@@ -83,10 +83,10 @@ jobs:
             exit 1
           fi
           echo "Packaging: $APP"
-          rm -rf Payload
+          rm -rf Payload Minis-unsigned.ipa
           mkdir Payload
           cp -R "$APP" Payload/
-          ditto -c -k --sequesterRsrc Payload Minis-unsigned.ipa
+          zip -qry Minis-unsigned.ipa Payload
           ls -lh Minis-unsigned.ipa
           unzip -l Minis-unsigned.ipa | head -20
 
