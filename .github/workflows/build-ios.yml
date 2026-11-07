@@ -15,6 +15,8 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
+          repository: OpenMinis/OpenMinis
+          ref: 1a71df0f381cefde80bf912b723de6f9831bc177
           submodules: recursive
           fetch-depth: 0
 
@@ -36,6 +38,13 @@ jobs:
           python3 -m pip install --break-system-packages meson
           echo "LLVM prefix: $(brew --prefix llvm)"
           meson --version
+
+      - name: Ensure Metal toolchain
+        run: |
+          if ! xcrun --sdk iphoneos metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk iphoneos metal --version
 
       - name: Prepare build config
         run: |
@@ -88,14 +97,21 @@ jobs:
           cp -R "$APP" Payload/
           zip -qry Minis-unsigned.ipa Payload
           ls -lh Minis-unsigned.ipa
-          unzip -l Minis-unsigned.ipa | head -20
+          shasum -a 256 Minis-unsigned.ipa | tee SHA256SUMS
+          git rev-parse HEAD > SOURCE_COMMIT.txt
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$APP/Info.plist"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: Minis-unsigned-ipa
-          path: Minis-unsigned.ipa
-          retention-days: 7
+          path: |
+            Minis-unsigned.ipa
+            SHA256SUMS
+            SOURCE_COMMIT.txt
+            xcodebuild.log
+          retention-days: 30
 
       - name: Upload build log on failure
         if: failure()
@@ -104,4 +120,4 @@ jobs:
           name: build-log
           path: xcodebuild.log
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 30
