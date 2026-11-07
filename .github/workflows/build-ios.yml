@@ -15,6 +15,8 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
+          repository: OpenMinis/OpenMinis
+          ref: 1a71df0f381cefde80bf912b723de6f9831bc177
           submodules: recursive
           fetch-depth: 0
 
@@ -23,6 +25,20 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
           sw_vers
+
+      - name: 修复共享容器缺失并运行回归测试
+        run: |
+          python3 - <<'PY'
+          import base64, pathlib
+          pathlib.Path('storage-fallback.patch').write_bytes(base64.b64decode('ZGlmZiAtLWdpdCBhL3NyYy9pb3MvQWdlbnQvQ2hhdC9BSUNoYXRWaWV3TW9kZWwrUmVxdWVzdEJ1ZGdldC5zd2lmdCBiL3NyYy9pb3MvQWdlbnQvQ2hhdC9BSUNoYXRWaWV3TW9kZWwrUmVxdWVzdEJ1ZGdldC5zd2lmdAppbmRleCBhM2NhYTIwLi44NGRlMjhlIDEwMDY0NAotLS0gYS9zcmMvaW9zL0FnZW50L0NoYXQvQUlDaGF0Vmlld01vZGVsK1JlcXVlc3RCdWRnZXQuc3dpZnQKKysrIGIvc3JjL2lvcy9BZ2VudC9DaGF0L0FJQ2hhdFZpZXdNb2RlbCtSZXF1ZXN0QnVkZ2V0LnN3aWZ0CkBAIC00MTksMTggKzQxOSwxNCBAQCBleHRlbnNpb24gQUlDaGF0Vmlld01vZGVsIHsKICAgICAvLy8gRmlsZVByb3ZpZGVyIGV4dGVuc2lvbi4gS2VlcCBPTkxZIHVzZXItZmFjaW5nIHN1YmRpcnMgKHNoYXJlZCwgc2tpbGxzLAogICAgIC8vLyBtZW1vcnkpIGhlcmUg4oCUIGFueXRoaW5nIGVsc2UgbGVha3MgaW50byAiT24gTXkgaVBob25lIOKGkiBNaW5pcyIuCiAgICAgbm9uaXNvbGF0ZWQgc3RhdGljIHZhciBtaW5pc0FwcEdyb3VwUm9vdDogVVJMIHsKLSAgICAgICAgRmlsZU1hbmFnZXIuZGVmYXVsdC5jb250YWluZXJVUkwoCi0gICAgICAgICAgICBmb3JTZWN1cml0eUFwcGxpY2F0aW9uR3JvdXBJZGVudGlmaWVyOiBTaGFyZWRDb250YWluZXJTdG9yZS5hcHBHcm91cElECi0gICAgICAgICkhLmFwcGVuZGluZ1BhdGhDb21wb25lbnQoIk1pbmlzRmlsZVByb3ZpZGVyIiwgaXNEaXJlY3Rvcnk6IHRydWUpCisgICAgICAgIFNoYXJlZENvbnRhaW5lclN0b3JlLnN0b3JhZ2VDb250YWluZXIuYXBwZW5kaW5nUGF0aENvbXBvbmVudCgiTWluaXNGaWxlUHJvdmlkZXIiLCBpc0RpcmVjdG9yeTogdHJ1ZSkKICAgICB9CiAKICAgICAvLy8gQXBwIEdyb3VwIHN1YmRpcmVjdG9yeSBmb3IgcHJpdmF0ZSBtZXRhZGF0YSB0aGF0IG11c3QgTk9UIGJlIGV4cG9zZWQKICAgICAvLy8gdG8gaU9TIEZpbGVzIChtb3VudGVkLWZvbGRlcnMuanNvbiwgRmlsZVByb3ZpZGVyIGV4dGVuc2lvbiBsb2dzLCBldGMpLgogICAgIC8vLyBTaWJsaW5nIG9mIGBtaW5pc0FwcEdyb3VwUm9vdGAgaW5zaWRlIHRoZSBzYW1lIEFwcCBHcm91cCBjb250YWluZXIuCiAgICAgbm9uaXNvbGF0ZWQgc3RhdGljIHZhciBtaW5pc0NvbmZpZ1Jvb3Q6IFVSTCB7Ci0gICAgICAgIGxldCB1cmwgPSBGaWxlTWFuYWdlci5kZWZhdWx0LmNvbnRhaW5lclVSTCgKLSAgICAgICAgICAgIGZvclNlY3VyaXR5QXBwbGljYXRpb25Hcm91cElkZW50aWZpZXI6IFNoYXJlZENvbnRhaW5lclN0b3JlLmFwcEdyb3VwSUQKLSAgICAgICAgKSEuYXBwZW5kaW5nUGF0aENvbXBvbmVudCgiTWluaXNDb25maWciLCBpc0RpcmVjdG9yeTogdHJ1ZSkKKyAgICAgICAgbGV0IHVybCA9IFNoYXJlZENvbnRhaW5lclN0b3JlLnN0b3JhZ2VDb250YWluZXIuYXBwZW5kaW5nUGF0aENvbXBvbmVudCgiTWluaXNDb25maWciLCBpc0RpcmVjdG9yeTogdHJ1ZSkKICAgICAgICAgdHJ5PyBGaWxlTWFuYWdlci5kZWZhdWx0LmNyZWF0ZURpcmVjdG9yeShhdDogdXJsLCB3aXRoSW50ZXJtZWRpYXRlRGlyZWN0b3JpZXM6IHRydWUpCiAgICAgICAgIHJldHVybiB1cmwKICAgICB9CmRpZmYgLS1naXQgYS9zcmMvaW9zL01pbmlzQXBwLnN3aWZ0IGIvc3JjL2lvcy9NaW5pc0FwcC5zd2lmdAppbmRleCA0MWNkOWU5Li5jZDIxZDA5IDEwMDY0NAotLS0gYS9zcmMvaW9zL01pbmlzQXBwLnN3aWZ0CisrKyBiL3NyYy9pb3MvTWluaXNBcHAuc3dpZnQKQEAgLTQ0OSw3ICs0NDksOSBAQCBzdHJ1Y3QgTWluaXNBcHA6IEFwcCB7CiAgICAgICAgICAgICAgICAgICAgIFNlbGYubG9nRlBTeW5jVHJhY2VQYXRocygpCiAgICAgICAgICAgICAgICAgICAgIC8vIFN0YXJ0IHdhdGNoaW5nIHNoYXJlZC9za2lsbHMvbWVtb3J5IHN1YnRyZWVzIHNvIGlTSCB3cml0ZXMKICAgICAgICAgICAgICAgICAgICAgLy8gYW5kIEZpbGVCcm93c2VyVmlldyBtdXRhdGlvbnMgcHJvcGFnYXRlIHRvIHRoZSBGaWxlcyBhcHAuCi0gICAgICAgICAgICAgICAgICAgIEFwcEdyb3VwQ2hhbmdlV2F0Y2hlci5zaGFyZWQuc3RhcnQoKQorICAgICAgICAgICAgICAgICAgICBpZiBTaGFyZWRDb250YWluZXJTdG9yZS5hcHBHcm91cENvbnRhaW5lciAhPSBuaWwgeworICAgICAgICAgICAgICAgICAgICAgICAgQXBwR3JvdXBDaGFuZ2VXYXRjaGVyLnNoYXJlZC5zdGFydCgpCisgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgLy8gQWN0aXZhdGUgc2VjdXJpdHkgc2NvcGVzIGZvciB1c2VyLW1vdW50ZWQgZXh0ZXJuYWwgZm9sZGVycwogICAgICAgICAgICAgICAgICAgICAvLyAoZS5nLiBPYnNpZGlhbiB2YXVsdCBpbiBpQ2xvdWQgRHJpdmUpLiBIZWxkIGZvciBhcHAgbGlmZXRpbWUuCiAgICAgICAgICAgICAgICAgICAgIE1vdW50ZWRGb2xkZXJzTWFuYWdlci5zaGFyZWQuYWN0aXZhdGVBbGwoKQpAQCAtODEzLDYgKzgxNSwxMCBAQCBzdHJ1Y3QgTWluaXNBcHA6IEFwcCB7CiAgICAgfQogCiAgICAgcHJpdmF0ZSBzdGF0aWMgZnVuYyByZWdpc3RlckZpbGVQcm92aWRlckRvbWFpbigpIHsKKyAgICAgICAgZ3VhcmQgU2hhcmVkQ29udGFpbmVyU3RvcmUuYXBwR3JvdXBDb250YWluZXIgIT0gbmlsIGVsc2UgeworICAgICAgICAgICAgbGlmZWN5Y2xlTG9nLmluZm8oIltGaWxlUHJvdmlkZXJdIEFwcCBHcm91cCB1bmF2YWlsYWJsZTsgc2tpcHBpbmcgZXh0ZW5zaW9uIHJlZ2lzdHJhdGlvbiIpCisgICAgICAgICAgICByZXR1cm4KKyAgICAgICAgfQogICAgICAgICBsb2dBcHBVcGRhdGVNYXJrZXJGb3JGUFRyYWNlKCkKIAogICAgICAgICAvLyBbVC1pb3MtZnAtbWFjLWJvb3RjcmFzaF0gQ2lyY3VpdCBicmVha2VyLCBOT1QgYSBibGFua2V0IGRpc2FibGUuCkBAIC0xMTc4LDcgKzExODQsMTAgQEAgc3RydWN0IE1pbmlzQXBwOiBBcHAgewogICAgIHByaXZhdGUgc3RhdGljIGZ1bmMgbWlncmF0ZVNoYXJlZERpclRvQXBwR3JvdXAoKSB7CiAgICAgICAgIGxldCBmbSA9IEZpbGVNYW5hZ2VyLmRlZmF1bHQKICAgICAgICAgbGV0IGxpYnJhcnkgPSBmbS51cmxzKGZvcjogLmxpYnJhcnlEaXJlY3RvcnksIGluOiAudXNlckRvbWFpbk1hc2spLmZpcnN0IQotICAgICAgICBsZXQgY29udGFpbmVyID0gZm0uY29udGFpbmVyVVJMKGZvclNlY3VyaXR5QXBwbGljYXRpb25Hcm91cElkZW50aWZpZXI6ICJncm91cC5jb20ub3Blbm1pbmlzLmFwcCIpIQorICAgICAgICBndWFyZCBsZXQgY29udGFpbmVyID0gU2hhcmVkQ29udGFpbmVyU3RvcmUuYXBwR3JvdXBDb250YWluZXIgZWxzZSB7CisgICAgICAgICAgICBsaWZlY3ljbGVMb2cuaW5mbygiW0ZpbGVQcm92aWRlcl0gQXBwIEdyb3VwIHVuYXZhaWxhYmxlOyByZXRhaW5pbmcgYXBwLWxvY2FsIHN0b3JhZ2UiKQorICAgICAgICAgICAgcmV0dXJuCisgICAgICAgIH0KIAogICAgICAgICBsZXQgbWlncmF0aW9uczogWyhzb3VyY2U6IFVSTCwgZGVzdDogVVJMLCBsYWJlbDogU3RyaW5nKV0gPSBbCiAgICAgICAgICAgICAvLyBMZWdhY3kgTGlicmFyeS9NaW5pc0NoYXQvc2hhcmVkIOKGkiBuZXcgc2hhcmVkCmRpZmYgLS1naXQgYS9zcmMvaW9zL1NoYXJlZC9TaGFyZWRDb250YWluZXJTdG9yZS5zd2lmdCBiL3NyYy9pb3MvU2hhcmVkL1NoYXJlZENvbnRhaW5lclN0b3JlLnN3aWZ0CmluZGV4IGY5Y2Y3N2EuLmE3ZjQzNTYgMTAwNjQ0Ci0tLSBhL3NyYy9pb3MvU2hhcmVkL1NoYXJlZENvbnRhaW5lclN0b3JlLnN3aWZ0CisrKyBiL3NyYy9pb3MvU2hhcmVkL1NoYXJlZENvbnRhaW5lclN0b3JlLnN3aWZ0CkBAIC03LDggKzcsMjggQEAgZW51bSBTaGFyZWRDb250YWluZXJTdG9yZSB7CiAKICAgICBwcml2YXRlIHN0YXRpYyBsZXQgcGVuZGluZ1NoYXJlS2V5ID0gInBlbmRpbmdTaGFyZSIKIAorICAgIC8vLyDml6DlhbHkuqvmnYPpmZDml7bvvIzmnKzlnLDmlbDmja7kv53lrZjlnKjlupTnlKjnp4HmnInnm67lvZXvvIzkuI3og73lgYflrprph43nrb7kv53nlZnkuoYgQXBwIEdyb3Vw44CCCisgICAgc3RhdGljIGZ1bmMgcmVzb2x2ZVN0b3JhZ2VDb250YWluZXIoc2hhcmVkQ29udGFpbmVyOiBVUkw/LCBhcHBsaWNhdGlvblN1cHBvcnQ6IFVSTCkgLT4gVVJMIHsKKyAgICAgICAgc2hhcmVkQ29udGFpbmVyID8/IGFwcGxpY2F0aW9uU3VwcG9ydC5hcHBlbmRpbmdQYXRoQ29tcG9uZW50KCJNaW5pc0xvY2FsQ29udGFpbmVyIiwgaXNEaXJlY3Rvcnk6IHRydWUpCisgICAgfQorCisgICAgc3RhdGljIHZhciBhcHBHcm91cENvbnRhaW5lcjogVVJMPyB7CisgICAgICAgIEZpbGVNYW5hZ2VyLmRlZmF1bHQuY29udGFpbmVyVVJMKGZvclNlY3VyaXR5QXBwbGljYXRpb25Hcm91cElkZW50aWZpZXI6IGFwcEdyb3VwSUQpCisgICAgfQorCisgICAgLy8vIOWQr+WKqOWQjuWbuuWumuebruW9le+8jOmBv+WFjeWQjOS4gOi/m+eoi+WGheS4jeWQjOWtmOWCqOaooeWdl+mAieaLqeS4jeWQjOS9jee9ruOAggorICAgIHN0YXRpYyBsZXQgc3RvcmFnZUNvbnRhaW5lcjogVVJMID0geworICAgICAgICBsZXQgZm0gPSBGaWxlTWFuYWdlci5kZWZhdWx0CisgICAgICAgIGxldCBzdXBwb3J0ID0gZm0udXJscyhmb3I6IC5hcHBsaWNhdGlvblN1cHBvcnREaXJlY3RvcnksIGluOiAudXNlckRvbWFpbk1hc2spLmZpcnN0CisgICAgICAgICAgICA/PyBmbS5ob21lRGlyZWN0b3J5Rm9yQ3VycmVudFVzZXIuYXBwZW5kaW5nUGF0aENvbXBvbmVudCgiTGlicmFyeS9BcHBsaWNhdGlvbiBTdXBwb3J0IiwgaXNEaXJlY3Rvcnk6IHRydWUpCisgICAgICAgIGxldCB1cmwgPSByZXNvbHZlU3RvcmFnZUNvbnRhaW5lcihzaGFyZWRDb250YWluZXI6IGFwcEdyb3VwQ29udGFpbmVyLCBhcHBsaWNhdGlvblN1cHBvcnQ6IHN1cHBvcnQpCisgICAgICAgIHRyeT8gZm0uY3JlYXRlRGlyZWN0b3J5KGF0OiB1cmwsIHdpdGhJbnRlcm1lZGlhdGVEaXJlY3RvcmllczogdHJ1ZSkKKyAgICAgICAgcmV0dXJuIHVybAorICAgIH0oKQorCiAgICAgc3RhdGljIHZhciBzaGFyZWREZWZhdWx0czogVXNlckRlZmF1bHRzPyB7Ci0gICAgICAgIFVzZXJEZWZhdWx0cyhzdWl0ZU5hbWU6IGFwcEdyb3VwSUQpCisgICAgICAgIGd1YXJkIGFwcEdyb3VwQ29udGFpbmVyICE9IG5pbCBlbHNlIHsgcmV0dXJuIG5pbCB9CisgICAgICAgIHJldHVybiBVc2VyRGVmYXVsdHMoc3VpdGVOYW1lOiBhcHBHcm91cElEKQogICAgIH0KIAogICAgIC8vLyBEaXJlY3RvcnkgaW4gdGhlIHNoYXJlZCBjb250YWluZXIgZm9yIHRyYW5zZmVycmluZyBhdHRhY2htZW50IGZpbGVzLgo='))
+          pathlib.Path('StorageFallbackTests.swift').write_bytes(base64.b64decode('aW1wb3J0IEZvdW5kYXRpb24KCkBtYWluCnN0cnVjdCBTdG9yYWdlRmFsbGJhY2tUZXN0cyB7CiAgICBzdGF0aWMgZnVuYyBtYWluKCkgdGhyb3dzIHsKICAgICAgICBsZXQgZm0gPSBGaWxlTWFuYWdlci5kZWZhdWx0CiAgICAgICAgbGV0IHJvb3QgPSBmbS50ZW1wb3JhcnlEaXJlY3RvcnkuYXBwZW5kaW5nUGF0aENvbXBvbmVudChVVUlEKCkudXVpZFN0cmluZywgaXNEaXJlY3Rvcnk6IHRydWUpCiAgICAgICAgZGVmZXIgeyB0cnk/IGZtLnJlbW92ZUl0ZW0oYXQ6IHJvb3QpIH0KICAgICAgICBsZXQgc3VwcG9ydCA9IHJvb3QuYXBwZW5kaW5nUGF0aENvbXBvbmVudCgiTGlicmFyeS9BcHBsaWNhdGlvbiBTdXBwb3J0IiwgaXNEaXJlY3Rvcnk6IHRydWUpCiAgICAgICAgbGV0IHNoYXJlZCA9IHJvb3QuYXBwZW5kaW5nUGF0aENvbXBvbmVudCgiR3JvdXAiLCBpc0RpcmVjdG9yeTogdHJ1ZSkKICAgICAgICBsZXQgbG9jYWwgPSBTaGFyZWRDb250YWluZXJTdG9yZS5yZXNvbHZlU3RvcmFnZUNvbnRhaW5lcihzaGFyZWRDb250YWluZXI6IG5pbCwgYXBwbGljYXRpb25TdXBwb3J0OiBzdXBwb3J0KQogICAgICAgIHByZWNvbmRpdGlvbihsb2NhbCA9PSBzdXBwb3J0LmFwcGVuZGluZ1BhdGhDb21wb25lbnQoIk1pbmlzTG9jYWxDb250YWluZXIiLCBpc0RpcmVjdG9yeTogdHJ1ZSkpCiAgICAgICAgcHJlY29uZGl0aW9uKFNoYXJlZENvbnRhaW5lclN0b3JlLnJlc29sdmVTdG9yYWdlQ29udGFpbmVyKHNoYXJlZENvbnRhaW5lcjogc2hhcmVkLCBhcHBsaWNhdGlvblN1cHBvcnQ6IHN1cHBvcnQpID09IHNoYXJlZCkKICAgICAgICAvLyDpqozor4Hml6DlhbHkuqvmnYPpmZDml7bprYLorr7jgIHorrDlv4bkuI7phY3nva7kvb/nlKjnmoTot6/lvoTlj6/or7vlhpnkuJTot6josIPnlKjnqLPlrprjgIIKICAgICAgICBmb3IgcmVsYXRpdmUgaW4gWyJNaW5pc0ZpbGVQcm92aWRlci9zaGFyZWQvc291bC5qc29uIiwgIk1pbmlzRmlsZVByb3ZpZGVyL21lbW9yeS90ZXN0Lm1kIiwgIk1pbmlzQ29uZmlnL2NvbmZpZy5qc29uIl0gewogICAgICAgICAgICBsZXQgZmlsZSA9IGxvY2FsLmFwcGVuZGluZ1BhdGhDb21wb25lbnQocmVsYXRpdmUpCiAgICAgICAgICAgIHRyeSBmbS5jcmVhdGVEaXJlY3RvcnkoYXQ6IGZpbGUuZGVsZXRpbmdMYXN0UGF0aENvbXBvbmVudCgpLCB3aXRoSW50ZXJtZWRpYXRlRGlyZWN0b3JpZXM6IHRydWUpCiAgICAgICAgICAgIGxldCBkYXRhID0gRGF0YSgi5pys5Zyw5pWw5o2u5L+d55WZ6aqM6K+BIi51dGY4KQogICAgICAgICAgICB0cnkgZGF0YS53cml0ZSh0bzogZmlsZSkKICAgICAgICAgICAgbGV0IGFnYWluID0gU2hhcmVkQ29udGFpbmVyU3RvcmUucmVzb2x2ZVN0b3JhZ2VDb250YWluZXIoc2hhcmVkQ29udGFpbmVyOiBuaWwsIGFwcGxpY2F0aW9uU3VwcG9ydDogc3VwcG9ydCkKICAgICAgICAgICAgbGV0IGxvYWRlZCA9IHRyeSBEYXRhKGNvbnRlbnRzT2Y6IGFnYWluLmFwcGVuZGluZ1BhdGhDb21wb25lbnQocmVsYXRpdmUpKQogICAgICAgICAgICBwcmVjb25kaXRpb24obG9hZGVkID09IGRhdGEpCiAgICAgICAgfQogICAgICAgIHByZWNvbmRpdGlvbighZm0uZmlsZUV4aXN0cyhhdFBhdGg6IHNoYXJlZC5wYXRoKSkKICAgICAgICBwcmludCgi6YCa6L+H77ya5YWx5Lqr55uu5b2V5LyY5YWI44CB5p2D6ZmQ57y65aSx5Zue6YCA44CB55uu5b2V56iz5a6a44CB6a2C6K6+5Y+K6YWN572u6K+75YaZ44CB5pyq5Yib5bu65Lyq5YWx5Lqr55uu5b2VIikKICAgIH0KfQo='))
+          PY
+          git apply --check storage-fallback.patch
+          git apply storage-fallback.patch
+          git diff --check
+          swiftc src/ios/Shared/PendingShare.swift src/ios/Shared/SharedContainerStore.swift StorageFallbackTests.swift -o /tmp/storage-fallback-test
+          /tmp/storage-fallback-test | tee storage-test.log
+          shasum -a 256 storage-fallback.patch > PATCH_SHA256.txt
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -36,6 +52,13 @@ jobs:
           python3 -m pip install --break-system-packages meson
           echo "LLVM prefix: $(brew --prefix llvm)"
           meson --version
+
+      - name: Ensure Metal toolchain
+        run: |
+          if ! xcrun --sdk iphoneos metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk iphoneos metal --version
 
       - name: Prepare build config
         run: |
@@ -69,6 +92,7 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
+            CURRENT_PROJECT_VERSION=2 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -88,14 +112,24 @@ jobs:
           cp -R "$APP" Payload/
           zip -qry Minis-unsigned.ipa Payload
           ls -lh Minis-unsigned.ipa
-          unzip -l Minis-unsigned.ipa | head -20
+          shasum -a 256 Minis-unsigned.ipa | tee SHA256SUMS
+          git rev-parse HEAD > SOURCE_COMMIT.txt
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$APP/Info.plist"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: Minis-unsigned-ipa
-          path: Minis-unsigned.ipa
-          retention-days: 7
+          path: |
+            Minis-unsigned.ipa
+            SHA256SUMS
+            SOURCE_COMMIT.txt
+            xcodebuild.log
+            storage-fallback.patch
+            PATCH_SHA256.txt
+            storage-test.log
+          retention-days: 30
 
       - name: Upload build log on failure
         if: failure()
@@ -104,4 +138,4 @@ jobs:
           name: build-log
           path: xcodebuild.log
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 30
