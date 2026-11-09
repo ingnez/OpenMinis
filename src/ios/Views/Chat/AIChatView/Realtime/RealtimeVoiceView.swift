@@ -5,10 +5,13 @@ struct RealtimeVoiceView: View {
     @StateObject private var session: RealtimeVoiceSession
     @ObservedObject private var providers = ProviderConfigStore.shared
     @AppStorage("realtimeVoice.provider") private var providerID = ""
-    @AppStorage("realtimeVoice.model") private var model = "gpt-realtime"
+    @AppStorage("realtimeVoice.model") private var model = ""
     @AppStorage("realtimeVoice.voice") private var voice = "alloy"
     @AppStorage("realtimeVoice.preview") private var preview = false
     @State private var showSettings = false
+    @StateObject private var catalog = RealtimeModelCatalog()
+    @AppStorage("realtimeVoice.modelsByProvider") private var modelSelections = "{}"
+    @State private var selectionProvider = ""
     init(chat: AIChatViewModel) { _session = StateObject(wrappedValue: RealtimeVoiceSession(chat: chat)) }
     private var supportedProviders: [ProviderInstance] {
         providers.instances.filter { $0.isEnabled && ($0.providerType == .openAI || $0.providerType == .openAIResponses) && $0.credentialType == .apiKey }
@@ -82,6 +85,14 @@ struct RealtimeVoiceView: View {
             }
             .sheet(isPresented: $showSettings) { settings }
             .onAppear { chooseInitialProvider() }
+            .task(id: providerID) {
+                prepareCatalog()
+                await refreshCatalog()
+            }
+            .onChange(of: model) { value in
+                guard selectionProvider == providerID else { return }
+                saveSelection(value, for: providerID)
+            }
             .onDisappear { session.finish() }
         }.interactiveDismissDisabled(session.active)
     }
@@ -92,14 +103,31 @@ struct RealtimeVoiceView: View {
                     Picker("服务商", selection: $providerID) {
                         Text("请选择").tag("")
                         ForEach(supportedProviders, id: \.id) { provider in Text(provider.label).tag(provider.id) }
-                    }.onChange(of: providerID) { _ in chooseModel() }
-                    if !candidates.isEmpty {
-                        Picker("已发现的实时模型", selection: $model) {
-                            if !candidates.contains(where: { $0.model.id == model }) { Text(model).tag(model) }
-                            ForEach(candidates, id: \.id) { entry in Text(entry.model.id).tag(entry.model.id) }
-                        }
                     }
-                    TextField("模型名称", text: $model).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    NavigationLink {
+                        RealtimeModelPicker(catalog: catalog, model: $model, refresh: refreshCatalog)
+                    } label: {
+                        LabeledContent("选择语音模型", value: model.isEmpty ? "请选择" : model)
+                    }.disabled(providerID.isEmpty)
+                    Button {
+                        Task { await refreshCatalog() }
+                    } label: {
+                        HStack {
+                            Label("刷新服务商模型", systemImage: "arrow.clockwise")
+                            Spacer()
+                            if catalog.loading { ProgressView() }
+                        }
+                    }.disabled(providerID.isEmpty || catalog.loading)
+                    if let error = catalog.error {
+                        Text("刷新失败：\(error)\n仍可查看已有列表或手动填写。").font(.footnote).foregroundStyle(.red)
+                    } else if let updated = catalog.updatedAt {
+                        Text("已获取 \(catalog.models.count) 个模型 · \(updated.formatted(date: .omitted, time: .shortened))")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        Text(catalog.loading ? "正在获取服务商完整模型列表…" : "当前为本地列表，尚未在线验证。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    TextField("手动填写模型名称", text: $model).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .onChange(of: model) { preview = $0.contains("preview") }
                     Toggle("旧版 Preview 协议", isOn: $preview)
                     Picker("声音", selection: $voice) {
@@ -111,6 +139,8 @@ struct RealtimeVoiceView: View {
                     Text("本模式传送当前聊天文字与灵魂设定。语音通话暂不执行终端、浏览器等工具，挂断后可在普通聊天中继续。")
                 }.font(.footnote).foregroundStyle(.secondary)
             }.navigationTitle("通话设置").navigationBarTitleDisplayMode(.inline)
+                .refreshable { await refreshCatalog() }
+                .task { if !catalog.loading { await refreshCatalog() } }
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showSettings = false } } }
         }
     }
@@ -122,7 +152,40 @@ struct RealtimeVoiceView: View {
             providerID = entry.providerInstanceId; model = entry.model.id; preview = model.contains("preview")
         } else { providerID = supportedProviders.first?.id ?? ""; showSettings = true }
     }
-    private func chooseModel() {
-        if let entry = candidates.first { model = entry.model.id; preview = model.contains("preview") }
+    private func saveSelection(_ value: String, for id: String) {
+        guard !id.isEmpty else { return }
+        var saved = (try? JSONDecoder().decode([String: String].self, from: Data(modelSelections.utf8))) ?? [:]
+        saved[id] = value
+        if let data = try? JSONEncoder().encode(saved), let json = String(data: data, encoding: .utf8) { modelSelections = json }
+    }
+    private func prepareCatalog() {
+        if !selectionProvider.isEmpty, selectionProvider != providerID { saveSelection(model, for: selectionProvider) }
+        let saved = (try? JSONDecoder().decode([String: String].self, from: Data(modelSelections.utf8))) ?? [:]
+        let switching = !selectionProvider.isEmpty && selectionProvider != providerID
+        selectionProvider = providerID
+        if let selected = saved[providerID] { model = selected }
+        else if switching { model = "" }
+        let local = providers.modelEntries.filter { $0.providerInstanceId == providerID }.map { choice($0.model) }
+        catalog.select(providerID, local: local)
+    }
+    private func choice(_ value: LLMModel) -> RealtimeModelChoice {
+        let modes = value.modalityOverride ?? value.capabilities.supportedModalities
+        return RealtimeModelChoice(id: value.id, name: value.displayName,
+                                   audioInput: modes.contains(.audioInput), audioOutput: modes.contains(.audioOutput))
+    }
+    private func refreshCatalog() async {
+        let id = providerID
+        guard !session.active, let provider = supportedProviders.first(where: { $0.id == id }) else { return }
+        if catalog.providerID != id { prepareCatalog() }
+        await catalog.refresh(provider: id) {
+            guard let key = ProviderKeychainHelper.loadAPIKey(instanceId: id), !key.isEmpty else {
+                throw NSError(domain: "RealtimeModels", code: 401, userInfo: [NSLocalizedDescriptionKey: "服务商未配置 API 密钥"])
+            }
+            let values = try await OpenAIModelsAPI.fetchModels(apiKey: key, baseURL: provider.effectiveCustomBaseURL,
+                appendV1Suffix: provider.appendV1Suffix, forceRefresh: true,
+                userAgent: provider.supportsCustomUserAgent ? provider.effectiveCustomUserAgent : nil, includeNonChat: true)
+            return values.map { choice($0) }
+        }
+        // 刷新只更新目录，不替用户选择新模型，也不覆盖正在编辑的名称。
     }
 }

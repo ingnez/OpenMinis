@@ -17,7 +17,16 @@ struct ProviderInstance {
  var providerType: ProviderType; var credentialType: CredentialType
  func resolvedBaseURL(default v: String) -> (url: String, appendV1: Bool) { (v,true) }
 }
-struct LLMModel { var id: String }
+struct ModelModality: OptionSet { let rawValue: Int; static let audioInput = Self(rawValue: 1); static let audioOutput = Self(rawValue: 2) }
+struct ModelCapabilities { var supportedModalities: ModelModality = [] }
+struct LLMModel { var id: String; var displayName: String = ""; var modalityOverride: ModelModality?; var capabilities = ModelCapabilities() }
+extension ProviderInstance {
+ var effectiveCustomBaseURL: String? { nil }; var appendV1Suffix: Bool { true }
+ var supportsCustomUserAgent: Bool { false }; var effectiveCustomUserAgent: String? { nil }
+}
+enum OpenAIModelsAPI {
+ static func fetchModels(apiKey: String, baseURL: String?, appendV1Suffix: Bool, forceRefresh: Bool, userAgent: String?, includeNonChat: Bool) async throws -> [LLMModel] { [] }
+}
 struct ModelEntry: Identifiable { var id: String; var providerInstanceId: String; var model: LLMModel }
 @MainActor final class ProviderConfigStore: ObservableObject {
  static let shared = ProviderConfigStore()

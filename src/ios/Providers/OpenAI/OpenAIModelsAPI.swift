@@ -15,8 +15,9 @@ enum OpenAIModelsAPI {
 
     private static let defaultBaseURL = "https://api.openai.com"
 
-    static func fetchModels(apiKey: String, baseURL: String? = nil, appendV1Suffix: Bool = true, forceRefresh: Bool = false, userAgent: String? = nil) async throws -> [LLMModel] {
-        if !forceRefresh, let cached = OpenAIModelsCache.load(credential: apiKey) {
+    static func fetchModels(apiKey: String, baseURL: String? = nil, appendV1Suffix: Bool = true, forceRefresh: Bool = false, userAgent: String? = nil, includeNonChat: Bool = false) async throws -> [LLMModel] {
+        // 通话目录需要完整模型，不复用普通聊天目录缓存。
+        if !includeNonChat, !forceRefresh, let cached = OpenAIModelsCache.load(credential: apiKey) {
             logger.info("Returning \(cached.count) cached models (API key)")
             return cached
         }
@@ -32,8 +33,8 @@ enum OpenAIModelsAPI {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         if let ua = userAgent { request.setValue(ua, forHTTPHeaderField: "User-Agent") }
         logger.info("Fetching OpenAI models (API key auth, custom base: \(isCustomBase), appendV1: \(appendV1Suffix))")
-        let models = try await performFetch(request, filterOpenAIOnly: !isCustomBase)
-        OpenAIModelsCache.save(models, credential: apiKey)
+        let models = try await performFetch(request, filterOpenAIOnly: !isCustomBase && !includeNonChat)
+        if !includeNonChat { OpenAIModelsCache.save(models, credential: apiKey) }
         return models
     }
 
