@@ -24,6 +24,22 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           sw_vers
 
+      - name: Resolve Swift packages
+        run: |
+          set -o pipefail
+          git config --global http.version HTTP/1.1
+          for attempt in 1 2 3; do
+            if xcodebuild -resolvePackageDependencies \
+              -project src/ios/Minis.xcodeproj -scheme Minis \
+              -clonedSourcePackagesDirPath "$RUNNER_TEMP/MinisPackages" \
+              -scmProvider system -disablePackageRepositoryCache \
+              2>&1 | tee package-resolve.log; then
+              exit 0
+            fi
+            rm -rf "$RUNNER_TEMP/MinisPackages"
+          done
+          exit 1
+
       - name: 验证启动修复和本轮功能
         run: |
           git diff --check
@@ -85,6 +101,9 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/MinisPackages" \
+            -scmProvider system \
+            -disableAutomaticPackageResolution \
             CURRENT_PROJECT_VERSION=4 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
@@ -129,6 +148,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: xcodebuild.log
+          path: |
+            xcodebuild.log
+            package-resolve.log
+            storage-test.log
+            reset-test.log
+            soul-test.log
           if-no-files-found: ignore
           retention-days: 30
