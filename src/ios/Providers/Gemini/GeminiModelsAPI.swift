@@ -8,8 +8,8 @@ enum GeminiModelsAPI {
 
     private static let defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-    static func fetchModels(apiKey: String, customBaseURL: String? = nil, forceRefresh: Bool = false) async throws -> [LLMModel] {
-        if !forceRefresh, let cached = GeminiModelsCache.load(credential: apiKey) {
+    static func fetchModels(apiKey: String, customBaseURL: String? = nil, forceRefresh: Bool = false, includeNonChat: Bool = false) async throws -> [LLMModel] {
+        if !includeNonChat, !forceRefresh, let cached = GeminiModelsCache.load(credential: apiKey) {
             logger.info("Returning \(cached.count) cached models (API key)")
             return cached
         }
@@ -45,8 +45,8 @@ enum GeminiModelsAPI {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         logger.info("Fetching Gemini models (API key auth)")
-        let models = try await performFetch(request)
-        GeminiModelsCache.save(models, credential: apiKey)
+        let models = try await performFetch(request, includeNonChat: includeNonChat)
+        if !includeNonChat { GeminiModelsCache.save(models, credential: apiKey) }
         return models
     }
 
@@ -98,7 +98,7 @@ enum GeminiModelsAPI {
         return LLMModel.allGemini
     }
 
-    private static func performFetch(_ request: URLRequest) async throws -> [LLMModel] {
+    private static func performFetch(_ request: URLRequest, includeNonChat: Bool = false) async throws -> [LLMModel] {
         // Redact API key from logged URL
         let logURL: String
         if let url = request.url, var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
@@ -147,8 +147,10 @@ enum GeminiModelsAPI {
             let displayName = item["displayName"] as? String ?? id
 
             // Filter to chat-capable models only
-            guard let methods = item["supportedGenerationMethods"] as? [String],
-                  methods.contains("generateContent") else { return nil }
+            if !includeNonChat {
+                guard let methods = item["supportedGenerationMethods"] as? [String],
+                      methods.contains("generateContent") else { return nil }
+            }
 
             return LLMModel(id: id, displayName: displayName, provider: "Google")
         }

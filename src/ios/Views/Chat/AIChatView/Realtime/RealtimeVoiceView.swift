@@ -212,7 +212,7 @@ struct RealtimeVoiceView: View {
                 throw NSError(domain: "RealtimeModels", code: 401, userInfo: [NSLocalizedDescriptionKey: "服务商未配置 API 密钥"])
             }
             if provider.providerType == .gemini {
-                let values = try await GeminiModelsAPI.fetchModels(apiKey: key, customBaseURL: provider.effectiveCustomBaseURL, forceRefresh: true)
+                let values = try await GeminiModelsAPI.fetchModels(apiKey: key, customBaseURL: provider.effectiveCustomBaseURL, forceRefresh: true, includeNonChat: true)
                 return values.map { choice($0) }
             }
             let values = try await OpenAIModelsAPI.fetchModels(apiKey: key, baseURL: provider.effectiveCustomBaseURL,

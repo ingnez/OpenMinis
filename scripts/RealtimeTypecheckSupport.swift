@@ -11,7 +11,7 @@ import SwiftUI
  func end(_ i: Intent) {}
 }
 enum ProviderType { case openAI, openAIResponses, gemini, other }
-enum GeminiModelsAPI { static func fetchModels(apiKey: String, customBaseURL: String?, forceRefresh: Bool) async throws -> [LLMModel] { [] } }
+enum GeminiModelsAPI { static func fetchModels(apiKey: String, customBaseURL: String?, forceRefresh: Bool, includeNonChat: Bool) async throws -> [LLMModel] { [] } }
 enum CredentialType { case apiKey, other }
 struct ProviderInstance {
  var id: String; var label: String; var isEnabled: Bool

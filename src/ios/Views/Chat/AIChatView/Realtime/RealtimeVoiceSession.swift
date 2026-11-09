@@ -46,6 +46,8 @@ final class RealtimeVoiceSession: ObservableObject {
     private var geminiUserID = UUID().uuidString
     private var geminiAssistantID = UUID().uuidString
     private var geminiSuppressOutput = false
+    private var geminiPlaybackID: String?
+    private var connectionLabel = ""
     private var audioStarted = false
     @Published var validationResult: String?
 
@@ -65,6 +67,7 @@ final class RealtimeVoiceSession: ObservableObject {
         validationResult = nil; error = nil
         do { connectionProtocol = try RealtimeConnectionProtocol.resolve(protocolMode, model: model) }
         catch { self.error = error.localizedDescription; return }
+        connectionLabel = "\(provider.label) · \(model)"; geminiPlaybackID = nil
         validationOnly = validateOnly; diagnosticKey = key; diagnosing = false; audioStarted = false
         geminiUserID = UUID().uuidString; geminiAssistantID = UUID().uuidString; geminiSuppressOutput = false
         let generation = UUID(); epoch = generation
@@ -254,7 +257,7 @@ final class RealtimeVoiceSession: ObservableObject {
     }
     private func completeValidation() -> Bool {
         guard validationOnly else { return false }
-        validationResult = "\(connectionProtocol.title) 会话握手通过；未录音、未发送聊天历史，实际音频尚未测试。"
+        validationResult = "\(connectionLabel)\n\(connectionProtocol.title) 会话握手通过；未录音、未发送聊天历史，实际音频尚未测试。"
         finish(reason: "实时连接验证通过")
         return true
     }
@@ -345,6 +348,7 @@ final class RealtimeVoiceSession: ObservableObject {
                     guard !mime.contains("rate=") || mime.contains("rate=24000") else {
                         throw RealtimeConnectionProtocol.ConnectionError.message("Gemini 返回不支持的采样率：\(mime)")
                     }
+                    geminiPlaybackID = geminiAssistantID
                     responseRunning = true; try audio.play(data); status = "AI 正在说 · 可以直接插话"
                 }
             }
@@ -392,13 +396,15 @@ final class RealtimeVoiceSession: ObservableObject {
 
     func interrupt(sendCancel: Bool = true) {
         if connectionProtocol.isGemini {
-            audio.interrupt()
-            if let index = lines.firstIndex(where: { $0.id == geminiAssistantID }) {
+            let interruptedID = geminiPlaybackID
+            let hadOutput = responseRunning || audio.hasPendingAudio
+            audio.interrupt(); geminiPlaybackID = nil
+            if hadOutput, let index = lines.firstIndex(where: { $0.id == interruptedID }) {
                 lines[index].text = "[这段语音被打断，未保存可能尚未播放的字幕]"
                 lines[index].interrupted = true
             }
             // 自动VAD的服务端interrupted会结束输出；手动打断先静音本轮直到回合结束。
-            geminiSuppressOutput = sendCancel
+            geminiSuppressOutput = sendCancel && responseRunning
             responseRunning = false
             if active { status = muted ? "麦克风已静音" : "正在听你说" }
             return
