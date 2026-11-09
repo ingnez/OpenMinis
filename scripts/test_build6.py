@@ -25,7 +25,7 @@ final class Registry {
  var jobs: [String: Job] = [:]
  var drains=0
  func drainQueuedDelegations() { drains += 1 }
-'''+admission+'''
+'''+admission+r'''
 }
 let r=Registry()
 precondition(ConcurrencyLimits.childJobsPerParent == 0)
@@ -54,9 +54,14 @@ with tempfile.TemporaryDirectory() as tmp:
   exe=Path(tmp)/'test'
   subprocess.run(['swiftc',*flags,str(p),'-o',str(exe)],check=True)
   subprocess.run([str(exe)],check=True)
-# 明确检查PBX中的旧文件排除项，不能只扫描未编译同名文件。
+# 检查同步目录已加入实际目标，旧同名文件没有在编译源清单中。
 project=read(base+'Minis.xcodeproj/project.pbxproj')
-assert 'Views/Chat/AIChatView.swift' in project
+assert 'path = AIChatView;' in project
+assert 'E5ACVSYNC0000000000000A1 /* AIChatView */' in block(project,'fileSystemSynchronizedGroups = (',');') or re.search(r'fileSystemSynchronizedGroups = \([^)]*E5ACVSYNC0000000000000A1',project)
+assert 'AIChatView.swift in Sources' not in project
+loop=read(base+'Agent/Chat/AIChatViewModel+AgentLoop.swift')
+assert 'while !isSubAgentCall && regularInFlight.count >= Self.maxConcurrentTools' in loop
+assert 'if !isSubAgentCall { regularInFlight.insert(idx) }' in loop
 active=base+'Views/Chat/AIChatView/'
 view=read(active+'AIChatView.swift');controls=read(active+'AIChatView+ComposerControls.swift')
 assert '@State var showRealtimeVoice = false' in view

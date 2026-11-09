@@ -2054,11 +2054,14 @@ extension AIChatViewModel {
             await withTaskGroup(of: (Int, ToolExecOutcome).self) { group in
                 var added = 0
                 var harvested = 0
+                var regularInFlight: Set<Int> = []
                 for (idx, tu) in toolEntries.enumerated() {
-                    // Rate-limit: hold here until we're below the in-flight cap.
-                    while added - harvested >= Self.maxConcurrentTools {
+                    // 子代理委派不占普通工具槽位，包括 wait=true 的委派。
+                    let isSubAgentCall = tu.name == SubAgentDefinition.toolName
+                    while !isSubAgentCall && regularInFlight.count >= Self.maxConcurrentTools {
                         if let pair = await group.next() {
                             outcomesByIndex[pair.0] = pair.1
+                            regularInFlight.remove(pair.0)
                             harvested += 1
                         } else {
                             break
@@ -2081,6 +2084,7 @@ extension AIChatViewModel {
                         while earlierWriters.contains(where: { outcomesByIndex[$0] == nil }),
                               let pair = await group.next() {
                             outcomesByIndex[pair.0] = pair.1
+                            regularInFlight.remove(pair.0)
                             harvested += 1
                         }
                         logger.info("[BatchOrder] \(tu.name) [\(idx)] waited \(String(format: "%.2f", Date().timeIntervalSince(waitStart)))s for writer(s) \(earlierWriters) in the same batch")
@@ -2101,6 +2105,7 @@ extension AIChatViewModel {
                         )
                         return (idx, outcome)
                     }
+                    if !isSubAgentCall { regularInFlight.insert(idx) }
                     added += 1
                 }
                 // Drain the remainder.
