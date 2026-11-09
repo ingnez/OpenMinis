@@ -68,7 +68,7 @@ assert '@State var showRealtimeVoice = false' in view
 assert '.fullScreenCover(isPresented: $showRealtimeVoice)' in view
 assert 'RealtimeVoiceView(chat: cached.vm)' in view
 assert '|| showRealtimeVoice' in view
-row=block(controls,'private var inputBottomRow: AnyView {','return AnyView(row)')
+row=block(controls,'var inputBottomRow: AnyView {','return AnyView(row)')
 assert 'phone.circle.fill' in row and 'showRealtimeVoice = true' in row
 assert 'accessibilityIdentifier("realtimeVoiceButton")' in row
 assert 'voiceInputActive = false' in row
