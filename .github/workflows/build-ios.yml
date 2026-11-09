@@ -24,6 +24,12 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           sw_vers
 
+      - name: 实时语音协议回归与 iOS 类型检查
+        run: |
+          set -o pipefail
+          python3 scripts/test_realtime_voice.py | tee realtime-test.log
+          xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/RealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Realtime/*.swift 2>&1 | tee realtime-typecheck.log
+
       - name: 下载并校验官方 VAD 二进制
         run: python3 scripts/prepare_vad.py
 
@@ -107,7 +113,7 @@ jobs:
             -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
             -scmProvider system \
             -disableAutomaticPackageResolution \
-            CURRENT_PROJECT_VERSION=4 \
+            CURRENT_PROJECT_VERSION=5 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -143,6 +149,8 @@ jobs:
             xcodebuild.log
             reset-test.log
             soul-test.log
+            realtime-test.log
+            realtime-typecheck.log
             storage-test.log
           retention-days: 30
 
@@ -157,5 +165,7 @@ jobs:
             storage-test.log
             reset-test.log
             soul-test.log
+            realtime-test.log
+            realtime-typecheck.log
           if-no-files-found: ignore
           retention-days: 30

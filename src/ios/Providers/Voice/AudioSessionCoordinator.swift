@@ -33,6 +33,7 @@ final class AudioSessionCoordinator {
         case replyTTS = 1
         case mediaAttachment = 2
         case capture = 3
+        case realtimeConversation = 4
     }
 
     private let logger = AppLogger(category: "AudioSession")
@@ -150,6 +151,8 @@ final class AudioSessionCoordinator {
 
     private func profile(for intent: Intent) -> (AVAudioSession.Category, AVAudioSession.Mode, AVAudioSession.CategoryOptions) {
         switch intent {
+        case .realtimeConversation:
+            return (.playAndRecord, .voiceChat, [.defaultToSpeaker, .allowBluetooth])
         case .capture:
             return (.record, .measurement, [])
         case .mediaAttachment:
