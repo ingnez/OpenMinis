@@ -630,6 +630,8 @@ final class AgentJobRegistry: ObservableObject {
     /// Free child slots of `parent`, not counting the reservation `key` holds
     /// (the caller's own, when it is the start that reservation was made for).
     func freeChildSlots(parent parentSessionId: String, excludingReservation key: String? = nil) -> Int {
+        // 不限并发时直接放行，避免将 0 误认为没有空闲槽位。
+        guard Self.maxChildJobsPerParent > 0 else { return Int.max }
         let reserved = childStartReservations.filter { $0.value == parentSessionId && $0.key != key }.count
         return Self.maxChildJobsPerParent - runningChildJobCount(parent: parentSessionId) - reserved
     }

@@ -76,6 +76,20 @@ extension AIChatView {
                 readAloudToolbarToggle
                 Spacer()
             }
+            Button {
+                voiceVM.stopListening()
+                voiceVM.cancelTranscription()
+                voiceInputActive = false
+                vm.stopSpeechForThisSession()
+                inputFocused = false
+                showRealtimeVoice = true
+            } label: {
+                Image(systemName: "phone.circle.fill")
+                    .font(.system(size: 25)).frame(width: 34, height: 34)
+            }
+            .accessibilityLabel("实时语音对聊")
+            .accessibilityIdentifier("realtimeVoiceButton")
+            .disabled(vm.isProcessing || vm.isCompacting)
             micButtonContainer
             sendButton
         }
@@ -86,7 +100,7 @@ extension AIChatView {
     /// leading buttons, the 34pt mic and the 34pt send button, plus the four
     /// 12pt HStack gaps between them. Everything left over is what the
     /// read-aloud capsule may use.
-    private static let readAloudRowFixedWidth: CGFloat = 34 * 4 + 12 * 4
+    private static let readAloudRowFixedWidth: CGFloat = 34 * 5 + 12 * 5
 
     /// Free width below which the toggle drops its text and becomes icon-only.
     ///

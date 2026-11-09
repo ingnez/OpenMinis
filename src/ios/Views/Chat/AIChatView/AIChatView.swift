@@ -339,6 +339,7 @@ struct AIChatView: View {
     /// Populated lazily on first appearance.
     @State var totalSessionCount: Int? = nil
     @State var showBrowserSheet = false
+    @State var showRealtimeVoice = false
     @State var showTerminal = false
     @State private var terminalInitCommand: String?
     @State var showAttachmentMenu = false
@@ -497,7 +498,7 @@ struct AIChatView: View {
     /// True when any sheet or fullScreenCover is presented (suppress auto-focus to avoid keyboard bugs).
     var hasOverlayPresented: Bool {
         showFileBrowser || showBrowserSheet || showTerminal || showCamera
-            || showPhotoPicker || showDocumentPicker || showModelPicker
+            || showPhotoPicker || showDocumentPicker || showModelPicker || showRealtimeVoice
     }
 
     /// Tracks whether this ChatView is the currently visible screen.
@@ -1114,6 +1115,9 @@ struct AIChatView: View {
                 }
             }
             .presentationDetents([.large])
+        }
+        .fullScreenCover(isPresented: $showRealtimeVoice) {
+            RealtimeVoiceView(chat: cached.vm)
         }
         .sheet(isPresented: $showTokenUsage) {
             TokenUsageSheet(vm: cached.vm)

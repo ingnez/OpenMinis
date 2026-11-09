@@ -397,20 +397,18 @@ final class KeepScreenAwakeController {
 ///     NOT take one: a parent waiting on its own sub agents already holds one,
 ///     and routing the children through the same pool could leave every parent
 ///     waiting behind its own children.
-///   - `childJobsPerParent` (3): sub agents running at once PER PARENT
-///     conversation (AgentJobRegistry). Each parent has its own 3; parents do
-///     not compete for them.
+///   - `childJobsPerParent` (0): 子代理并发不限数量；调试时可设为正数。
+///     新建、恢复和定时子任务均通过 AgentJobRegistry 的同一准入规则。
 ///   - `queuedDelegationsPerParent` (10): delegations waiting for one of those
 ///     slots, per parent. Past it a delegation is refused, and told it was NOT
 ///     queued.
 ///   - `toolsPerTurn` (10): tool calls one turn runs in parallel.
 ///
-/// Worst case these allow: 6 parents x 3 sub agents + the 6 parents = 24 agent
-/// loops at once, with no shell concurrency cap on iOS. Raise any of them with
-/// that in mind.
+/// 子代理不再有固定总数上限；其运行数量由请求和可用资源决定。
 enum ConcurrencyLimits {
     static let shippingSessionSlots = 6
-    static let shippingChildJobsPerParent = 3
+    // 0 表示不限制子代理并发数量。
+    static let shippingChildJobsPerParent = 0
     static let shippingQueuedDelegationsPerParent = 10
     static let shippingToolsPerTurn = 10
 

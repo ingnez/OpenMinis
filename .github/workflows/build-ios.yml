@@ -24,6 +24,11 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           sw_vers
 
+      - name: 无上限子代理与实际通话入口回归
+        run: |
+          set -o pipefail
+          python3 scripts/test_build6.py | tee build6-test.log
+
       - name: 实时语音协议回归与 iOS 类型检查
         run: |
           set -o pipefail
@@ -115,7 +120,7 @@ jobs:
             -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
             -scmProvider system \
             -disableAutomaticPackageResolution \
-            CURRENT_PROJECT_VERSION=5 \
+            CURRENT_PROJECT_VERSION=6 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -152,6 +157,7 @@ jobs:
             reset-test.log
             soul-test.log
             realtime-test.log
+            build6-test.log
             realtime-typecheck.log
             storage-test.log
           retention-days: 30
@@ -168,6 +174,7 @@ jobs:
             reset-test.log
             soul-test.log
             realtime-test.log
+            build6-test.log
             realtime-typecheck.log
           if-no-files-found: ignore
           retention-days: 30

@@ -306,7 +306,8 @@ extension AIChatViewModel {
             + "Stop investigating now and spend what is left on finishing: if the task asked you to write a file or produce an artifact, do it in the next round, then write your final answer. "
             + "Remember the final message must contain the complete deliverable itself, not a pointer to it."
     }
-    static let helperMaxPerAssistantTurn = 3
+    // 0 表示同一轮委派次数不设数量上限。
+    static let helperMaxPerAssistantTurn = 0
     /// [T-sub-agents-queue] Marker put into a queued delegation's args so the
     /// re-entry knows the per-turn allowance has already been served.
     static let queuedReentryKey = "__from_queue"
@@ -377,7 +378,7 @@ extension AIChatViewModel {
         // send it straight back to the queue it just left.
         let fromQueue = (args[Self.queuedReentryKey] as? Bool) == true
         var overTurnAllowance = false
-        if !fromQueue, msgIdx < messages.count {
+        if Self.helperMaxPerAssistantTurn > 0, !fromQueue, msgIdx < messages.count {
             let delegateBlocks = messages[msgIdx].blocks.enumerated().filter {
                 if case .delegateTool = $0.element.kind { return true }
                 return false
