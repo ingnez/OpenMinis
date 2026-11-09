@@ -18,6 +18,15 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: 云端 Agent 服务集成验证与资源打包
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s cloud-agent -p 'test*.py' -v 2>&1 | tee cloud-agent-test.log
+          python3 scripts/prepare_cloud_agent.py
+          swiftc -swift-version 5 src/ios/Views/Chat/AIChatView/Cloud/CloudModelCatalog.swift scripts/CloudModelCatalogTests.swift -o /tmp/cloud-model-tests
+          /tmp/cloud-model-tests | tee cloud-model-test.log
+          xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/CloudModelCatalog.swift src/ios/Views/Chat/AIChatView/Cloud/CloudConnection.swift src/ios/Views/Chat/AIChatView/Cloud/CloudAgentViews.swift 2>&1 | tee cloud-connection-typecheck.log
+
       - name: Show toolchain
         run: |
           xcodebuild -version
@@ -45,6 +54,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/prepare_vad.py
+
+      - name: 校验并准备固定版本 SwiftMath 源码
+        run: python3 scripts/prepare_swiftmath.py
 
       - name: Resolve Swift packages
         run: |
@@ -126,7 +138,7 @@ jobs:
             -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
             -scmProvider system \
             -disableAutomaticPackageResolution \
-            CURRENT_PROJECT_VERSION=8 \
+            CURRENT_PROJECT_VERSION=10 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -166,6 +178,9 @@ jobs:
             build6-test.log
             voice-catalog-test.log
             realtime-typecheck.log
+            cloud-model-test.log
+            cloud-agent-test.log
+            cloud-connection-typecheck.log
             storage-test.log
           retention-days: 30
 
@@ -177,6 +192,9 @@ jobs:
           path: |
             xcodebuild.log
             package-resolve.log
+            cloud-model-test.log
+            cloud-agent-test.log
+            cloud-connection-typecheck.log
             storage-test.log
             reset-test.log
             soul-test.log
