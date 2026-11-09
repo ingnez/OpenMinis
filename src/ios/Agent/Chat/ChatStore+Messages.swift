@@ -17,6 +17,30 @@ import os.log
 private let logger = AppLogger(category: "ChatStore")
 
 extension ChatStore {
+    /// 远端任务回复使用稳定主键；重连重放不新增重复消息。
+    func saveCloudTaskMessage(id: String, sessionId: String, parts: [ContentPart]) -> Bool {
+        guard deletedSessionTombstone(sessionId) == nil else { return false }
+        var query: OpaquePointer?
+        var exists = false
+        if sqlite3_prepare_v2(db, "SELECT 1 FROM messages WHERE id = ? AND session_id = ?", -1, &query, nil) == SQLITE_OK {
+            sqlite3_bind_text(query, 1, (id as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(query, 2, (sessionId as NSString).utf8String, -1, nil)
+            exists = sqlite3_step(query) == SQLITE_ROW
+        }
+        sqlite3_finalize(query)
+        if exists {
+            updateMessageParts(messageId: id, parts: parts)
+        } else {
+            appendMessage(RawMessage(id: id, sessionId: sessionId, role: .assistant, parts: parts, createdAt: Date(), tokenUsage: nil))
+        }
+        var check: OpaquePointer?
+        defer { sqlite3_finalize(check) }
+        guard sqlite3_prepare_v2(db, "SELECT 1 FROM messages WHERE id = ? AND session_id = ?", -1, &check, nil) == SQLITE_OK else { return false }
+        sqlite3_bind_text(check, 1, (id as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(check, 2, (sessionId as NSString).utf8String, -1, nil)
+        return sqlite3_step(check) == SQLITE_ROW
+    }
+
     // MARK: - Message CRUD
 
     func appendMessage(_ message: RawMessage) {

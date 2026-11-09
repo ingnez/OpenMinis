@@ -1,0 +1,33 @@
+name: Cloud Computer Integration
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cloud-computer-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: 任务协议集成验证
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s cloud-agent -p 'test*.py' -v 2>&1 | tee cloud-v2-tests.log
+      - name: 安装并测试真实桌面浏览器
+        run: |
+          set -o pipefail
+          sudo bash cloud-agent/install.sh 2>&1 | tee cloud-install.log
+          sudo bash cloud-agent/install-desktop.sh 2>&1 | tee cloud-desktop-install.log
+          sudo bash cloud-agent/test_desktop.sh 2>&1 | tee cloud-desktop-test.log
+          sudo cp cloud-agent/test_browser_real.py /opt/openminis-cloud-agent/test_browser_real.py
+          sudo -u openminis env DISPLAY=:99 XAUTHORITY=/var/lib/openminis-cloud-agent/.Xauthority HOME=/var/lib/openminis-cloud-agent PLAYWRIGHT_BROWSERS_PATH=/var/lib/openminis-cloud-agent/ms-playwright OPENMINIS_REAL_BROWSER_TEST=1 /opt/openminis-cloud-agent/venv/bin/python3 /opt/openminis-cloud-agent/test_browser_real.py 2>&1 | tee cloud-browser-real.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cloud-computer-linux-evidence
+          path: |
+            cloud-v2-tests.log
+            cloud-install.log
+            cloud-desktop-install.log
+            cloud-desktop-test.log
+            cloud-browser-real.log
