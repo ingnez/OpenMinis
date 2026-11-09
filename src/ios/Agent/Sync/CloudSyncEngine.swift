@@ -323,6 +323,12 @@ final class CloudSyncEngine: ObservableObject {
     @Published var lastSyncDate: Date?
     @Published var isEnabled: Bool {
         didSet {
+            guard SharedContainerStore.cloudSyncAvailable else {
+                isEnabled = false
+                SharedContainerStore.recoverCloudSyncPreferences()
+                syncStatus = .disabled
+                return
+            }
             UserDefaults.standard.set(isEnabled, forKey: "cloudSync.enabled")
             if isEnabled {
                 // [T-icloud-zone-delete-resurrect] Turning sync back ON is an
@@ -429,7 +435,8 @@ final class CloudSyncEngine: ObservableObject {
         self.sessionCacheDir = library.appendingPathComponent("MinisChat/sync_etag_cache")
         self.globalEtagCacheURL = library.appendingPathComponent("MinisChat/sync_etag_global.plist")
         try? FileManager.default.createDirectory(at: sessionCacheDir, withIntermediateDirectories: true)
-        self.isEnabled = UserDefaults.standard.bool(forKey: "cloudSync.enabled")
+        SharedContainerStore.recoverCloudSyncPreferences()
+        self.isEnabled = SharedContainerStore.cloudSyncAvailable && UserDefaults.standard.bool(forKey: "cloudSync.enabled")
 
         let ud = UserDefaults.standard
         // Default all categories to true if never set
@@ -540,6 +547,11 @@ final class CloudSyncEngine: ObservableObject {
     }
 
     func start() async {
+        guard SharedContainerStore.cloudSyncAvailable else {
+            SharedContainerStore.recoverCloudSyncPreferences()
+            syncStatus = .disabled
+            return
+        }
         guard isEnabled else {
             syncStatus = .disabled
             return

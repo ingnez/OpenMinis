@@ -7,8 +7,40 @@ enum SharedContainerStore {
 
     private static let pendingShareKey = "pendingShare"
 
+    /// 本恢复构建不接入官方 CloudKit 容器；不可用时绝不构造 CKContainer。
+    static var cloudSyncAvailable: Bool { false }
+    static let cloudSyncUnavailableMessage = "此重签恢复版不支持官方 iCloud 同步。原同步开关已关闭，本地聊天和文件会保留。可通过备份导出到文件 App。"
+
+    /// 只重置同步启动开关，不删除数据库、文件或云端记录。
+    static func recoverCloudSyncPreferences(_ defaults: UserDefaults = .standard) {
+        guard !cloudSyncAvailable else { return }
+        for key in ["cloudSync.enabled", "cloudSync.v2.enabled"] {
+            if defaults.bool(forKey: key) { defaults.set(false, forKey: key) }
+        }
+    }
+
+    /// 无共享权限时，本地数据保存在应用私有目录，不能假定重签保留了 App Group。
+    static func resolveStorageContainer(sharedContainer: URL?, applicationSupport: URL) -> URL {
+        sharedContainer ?? applicationSupport.appendingPathComponent("MinisLocalContainer", isDirectory: true)
+    }
+
+    static var appGroupContainer: URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)
+    }
+
+    /// 启动后固定目录，避免同一进程内不同存储模块选择不同位置。
+    static let storageContainer: URL = {
+        let fm = FileManager.default
+        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Library/Application Support", isDirectory: true)
+        let url = resolveStorageContainer(sharedContainer: appGroupContainer, applicationSupport: support)
+        try? fm.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }()
+
     static var sharedDefaults: UserDefaults? {
-        UserDefaults(suiteName: appGroupID)
+        guard appGroupContainer != nil else { return nil }
+        return UserDefaults(suiteName: appGroupID)
     }
 
     /// Directory in the shared container for transferring attachment files.

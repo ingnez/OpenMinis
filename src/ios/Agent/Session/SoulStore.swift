@@ -770,9 +770,7 @@ enum SoulStore {
 
     // MARK: - Body length rules (unified token count)
     //
-    // The personality body has a single hard cap of 2000 tokens, applied
-    // at every write surface (Settings UI Save button, minis-config writer,
-    // and the prompt-build-time fallback in `SystemPromptBuilder`).
+    // 灵魂正文不设保存或注入上限。以下计数仅供设置页参考。
     //
     // Counting rules — see `tokenCount(_:)`:
     //   - Each CJK glyph or CJK punctuation mark = 1 token
@@ -781,7 +779,7 @@ enum SoulStore {
     //
     // So "hello AB CD" with two CJK glyphs counts as 1 (hello) + 4 (A B C D) = 5.
 
-    static let bodyTokenLimit = 2000
+    // 估算数量仅用于展示，不限制保存或提示词注入。
 
     /// Count tokens in [body] under the unified rule. Empty / whitespace
     /// returns 0. CJK glyphs/punctuation count one-per-character; non-CJK
@@ -804,15 +802,10 @@ enum SoulStore {
         return count
     }
 
-    /// Classify [body] under the unified 2000-token rule. Empty /
-    /// whitespace-only bodies always return `.ok`.
+    /// 兼容旧调用方：正文长度始终有效，空白处理保持原有行为。
     static func isOverLimit(_ body: String) -> SoulBodyLimitCheck {
-        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return .ok }
-        let count = tokenCount(trimmed)
-        return count > Self.bodyTokenLimit
-            ? .overLimit(count: count, cap: Self.bodyTokenLimit)
-            : .ok
+        // 灵魂正文不设人为长度上限；空白处理由各保存入口原有逻辑负责。
+        return .ok
     }
 
     /// CJK punctuation that the user perceives as a character — full-width
@@ -1112,21 +1105,7 @@ enum SystemPromptBuilder {
             return identityTrimmed + styleBlock(style) + "\n\n" + soulEditHint + "\n\n"
         }
 
-        // Reject (NOT truncate) bodies that exceed the language-aware
-        // limit. Truncation silently dropped half the user's text and
-        // implied that "the agent still gets your character" when in
-        // practice it was missing context. Falling back to identity-only
-        // is the safer signal: the user notices the personality isn't
-        // taking effect, opens Settings, and sees the same red over-limit
-        // warning the Save button surfaces. Write paths already reject
-        // over-limit; this branch only triggers for an on-disk file that
-        // was written before this rule existed (or via shell / another
-        // device).
-        let check = SoulStore.isOverLimit(trimmed)
-        guard !check.isOverLimit else {
-            Self.logger.warning("[Soul] personality body is over the language-aware limit (\(check)) — falling back to identity-only system prompt.")
-            return identityTrimmed + styleBlock(style) + "\n\n" + soulEditHint + "\n\n"
-        }
+        // 长正文完整注入，沿用原有空白处理及注入过滤。
 
         let personality = scrubInjections(trimmed)
 

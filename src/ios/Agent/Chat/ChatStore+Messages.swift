@@ -38,6 +38,8 @@ extension ChatStore {
         // assistant row with empty parts. On the next turn DeepSeek/OpenAI-compat
         // servers reject that history with `400 content or tool_calls must be set`.
         let messages = messages.filter { msg in
+            // 已删除会话的迟到结果不能重新落盘。
+            guard deletedSessionTombstone(msg.sessionId) == nil else { return false }
             guard msg.role == .assistant else { return true }
             return msg.parts.contains { part in
                 switch part {

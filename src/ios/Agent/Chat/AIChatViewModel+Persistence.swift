@@ -66,6 +66,7 @@ extension AIChatViewModel {
     }
 
     func reloadMessagesFromDB(reason: String = "unspecified") async {
+        guard !isRetiredByReset else { return }
         guard let sessionId else {
             logger.info("[ReloadTrace] skip reason=\(reason) sid=nil")
             return
@@ -1194,12 +1195,17 @@ extension AIChatViewModel {
     /// Creates a session if needed and returns its ID.
     @discardableResult
     func ensureSessionReturningId() async -> String {
+        guard !isRetiredByReset else { return sessionId ?? "" }
         if let sid = sessionId {
             logger.info("🔑DRAFT [vm=\(self.vmInstanceId)] ensureSession already has sessionId=\(sid)")
             return sid
         }
         let model = selectedModel
         let session = await ChatStore.shared.createSession(modelId: model.id, source: sessionSource)
+        guard !isRetiredByReset else {
+            await ChatStore.shared.deleteSession(session.id)
+            return session.id
+        }
         sessionId = session.id
         // [T-minisurl-wrong-active-session] No Self.activeSessionId write:
         // drafts are also created by non-UI flows (chat.prompt RPC, share
@@ -2495,6 +2501,7 @@ extension AIChatViewModel {
             return nil
         }
         logger.info("[Persist] built raw.sid=\(raw.sessionId.prefix(8)) raw.id=\(raw.id.prefix(8)) role=\(raw.role.rawValue)")
+        guard !isRetiredByReset else { return nil }
         await ChatStore.shared.appendMessage(raw)
         // Post-write DB sanity check: query count + max(sort_order) for this session
         let stats = await ChatStore.shared.sessionWriteStats(sessionId: raw.sessionId)
@@ -2537,6 +2544,7 @@ extension AIChatViewModel {
     /// context-exhausted case (`ChatMessage(role: .assistant, content: "")` with
     /// `.error` set).
     func persistErrorInfo(_ error: String?) async {
+        guard !isRetiredByReset else { return }
         // [T-error-persist-current-turn] GH#263. An error belongs to the turn
         // that failed. When this turn has no persisted assistant row yet (it
         // died before any output), the last persisted row is the PREVIOUS

@@ -885,6 +885,75 @@ extension AIChatViewModel {
         commandStartTime = nil
     }
 
+    /// 本地命令：旧实例停止后退出界面，迟到回调不能进入新会话。
+    func resetCurrentSession() {
+        guard remoteDeviceId == nil, !isRetiredByReset else { return }
+        isRetiredByReset = true
+        let oldSessionId = sessionId
+        let oldTask = currentTask
+        let oldCompactTask = compactTask
+        promptQueue.removeAll() // cancel() 否则会继续执行队列
+        cancelPendingUserAsk()
+        cancel()
+        oldCompactTask?.cancel()
+        titleGenEpoch &+= 1
+        isTitleGenerating = false
+        stopSpeechForThisSession()
+        for message in messages where message.awaitingHistoryEntry {
+            abandonedPendingSendIds.insert(message.id)
+        }
+        messages.removeAll()
+        agentHistory.removeAll()
+        toolSnapshots.removeAll()
+        pendingThoughtSignatures.removeAll()
+        offloadScanCache.removeAll()
+        cachedLatestMarker = nil
+        toolLoopDetector.reset()
+        clearEditingState()
+        inputText = ""
+        attachments.removeAll()
+        pastedTexts.removeAll()
+        savedInputBeforeSlash = nil
+        savedCaretBeforeSlash = nil
+        pendingSendText = nil
+        pendingSendAttachments.removeAll()
+        showCompactBeforeSendPrompt = false
+        showSlashMenu = false
+        clearChatConfirmRequested = false
+        errorMessage = nil
+        contextUsage = nil
+        contextUsageHint = nil
+        canResume = false
+        isCompacting = false
+        pendingSyncReloadOnIdle = false
+
+        // 同步切换到新的实例，不等待网络取消回调。
+        NotificationCenter.default.post(name: .newChatRequested, object: nil)
+        Task { @MainActor in
+            if let sid = oldSessionId {
+                let ids = await ChatStore.shared.sessionIdsWithDescendants([sid])
+                for id in ids {
+                    AgentJobRegistry.shared.cancelAll(parent: id, reason: "session reset", silent: true)
+                    AgentJobRegistry.shared.cancelAll(session: id, reason: "session reset")
+                    ViewModelCache.shared.remove(sessionId: id)
+                    BrowserUseOffloadBridge.releasePool(forSession: id)
+                    BrowserTabPool.deletePersistedData(for: id)
+                }
+                await ChatStore.shared.deleteSession(sid)
+                await ISHExecutionCoordinator.shared.sessionDidTerminate(sessionId: sid)
+            }
+            // 取消是协作式的；收尾后再扫一次，清除已在途的写入/文件。
+            await oldTask?.value
+            await oldCompactTask?.value
+            if let sid = self.sessionId ?? oldSessionId {
+                ViewModelCache.shared.remove(sessionId: sid)
+                await ChatStore.shared.deleteSession(sid)
+            }
+            self.messages.removeAll()
+            self.agentHistory.removeAll()
+        }
+    }
+
     func clearChat() {
         messages.removeAll()
         agentHistory.removeAll()

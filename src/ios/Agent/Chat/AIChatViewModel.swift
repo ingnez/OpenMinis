@@ -1622,6 +1622,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     // `internal` (not `private`): the +Compaction extension's
     // schedulePostCompactDrain() runs the post-compact queue drain on this
     // task so cancel() can stop it. [T-compact-queued-drain]
+    // 重置后的旧实例永不再发送或保存，新的空白会话使用独立实例。
+    var isRetiredByReset = false
     var currentTask: Task<Void, Never>?
     var compactTask: Task<Void, Never>?
 

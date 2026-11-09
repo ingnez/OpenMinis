@@ -25,6 +25,7 @@ extension ChatStore {
 
     /// Insert a compact marker after a successful compaction.
     func insertCompactMarker(_ marker: CompactMarker) {
+        guard deletedSessionTombstone(marker.sessionId) == nil else { return }
         let sql = """
             INSERT INTO compact_markers (id, session_id, summary, first_kept_sort_order, compacted_count, created_at, ui_boundary_sort_order, boundary_message_id, first_kept_message_id, last_compacted_message_id, version)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

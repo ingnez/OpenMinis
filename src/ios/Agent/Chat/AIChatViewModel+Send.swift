@@ -32,6 +32,12 @@ extension AIChatViewModel {
     ///   the text here keeps a background turn from reading, overwriting, or
     ///   emptying whatever the user is typing at that moment.
     func send(overrideText: String? = nil) {
+        guard !isRetiredByReset else { return }
+        if overrideText == nil,
+           inputText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "/reset" {
+            resetCurrentSession()
+            return
+        }
         settlePendingStop(before: "send")  // [T-stop-cleanup-before-new-turn]
         // Read-only mode — cannot send messages
         guard remoteDeviceId == nil else { return }

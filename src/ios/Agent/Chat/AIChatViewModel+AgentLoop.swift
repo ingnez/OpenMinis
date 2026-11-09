@@ -88,6 +88,7 @@ extension AIChatViewModel {
     }
 
     func runAgentLoop(resumingAt existingMsgIdx: Int? = nil, committedBlocks: Int? = nil) async throws {
+        guard !isRetiredByReset else { throw CancellationError() }
         do {
             try await runAgentLoopCore(resumingAt: existingMsgIdx, committedBlocks: committedBlocks)
         } catch {

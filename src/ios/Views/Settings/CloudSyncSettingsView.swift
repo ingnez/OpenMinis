@@ -18,6 +18,17 @@ struct CloudSyncSettingsView: View {
     @State private var envVarsSize: Int64 = 0
 
     var body: some View {
+        Group {
+            if SharedContainerStore.cloudSyncAvailable {
+                syncContent
+            } else {
+                List { Text(SharedContainerStore.cloudSyncUnavailableMessage) }
+                    .navigationTitle("iCloud Sync")
+            }
+        }
+    }
+
+    private var syncContent: some View {
         List {
             syncToggleSection
             if engine.isEnabled {

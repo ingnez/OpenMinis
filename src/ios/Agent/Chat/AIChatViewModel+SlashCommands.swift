@@ -33,6 +33,7 @@ extension AIChatViewModel {
     }
 
     static let availableSlashCommands: [SlashCommand] = [
+        SlashCommand(id: "reset", icon: "arrow.counterclockwise", title: "Reset", subtitle: "立即清空本会话内容与上下文"),
         SlashCommand(id: "clear", icon: "trash", title: "Clear", subtitle: "Clear all messages in this session"),
         SlashCommand(id: "compact", icon: "arrow.down.right.and.arrow.up.left", title: "Compact", subtitle: "Compress conversation history into summary"),
         SlashCommand(id: "memory", icon: "brain.head.profile", title: "Memory", subtitle: "Toggle memory writes on/off (reads unaffected)"),
@@ -398,6 +399,8 @@ extension AIChatViewModel {
         showSlashMenu = false
         slashMenuSelectedIndex = -1
         switch cmd.id {
+        case "reset":
+            resetCurrentSession()
         case "compact":
             compactAll()
         case "memory":

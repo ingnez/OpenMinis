@@ -68,6 +68,12 @@ extension AIChatViewModel {
     ///   draft is never read, written, or cleared.
     func enqueuePrompt(silent: Bool = false, deferUntilIdle: Bool = false,
                        overrideText: String? = nil) {
+        guard !isRetiredByReset else { return }
+        if overrideText == nil,
+           inputText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "/reset" {
+            resetCurrentSession()
+            return
+        }
         let usingComposer = overrideText == nil
         let text = (overrideText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty, isProcessing else { return }

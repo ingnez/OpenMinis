@@ -262,32 +262,17 @@ struct SoulSettingsView: View {
         }
     }
 
-    /// Footer under the personality editor. Renders a green count when the
-    /// body is within budget and a red over-limit message when it isn't.
-    /// Save is disabled in the over-limit branch.
+    /// 数量只作展示，不再阻止保存长正文。
     private var bodyLengthFooter: some View {
-        let check = SoulStore.isOverLimit(bodyText)
-        return HStack(spacing: 6) {
-            if check.isOverLimit {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-            }
-            switch check {
-            case .ok:
-                Text(soulBodyCountText(bodyText))
-                    .foregroundStyle(.secondary)
-            case .overLimit(let count, let cap):
-                Text(AppLocalized("Over limit: \(count) / \(cap) tokens. Each CJK character and each Latin word counts as one."))
-                    .foregroundStyle(.red)
-            }
-        }
-        .font(.footnote)
+        Text(soulBodyCountText(bodyText))
+            .foregroundStyle(.secondary)
+            .font(.footnote)
     }
 
     /// Counter shown when the body is within budget.
     private func soulBodyCountText(_ body: String) -> String {
         let count = SoulStore.tokenCount(body)
-        return AppLocalized("\(count) / \(SoulStore.bodyTokenLimit) tokens")
+        return "约 \(count) tokens · 不限字数"
     }
 
     private var isBodyOverLimit: Bool {

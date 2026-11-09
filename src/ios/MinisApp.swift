@@ -132,6 +132,7 @@ struct MinisApp: App {
         //
         // `install` is idempotent, so the later onAppLaunch() call is a no-op.
         CrashSignalHandler.install()
+        SharedContainerStore.recoverCloudSyncPreferences()
         // [T-crash-breadcrumbs] Rotate the previous run's breadcrumbs and start
         // this run's ring + 15 s resource sampling, before anything else runs.
         CrashBreadcrumbs.start()
@@ -215,6 +216,10 @@ struct MinisApp: App {
     @available(iOS 17.0, *)
     @MainActor
     private static func startSyncEngines() async {
+        guard SharedContainerStore.cloudSyncAvailable else {
+            SharedContainerStore.recoverCloudSyncPreferences()
+            return
+        }
         await SyncV2Bootstrap.startIfEnabled()
         if !SyncV2Bootstrap.shouldPauseV1() {
             await CloudSyncEngine.shared.start()
@@ -449,7 +454,9 @@ struct MinisApp: App {
                     Self.logFPSyncTracePaths()
                     // Start watching shared/skills/memory subtrees so iSH writes
                     // and FileBrowserView mutations propagate to the Files app.
-                    AppGroupChangeWatcher.shared.start()
+                    if SharedContainerStore.appGroupContainer != nil {
+                        AppGroupChangeWatcher.shared.start()
+                    }
                     // Activate security scopes for user-mounted external folders
                     // (e.g. Obsidian vault in iCloud Drive). Held for app lifetime.
                     MountedFoldersManager.shared.activateAll()
@@ -813,6 +820,10 @@ struct MinisApp: App {
     }
 
     private static func registerFileProviderDomain() {
+        guard SharedContainerStore.appGroupContainer != nil else {
+            lifecycleLog.info("[FileProvider] App Group unavailable; skipping extension registration")
+            return
+        }
         logAppUpdateMarkerForFPTrace()
 
         // [T-ios-fp-mac-bootcrash] Circuit breaker, NOT a blanket disable.
@@ -1178,7 +1189,10 @@ struct MinisApp: App {
     private static func migrateSharedDirToAppGroup() {
         let fm = FileManager.default
         let library = fm.urls(for: .libraryDirectory, in: .userDomainMask).first!
-        let container = fm.containerURL(forSecurityApplicationGroupIdentifier: "group.com.openminis.app")!
+        guard let container = SharedContainerStore.appGroupContainer else {
+            lifecycleLog.info("[FileProvider] App Group unavailable; retaining app-local storage")
+            return
+        }
 
         let migrations: [(source: URL, dest: URL, label: String)] = [
             // Legacy Library/MinisChat/shared → new shared

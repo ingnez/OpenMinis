@@ -29,6 +29,22 @@ struct CloudSyncSettingsV2View: View {
     private static let refreshIntervalSeconds: UInt64 = 5
 
     var body: some View {
+        Group {
+            if SharedContainerStore.cloudSyncAvailable {
+                syncContent
+            } else {
+                Form {
+                    Section {
+                        Label("iCloud 同步不可用", systemImage: "icloud.slash")
+                        Text(SharedContainerStore.cloudSyncUnavailableMessage)
+                    }
+                }
+                .navigationTitle("iCloud Sync")
+            }
+        }
+    }
+
+    private var syncContent: some View {
         Form {
             Section {
                 Toggle(isOn: Binding(
