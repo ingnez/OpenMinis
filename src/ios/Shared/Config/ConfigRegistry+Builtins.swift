@@ -304,12 +304,8 @@ extension ConfigRegistry {
             }
         ))
 
-        // Personality body. The Settings UI calls this the "Personality
-        // Prompt" — same field, different surface. Length cap is a unified
-        // 2000-token budget (CJK glyphs + CJK punctuation count one each;
-        // Latin words count one each) enforced via SoulStore.isOverLimit;
-        // the schema does not carry a byte-level maxLength because a fixed
-        // char count would be wrong for non-ASCII text. SoulMDParser
+        // Personality body. Settings and minis-config both accept arbitrary
+        // body length; the schema intentionally has no maxLength. SoulMDParser
         // injection scrubbing also runs at prompt-build time
         // (SystemPromptBuilder.identitySection), so a stored body with an
         // "ignore previous instructions" line still won't reach the model
