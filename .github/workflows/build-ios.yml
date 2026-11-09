@@ -31,6 +31,8 @@ jobs:
           xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/RealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Realtime/*.swift 2>&1 | tee realtime-typecheck.log
 
       - name: 下载并校验官方 VAD 二进制
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 scripts/prepare_vad.py
 
       - name: Resolve Swift packages

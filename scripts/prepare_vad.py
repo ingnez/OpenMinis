@@ -1,11 +1,26 @@
 """从官方资源API获取同一VAD二进制，校验后作为本地Swift包构建。"""
 from pathlib import Path
-import subprocess, hashlib, re, zipfile
+import subprocess, hashlib, re, zipfile, os, urllib.request, urllib.error, shutil, time
 root=Path(__file__).resolve().parents[1]
 pkg=root/'deps/RealTimeCutVADLibrary'
 subprocess.run(['git','clone','--depth','1','--branch','1.0.14','https://github.com/helloooideeeeea/RealTimeCutVADLibrary.git',str(pkg)],check=True)
 archive=pkg/'vad.zip'
-subprocess.run(['curl','-fL','--retry','5','--retry-all-errors','--connect-timeout','20','--max-time','180','-H','Accept: application/octet-stream','https://api.github.com/repos/helloooideeeeea/RealTimeCutVADLibraryForXCFramework/releases/assets/243944325','-o',str(archive)],check=True)
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs): return None
+headers = {'Accept': 'application/octet-stream', 'User-Agent': 'Minis-build'}
+if os.environ.get('GH_TOKEN'): headers['Authorization'] = 'Bearer ' + os.environ['GH_TOKEN']
+for attempt in range(3):
+    try:
+        req = urllib.request.Request('https://api.github.com/repos/helloooideeeeea/RealTimeCutVADLibraryForXCFramework/releases/assets/243944325?cache=' + str(int(time.time())), headers=headers)
+        try: response = urllib.request.build_opener(NoRedirect).open(req, timeout=60)
+        except urllib.error.HTTPError as e:
+            if e.code not in (301, 302, 303, 307, 308): raise
+            response = urllib.request.urlopen(e.headers['Location'], timeout=120)
+        with response, archive.open('wb') as output: shutil.copyfileobj(response, output)
+        break
+    except Exception as e:
+        print('下载尝试失败：', type(e).__name__)
+        if attempt == 2: raise RuntimeError('官方VAD资源下载失败') from None
 sha=hashlib.sha256(archive.read_bytes()).hexdigest()
 assert sha=='00c4a8cd5a22e634f34d744eb06aa88a4494e12a5f9d4573989129a1f4c7e76d',sha
 with zipfile.ZipFile(archive) as z:
