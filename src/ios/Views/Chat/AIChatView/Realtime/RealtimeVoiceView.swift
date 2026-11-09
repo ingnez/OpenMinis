@@ -8,13 +8,21 @@ struct RealtimeVoiceView: View {
     @AppStorage("realtimeVoice.model") private var model = ""
     @AppStorage("realtimeVoice.voice") private var voice = "alloy"
     @AppStorage("realtimeVoice.preview") private var preview = false
+    @AppStorage("realtimeVoice.protocolsByProvider") private var protocolsByProvider = "{}"
+    @State private var protocolMode = "automatic"
+    private var selectedProtocol: RealtimeConnectionProtocol? {
+        try? RealtimeConnectionProtocol.resolve(protocolMode, model: model)
+    }
+    private var availableVoices: [String] {
+        selectedProtocol?.isGemini == true ? RealtimeConnectionProtocol.geminiVoices : RealtimeConnectionProtocol.openAIVoices
+    }
     @State private var showSettings = false
     @StateObject private var catalog = RealtimeModelCatalog()
     @AppStorage("realtimeVoice.modelsByProvider") private var modelSelections = "{}"
     @State private var selectionProvider = ""
     init(chat: AIChatViewModel) { _session = StateObject(wrappedValue: RealtimeVoiceSession(chat: chat)) }
     private var supportedProviders: [ProviderInstance] {
-        providers.instances.filter { $0.isEnabled && ($0.providerType == .openAI || $0.providerType == .openAIResponses) && $0.credentialType == .apiKey }
+        providers.instances.filter { $0.isEnabled && ($0.providerType == .openAI || $0.providerType == .openAIResponses || $0.providerType == .gemini) && $0.credentialType == .apiKey }
     }
     private var candidates: [ModelEntry] {
         providers.modelEntries.filter { $0.providerInstanceId == providerID && RealtimeVoiceProtocol.isConversationModel($0.model.id) }
@@ -66,7 +74,7 @@ struct RealtimeVoiceView: View {
                     }.buttonStyle(.bordered).labelStyle(.iconOnly).controlSize(.large)
                 } else {
                     Button {
-                        Task { await session.start(providerID: providerID, model: model.trimmingCharacters(in: .whitespacesAndNewlines), voice: voice, preview: preview) }
+                        Task { await session.start(providerID: providerID, model: model.trimmingCharacters(in: .whitespacesAndNewlines), voice: voice, preview: preview, protocolMode: protocolMode) }
                     } label: { Label("开始实时通话", systemImage: "phone.fill").frame(maxWidth: .infinity) }
                         .buttonStyle(.borderedProminent).controlSize(.large).padding(.horizontal, 28)
                         .disabled(providerID.isEmpty || model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -93,6 +101,14 @@ struct RealtimeVoiceView: View {
                 guard selectionProvider == providerID else { return }
                 saveSelection(value, for: providerID)
             }
+            .onChange(of: protocolMode) { value in
+                guard selectionProvider == providerID else { return }
+                var saved = (try? JSONDecoder().decode([String: String].self, from: Data(protocolsByProvider.utf8))) ?? [:]
+                saved[providerID] = value
+                if let data = try? JSONEncoder().encode(saved), let text = String(data: data, encoding: .utf8) { protocolsByProvider = text }
+                voice = selectedProtocol?.normalizedVoice(voice) ?? "alloy"
+            }
+            .onChange(of: model) { _ in voice = selectedProtocol?.normalizedVoice(voice) ?? "alloy" }
             .onDisappear { session.finish() }
         }.interactiveDismissDisabled(session.active)
     }
@@ -129,10 +145,22 @@ struct RealtimeVoiceView: View {
                     }
                     TextField("手动填写模型名称", text: $model).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .onChange(of: model) { preview = $0.contains("preview") }
-                    Toggle("旧版 Preview 协议", isOn: $preview)
-                    Picker("声音", selection: $voice) {
-                        ForEach(["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"], id: \.self) { Text($0).tag($0) }
+                    Picker("实时协议", selection: $protocolMode) {
+                        ForEach(RealtimeConnectionProtocol.allCases) { item in Text(item.title).tag(item.rawValue) }
                     }
+                    Text(selectedProtocol.map { "将使用：\($0.title)" } ?? "此名称没有可识别的 Gemini Live 标识。请选择 Live/native-audio 型号；已确认的实时别名可手动选择协议。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Picker("声音", selection: $voice) {
+                        ForEach(availableVoices, id: \.self) { Text($0).tag($0) }
+                    }
+                    Button {
+                        Task { await session.start(providerID: providerID, model: model.trimmingCharacters(in: .whitespacesAndNewlines), voice: voice, preview: preview, protocolMode: protocolMode, validateOnly: true) }
+                    } label: { Label(session.active ? "验证中…" : "验证实时连接（不开麦）", systemImage: "checkmark.shield") }
+                    .disabled(session.active || providerID.isEmpty || model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if let result = session.validationResult { Text(result).font(.footnote).foregroundStyle(.green) }
+                    if let error = session.error { Text(error).font(.footnote).foregroundStyle(.red).textSelection(.enabled) }
+                    Text("验证只建立所选模型会话，不传录音和聊天历史。服务商可能对会话建立收费。")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section {
                     Text("需要服务商开放双向 Realtime 音频接口。列出模型名不保证实时通道可用；连接失败时可更换服务商。密钥直接使用服务商设置中的现有凭据。")
@@ -163,6 +191,8 @@ struct RealtimeVoiceView: View {
         let saved = (try? JSONDecoder().decode([String: String].self, from: Data(modelSelections.utf8))) ?? [:]
         let switching = !selectionProvider.isEmpty && selectionProvider != providerID
         selectionProvider = providerID
+        let protocolMap = (try? JSONDecoder().decode([String: String].self, from: Data(protocolsByProvider.utf8))) ?? [:]
+        protocolMode = protocolMap[providerID] ?? "automatic"
         if let selected = saved[providerID] { model = selected }
         else if switching { model = "" }
         let local = providers.modelEntries.filter { $0.providerInstanceId == providerID }.map { choice($0.model) }
@@ -180,6 +210,10 @@ struct RealtimeVoiceView: View {
         await catalog.refresh(provider: id) {
             guard let key = ProviderKeychainHelper.loadAPIKey(instanceId: id), !key.isEmpty else {
                 throw NSError(domain: "RealtimeModels", code: 401, userInfo: [NSLocalizedDescriptionKey: "服务商未配置 API 密钥"])
+            }
+            if provider.providerType == .gemini {
+                let values = try await GeminiModelsAPI.fetchModels(apiKey: key, customBaseURL: provider.effectiveCustomBaseURL, forceRefresh: true)
+                return values.map { choice($0) }
             }
             let values = try await OpenAIModelsAPI.fetchModels(apiKey: key, baseURL: provider.effectiveCustomBaseURL,
                 appendV1Suffix: provider.appendV1Suffix, forceRefresh: true,

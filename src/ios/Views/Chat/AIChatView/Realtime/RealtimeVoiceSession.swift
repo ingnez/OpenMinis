@@ -39,10 +39,19 @@ final class RealtimeVoiceSession: ObservableObject {
     private var observers: [NSObjectProtocol] = []
     private var oldIdleDisabled = false
     private var saveTask: Task<Void, Never>?
+    private var connectionProtocol: RealtimeConnectionProtocol = .openAI
+    private var validationOnly = false
+    private var diagnosticKey = ""
+    private var diagnosing = false
+    private var geminiUserID = UUID().uuidString
+    private var geminiAssistantID = UUID().uuidString
+    private var geminiSuppressOutput = false
+    private var audioStarted = false
+    @Published var validationResult: String?
 
     init(chat: AIChatViewModel) { self.chat = chat }
 
-    func start(providerID: String, model: String, voice: String, preview: Bool) async {
+    func start(providerID: String, model: String, voice: String, preview: Bool, protocolMode: String = "automatic", validateOnly: Bool = false) async {
         guard !active else { return }
         if let saveTask { await saveTask.value }
         guard !active else { return }
@@ -53,23 +62,27 @@ final class RealtimeVoiceSession: ObservableObject {
               let key = ProviderKeychainHelper.loadAPIKey(instanceId: provider.id), !key.isEmpty else {
             error = "请先在服务商设置中配置支持实时音频的 API 密钥。"; return
         }
+        validationResult = nil; error = nil
+        do { connectionProtocol = try RealtimeConnectionProtocol.resolve(protocolMode, model: model) }
+        catch { self.error = error.localizedDescription; return }
+        validationOnly = validateOnly; diagnosticKey = key; diagnosing = false; audioStarted = false
+        geminiUserID = UUID().uuidString; geminiAssistantID = UUID().uuidString; geminiSuppressOutput = false
         let generation = UUID(); epoch = generation
         active = true; connected = false; error = nil; lines = []; elapsed = 0; muted = false
         ledger = RealtimePlaybackLedger(); ignoredResponses = []; transcriptIDs = []
         seeded = false; configured = false; responseRunning = false; currentResponse = nil
         oldIdleDisabled = UIApplication.shared.isIdleTimerDisabled
-        status = "请求麦克风权限"
-        let granted = await withCheckedContinuation { continuation in
-            AVAudioSession.sharedInstance().requestRecordPermission { continuation.resume(returning: $0) }
-        }
+        status = "正在验证实时接口"
+        // 握手成功之前不申请或启动麦克风，验证模式不传聊天内容。
+        let granted = true
         guard generation == epoch, active else { return }
         guard UIApplication.shared.applicationState == .active else {
             finish(reason: "离开前台，通话已结束"); return
         }
         guard granted else { fail("没有麦克风权限，请在系统设置中允许 Minis 使用麦克风。"); return }
         do {
-            let base = provider.resolvedBaseURL(default: "https://api.openai.com")
-            let url = try RealtimeVoiceProtocol.endpoint(base: base.url, appendV1: base.appendV1, model: model)
+            let base = provider.resolvedBaseURL(default: provider.providerType == .gemini ? "https://generativelanguage.googleapis.com" : "https://api.openai.com")
+            let url = try connectionProtocol.endpoint(base: base.url, appendV1: base.appendV1, model: model)
             guard url.scheme == "wss" else {
                 fail("实时通话需要 HTTPS/WSS 服务商地址，请配置加密连接。"); return
             }
@@ -79,11 +92,15 @@ final class RealtimeVoiceSession: ObservableObject {
             UIApplication.shared.isIdleTimerDisabled = true
             observeLifecycle()
             var request = URLRequest(url: url, timeoutInterval: 20)
-            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-            if preview { request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta") }
+            if connectionProtocol.isGemini && url.host == "generativelanguage.googleapis.com" {
+                request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
+            } else {
+                request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            }
+            if connectionProtocol == .openAIPreview { request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta") }
             let config = URLSessionConfiguration.ephemeral
             config.timeoutIntervalForRequest = 25
-            let transport = URLSession(configuration: config)
+            let transport = URLSession(configuration: config, delegate: RealtimeTransportDelegate(), delegateQueue: nil)
             self.transport = transport
             let socket = transport.webSocketTask(with: request); self.socket = socket
             var continuation: AsyncStream<String>.Continuation!
@@ -98,7 +115,7 @@ final class RealtimeVoiceSession: ObservableObject {
                     }
                 } catch {
                     guard let self, self.epoch == generation, self.active else { return }
-                    self.fail(self.connectionError(socket: socket))
+                    await self.diagnose(socket: socket, request: request, generation: generation)
                 }
             }
             receiveTask = Task { [weak self] in
@@ -109,12 +126,16 @@ final class RealtimeVoiceSession: ObservableObject {
                         let data: Data
                         switch frame { case .data(let d): data = d; case .string(let s): data = Data(s.utf8); @unknown default: continue }
                         guard let event = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-                        try self.handle(event, model: model, voice: voice, preview: preview)
+                        if self.connectionProtocol.isGemini { try self.handleGemini(event) }
+                        else { try self.handle(event, model: model, voice: voice, preview: preview) }
                     }
                 } catch {
                     guard let self, self.epoch == generation, self.active else { return }
-                    self.fail(self.connectionError(socket: socket))
+                    await self.diagnose(socket: socket, request: request, generation: generation)
                 }
+            }
+            if connectionProtocol.isGemini {
+                emit(connectionProtocol.setup(model: model, voice: voice, instructions: instructions))
             }
             timeoutTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 25_000_000_000)
@@ -147,11 +168,10 @@ final class RealtimeVoiceSession: ObservableObject {
         switch type {
         case "session.created":
             guard !configured else { return }; configured = true
-            var instructions = SystemPromptBuilder.identitySection()
-            instructions += "\n你正在实时语音通话。默认使用中文，回答简洁自然；不要朗读 Markdown 标记。此通话没有执行工具，不得声称已执行任何外部操作。"
-            emit(RealtimeVoiceProtocol.configuration(model: model, voice: voice, instructions: instructions, preview: preview))
+            emit(connectionProtocol.setup(model: model, voice: voice, instructions: instructions))
         case "session.updated":
             guard !seeded else { return }; seeded = true
+            if completeValidation() { return }
             // 仅传递可见文本；已压缩会话携带摘要，不发送工具内部数据或附件。
             if let chat {
                 for message in chat.effectiveAgentHistory() {
@@ -163,7 +183,7 @@ final class RealtimeVoiceSession: ObservableObject {
             }
             // 单一发送队列保证历史事件先于麦克风音频送达。
             guard active else { return }
-            try beginAudio()
+            authorizeAndBeginAudio()
         case "input_audio_buffer.speech_started":
             interrupt(sendCancel: false); status = muted ? "麦克风已静音" : "正在听你说"
         case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
@@ -222,8 +242,117 @@ final class RealtimeVoiceSession: ObservableObject {
             let code = detail["code"] as? String ?? "unknown"
             // 完成瞬间的取消竞态是允许的；其他服务端错误停止会话。
             if code == "response_cancel_not_active" { return }
-            fail("实时服务返回错误（\(String(code.prefix(100)))）。请检查模型、协议版本、余额和权限。")
+            let message = detail["message"] as? String ?? "未提供错误详情"
+            fail("实时服务错误（\(String(code.prefix(100)))）：\(RealtimeConnectionProtocol.safeDetail(message, key: diagnosticKey))")
         default: break
+        }
+    }
+
+    private var instructions: String {
+        if validationOnly { return "Connection validation only. Do not generate a response." }
+        return SystemPromptBuilder.identitySection() + "\n你正在实时语音通话。默认中文，回答简洁自然。没有可执行工具，不得声称已执行外部操作。"
+    }
+    private func completeValidation() -> Bool {
+        guard validationOnly else { return false }
+        validationResult = "\(connectionProtocol.title) 会话握手通过；未录音、未发送聊天历史，实际音频尚未测试。"
+        finish(reason: "实时连接验证通过")
+        return true
+    }
+    private func authorizeAndBeginAudio() {
+        timeoutTask?.cancel()
+        let generation = epoch
+        Task { [weak self] in
+            let allowed = await withCheckedContinuation { c in
+                AVAudioSession.sharedInstance().requestRecordPermission { c.resume(returning: $0) }
+            }
+            guard let self, self.active, self.epoch == generation else { return }
+            guard allowed else { self.fail("请在系统设置中允许 Minis 使用麦克风。"); return }
+            guard UIApplication.shared.applicationState == .active else { self.finish(reason: "离开前台，通话已结束"); return }
+            do { try self.beginAudio(); self.audioStarted = true }
+            catch { self.fail(error.localizedDescription) }
+        }
+    }
+    private func diagnose(socket: URLSessionWebSocketTask, request: URLRequest, generation: UUID) async {
+        guard !diagnosing else { return }; diagnosing = true
+        let baseline = connectionError(socket: socket)
+        let code = (socket.response as? HTTPURLResponse)?.statusCode
+        var details = ""
+        if let reason = socket.closeReason, let text = String(data: reason, encoding: .utf8) { details = text }
+        // WebSocket 握手失败通常不暴露正文；只读GET补取同一路由错误，绝不发音频或聊天。
+        if let code, code >= 400, let url = request.url, var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            parts.scheme = "https"
+            if let url = parts.url {
+                var diagnostic = URLRequest(url: url, timeoutInterval: 8)
+                diagnostic.allHTTPHeaderFields = request.allHTTPHeaderFields
+                diagnostic.setValue("application/json", forHTTPHeaderField: "Accept")
+                let configuration = URLSessionConfiguration.ephemeral
+                let client = URLSession(configuration: configuration, delegate: RealtimeTransportDelegate(), delegateQueue: nil)
+                defer { client.invalidateAndCancel() }
+                if let (data, response) = try? await client.data(for: diagnostic), data.count <= 65_536,
+                   let http = response as? HTTPURLResponse, http.statusCode >= 400,
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    let error = json["error"] as? [String: Any] ?? json
+                    if let message = error["message"] as? String {
+                        details += "\n同路由诊断（HTTP \(http.statusCode)）：" + message
+                    }
+                    if let id = http.value(forHTTPHeaderField: "x-request-id") ?? http.value(forHTTPHeaderField: "x-oneapi-request-id") { details += "\n请求标识：" + id }
+                }
+            }
+        }
+        guard active, epoch == generation else { return }
+        let protocolInfo = "\n当前协议：\(connectionProtocol.title)。"
+        let hint = code == 400 ? "\nHTTP 400 表示服务端拒绝请求；请核对模型的实时权限、协议和服务商路由，不是单凭此状态就能判断网络故障。" : ""
+        fail(baseline + protocolInfo + hint + RealtimeConnectionProtocol.safeDetail(details, key: diagnosticKey))
+    }
+    private func handleGemini(_ event: [String: Any]) throws {
+        if let error = event["error"] as? [String: Any] {
+            fail("Gemini Live：" + RealtimeConnectionProtocol.safeDetail(error["message"] as? String ?? "服务端拒绝会话", key: diagnosticKey)); return
+        }
+        if event["setupComplete"] != nil {
+            guard !seeded else { return }; seeded = true
+            if completeValidation() { return }
+            if let chat {
+                let turns: [[String: Any]] = chat.effectiveAgentHistory().compactMap { message in
+                    let text = message.parts.compactMap { part -> String? in if case .text(let s) = part { return s }; return nil }.joined(separator: "\n")
+                    guard !text.isEmpty else { return nil }
+                    return ["role": message.role.rawValue == "assistant" ? "model" : "user", "parts": [["text": text]]]
+                }
+                if !turns.isEmpty { emit(["clientContent": ["turns": turns, "turnComplete": false]]) }
+            }
+            authorizeAndBeginAudio(); return
+        }
+        guard audioStarted else { return }
+        if event["goAway"] != nil { fail("Gemini Live 会话即将到期，请重新连接。"); return }
+        guard let content = event["serverContent"] as? [String: Any] else { return }
+        if content["interrupted"] as? Bool == true {
+            interrupt(sendCancel: false)
+            geminiSuppressOutput = false
+            geminiAssistantID = UUID().uuidString
+            status = "正在听你说"
+        }
+        if let input = content["inputTranscription"] as? [String: Any], let text = input["text"] as? String {
+            updateLine(id: geminiUserID, role: "user", text: text, append: true)
+        }
+        if !geminiSuppressOutput {
+            if let output = content["outputTranscription"] as? [String: Any], let text = output["text"] as? String {
+                updateLine(id: geminiAssistantID, role: "assistant", text: text, append: true)
+            }
+            if let turn = content["modelTurn"] as? [String: Any], let parts = turn["parts"] as? [[String: Any]] {
+                for part in parts {
+                    guard let inline = part["inlineData"] as? [String: Any],
+                          let mime = inline["mimeType"] as? String, mime.hasPrefix("audio/pcm"),
+                          let encoded = inline["data"] as? String, let data = Data(base64Encoded: encoded) else { continue }
+                    guard !mime.contains("rate=") || mime.contains("rate=24000") else {
+                        throw RealtimeConnectionProtocol.ConnectionError.message("Gemini 返回不支持的采样率：\(mime)")
+                    }
+                    responseRunning = true; try audio.play(data); status = "AI 正在说 · 可以直接插话"
+                }
+            }
+        }
+        if content["turnComplete"] as? Bool == true {
+            responseRunning = false; geminiSuppressOutput = false
+            geminiUserID = UUID().uuidString; geminiAssistantID = UUID().uuidString
+            if !audio.hasPendingAudio { status = muted ? "麦克风已静音" : "正在听你说" }
         }
     }
 
@@ -241,7 +370,7 @@ final class RealtimeVoiceSession: ObservableObject {
                 guard let self, self.active, self.epoch == generation else { return }
                 // 静音仍发送同长度的零音频，让服务端正确结束上一句话。
                 let bytes = self.muted ? Data(count: data.count) : data
-                self.emit(["type": "input_audio_buffer.append", "audio": bytes.base64EncodedString()])
+                self.emit(self.connectionProtocol.audio(bytes))
             }
         }
         connected = true; status = "正在听你说"; timeoutTask?.cancel()
@@ -262,6 +391,18 @@ final class RealtimeVoiceSession: ObservableObject {
     }
 
     func interrupt(sendCancel: Bool = true) {
+        if connectionProtocol.isGemini {
+            audio.interrupt()
+            if let index = lines.firstIndex(where: { $0.id == geminiAssistantID }) {
+                lines[index].text = "[这段语音被打断，未保存可能尚未播放的字幕]"
+                lines[index].interrupted = true
+            }
+            // 自动VAD的服务端interrupted会结束输出；手动打断先静音本轮直到回合结束。
+            geminiSuppressOutput = sendCancel
+            responseRunning = false
+            if active { status = muted ? "麦克风已静音" : "正在听你说" }
+            return
+        }
         if sendCancel, responseRunning, let id = currentResponse {
             emit(["type": "response.cancel", "response_id": id])
         }
@@ -296,6 +437,7 @@ final class RealtimeVoiceSession: ObservableObject {
         socket?.cancel(with: .normalClosure, reason: nil); socket = nil
         transport?.invalidateAndCancel(); transport = nil
         audio.stop()
+        audioStarted = false; diagnosticKey = ""
         VoiceModePreference.shared.isCapturing = false
         observers.forEach { NotificationCenter.default.removeObserver($0) }; observers = []
         UIApplication.shared.isIdleTimerDisabled = oldIdleDisabled

@@ -10,7 +10,8 @@ import SwiftUI
  func beginAndWait(_ i: Intent, timeout: TimeInterval) -> Bool { true }
  func end(_ i: Intent) {}
 }
-enum ProviderType { case openAI, openAIResponses, other }
+enum ProviderType { case openAI, openAIResponses, gemini, other }
+enum GeminiModelsAPI { static func fetchModels(apiKey: String, customBaseURL: String?, forceRefresh: Bool) async throws -> [LLMModel] { [] } }
 enum CredentialType { case apiKey, other }
 struct ProviderInstance {
  var id: String; var label: String; var isEnabled: Bool

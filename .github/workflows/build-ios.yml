@@ -37,6 +37,7 @@ jobs:
       - name: 实时语音协议回归与 iOS 类型检查
         run: |
           set -o pipefail
+          python3 scripts/test_voice_protocols.py | tee voice-protocols-test.log
           python3 scripts/test_realtime_voice.py | tee realtime-test.log
           xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/RealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Realtime/*.swift 2>&1 | tee realtime-typecheck.log
 
@@ -125,7 +126,7 @@ jobs:
             -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
             -scmProvider system \
             -disableAutomaticPackageResolution \
-            CURRENT_PROJECT_VERSION=7 \
+            CURRENT_PROJECT_VERSION=8 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
