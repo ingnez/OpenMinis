@@ -206,6 +206,14 @@ extension AIChatViewModel {
         // [T-user-ask] A question waiting on the user ends with the run.
         cancelPendingUserAsk()
         userDidCancel = true
+
+        // [CloudComputer] If cloud execution is active, explicitly cancel remote task on VPS
+        if let sid = sessionId, isCloudExecutionActive {
+            Task { @MainActor in
+                try? await CloudChatBridge.shared.cancelRemoteTask(localSessionId: sid)
+            }
+        }
+
         currentTask?.cancel()
         currentTask = nil
         dropPresetsOfStoppedTurn()  // [T-preset-cleared-on-stop]

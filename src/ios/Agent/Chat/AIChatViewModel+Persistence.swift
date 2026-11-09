@@ -174,6 +174,7 @@ extension AIChatViewModel {
             // is still false, the detail page shows no "Interrupted" banner
             // even though the list shows ⏸. Re-run the lightweight check here.
             recheckCanResumeFromHistory()
+            await reattachCloudTaskIfNeeded()
         }
     }
 
@@ -988,6 +989,9 @@ extension AIChatViewModel {
         let totalElapsed = (CFAbsoluteTimeGetCurrent() - loadStart) * 1000
         let totalSinceAppear = (CFAbsoluteTimeGetCurrent() - Self.onAppearTimestamp) * 1000
         logger.info("[SessionLoad] \(sessionId) — TOTAL: \(String(format: "%.1f", totalElapsed))ms T+\(String(format: "%.0f", totalSinceAppear))ms [DB: \(String(format: "%.1f", dbElapsed)) | Build: \(String(format: "%.1f", buildElapsed)) | Snapshots: \(String(format: "%.1f", snapshotElapsed)) | Mount: \(String(format: "%.1f", mountElapsed))]")
+
+        // [CloudComputer] Re-attach to active remote VPS task if in cloud execution mode
+        await reattachCloudTaskIfNeeded()
     }
 
     /// [T-ios-paused-badge-desync] Lightweight interrupted-loop tail check.

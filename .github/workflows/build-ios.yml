@@ -7,6 +7,34 @@ permissions:
   contents: read
 
 jobs:
+  cloud-computer-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: 云端任务与同会话持久化回归
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s cloud-agent -p 'test*.py' -v 2>&1 | tee cloud-v2-tests.log
+      - name: 安装并验证真实云电脑环境
+        run: |
+          set -o pipefail
+          sudo bash cloud-agent/install.sh 2>&1 | tee cloud-install.log
+          sudo bash cloud-agent/install-desktop.sh 2>&1 | tee cloud-desktop-install.log
+          sudo bash cloud-agent/test_desktop.sh 2>&1 | tee cloud-desktop-test.log
+          sudo cp cloud-agent/test_browser_real.py /opt/openminis-cloud-agent/test_browser_real.py
+          sudo chown root:root /opt/openminis-cloud-agent/test_browser_real.py
+          sudo -u openminis env DISPLAY=:99 XAUTHORITY=/var/lib/openminis-cloud-agent/.Xauthority HOME=/var/lib/openminis-cloud-agent PLAYWRIGHT_BROWSERS_PATH=/var/lib/openminis-cloud-agent/ms-playwright OPENMINIS_REAL_BROWSER_TEST=1 /opt/openminis-cloud-agent/venv/bin/python3 /opt/openminis-cloud-agent/test_browser_real.py 2>&1 | tee cloud-browser-real.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cloud-computer-linux-evidence
+          path: |
+            cloud-v2-tests.log
+            cloud-install.log
+            cloud-desktop-install.log
+            cloud-desktop-test.log
+            cloud-browser-real.log
   build:
     runs-on: macos-26
     timeout-minutes: 350
@@ -17,6 +45,17 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+
+      - name: 云端 Agent 服务集成验证与资源打包
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s cloud-agent -p 'test*.py' -v 2>&1 | tee cloud-agent-test.log
+          python3 scripts/prepare_cloud_agent.py
+          swiftc -swift-version 5 src/ios/Views/Chat/AIChatView/Cloud/CloudModelCatalog.swift scripts/CloudModelCatalogTests.swift -o /tmp/cloud-model-tests
+          /tmp/cloud-model-tests | tee cloud-model-test.log
+          swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift -o /tmp/cloud-chat-tests
+          /tmp/cloud-chat-tests | tee cloud-chat-test.log
+          xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/AIChatViewModel+CloudComputer.swift src/ios/Views/Chat/AIChatView/Cloud/CloudModelCatalog.swift src/ios/Views/Chat/AIChatView/Cloud/CloudConnection.swift src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopView.swift src/ios/Views/Chat/AIChatView/Cloud/CloudWorkContext.swift src/ios/Views/Chat/AIChatView/Cloud/CloudAgentViews.swift 2>&1 | tee cloud-connection-typecheck.log
 
       - name: Show toolchain
         run: |
@@ -45,6 +84,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/prepare_vad.py
+
+      - name: 校验并准备固定版本 SwiftMath 源码
+        run: python3 scripts/prepare_swiftmath.py
 
       - name: Resolve Swift packages
         run: |
@@ -126,7 +168,7 @@ jobs:
             -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
             -scmProvider system \
             -disableAutomaticPackageResolution \
-            CURRENT_PROJECT_VERSION=8 \
+            CURRENT_PROJECT_VERSION=11 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -166,6 +208,10 @@ jobs:
             build6-test.log
             voice-catalog-test.log
             realtime-typecheck.log
+            cloud-chat-test.log
+            cloud-model-test.log
+            cloud-agent-test.log
+            cloud-connection-typecheck.log
             storage-test.log
           retention-days: 30
 
@@ -177,6 +223,10 @@ jobs:
           path: |
             xcodebuild.log
             package-resolve.log
+            cloud-chat-test.log
+            cloud-model-test.log
+            cloud-agent-test.log
+            cloud-connection-typecheck.log
             storage-test.log
             reset-test.log
             soul-test.log

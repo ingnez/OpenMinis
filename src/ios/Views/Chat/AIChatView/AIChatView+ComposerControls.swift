@@ -60,6 +60,53 @@ extension AIChatView {
         }
     }
 
+    /// Execution location switch button (本机 / 云电脑)
+    @ViewBuilder
+    private var executionLocationMenuButton: some View {
+        let isCloud = vm.isCloudExecutionActive
+        let labelIcon = isCloud ? "cloud.fill" : "iphone"
+        let labelText = isCloud ? "云电脑" : "本机"
+
+        Menu {
+            Button {
+                if let sid = vm.sessionId {
+                    CloudChatBridge.shared.setCloudExecutionEnabled(false, for: sid)
+                } else {
+                    UserDefaults.standard.set(false, forKey: "OpenMinisCloud_DefaultExecution")
+                }
+                vm.objectWillChange.send()
+            } label: {
+                Label("本机执行 (iSH)", systemImage: "iphone")
+            }
+
+            Button {
+                if let sid = vm.sessionId {
+                    CloudChatBridge.shared.setCloudExecutionEnabled(true, for: sid)
+                } else {
+                    UserDefaults.standard.set(true, forKey: "OpenMinisCloud_DefaultExecution")
+                }
+                vm.objectWillChange.send()
+            } label: {
+                Label("云电脑执行 (VPS 常驻)", systemImage: "cloud.fill")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: labelIcon)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(labelText)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(isCloud ? Color.accentColor : ChatColors.secondaryText)
+            .padding(.horizontal, 8)
+            .frame(height: 34)
+            .background(ChatColors.inputIconBg)
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(isCloud ? Color.accentColor.opacity(0.5) : ChatColors.inputIconBorder, lineWidth: 0.5))
+        }
+        .accessibilityLabel(Text("执行位置：\(labelText)"))
+        .disabled(vm.isProcessing)
+    }
+
     /// Bottom toolbar under the text field (+ / edit-exit / mic / send).
     /// Returns AnyView to keep `inputBar`'s generic type compact; SwiftUI
     /// runtime demangle chokes on deep nested types otherwise.
@@ -68,6 +115,10 @@ extension AIChatView {
             attachmentMenuButton
             slashMenuButton
             if vm.editingMessageIndex != nil { editExitButton }
+            
+            // [CloudComputer] Execution location switch (本机 / 云电脑)
+            executionLocationMenuButton
+            
             Spacer()
             // Mutually exclusive with editExitButton: while editing a past
             // message the exit capsule owns this row — showing both capsules

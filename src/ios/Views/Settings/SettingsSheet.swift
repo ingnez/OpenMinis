@@ -36,6 +36,7 @@ private enum SettingsDestination: Hashable {
     // [T-mcp-oauth-deeplink]
     case mcpIntegrations
     case mcpServerDetail(serverId: String)
+    case vpsCloudAgent
 }
 
 struct SettingsSheet: View {
@@ -193,6 +194,19 @@ struct SettingsSheet: View {
                                 .foregroundStyle(.white)
                                 .frame(width: 21, height: 21)
                                 .background(.green, in: Circle())
+                        }
+                    }
+                    NavigationLink {
+                        CloudAgentSettingsView()
+                    } label: {
+                        Label {
+                            Text("VPS 云端 Agent")
+                        } icon: {
+                            Image(systemName: "server.rack")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white)
+                                .frame(width: 21, height: 21)
+                                .background(.blue, in: Circle())
                         }
                     }
                 }
@@ -434,6 +448,8 @@ struct SettingsSheet: View {
                     MCPIntegrationsView()
                 case .mcpServerDetail(let serverId):
                     MCPIntegrationsView(initialEditServerId: serverId)
+                case .vpsCloudAgent:
+                    CloudAgentSettingsView()
                 }
             }
             .onAppear {

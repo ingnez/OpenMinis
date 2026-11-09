@@ -931,6 +931,8 @@ extension AIChatViewModel {
         NotificationCenter.default.post(name: .newChatRequested, object: nil)
         Task { @MainActor in
             if let sid = oldSessionId {
+                CloudChatBridge.shared.detachSession(localSessionId: sid)
+                try? await CloudChatBridge.shared.cancelRemoteTask(localSessionId: sid)
                 let ids = await ChatStore.shared.sessionIdsWithDescendants([sid])
                 for id in ids {
                     AgentJobRegistry.shared.cancelAll(parent: id, reason: "session reset", silent: true)

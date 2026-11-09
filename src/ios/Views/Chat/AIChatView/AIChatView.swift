@@ -1627,6 +1627,7 @@ struct AIChatView: View {
         // frame change that clears it.
         .onChange(of: scenePhase) { phase in
             if phase == .active {
+                Task { await vm.reattachCloudTaskIfNeeded() }
                 // [T-voice-inputbar-fg-stale-debounce] iOS changes safe area
                 // insets while backgrounded, causing onGeometryChange to fire
                 // with shifted geometry. That measurement spawns a debounce

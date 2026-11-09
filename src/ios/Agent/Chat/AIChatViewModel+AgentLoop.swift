@@ -89,6 +89,24 @@ extension AIChatViewModel {
 
     func runAgentLoop(resumingAt existingMsgIdx: Int? = nil, committedBlocks: Int? = nil) async throws {
         guard !isRetiredByReset else { throw CancellationError() }
+
+        // [CloudComputer] Check if cloud execution is enabled for this session
+        if isCloudExecutionActive {
+            logger.info("☁️ Cloud Computer execution active for session \(self.sessionId ?? "nil") — routing directly to VPS, strictly disabling local fallback.")
+            let targetMsg: ChatMessage
+            if let idx = existingMsgIdx, messages.indices.contains(idx), messages[idx].role == .assistant {
+                targetMsg = messages[idx]
+            } else if let last = messages.last, last.role == .assistant {
+                targetMsg = last
+            } else {
+                let fresh = ChatMessage(role: .assistant, content: "", blocks: [])
+                messages.append(fresh)
+                targetMsg = fresh
+            }
+            try await runCloudAgentLoop(targetAssistantMessage: targetMsg)
+            return
+        }
+
         do {
             try await runAgentLoopCore(resumingAt: existingMsgIdx, committedBlocks: committedBlocks)
         } catch {
