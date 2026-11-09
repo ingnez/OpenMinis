@@ -63,6 +63,9 @@ final class RealtimeVoiceSession: ObservableObject {
             AVAudioSession.sharedInstance().requestRecordPermission { continuation.resume(returning: $0) }
         }
         guard generation == epoch, active else { return }
+        guard UIApplication.shared.applicationState == .active else {
+            finish(reason: "离开前台，通话已结束"); return
+        }
         guard granted else { fail("没有麦克风权限，请在系统设置中允许 Minis 使用麦克风。"); return }
         do {
             let base = provider.resolvedBaseURL(default: "https://api.openai.com")
@@ -263,8 +266,9 @@ final class RealtimeVoiceSession: ObservableObject {
         }
         if let id = currentResponse, responseRunning || audio.hasPendingAudio { ignoredResponses.insert(id) }
         if audio.hasPendingAudio || responseRunning {
-            let item = ledger.itemID
-            let truncation = ledger.interrupt(playedFrames: audio.playedFrames)
+            let ownsPlayback = ledger.responseID == currentResponse || audio.hasPendingAudio
+            let item = ownsPlayback ? ledger.itemID : nil
+            let truncation = ownsPlayback ? ledger.interrupt(playedFrames: audio.playedFrames) : nil
             audio.interrupt()
             if let truncation { emit(truncation) }
             if let item, let index = lines.firstIndex(where: { $0.id == item }) {
@@ -281,8 +285,10 @@ final class RealtimeVoiceSession: ObservableObject {
     private func fail(_ message: String) { error = message; finish(reason: "连接已停止") }
     func finish(reason: String = "通话已结束") {
         guard active else { return }
-        interrupt()
-        active = false; connected = false; epoch = UUID()
+        // 先禁用发送，防止发送队列溢出时挂断再次发取消事件造成递归。
+        active = false
+        interrupt(sendCancel: false)
+        connected = false; epoch = UUID()
         receiveTask?.cancel(); senderTask?.cancel(); microphoneTask?.cancel()
         timeoutTask?.cancel(); clockTask?.cancel()
         outbound?.finish(); outbound = nil
