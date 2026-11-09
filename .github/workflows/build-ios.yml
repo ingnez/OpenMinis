@@ -24,6 +24,9 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           sw_vers
 
+      - name: 下载并校验官方 VAD 二进制
+        run: python3 scripts/prepare_vad.py
+
       - name: Resolve Swift packages
         run: |
           set -o pipefail
@@ -31,12 +34,12 @@ jobs:
           for attempt in 1 2 3; do
             if xcodebuild -resolvePackageDependencies \
               -project src/ios/Minis.xcodeproj -scheme Minis \
-              -clonedSourcePackagesDirPath "$RUNNER_TEMP/MinisPackages" \
+              -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
               -scmProvider system -disablePackageRepositoryCache \
               2>&1 | tee package-resolve.log; then
               exit 0
             fi
-            rm -rf "$RUNNER_TEMP/MinisPackages"
+            rm -rf "$GITHUB_WORKSPACE/build/SourcePackages"
           done
           exit 1
 
@@ -101,7 +104,7 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
-            -clonedSourcePackagesDirPath "$RUNNER_TEMP/MinisPackages" \
+            -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
             -scmProvider system \
             -disableAutomaticPackageResolution \
             CURRENT_PROJECT_VERSION=4 \
