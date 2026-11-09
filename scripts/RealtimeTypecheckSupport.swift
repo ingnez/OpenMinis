@@ -27,6 +27,7 @@ struct ModelEntry: Identifiable { var id: String; var providerInstanceId: String
 }
 enum ProviderKeychainHelper { static func loadAPIKey(instanceId: String) -> String? { nil } }
 @MainActor final class VoiceOutputPlayer { static let shared = VoiceOutputPlayer(); func stopAll() {} }
+@MainActor final class VoiceModePreference { static let shared = VoiceModePreference(); var isCapturing = false }
 enum AgentContentPart { case text(String) }
 struct AgentMessage {
  enum Role: String { case user, assistant }

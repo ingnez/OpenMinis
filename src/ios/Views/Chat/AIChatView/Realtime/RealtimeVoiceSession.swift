@@ -235,6 +235,7 @@ final class RealtimeVoiceSession: ObservableObject {
             self.status = self.muted ? "麦克风已静音" : "正在听你说"
         }
         let stream = try audio.start()
+        VoiceModePreference.shared.isCapturing = true
         microphoneTask = Task { [weak self] in
             for await data in stream {
                 guard let self, self.active, self.epoch == generation else { return }
@@ -295,6 +296,7 @@ final class RealtimeVoiceSession: ObservableObject {
         socket?.cancel(with: .normalClosure, reason: nil); socket = nil
         transport?.invalidateAndCancel(); transport = nil
         audio.stop()
+        VoiceModePreference.shared.isCapturing = false
         observers.forEach { NotificationCenter.default.removeObserver($0) }; observers = []
         UIApplication.shared.isIdleTimerDisabled = oldIdleDisabled
         status = reason
