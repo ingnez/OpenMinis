@@ -420,3 +420,8 @@
 ### 9.5 通知路由
 - App 进程活着（前台或后台）时每 25 秒 `POST /v1/presence`；服务器 90 秒内收到过就认为 App 在，任务完成等通知只进 App 通知流（`GET /v1/notifications`），由 App 用系统本地通知显示，不发 Bark / ntfy / Telegram 推送。
 - 超过 90 秒没报到（App 被挂起或杀掉）才按设置走外部推送；这条通知在通知流里带 `external: true`，App 之后取到也不再弹一次。
+
+### 9.6 首页长按菜单
+- `PUT /v1/bots/<id>/prefs` `{pinned?, hidden?, unread?, seen_at?}`：置顶、隐藏（主 Bot 不能隐藏）、手动标为未读、已读到的时间；`GET /v1/bots` 每个 Bot 带 `prefs`。
+- 替换主 Bot：`PUT /v1/bots/<id>` `{is_primary: true}`，一次事务里转移，记一条可撤销的 `set_primary_bot` 审计。管理工具的角色检查每次现查当前主 Bot 的 id，旧主 Bot 立刻失去权限。
+- `DELETE /v1/bots/<id>?soft=1` 放进回收站（主 Bot 不能删）；`GET /v1/bots/trash` 看回收站；`POST /v1/bots/<id>/restore` 恢复。

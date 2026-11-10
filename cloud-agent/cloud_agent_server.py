@@ -1783,6 +1783,7 @@ def bot_detail(bot):
         out["resources"] = iso.bot_settings(resource_settings(), pid)
         out["resource_overrides"] = resource_settings()["bot_overrides"].get(pid, {})
         out["routines_enabled"] = conn.execute("SELECT COUNT(*) FROM routines WHERE persona_id = ? AND enabled = 1", (pid,)).fetchone()[0]
+        out["prefs"] = cloud_admin.prefs(conn, pid)
         out["running_tasks"] = counts.get("running", 0) + counts.get("queued", 0)
         out["waiting_approvals"] = counts.get("waiting_user", 0)
         return out
@@ -3196,11 +3197,12 @@ def tools_for_depth(depth, admin=False):
     return [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in ADMIN_TOOLS]
 
 def is_admin_session(session_id, depth=0):
-    """服务器侧的角色检查：只有主 Bot 的会话、且不是子任务，才能用管理工具。"""
-    if depth:
+    """服务器侧的角色检查：只有当前主 Bot 的会话、且不是子任务，才能用管理工具。每次现查当前主 Bot 的 id，
+    换主 Bot 后旧主 Bot 立刻失去权限（包括它正在跑的任务的下一步）。"""
+    if depth or not session_id:
         return False
-    bot = session_bot(session_id) if session_id else None
-    return bool(bot and bot.get("is_primary"))
+    pid = session_persona_id(session_id)
+    return bool(pid) and pid == primary_bot_id()
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -4767,6 +4769,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Plugin not found"})
             return
 
+        if path == "/v1/bots/trash":
+            conn = get_db_connection()
+            try:
+                self._send(200, {"trash": cloud_admin.trash(conn)})
+            finally:
+                conn.close()
+            return
         if path == "/v1/bots":
             self._send(200, {"bots": [bot_detail(b) for b in list_personas()], "primary": primary_bot_id()})
             return
@@ -5578,9 +5587,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Plugin not found"})
             return
 
+        m_prefs = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/prefs$", path)
+        if m_prefs:
+            conn = get_db_connection()
+            try:
+                p = cloud_admin.set_prefs(conn, m_prefs.group(1), req_json)
+            except cloud_admin.AdminError as e:
+                self._send(404 if "没有这个" in str(e) else 400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            bots_changed()
+            self._send(200, {"bot_id": m_prefs.group(1), "prefs": p})
+            return
         if path.startswith("/v1/bots/"):
             conn = get_db_connection()
             try:
+                bid_put = path[len("/v1/bots/"):]
+                if req_json.get("is_primary") is True and cloud_bots.BOT_ID_RE.match(bid_put or "") and cloud_bots.get(conn, bid_put) \
+                        and not (cloud_bots.get(conn, bid_put) or {}).get("is_primary"):
+                    prev = cloud_admin.set_primary(conn, bid_put)
+                    cloud_audit.record(conn, "set_primary_bot", bid_put, f"把 {bid_put} 设为主 Bot（App）",
+                                       {"kind": "bot", "op": "set_primary", "bot_id": bid_put, "previous": prev}, bot_id=bid_put)
                 bot, created = cloud_bots.upsert(conn, path[len("/v1/bots/"):], req_json, credential_exists)
             except cloud_bots.BotError as e:
                 self._send(400, {"error": str(e)})
@@ -5784,6 +5812,22 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 conn.close()
             self._send(200 if ok else 404, {"deleted": True} if ok else {"error": "Group not found"})
+            return
+        if path.startswith("/v1/bots/") and (query_params.get("soft") or ["0"])[0] == "1":
+            # 首页长按「删除」：进回收站（保留记忆和会话），可在操作记录里撤销或 POST /v1/bots/<id>/restore
+            bid = path[len("/v1/bots/"):]
+            conn = get_db_connection()
+            try:
+                bot = cloud_admin.delete(conn, bid)
+                cloud_audit.record(conn, "delete_bot", bid, f"删除 Bot「{bot['name']}」（在回收站，可恢复）",
+                                   {"kind": "bot", "op": "delete", "bot_id": bid}, bot_id=bid)
+            except cloud_admin.AdminError as e:
+                self._send(404 if "没有这个" in str(e) else 400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            bots_changed()
+            self._send(200, {"bot_id": bid, "deleted": True, "in_trash": True})
             return
         if path.startswith("/v1/bots/"):
             path = "/v1/personas/" + path[len("/v1/bots/"):]
@@ -6203,6 +6247,22 @@ class Handler(BaseHTTPRequestHandler):
                 except cloud_plugins.PluginError as e:
                     results.append({"id": s.get("id") if isinstance(s, dict) else None, "error": str(e)})
             self._send(200, {"results": results})
+            return
+
+        m_restore = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/restore$", path)
+        if m_restore:
+            conn = get_db_connection()
+            try:
+                bot = cloud_admin.restore(conn, m_restore.group(1), credential_exists)
+                cloud_audit.record(conn, "restore_bot", bot["bot_id"], f"从回收站恢复 Bot「{bot['name']}」",
+                                   {"kind": "bot", "op": "create", "bot_id": bot["bot_id"]}, bot_id=bot["bot_id"])
+            except cloud_admin.AdminError as e:
+                self._send(404 if "没有" in str(e) else 400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            bots_changed()
+            self._send(200, {"restored": True, "bot": bot_detail(bot)})
             return
 
         if path == "/v1/bots/import":

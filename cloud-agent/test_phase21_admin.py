@@ -94,6 +94,49 @@ class AdminToolTests(CloudServerTestCase):
         self.assertIn("helper", self._bot_ids())
         self.assertNotIn("sk-", json.dumps(res, ensure_ascii=False))
 
+    def test_04_primary_transfer_moves_admin_role(self):
+        # 主 Bot 自己把主 Bot 交给 helper：helper 拿到管理工具，boss 立刻失去
+        res = self._run("boss", [("set_primary_bot", {"bot_id": "helper"}), ("create_bot", {"name": "迟到的"})], "m-t1")
+        self.assertEqual(res[0]["primary"], "helper")
+        self.assertIn("只有主 Bot", res[1]["error"], "换掉后同一任务的下一步也不能再用管理工具")
+        bots = {b["bot_id"]: b for b in self.request("GET", "/v1/bots")[1]["bots"]}
+        self.assertEqual([k for k, b in bots.items() if b["is_primary"]], ["helper"])
+        self._run("boss", [], "m-t2")
+        self.assertNotIn("create_bot", self._tool_names())
+        self.assertNotIn("[主 Bot]", FakeModelHandler.requests[-1]["messages"][0]["content"])
+        res = self._run("helper", [("create_bot", {"name": "Newbie"})], "m-t3")
+        self.assertTrue(res[0]["created"])
+        # App 里「替换主 Bot」：PUT is_primary，记审计，可撤销回原来的主 Bot
+        self.assertEqual(self.request("PUT", "/v1/bots/boss", {"is_primary": True})[0], 200)
+        audit = self.request("GET", "/v1/audit")[1]["items"]
+        entry = next(e for e in audit if e["tool"] == "set_primary_bot" and e["target"] == "boss")
+        self.assertTrue(entry["undoable"])
+        self.assertEqual(self.request("POST", f"/v1/audit/{entry['id']}/undo", {})[0], 200)
+        primary = self.request("GET", "/v1/bots")[1]["primary"]
+        self.assertEqual(primary, "helper")
+
+    def test_05_prefs_persist(self):
+        st, res = self.request("PUT", "/v1/bots/helper/prefs", {"pinned": True, "unread": True})
+        self.assertEqual(st, 200)
+        self.assertTrue(res["prefs"]["pinned"] and res["prefs"]["unread"])
+        self.request("PUT", "/v1/bots/helper/prefs", {"hidden": True, "seen_at": 123.0})
+        p = next(b for b in self.request("GET", "/v1/bots")[1]["bots"] if b["bot_id"] == "helper")["prefs"]
+        self.assertEqual((p["pinned"], p["hidden"], p["unread"], p["seen_at"]), (True, True, True, 123.0))
+        self.assertEqual(self.request("PUT", "/v1/bots/boss/prefs", {"hidden": True})[0], 400, "主 Bot 不能隐藏")
+        self.assertEqual(self.request("PUT", "/v1/bots/nobody/prefs", {"pinned": True})[0], 404)
+        self.assertEqual(self.request("PUT", "/v1/bots/helper/prefs", {"pinned": "yes"})[0], 400)
+
+    def test_06_app_soft_delete_and_restore(self):
+        self.assertEqual(self.request("DELETE", "/v1/bots/boss?soft=1")[0], 400, "主 Bot 不能删")
+        st, res = self.request("DELETE", "/v1/bots/helper?soft=1")
+        self.assertEqual((st, res["in_trash"]), (200, True))
+        self.assertNotIn("helper", self._bot_ids())
+        self.assertIn("helper", [t["bot_id"] for t in self.request("GET", "/v1/bots/trash")[1]["trash"]])
+        st, res = self.request("POST", "/v1/bots/helper/restore", {})
+        self.assertEqual(st, 200)
+        self.assertIn("helper", self._bot_ids())
+        self.assertEqual(self.request("POST", "/v1/bots/helper/restore", {})[0], 404)
+
 
 if __name__ == "__main__":
     unittest.main()

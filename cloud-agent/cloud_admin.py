@@ -23,6 +23,9 @@ class AdminError(ValueError):
 
 
 def ensure_schema(conn):
+    # 首页长按菜单：置顶 / 隐藏 / 手动标为未读，以及「已读到」的时间（换手机也一致）
+    conn.execute("CREATE TABLE IF NOT EXISTS bot_prefs (bot_id TEXT PRIMARY KEY, pinned INTEGER NOT NULL DEFAULT 0, "
+                 "hidden INTEGER NOT NULL DEFAULT 0, unread INTEGER NOT NULL DEFAULT 0, seen_at REAL NOT NULL DEFAULT 0, pinned_at REAL)")
     conn.execute("CREATE TABLE IF NOT EXISTS bot_trash (bot_id TEXT PRIMARY KEY, bot TEXT NOT NULL, routines TEXT, "
                  "deleted_by TEXT, deleted_at REAL NOT NULL)")
     conn.commit()
@@ -129,10 +132,14 @@ def restore(conn, bot_id, credential_exists=None):
 
 
 def set_primary(conn, bot_id):
+    """换主 Bot：一次事务里清掉旧主 Bot 的标记、给新主 Bot 打上。管理权限只看「当前主 Bot 是谁」，所以随之转移。"""
     if not cloud_bots.get(conn, bot_id):
         raise AdminError("没有这个 Bot")
     prev = cloud_bots.primary(conn)
-    cloud_bots.upsert(conn, bot_id, {"is_primary": True})
+    with conn:
+        conn.execute("UPDATE personas SET is_primary = CASE WHEN persona_id = ? THEN 1 ELSE 0 END, updated_at = ? "
+                     "WHERE is_primary = 1 OR persona_id = ?", (bot_id, time.time(), bot_id))
+        conn.execute("UPDATE bot_prefs SET hidden = 0 WHERE bot_id = ?", (bot_id,))
     return prev["bot_id"] if prev else None
 
 
@@ -155,3 +162,38 @@ def undo(conn, info, credential_exists=None):
     except (AdminError, cloud_bots.BotError) as e:
         return False, str(e)
     return False, "这条操作不能撤销"
+
+
+PREF_KEYS = ("pinned", "hidden", "unread", "seen_at")
+
+
+def prefs(conn, bot_id):
+    r = conn.execute("SELECT pinned, hidden, unread, seen_at, pinned_at FROM bot_prefs WHERE bot_id = ?", (bot_id,)).fetchone()
+    if not r:
+        return {"pinned": False, "hidden": False, "unread": False, "seen_at": 0.0, "pinned_at": None}
+    return {"pinned": bool(r[0]), "hidden": bool(r[1]), "unread": bool(r[2]), "seen_at": r[3] or 0.0, "pinned_at": r[4]}
+
+
+def set_prefs(conn, bot_id, body):
+    if not cloud_bots.get(conn, bot_id):
+        raise AdminError("没有这个 Bot")
+    if not isinstance(body, dict) or not any(k in body for k in PREF_KEYS):
+        raise AdminError("没有要改的项（pinned / hidden / unread / seen_at）")
+    cur = prefs(conn, bot_id)
+    for k in ("pinned", "hidden", "unread"):
+        if k in body:
+            if not isinstance(body[k], bool):
+                raise AdminError(f"{k} 必须是 true / false")
+            if k == "pinned" and body[k] and not cur["pinned"]:
+                cur["pinned_at"] = time.time()
+            cur[k] = body[k]
+    if "seen_at" in body:
+        if not isinstance(body["seen_at"], (int, float)):
+            raise AdminError("seen_at 必须是时间戳")
+        cur["seen_at"] = max(cur["seen_at"], float(body["seen_at"]))
+    if cur["hidden"] and (cloud_bots.get(conn, bot_id) or {}).get("is_primary"):
+        raise AdminError("主 Bot 不能隐藏")
+    conn.execute("INSERT OR REPLACE INTO bot_prefs (bot_id, pinned, hidden, unread, seen_at, pinned_at) VALUES (?, ?, ?, ?, ?, ?)",
+                 (bot_id, int(cur["pinned"]), int(cur["hidden"]), int(cur["unread"]), cur["seen_at"], cur["pinned_at"]))
+    conn.commit()
+    return prefs(conn, bot_id)
