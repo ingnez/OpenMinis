@@ -49,6 +49,7 @@ if SERVER_DIR not in sys.path:
 import re
 import cloud_browser
 import cloud_delegation as deleg
+import cloud_groups
 import cloud_desktop
 import cloud_secrets
 import cloud_policy
@@ -263,6 +264,7 @@ def init_db():
     # 结构化记忆（FTS5 trigram，不可用时退化为 LIKE）
     cursor.execute(deleg.SCHEMA)
     conn.commit()
+    cloud_groups.ensure_schema(conn)
     cloud_memory.ensure_schema(conn)
     cloud_skills.ensure_schema(conn)
     cloud_bots.ensure_schema(conn)
@@ -1589,6 +1591,101 @@ def tool_delegate_task(task_id, session_id, args, model, provider_config):
     out = {"status": row["status"], "delegation_id": did, "bot": row["to_bot"], "result": row["result"] or ""}
     if row["status"] != "completed":
         out["error"] = f"对方任务结束状态：{row['status']}"
+    return out
+
+# ---------------- 群聊 ----------------
+GROUP_FALLBACK = {}      # group_id -> (model, provider)：成员 Bot 没选自己的模型时用用户当前的模型
+
+def _bot_provider(bot, fallback):
+    if bot.get("model") and bot.get("credential"):
+        provider, _st, err = resolve_provider({"protocol": "chat", "credential": bot["credential"]})
+        if err:
+            raise RuntimeError(f"凭据不可用：{err}")
+        return bot["model"], provider
+    if fallback and fallback[1]:
+        return fallback
+    raise RuntimeError("没有可用的模型：请给这个 Bot 选一个模型，或在手机上选好默认模型")
+
+def _group_llm(bot, messages, fallback):
+    model, provider = _bot_provider(bot, fallback)
+    url = f"{provider.get('base_url', 'https://api.openai.com/v1').rstrip('/')}/chat/completions"
+    resp = call_llm_with_effort(url, {"Content-Type": "application/json", "Authorization": f"Bearer {provider.get('api_key', '')}"},
+                                {"model": model, "messages": messages, "stream": False, "max_tokens": 600},
+                                bot.get("reasoning_effort"))
+    msg = ((resp.get("choices") or [{}])[0].get("message") or {})
+    text = msg.get("content") or ""
+    if isinstance(text, list):
+        text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+    return text, (resp.get("usage") or {}).get("total_tokens") or 0
+
+def _group_start_task(group, bot, task, msg_id):
+    """群里被 @ 的 Bot 需要真正动手：在它自己的工作区跑一个任务，结果贴回群里。"""
+    model, provider = _bot_provider(bot, GROUP_FALLBACK.get(group["group_id"]))
+    sid = "sess_" + uuid.uuid4().hex[:12]
+    tid = "task_" + uuid.uuid4().hex[:12]
+    now = time.time()
+    did = "grp_task_" + uuid.uuid4().hex[:8]
+    content = deleg.incoming_text(f"群聊「{group['name']}」", "task", task[:20000], did, True)
+    conn = get_db_connection()
+    try:
+        conn.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, NULL, ?, '', ?, ?)",
+                     (sid, f"群聊「{group['name']}」：" + task.strip().splitlines()[0][:40], now, bot["persona_id"]))
+        conn.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
+                     (tid, sid, model, now))
+        conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (sid, content, now))
+        conn.commit()
+        task_msg = cloud_groups.add_message(conn, group["group_id"], bot["persona_id"], "task", task[:2000], reply_to=msg_id,
+                                            meta={"task_id": tid, "session_id": sid, "status": "running"})
+    finally:
+        conn.close()
+    with active_tasks_lock:
+        active_tasks[tid] = {"process": None, "cancelled": False, "pid": None}
+    TASK_HOP[tid] = 1
+    GROUPS.notify()
+
+    def worker():
+        try:
+            run_agent_task(tid, sid, content, model, provider, "")
+        finally:
+            TASK_HOP.pop(tid, None)
+            c2 = get_db_connection()
+            try:
+                status = (c2.execute("SELECT status FROM tasks WHERE task_id = ?", (tid,)).fetchone() or ["failed"])[0]
+                last = c2.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL ORDER BY id DESC LIMIT 1",
+                                  (sid,)).fetchone()
+                result = ((last[0] if last else "") or "（没有文字结果）")[:6000]
+                cloud_groups.add_message(c2, group["group_id"], bot["persona_id"], "task_result", result, reply_to=task_msg,
+                                         meta={"task_id": tid, "session_id": sid, "status": status})
+            finally:
+                c2.close()
+            GROUPS.notify()
+            cfg = current_notify_config()
+            if cfg and not _bot_muted(persona_id=bot["persona_id"]):
+                cloud_notify.notify_async(cfg, "task_completed", f"{bot.get('name')} 在「{group['name']}」完成了任务"[:120], result[:600])
+
+    threading.Thread(target=worker, daemon=True, name="group-task").start()
+    return tid
+
+GROUPS = cloud_groups.GroupEngine({
+    "db": lambda: get_db_connection(),
+    "settings": lambda: resource_settings(),
+    "bot": lambda bid: get_persona(bid),
+    "persona_text": lambda bot: cloud_bots.prompt(bot, []),
+    "llm": lambda bot, messages, fallback: _group_llm(bot, messages, fallback),
+    "start_task": lambda group, bot, task, msg_id: _group_start_task(group, bot, task, msg_id),
+})
+
+def group_payload(conn, g, after=0):
+    members = []
+    for bid in g["members"]:
+        b = get_persona(bid)
+        if b:
+            members.append({"bot_id": bid, "name": b["name"], "emoji": b.get("emoji"), "model": b.get("model") or "",
+                            "reasoning_effort": b.get("reasoning_effort") or ""})
+    out = dict(g)
+    out["member_bots"] = members
+    out["typing"] = GROUPS.typing_list(g["group_id"])
+    out["messages"] = cloud_groups.messages_after(conn, g["group_id"], after, 300) if after is not None else []
     return out
 
 # 对外发消息：先以草稿形式挂起审批，用户确认后才发送（不受自定义策略影响）
@@ -3167,6 +3264,48 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, GATE.status())
             return
 
+        if path == "/v1/groups":
+            conn = get_db_connection()
+            try:
+                groups = cloud_groups.list_groups(conn)
+            finally:
+                conn.close()
+            for g in groups:
+                g["typing"] = GROUPS.typing_list(g["group_id"])
+            self._send(200, {"groups": groups})
+            return
+
+        m_grp = re.match(r"^/v1/groups/(grp_[a-f0-9]{10})(/messages)?$", path)
+        if m_grp:
+            gid = m_grp.group(1)
+            conn = get_db_connection()
+            try:
+                g = cloud_groups.get_group(conn, gid)
+                if not g:
+                    self._send(404, {"error": "Group not found"})
+                    return
+                if not m_grp.group(2):
+                    payload = group_payload(conn, g, 0)
+                    self._send(200, payload)
+                    return
+            finally:
+                conn.close()
+            try:
+                after = int((query_params.get("after") or ["0"])[0])
+                wait = float((query_params.get("wait") or ["0"])[0])
+            except ValueError:
+                self._send(400, {"error": "after / wait 必须是数字"})
+                return
+            msgs, typing = GROUPS.wait_for(gid, after, wait) if wait > 0 else (None, GROUPS.typing_list(gid))
+            if msgs is None:
+                conn = get_db_connection()
+                try:
+                    msgs = cloud_groups.messages_after(conn, gid, after)
+                finally:
+                    conn.close()
+            self._send(200, {"messages": msgs, "typing": typing})
+            return
+
         if path == "/v1/delegations":
             sid = (query_params.get("session_id") or [None])[0]
             items = list_delegations(sid)
@@ -3518,6 +3657,24 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"bot_id": bid, "notify": req_json["enabled"]})
             return
 
+        m_grp = re.match(r"^/v1/groups/(grp_[a-f0-9]{10})$", path)
+        if m_grp:
+            conn = get_db_connection()
+            try:
+                if not cloud_groups.get_group(conn, m_grp.group(1)):
+                    self._send(404, {"error": "Group not found"})
+                    return
+                try:
+                    fields = cloud_groups.validate_fields(req_json, lambda b: bool(get_persona(b)), partial=True)
+                except cloud_groups.GroupError as e:
+                    self._send(400, {"error": str(e)})
+                    return
+                g = cloud_groups.update_group(conn, m_grp.group(1), fields)
+                self._send(200, group_payload(conn, g, None))
+            finally:
+                conn.close()
+            return
+
         if path == "/v1/resources":
             try:
                 new = update_resource_settings(req_json)
@@ -3690,6 +3847,15 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/v1/bots/") and path.endswith("/telegram"):
             self._send(200, telegram_delete(path[len("/v1/bots/"):-len("/telegram")]))
             return
+        m_grp = re.match(r"^/v1/groups/(grp_[a-f0-9]{10})$", path)
+        if m_grp:
+            conn = get_db_connection()
+            try:
+                ok = cloud_groups.delete_group(conn, m_grp.group(1))
+            finally:
+                conn.close()
+            self._send(200 if ok else 404, {"deleted": True} if ok else {"error": "Group not found"})
+            return
         if path.startswith("/v1/bots/"):
             path = "/v1/personas/" + path[len("/v1/bots/"):]
         if path.startswith("/v1/plugins/"):
@@ -3805,6 +3971,45 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_json = self._read_json_body()
         if req_json is None:
+            return
+
+        if path == "/v1/groups":
+            try:
+                fields = cloud_groups.validate_fields(req_json, lambda b: bool(get_persona(b)))
+            except cloud_groups.GroupError as e:
+                self._send(400, {"error": str(e)})
+                return
+            conn = get_db_connection()
+            try:
+                g = cloud_groups.create_group(conn, fields)
+                self._send(201, group_payload(conn, g, None))
+            finally:
+                conn.close()
+            return
+
+        m_grp = re.match(r"^/v1/groups/(grp_[a-f0-9]{10})/messages$", path)
+        if m_grp:
+            gid = m_grp.group(1)
+            content = req_json.get("content")
+            if not isinstance(content, str) or not content.strip() or len(content) > 8000:
+                self._send(400, {"error": "content 必须是 1–8000 字的文字"})
+                return
+            conn = get_db_connection()
+            try:
+                if not cloud_groups.get_group(conn, gid):
+                    self._send(404, {"error": "Group not found"})
+                    return
+                provider_req = req_json.get("provider")
+                if provider_req:
+                    provider, _st, p_err = resolve_provider(provider_req)
+                    if not p_err:
+                        GROUP_FALLBACK[gid] = (req_json.get("model") or "gpt-4o", provider)
+                mid = cloud_groups.add_message(conn, gid, "user", "text", content.strip())
+            finally:
+                conn.close()
+            GROUPS.on_user_message(gid, mid, content.strip(), GROUP_FALLBACK.get(gid))
+            GROUPS.notify()
+            self._send(202, {"message_id": mid})
             return
 
         if path == "/v1/plugins/install":
