@@ -1023,6 +1023,10 @@ struct CloudSessionView: View {
         } else if !liveText.isEmpty {
             CloudProseAssistant(spec: theme.spec, name: theme.name, content: liveText, accent: theme.accent)
         }
+        if running, liveMessage.blocks.contains(where: { if case .browserTool = $0.kind { return true } else { return false } }) {
+            // Bot 正在用浏览器 / 桌面：对话里实时显示小画面，点开进入「电脑」
+            CloudDesktopPreview(botId: theme.botId) { showComputer = true }
+        }
         if running {
             CloudBotWorkingRow(spec: theme.spec, events: taskEvents, status: activeTaskStatus)
         }

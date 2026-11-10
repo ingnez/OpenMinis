@@ -13,6 +13,7 @@ import uuid
 import shutil
 import threading
 import subprocess
+import tempfile
 
 desktop_lock = threading.Lock()
 
@@ -184,3 +185,57 @@ def execute_desktop_action(session_id, workspace_dir, args, display_override=Non
 
         else:
             return {"error": f"Unsupported desktop action: {action}"}
+
+
+_THUMB_CACHE = {}
+_THUMB_LOCK = threading.Lock()
+
+
+def thumbnail(display, width=480, max_age=2.5):
+    """桌面小预览（手机对话里“正在用电脑”时显示）：截屏后缩到 width 宽的 JPEG。
+    返回 (bytes, mime)；截不了屏返回 (None, 原因)。同一屏幕 max_age 秒内复用上一张，避免多台手机一起轮询时反复截屏。"""
+    now = time.time()
+    with _THUMB_LOCK:
+        hit = _THUMB_CACHE.get(display)
+        if hit and now - hit[0] < max_age:
+            return hit[1], hit[2]
+    env = os.environ.copy()
+    env["DISPLAY"] = display
+    if "XAUTHORITY" not in env and os.path.exists("/var/lib/openminis-cloud-agent/.Xauthority"):
+        env["XAUTHORITY"] = "/var/lib/openminis-cloud-agent/.Xauthority"
+    with tempfile.TemporaryDirectory() as d:
+        png = os.path.join(d, "s.png")
+        if shutil.which("scrot"):
+            cmd = ["scrot", "-o", png]
+        elif shutil.which("import"):
+            cmd = ["import", "-window", "root", png]
+        else:
+            return None, "没有截屏工具（scrot / import）"
+        try:
+            res = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8)
+        except Exception as e:
+            return None, f"截屏失败：{e}"
+        if res.returncode != 0 or not os.path.exists(png):
+            return None, "截屏失败：" + res.stderr.decode("utf-8", "replace")[:200]
+        data, mime = None, "image/png"
+        try:
+            from PIL import Image
+            import io
+            im = Image.open(png).convert("RGB")
+            if im.width > width:
+                im = im.resize((width, max(1, im.height * width // im.width)))
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=70)
+            data, mime = buf.getvalue(), "image/jpeg"
+        except Exception:
+            jpg = os.path.join(d, "s.jpg")
+            if shutil.which("convert") and subprocess.run(["convert", png, "-resize", f"{width}x", "-quality", "70", jpg],
+                                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8).returncode == 0:
+                with open(jpg, "rb") as f:
+                    data, mime = f.read(), "image/jpeg"
+            else:
+                with open(png, "rb") as f:
+                    data = f.read()
+    with _THUMB_LOCK:
+        _THUMB_CACHE[display] = (time.time(), data, mime)
+    return data, mime

@@ -1,5 +1,7 @@
 """提效回归：自动标题（截取首句 / 小模型）、非 Claude 提示缓存提示与命中统计、主模型失败切换备用、中转站体检、搜索短时缓存。"""
 import json
+import os
+import sys
 import socket
 import time
 import unittest
@@ -188,6 +190,38 @@ class EfficiencyServerTests(CloudServerTestCase):
         self.assertEqual(self.request("PUT", "/v1/bots/pic/avatar", {"data_base64": base64.b64encode(b"GIF89a").decode()})[0], 400)
         self.assertEqual(self.request("PUT", "/v1/bots/pic/avatar", {"data_base64": "!!"})[0], 400)
         self.assertEqual(self.request("PUT", "/v1/bots/ghost/avatar", {"data_base64": base64.b64encode(jpg).decode()})[0], 404)
+
+
+    def test_09_desktop_thumbnail(self):
+        st, r = self.request("GET", "/v1/desktop/thumbnail?bot_id=pic")
+        self.assertIn(st, (200, 503))
+        if st == 503:
+            self.assertIn("截屏", r["error"])
+
+
+class DesktopThumbnailTests(unittest.TestCase):
+    def test_fake_scrot_is_downscaled_to_jpeg(self):
+        import tempfile, stat, cloud_desktop
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            self.skipTest("no PIL")
+        d = tempfile.mkdtemp()
+        fake = os.path.join(d, "scrot")
+        with open(fake, "w") as f:
+            f.write("#!%s\nimport sys\nfrom PIL import Image\nImage.new('RGB', (1280, 800), (10, 120, 200)).save(sys.argv[-1])\n" % sys.executable)
+        os.chmod(fake, os.stat(fake).st_mode | stat.S_IEXEC)
+        old = os.environ["PATH"]
+        os.environ["PATH"] = d + os.pathsep + old
+        try:
+            data, mime = cloud_desktop.thumbnail(":fake", width=320)
+            self.assertEqual(mime, "image/jpeg")
+            from PIL import Image
+            import io
+            self.assertEqual(Image.open(io.BytesIO(data)).size, (320, 200))
+            self.assertIs(cloud_desktop.thumbnail(":fake", width=320)[0], data)   # 2.5 秒内复用
+        finally:
+            os.environ["PATH"] = old
 
 
 if __name__ == "__main__":

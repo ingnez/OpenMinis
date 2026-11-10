@@ -538,7 +538,7 @@ public final class CloudConnection: ObservableObject {
             || (route.range(of: #"^/v1/groups/grp_[a-f0-9]{10}/messages$"#, options: .regularExpression) != nil
                 && String(components[1]).range(of: #"^after=[0-9]{1,18}(&wait=[0-9]{1,2})?$"#, options: .regularExpression) != nil)
             || (route == "/v1/search" && String(components[1]).range(of: #"^q=[A-Za-z0-9%._~-]{1,900}$"#, options: .regularExpression) != nil)
-            || (route == "/v1/desktop/health" && String(components[1]).range(of: #"^bot_id=[a-z0-9_-]{1,32}$"#, options: .regularExpression) != nil)
+            || ((route == "/v1/desktop/health" || route == "/v1/desktop/thumbnail") && String(components[1]).range(of: #"^bot_id=[a-z0-9_-]{1,32}$"#, options: .regularExpression) != nil)
             || (route == "/v1/usage" && String(components[1]).range(of: #"^days=[0-9]{1,2}$"#, options: .regularExpression) != nil)
             || (route == "/v1/delegations" && String(components[1]).range(of: #"^session_id=[A-Za-z0-9_-]{1,64}$"#, options: .regularExpression) != nil)
             || (route == "/v1/backup" && String(components[1]).range(of: #"^messages=[01]$"#, options: .regularExpression) != nil)

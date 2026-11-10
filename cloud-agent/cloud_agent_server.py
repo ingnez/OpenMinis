@@ -4012,6 +4012,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, h)
             return
 
+        if path == "/v1/desktop/thumbnail":
+            # 对话里的电脑小预览：只看已经在跑的屏幕，不为预览专门启动独立屏幕
+            bid = (query_params.get("bot_id") or [None])[0]
+            display = cloud_displays.MAIN_DISPLAY
+            if bid and get_persona(bid):
+                info = DISPLAYS.info(bid)
+                if info:
+                    display = info["display"]
+                    DISPLAYS.touch(bid)
+            data, mime = cloud_desktop.thumbnail(display)
+            if data is None:
+                self._send(503, {"error": mime})
+                return
+            self._send(200, {"data_base64": base64.b64encode(data).decode(), "mime": mime, "display": display, "at": time.time()})
+            return
+
         if path == "/v1/desktop/status":
             conn = get_db_connection()
             try:
