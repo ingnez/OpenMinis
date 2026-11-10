@@ -237,6 +237,30 @@ struct CloudRoutineRunsView: View {
     }
 }
 
+/// 例行任务模板：一键填好名称、提示词与计划，可再修改。
+struct CloudRoutineTemplate: Identifiable {
+    let id: String
+    let icon: String
+    let name: String
+    let cron: String
+    let prompt: String
+
+    static let all: [CloudRoutineTemplate] = [
+        CloudRoutineTemplate(id: "briefing", icon: "sun.max", name: "每日简报", cron: "30 7 * * *",
+            prompt: "生成今天的晨间简报：先用 memory_search 查我关注的项目（workstreams）与偏好，再用浏览器查当地天气和与这些项目相关的重要新闻（各 3 条以内），最后列出今天最该做的 3 件事。用 page_write 保存为页面“每日简报 <日期>”，回复里给出 5 行以内摘要。"),
+        CloudRoutineTemplate(id: "weekly", icon: "calendar", name: "每周复盘", cron: "0 20 * * 0",
+            prompt: "做本周复盘：用 memory_search 检索本周写入的记忆与进行中的项目，总结完成了什么、卡在哪里、下周最重要的 3 个目标。用 page_write 保存为页面“周复盘 <日期>”，并用 memory_write（category=workstreams）记录下周目标。"),
+        CloudRoutineTemplate(id: "server", icon: "server.rack", name: "服务器健康检查", cron: "0 */6 * * *",
+            prompt: "检查这台 VPS 的健康状况：磁盘（df -h）、内存（free -m）、负载（uptime）、失败的 systemd 服务（systemctl --failed）、最近的 OOM 或错误日志（journalctl -p err -n 30）。一切正常只回复“正常”加一行指标；有异常时说明原因与建议的修复命令（不要自行执行破坏性操作）。"),
+        CloudRoutineTemplate(id: "watch", icon: "eye", name: "网页变化监控", cron: "0 9,13,18 * * *",
+            prompt: "打开下面的网址，提取正文的关键内容，与工作区 watch/last.txt 中上次保存的内容对比；有实质变化时说明变化点，并把新内容写回 watch/last.txt；没有变化只回复“无变化”。\n网址：<在这里填写>"),
+        CloudRoutineTemplate(id: "papers", icon: "doc.text.magnifyingglass", name: "论文追踪", cron: "0 8 * * 1",
+            prompt: "在 PubMed 检索过去 7 天关于 <主题> 的新论文（用浏览器访问 pubmed.ncbi.nlm.nih.gov），挑出最相关的 5 篇，每篇给出标题、期刊、一句话结论与链接。用 page_write 保存为页面“论文周报 <日期>”。只引用真实检索到的文献。"),
+        CloudRoutineTemplate(id: "price", icon: "tag", name: "价格盯盘", cron: "0 10 * * *",
+            prompt: "打开下面的商品页面，读取当前价格与库存，与工作区 price/history.csv 的历史记录对比并追加今天的记录；价格低于历史最低或低于目标价时在回复开头写“降价提醒”。\n商品链接：<在这里填写>\n目标价：<可选>"),
+    ]
+}
+
 /// 新建例行任务。
 struct CloudRoutineEditor: View {
     let onSaved: @MainActor () async -> Void
@@ -252,6 +276,31 @@ struct CloudRoutineEditor: View {
 
     var body: some View {
         Form {
+            Section {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(CloudRoutineTemplate.all) { t in
+                            Button {
+                                name = t.name
+                                prompt = t.prompt
+                                kind = "cron"
+                                cronExpr = t.cron
+                            } label: {
+                                VStack(spacing: 6) {
+                                    Image(systemName: t.icon).font(.title3)
+                                    Text(t.name).font(.caption)
+                                }
+                                .frame(width: 84, height: 64)
+                                .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.12)))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            } header: {
+                Text("从模板开始")
+            }
             Section("内容") {
                 TextField("名称", text: $name)
                 TextField("提示词（每次运行发送给云端 Agent）", text: $prompt, axis: .vertical)
