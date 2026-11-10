@@ -855,7 +855,8 @@ extension AIChatViewModel {
         // complete data — prevents tables/images from rendering without snapshots.
         toolSnapshots = loadedSnapshots
         // 本地实时通话的分隔线（只在界面上，不进模型上下文）
-        if let sid = sessionId {
+        do {
+            let sid = sessionId   // 函数开头已 guard let 成非可选
             for (idx, d) in LocalCallDivider.insertions(sortOrders: loadedUIMessages.map(\.sourceSortOrder),
                                                          dividers: LocalCallDivider.load(sid)) {
                 let row = ChatMessage(role: .systemInfo, content: LocalCallDivider.text(seconds: d.seconds))
