@@ -18,6 +18,9 @@ struct CloudAgentSettingsView: View {
     @State private var isInstalling = false
     @State private var errorMessage: String? = nil
     @State private var followUpNotice: String? = nil
+    @State private var outboxCount = 0
+    @State private var outboxTask: Task<Void, Never>? = nil
+    @State private var memoryOutbox: [String: (String, [String: Any])] = [:]
 
     @AppStorage("OpenMinisCloud_selectedInstanceId") private var selectedProviderInstanceId: String = ""
     @AppStorage("OpenMinisCloud_manualModel") private var manualModel: String = ""
@@ -799,6 +802,9 @@ struct CloudSessionView: View {
         }
         .animation(.spring(response: 0.45, dampingFraction: 0.78), value: call.active)
         .overlay(alignment: .bottom) { CloudFollowUpToast(text: $followUpNotice) }
+        .overlay(alignment: .top) { CloudOutboxBanner(count: outboxCount, onDiscard: discardOutbox) }
+        .onAppear { refreshOutboxCount(); if outboxCount > 0 { flushOutbox() } }
+        .onDisappear { outboxTask?.cancel() }
         .onAppear { callDividers = CloudCallDivider.load(sessionId) }
         .onChange(of: call.error) { e in if let e, !call.active { realtimeNotice = e } }
         .sheet(isPresented: $showPhotos) { CloudPhotoPicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
@@ -1685,7 +1691,10 @@ struct CloudSessionView: View {
         submitPrepared(content: content, body: body)
     }
 
-    private func submit(content: String, body: [String: Any]) {
+    private func submit(content: String, body rawBody: [String: Any]) {
+        var body = rawBody
+        // 每条消息一个 nonce：网络断了重发时服务器按它去重，不会发两遍
+        if body["client_nonce"] == nil { body["client_nonce"] = UUID().uuidString }
         isSubmitting = true
         errorMessage = nil
         sendStartedAt = Date()   // 性能页「首字」实测起点，与本地模式同口径
@@ -1694,37 +1703,13 @@ struct CloudSessionView: View {
             do {
                 try await connection.ensureConnected()
                 let res = try await connection.request(method: "POST", path: "/v1/sessions/\(sessionId)/messages", body: body)
-                if let tid = res["task_id"] as? String {
-                    await MainActor.run {
-                        self.inputPrompt = "" // 仅在成功接收后清空输入框
-                        self.isSubmitting = false
-                        self.activeTaskId = tid
-                        self.activeTaskStatus = "running"
-                        self.watchedTasks.insert(tid)
-                        self.liveMessage = ChatMessage(role: .assistant, content: "")
-                        self.taskEvents = []
-                        self.ledger.reset()
-                        self.eventCursor = 0
-                        self.liveText = ""
-                        self.liveSeq = -1
-                        self.activeTaskCreatedAt = nil
-                        let row: [String: Any] = ["role": "user", "content": content, "timestamp": Date().timeIntervalSince1970]
-                        self.messages.append(row)
-                        self.turns.append(CloudHistoryAdapter.Turn(message: ChatMessage(role: .user, content: content), raw: row))
-                    }
-                    let botId = theme?.botId, sid = sessionId
-                    Task { @MainActor in
-                        let locked = botId.map { CloudBotLock.isLockedStored($0) } ?? false
-                        if let note = await CloudFollowUpScheduler.schedule(text: content, sessionId: sid, botId: botId, botLocked: locked) {
-                            followUpNotice = note
-                        }
-                    }
-                    pollTaskStatus(taskId: tid)
-                } else {
-                    await MainActor.run {
-                        self.isSubmitting = false
-                    }
+                await MainActor.run {
+                    self.inputPrompt = "" // 仅在成功接收后清空输入框
+                    self.isSubmitting = false
                 }
+                if let tid = res["task_id"] as? String { await accepted(taskId: tid, content: content) }
+            } catch let error where CloudOutbox.isTransient(error) {
+                await MainActor.run { queueForRetry(content: content, body: body) }
             } catch {
                 await MainActor.run {
                     self.errorMessage = "发送失败: \(error.localizedDescription)（输入已保留）"
@@ -1732,6 +1717,104 @@ struct CloudSessionView: View {
                 }
             }
         }
+    }
+
+    /// 服务器收下了这条消息：进入「运行中」并开始拉进度
+    private func accepted(taskId tid: String, content: String) async {
+        await MainActor.run {
+            self.activeTaskId = tid
+            self.activeTaskStatus = "running"
+            self.watchedTasks.insert(tid)
+            self.liveMessage = ChatMessage(role: .assistant, content: "")
+            self.taskEvents = []
+            self.ledger.reset()
+            self.eventCursor = 0
+            self.liveText = ""
+            self.liveSeq = -1
+            self.activeTaskCreatedAt = nil
+            let row: [String: Any] = ["role": "user", "content": content, "timestamp": Date().timeIntervalSince1970]
+            self.messages.append(row)
+            self.turns.append(CloudHistoryAdapter.Turn(message: ChatMessage(role: .user, content: content), raw: row))
+        }
+        let botId = theme?.botId, sid = sessionId
+        Task { @MainActor in
+            let locked = botId.map { CloudBotLock.isLockedStored($0) } ?? false
+            if let note = await CloudFollowUpScheduler.schedule(text: content, sessionId: sid, botId: botId, botLocked: locked) {
+                followUpNotice = note
+            }
+        }
+        pollTaskStatus(taskId: tid)
+    }
+
+    /// 网络断了：消息先存本机（带图片的只留在本页内存），输入框清空，横幅显示「N 条待发送」，网络回来自动重发
+    @MainActor
+    private func queueForRetry(content: String, body: [String: Any]) {
+        isSubmitting = false
+        inputPrompt = ""
+        let nonce = body["client_nonce"] as? String ?? UUID().uuidString
+        if let data = CloudOutbox.encode(body) {
+            CloudOutbox.shared.add(CloudOutboxItem(nonce: nonce, sessionId: sessionId, content: content, body: data,
+                                                   createdAt: Date().timeIntervalSince1970))
+        } else {
+            memoryOutbox[nonce] = (content, body)
+        }
+        refreshOutboxCount()
+        flushOutbox()
+    }
+
+    @MainActor
+    private func refreshOutboxCount() {
+        outboxCount = CloudOutbox.shared.items(for: sessionId).count + memoryOutbox.count
+    }
+
+    /// 逐条按原顺序重发；一条失败就退避等待再试，直到发完或离开页面
+    private func flushOutbox() {
+        guard outboxTask == nil else { return }
+        let sid = sessionId
+        outboxTask = Task { @MainActor in
+            defer { outboxTask = nil }
+            var attempt = 0
+            while !Task.isCancelled {
+                var pending: [(nonce: String, content: String, body: [String: Any])] =
+                    CloudOutbox.shared.items(for: sid).compactMap { i in CloudOutbox.decode(i.body).map { (nonce: i.nonce, content: i.content, body: $0) } }
+                pending += memoryOutbox.map { (nonce: $0.key, content: $0.value.0, body: $0.value.1) }
+                if pending.isEmpty { break }
+                // 正在跑别的任务时先等它结束，免得两条消息抢同一个对话
+                if activeTaskStatus == "running" || isSubmitting {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    continue
+                }
+                let next = pending[0]
+                do {
+                    try await connection.ensureConnected()
+                    let res = try await connection.request(method: "POST", path: "/v1/sessions/\(sid)/messages", body: next.body)
+                    CloudOutbox.shared.remove(next.nonce)
+                    memoryOutbox[next.nonce] = nil
+                    refreshOutboxCount()
+                    attempt = 0
+                    if let tid = res["task_id"] as? String { await accepted(taskId: tid, content: next.content) }
+                } catch let error where CloudOutbox.isTransient(error) {
+                    try? await Task.sleep(nanoseconds: UInt64(CloudOutbox.retryDelay(attempt: attempt) * 1_000_000_000))
+                    attempt += 1
+                } catch {
+                    // 服务器明确拒绝：不再重发，放回输入框让你看着改
+                    CloudOutbox.shared.remove(next.nonce)
+                    memoryOutbox[next.nonce] = nil
+                    refreshOutboxCount()
+                    if inputPrompt.isEmpty { inputPrompt = next.content }
+                    errorMessage = "待发送的消息被拒绝: \(error.localizedDescription)（已放回输入框）"
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func discardOutbox() {
+        outboxTask?.cancel()
+        outboxTask = nil
+        for i in CloudOutbox.shared.items(for: sessionId) { CloudOutbox.shared.remove(i.nonce) }
+        memoryOutbox = [:]
+        refreshOutboxCount()
     }
 
     private func pollTaskStatus(taskId: String) {
