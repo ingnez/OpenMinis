@@ -455,7 +455,7 @@ struct SessionRow: View, Equatable {
     @ViewBuilder
     private var rowIcon: some View {
         if typingPhase != nil {
-            CloudTypingDots(color: iconBackgroundColor, size: 44)
+            CloudTypingAvatarDots(color: iconBackgroundColor, size: 44)
                 .transition(.cloudTypingMorph(reduceMotion: reduceMotion))
         } else {
             providerIcon

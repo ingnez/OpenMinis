@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 头像位置上的「正在输入」：Bot 颜色的三个点依次跳动；减弱动态效果时是静止的三个深浅不同的点
-struct CloudTypingDots: View {
+struct CloudTypingAvatarDots: View {
     let color: Color
     var size: CGFloat = 46
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

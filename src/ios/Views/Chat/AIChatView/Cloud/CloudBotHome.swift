@@ -435,7 +435,7 @@ struct CloudBotHomeRow: View {
             Group {
                 if bot.activity != nil, !CloudBotLock.shared.isLocked(bot.id) {
                     // 正在回复：头像换成 Bot 颜色的三个点
-                    CloudTypingDots(color: spec.fill, size: 46)
+                    CloudTypingAvatarDots(color: spec.fill, size: 46)
                         .transition(.cloudTypingMorph(reduceMotion: reduceMotion))
                 } else if status == .working {
                     CloudBotLivelyAvatar(spec: CloudBotAvatarSpec.of(bot), size: 46)
