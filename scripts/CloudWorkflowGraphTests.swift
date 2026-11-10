@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics  // macOS 上 CGPoint / CGSize 的 Equatable 在这里（Linux 的 Foundation 自带）
+#endif
 
 // 工作流画布的纯逻辑（假数据）
 func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }

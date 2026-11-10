@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics  // macOS 上 CGPoint / CGSize 的 Equatable 在这里（Linux 的 Foundation 自带）
+#endif
 
 // 云电脑接管的纯逻辑：触控板、滚动、缩放跟随、按键、输入法上屏、画质、重连、连接计时。
 // 只依赖 Foundation：scripts/CloudDesktopInputTests.swift 在 Linux 上直接编译测试。

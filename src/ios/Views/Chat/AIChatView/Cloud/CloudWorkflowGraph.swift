@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics  // macOS 上 CGPoint / CGSize 的 Equatable 在这里（Linux 的 Foundation 自带）
+#endif
 
 /// 工作流画布的纯逻辑：哪个例行任务接在哪个后面、默认怎么摆、连线会不会绕成圈、位置存取
 struct CloudWorkflowGraph {
