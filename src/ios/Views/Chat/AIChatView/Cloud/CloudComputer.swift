@@ -50,7 +50,9 @@ struct CloudComputerView: View {
         .overlay(alignment: .topTrailing) { if immersive { exitImmersive } }
         .overlay(alignment: .bottomTrailing) { if !immersive, !ctl.controlling, sessionId != nil, phase == .live { pointButton } }
         .overlay(alignment: .top) { toastView }
-        .overlay(alignment: .topLeading) { CloudMacroBar(ctl: ctl, onSaved: { show($0) }).sheet(isPresented: $ctl.showFiles) { CloudDesktopFilesSheet() }.sheet(isPresented: $ctl.showSnapshots) { CloudSnapshotsSheet(sessionId: sessionId) }.padding(.top, immersive ? 12 : 64).padding(.leading, 12) }
+        .overlay(alignment: .topLeading) { CloudMacroBar(ctl: ctl, onSaved: { show($0) }).padding(.top, immersive ? 12 : 64).padding(.leading, 12) }
+        .background(CloudComputerAux(ctl: ctl, sessionId: sessionId, live: phase == .live, keyboardFocused: $keyboardFocused,
+                                     onPassword: { show("这是密码框：从保管库选一项填进去（值不经过手机和 Bot）"); showVault = true }))
         .overlay(alignment: .bottom) { if dictation.isRecording || !dictation.transcript.isEmpty { dictationBar } }
         .toolbar(.hidden, for: .navigationBar)
         .statusBarHidden(immersive)

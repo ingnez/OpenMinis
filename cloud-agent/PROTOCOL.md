@@ -624,6 +624,11 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 每项可选 `allowed_bots: [bot_id]`（`[]` 或 `null` = 所有 Bot）。不在名单的 Bot 调用会被拒并记一条失败使用记录；`vault_list` 的 `allowed` 按调用的 Bot 计算。
 - `GET /v1/vault`（只给 App）每项多出提示：卡片 `expiry_hint`（MM/YY）、联系信息 `address_hint`（默认地址一行）、登录 `pw_weak` / `pw_reused`（布尔）。服务端解密后只算提示，密码、卡号、CVV 原值不外传；模型看到的 `for_model` 不含这些提示。`?q=` 搜索也覆盖两个提示字段。
 
+## 云电脑智能键盘（2.44.0）
+
+- `GET /v1/desktop/focus` → `{"editable","password","kind","available"}`：主屏浏览器（Agent 用的那个 Chromium）当前获得焦点的元素是不是输入框、是不是密码框。只返回类型，从不读取或返回内容；浏览器没开时不会为此启动浏览器（`available:false`）。
+- 已知限制：iframe 里的输入框、浏览器以外的桌面程序检测不到；只看共享资料的浏览器。
+
 ## 统一搜索（2.43.0）
 
 - `GET /v1/search?q=` 的 `results` 前面多了非聊天条目：`{"type":"page","page_id","title","snippet","timestamp","bot_id"}`、`{"type":"routine","routine_id","title","snippet","timestamp","bot_id"}`、`{"type":"vault","item_id","title","snippet":"登录/银行卡/联系信息","timestamp"}`。

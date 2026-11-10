@@ -103,3 +103,45 @@ struct CloudDesktopFilesSheet: View {
         } catch { notice = error.localizedDescription }
     }
 }
+
+/// 云电脑页面的附属：文件 / 快照面板和智能键盘轮询。挂在一个始终存在的透明视图上（挂在可能为空的视图上 sheet 和 task 不会触发）
+struct CloudComputerAux: View {
+    @ObservedObject var ctl: CloudDesktopController
+    let sessionId: String?
+    let live: Bool
+    @Binding var keyboardFocused: Bool
+    let onPassword: () -> Void
+
+    var body: some View {
+        Color.clear
+            .sheet(isPresented: $ctl.showFiles) { CloudDesktopFilesSheet() }
+            .sheet(isPresented: $ctl.showSnapshots) { CloudSnapshotsSheet(sessionId: sessionId) }
+            .modifier(CloudSmartFieldWatcher(active: ctl.controlling && live, keyboardFocused: $keyboardFocused, onPassword: onPassword))
+    }
+}
+
+
+/// 控制云电脑时每 1.5 秒看一眼焦点；旧服务器没有这个接口就安静地停下
+struct CloudSmartFieldWatcher: ViewModifier {
+    let active: Bool
+    @Binding var keyboardFocused: Bool
+    let onPassword: () -> Void
+
+    func body(content: Content) -> some View {
+        content.task(id: active) {
+            guard active, CloudSmartField.enabled else { return }
+            var last = CloudSmartField.Focus()
+            while !Task.isCancelled {
+                guard let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/desktop/focus") else { return }
+                let now = CloudSmartField.Focus(r)
+                switch CloudSmartField.decide(previous: last, now: now, keyboardUp: keyboardFocused) {
+                case .showKeyboard: keyboardFocused = true
+                case .offerVault: onPassword()
+                case .none: break
+                }
+                last = now
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            }
+        }
+    }
+}

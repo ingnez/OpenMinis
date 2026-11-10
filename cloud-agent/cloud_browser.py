@@ -309,6 +309,20 @@ class BrowserOwnerDaemon:
                 except Exception:
                     pass
             return {"status": "closed"}
+        if args.get("action") == "__focus__":
+            # 云电脑上当前获得焦点的输入框是什么类型（不读内容）；浏览器没开就直接说没有，不为这个去开浏览器
+            ctx = self.contexts.get(self._sanitize_session_id(session_id))
+            if not ctx:
+                return {"status": "none", "editable": False}
+            for p in [p for p in ctx["context"].pages if not p.is_closed()][:8]:
+                try:
+                    info = p.evaluate(FOCUS_JS)
+                except Exception:
+                    continue
+                if info and info.get("focused"):
+                    return {"status": "ok", "editable": bool(info.get("editable")), "password": bool(info.get("password")),
+                            "kind": str(info.get("kind") or "")[:20]}
+            return {"status": "ok", "editable": False, "password": False, "kind": ""}
         if args.get("action") == "__warm__":
             self._get_or_create_context(session_id, workspace_dir, display)
             return {"status": "warm"}
@@ -691,6 +705,16 @@ def vault_fill_page(page, args):
             missing.append(name)
     return {"status": "ok" if filled else "error", "filled": filled, "not_found": missing, "page_host": host,
             **({} if filled else {"error": "页面上没找到可以填写的栏位；可以先点开登录框，或用 selectors 指定"})}
+
+
+FOCUS_JS = """() => {
+  const e = document.activeElement, f = document.hasFocus();
+  if (!e || e === document.body) return {focused: f, editable: false};
+  const tag = e.tagName.toLowerCase(), type = (e.getAttribute('type') || '').toLowerCase();
+  const skip = ['button','submit','checkbox','radio','file','range','color','image','reset','hidden'];
+  const editable = e.isContentEditable || tag === 'textarea' || (tag === 'input' && !skip.includes(type));
+  return {focused: f, editable, password: tag === 'input' && type === 'password', kind: type || tag};
+}"""
 
 
 def get_daemon():

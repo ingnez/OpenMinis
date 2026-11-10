@@ -638,7 +638,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.43.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.44.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -6331,6 +6331,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/v1/browser/snapshots":
             self._send(200, {"snapshots": cloud_snapshots.listing(os.path.dirname(DB_PATH))})
+            return
+
+        if path == "/v1/desktop/focus":
+            # 智能键盘：主屏浏览器里当前焦点是不是输入框 / 密码框（只给类型，从不给内容）
+            if not cloud_browser.is_browser_available():
+                self._send(200, {"editable": False, "password": False, "kind": "", "available": False})
+                return
+            r = cloud_browser.execute_browser_action("shared", SHARED_WORKSPACE, {"action": "__focus__"})
+            r = r if isinstance(r, dict) else {}
+            self._send(200, {"editable": bool(r.get("editable")), "password": bool(r.get("password")),
+                             "kind": str(r.get("kind") or "")[:20], "available": r.get("status") == "ok"})
             return
 
         if path == "/v1/desktop/files":
