@@ -1153,7 +1153,7 @@ struct CloudSessionView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("切换模型与思考深度：\(theme.chipText)")
-                Spacer()
+                CloudQuickCards(text: $inputPrompt)
             }
             .padding(.horizontal, 14)
             HStack(alignment: .bottom, spacing: 8) {
