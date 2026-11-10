@@ -43,6 +43,7 @@ final class CloudBotLock: ObservableObject {
         unlocked.insert(botId)
         UserDefaults.standard.set(Array(locked), forKey: Self.key)
         Task { await syncToServer() }
+        CloudBotHomeModel.shared.publishFeedToWidget()   // 小组件里也去掉 / 恢复这个 Bot 的条目
         return true
     }
 

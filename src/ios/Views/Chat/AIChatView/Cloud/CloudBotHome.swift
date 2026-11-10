@@ -120,6 +120,20 @@ final class CloudBotHomeModel: ObservableObject {
         }
     }
 
+    /// 「今日」小组件：只写没上锁的 Bot 的条目
+    func publishFeedToWidget() {
+        guard let shared = UserDefaults(suiteName: "group.com.openminis.app") else { return }
+        let list: [[String: Any]] = feed.filter { !CloudBotLock.isLockedStored($0.botId) }.prefix(5).map { f in
+            let name = bot(f.botId)?.name ?? "Bot"
+            return ["title": f.proactive ? name + " 找你" : f.title, "text": CloudMessageText.display(f.text).text,
+                    "at": f.at.timeIntervalSince1970, "bot_id": f.botId]
+        }
+        if (shared.array(forKey: "OpenMinisCloud_widgetFeed") as NSArray?) != (list as NSArray) {
+            shared.set(list, forKey: "OpenMinisCloud_widgetFeed")
+            WidgetCenter.shared.reloadTimelines(ofKind: "CloudTodayWidget")
+        }
+    }
+
     func others(matching query: String) -> [CloudBot] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         return bots.filter { !$0.isPrimary }
@@ -184,6 +198,7 @@ final class CloudBotHomeModel: ObservableObject {
             if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/feed"),
                let items = r["items"] as? [[String: Any]] {
                 feed = items.compactMap(CloudFeedItem.init)
+                publishFeedToWidget()
             }
         } catch let error as URLError where CloudConnection.tunnelDropped(error) {
             bannerText = nil

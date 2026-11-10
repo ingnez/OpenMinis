@@ -111,3 +111,95 @@ struct CloudBotsWidget: Widget {
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
+
+// MARK: - 「今日」小组件：最近的例行任务 / 主动消息结果
+
+/// App 每次刷新首页时把「今日」写进 App Group（上锁 Bot 的条目不写）；小组件本身连不上云电脑，只显示 App 最近一次带回的内容。
+struct CloudTodayEntry: TimelineEntry {
+    struct Item: Hashable { let title: String; let text: String; let at: Date; let botId: String }
+    let date: Date
+    let items: [Item]
+    let synced: Bool
+}
+
+struct CloudTodayProvider: TimelineProvider {
+    static let key = "OpenMinisCloud_widgetFeed"
+
+    static func load() -> (items: [CloudTodayEntry.Item], synced: Bool) {
+        guard let raw = UserDefaults(suiteName: "group.com.openminis.app")?.array(forKey: key) as? [[String: Any]] else { return ([], false) }
+        let items: [CloudTodayEntry.Item] = raw.compactMap { d in
+            guard let title = d["title"] as? String, let text = d["text"] as? String, !text.isEmpty else { return nil }
+            let bot = d["bot_id"] as? String ?? ""
+            let safeBot = bot.range(of: "^[a-z0-9][a-z0-9_-]{0,31}$", options: .regularExpression) != nil ? bot : ""
+            return CloudTodayEntry.Item(title: String(title.prefix(40)), text: String(text.prefix(200)),
+                                        at: Date(timeIntervalSince1970: d["at"] as? Double ?? 0), botId: safeBot)
+        }
+        return (items, true)
+    }
+
+    func placeholder(in context: Context) -> CloudTodayEntry {
+        CloudTodayEntry(date: Date(), items: [.init(title: "每日简报", text: "今天的要点会显示在这里", at: Date(), botId: "")], synced: true)
+    }
+
+    func getSnapshot(in context: Context, completion: @escaping (CloudTodayEntry) -> Void) {
+        let l = Self.load()
+        completion(CloudTodayEntry(date: Date(), items: l.items, synced: l.synced))
+    }
+
+    func getTimeline(in context: Context, completion: @escaping (Timeline<CloudTodayEntry>) -> Void) {
+        let l = Self.load()
+        completion(Timeline(entries: [CloudTodayEntry(date: Date(), items: l.items, synced: l.synced)],
+                            policy: .after(Date().addingTimeInterval(3 * 3600))))
+    }
+}
+
+struct CloudTodayWidgetView: View {
+    let entry: CloudTodayEntry
+    @Environment(\.widgetFamily) private var family
+
+    var body: some View {
+        let limit = family == .systemLarge ? 5 : 2
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("今日").font(.headline)
+                Spacer()
+                Image(systemName: "sparkles").foregroundStyle(.secondary)
+            }
+            if entry.items.isEmpty {
+                Spacer(minLength: 0)
+                Text(entry.synced ? "最近 24 小时还没有例行任务或主动消息" : "打开 App 一次即可同步").font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            } else {
+                ForEach(Array(entry.items.prefix(limit)), id: \.self) { item in
+                    Link(destination: URL(string: "minis://bot/" + item.botId)!) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(item.title).font(.caption.weight(.semibold)).lineLimit(1)
+                                Spacer()
+                                Text(item.at, style: .time).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Text(item.text).font(.caption).foregroundStyle(.secondary).lineLimit(family == .systemLarge ? 3 : 2)
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding()
+    }
+}
+
+struct CloudTodayWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "CloudTodayWidget", provider: CloudTodayProvider()) { entry in
+            if #available(iOS 17.0, *) {
+                CloudTodayWidgetView(entry: entry).containerBackground(.fill.tertiary, for: .widget)
+            } else {
+                CloudTodayWidgetView(entry: entry)
+            }
+        }
+        .configurationDisplayName("云端 Bot · 今日")
+        .description("最近的例行任务结果和 Bot 主动找你的消息。")
+        .supportedFamilies([.systemMedium, .systemLarge])
+    }
+}
