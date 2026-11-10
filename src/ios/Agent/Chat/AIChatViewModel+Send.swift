@@ -267,7 +267,8 @@ extension AIChatViewModel {
         logger.info("🔄SESSION [vm=\(self.vmInstanceId)] send START session=\(self.sessionId ?? "nil")")
 
         // Ensure kernel is booted before running
-        ensureKernelBooted()
+        // 云端提交由CloudConnection管理SSH所需的iSH，不等待本机Agent内核状态。
+        if !isCloudExecutionActive { ensureKernelBooted() }
         beginBackgroundProcessing()
 
         currentTask = Task { [weak self] in
@@ -523,17 +524,7 @@ extension AIChatViewModel {
                 self.agentHistory[i].dbMessageId = persistedId
             }
 
-            // Wait for kernel to finish booting
-            while self.kernelStatus == .booting {
-                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-            }
-
-            if case .failed(let msg) = self.kernelStatus {
-                self.errorMessage = "Kernel not available: \(msg)"
-                self.isProcessing = false
-                self.endBackgroundProcessing()
-                return
-            }
+            guard await self.prepareExecutionForSend() else { return }
 
             // Concurrency gate: wait for a processing slot
             guard let slotLease = await self.acquireSessionSlot(sid) else { return }
@@ -739,21 +730,14 @@ extension AIChatViewModel {
         isNearBottom = true
         forceScrollToBottom.send()
 
-        ensureKernelBooted()
+        // 云端提交由CloudConnection管理SSH所需的iSH，不等待本机Agent内核状态。
+        if !isCloudExecutionActive { ensureKernelBooted() }
         beginBackgroundProcessing()
 
         currentTask = Task { [weak self] in
             guard let self else { return }
 
-            while self.kernelStatus == .booting {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
-            if case .failed(let msg) = self.kernelStatus {
-                self.errorMessage = "Kernel not available: \(msg)"
-                self.isProcessing = false
-                self.endBackgroundProcessing()
-                return
-            }
+            guard await self.prepareExecutionForSend() else { return }
 
             // Concurrency gate: wait for a processing slot
             let retrySid = self.sessionId ?? "unknown"
@@ -884,21 +868,14 @@ extension AIChatViewModel {
         let existingBlockCount = lastMsg.blocks.count
         isProcessing = true
 
-        ensureKernelBooted()
+        // 云端提交由CloudConnection管理SSH所需的iSH，不等待本机Agent内核状态。
+        if !isCloudExecutionActive { ensureKernelBooted() }
         beginBackgroundProcessing()
 
         currentTask = Task { [weak self] in
             guard let self else { return }
 
-            while self.kernelStatus == .booting {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
-            if case .failed(let msg) = self.kernelStatus {
-                self.errorMessage = "Kernel not available: \(msg)"
-                self.isProcessing = false
-                self.endBackgroundProcessing()
-                return
-            }
+            guard await self.prepareExecutionForSend() else { return }
 
             let resumeSid = self.sessionId ?? "unknown"
             guard let slotLease = await self.acquireSessionSlot(resumeSid) else { return }
@@ -1007,21 +984,14 @@ extension AIChatViewModel {
         isNearBottom = true
         forceScrollToBottom.send()
 
-        ensureKernelBooted()
+        // 云端提交由CloudConnection管理SSH所需的iSH，不等待本机Agent内核状态。
+        if !isCloudExecutionActive { ensureKernelBooted() }
         beginBackgroundProcessing()
 
         currentTask = Task { [weak self] in
             guard let self else { return }
 
-            while self.kernelStatus == .booting {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
-            if case .failed(let msg) = self.kernelStatus {
-                self.errorMessage = "Kernel not available: \(msg)"
-                self.isProcessing = false
-                self.endBackgroundProcessing()
-                return
-            }
+            guard await self.prepareExecutionForSend() else { return }
 
             let sid = self.sessionId ?? "unknown"
             guard let slotLease = await self.acquireSessionSlot(sid) else { return }
@@ -1190,6 +1160,40 @@ extension AIChatViewModel {
     /// (callers `defer` it right after), or nil when the wait was cancelled -
     /// the run state has then been reset and the caller must return. A nil
     /// result holds nothing, so there is nothing to release.
+    /// 云电脑不等待本机Agent的启动状态；SSH环境仍由CloudConnection单独准备。
+    func prepareExecutionForSend() async -> Bool {
+        if Task.isCancelled || isRetiredByReset {
+            isProcessing = false
+            endBackgroundProcessing()
+            return false
+        }
+        if isCloudExecutionActive { return true }
+        let deadline = Date().addingTimeInterval(60)
+        while kernelStatus == .booting {
+            if Task.isCancelled || isRetiredByReset || Date() >= deadline {
+                if !Task.isCancelled && !isRetiredByReset {
+                    errorMessage = "本机运行环境启动超时，请重试或检查终端状态。"
+                }
+                isProcessing = false
+                endBackgroundProcessing()
+                return false
+            }
+            do { try await Task.sleep(nanoseconds: 100_000_000) }
+            catch {
+                isProcessing = false
+                endBackgroundProcessing()
+                return false
+            }
+        }
+        if case .failed(let message) = kernelStatus {
+            errorMessage = "Kernel not available: \(message)"
+            isProcessing = false
+            endBackgroundProcessing()
+            return false
+        }
+        return true
+    }
+
     func acquireSessionSlot(_ sid: String) async -> SessionSlotLease? {
         let concurrency = SessionConcurrencyManager.shared
         let exempt = helperConfig != nil

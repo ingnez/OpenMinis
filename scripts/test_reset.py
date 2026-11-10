@@ -28,6 +28,13 @@ extension Notification.Name { static let newChatRequested = Notification.Name("r
  func sessionIdsWithDescendants(_ ids: [String]) -> [String] { ids + ["child"] }
  func deleteSession(_ sid: String) { deleted.append(sid) }
 }
+@MainActor final class CloudChatBridge {
+ static let shared = CloudChatBridge()
+ var detached: [String] = []
+ var cancelled: [String] = []
+ func detachSession(localSessionId: String) { detached.append(localSessionId) }
+ func cancelRemoteTask(localSessionId: String) async throws { cancelled.append(localSessionId) }
+}
 @MainActor final class AgentJobRegistry {
  static let shared = AgentJobRegistry()
  var stopped: [String] = []
@@ -113,6 +120,8 @@ tests=r'''
    try? await Task.sleep(nanoseconds: 120_000_000)
    precondition(vm.messages.isEmpty && vm.agentHistory.isEmpty, "迟到回调必须再次清理")
    precondition(ChatStore.shared.deleted == ["old", "old"])
+   precondition(CloudChatBridge.shared.detached == ["old"])
+   precondition(CloudChatBridge.shared.cancelled == ["old"], "reset必须取消旧会话的云任务")
    precondition(!ChatStore.shared.deleted.contains("unrelated"))
    precondition(unrelated.agentHistory == ["old context"])
    let remote = AIChatViewModel(); remote.remoteDeviceId = "other device"
