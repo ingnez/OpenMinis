@@ -123,6 +123,7 @@ def _serve(handler):
 class CloudServerTestCase(unittest.TestCase):
     token = "phase1-test-token"
     extra_env = {}
+    approval_mode = None   # "ask" = 这一组测试要看审批卡（服务端默认「一律批准」）
 
     @classmethod
     def setUpClass(cls):
@@ -155,6 +156,8 @@ class CloudServerTestCase(unittest.TestCase):
         cls.notify_server, nport = _serve(NotifySinkHandler)
         cls.notify_base = f"http://127.0.0.1:{nport}"
         cls.api_server, cls.api_port = _serve(srv.CloudAgentHandler)
+        if cls.approval_mode:
+            srv.update_resource_settings({"bot_defaults": {"approval_mode": cls.approval_mode}})
 
     @classmethod
     def tearDownClass(cls):

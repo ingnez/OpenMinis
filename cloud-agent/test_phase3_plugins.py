@@ -58,6 +58,7 @@ class FakeHttpMCP(BaseHTTPRequestHandler):
 
 
 class PluginTests(CloudServerTestCase):
+    approval_mode = "ask"
     def setUp(self):
         self.srv.PLUGINS.close_all()
         self.srv.PLUGINS.plugin_dir = os.path.join(self.tmp.name, "plugin-files")

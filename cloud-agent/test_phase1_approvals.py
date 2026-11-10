@@ -19,6 +19,7 @@ def risky_script(command, final="finished"):
 
 
 class ApprovalFlowTests(CloudServerTestCase):
+    approval_mode = "ask"
     def setUp(self):
         cloud_policy.reset_policy(self.srv.approval_policy_path())
 

@@ -14,6 +14,8 @@ struct CloudBotResourceValues: Codable, Equatable {
     var task_timeout_min: Int?
     var bg_jobs_max: Int?
     var browser_profile: String?
+    /// 风险操作：auto = 一律批准（默认），ask = 先问我。旧服务器没有这个字段时为 nil，不显示。
+    var approval_mode: String?
 }
 
 struct CloudResourceSettings: Codable, Equatable {
@@ -165,7 +167,7 @@ struct CloudResourceSettingsView: View {
                 } header: {
                     Text("每个 Bot 默认")
                 } footer: {
-                    Text("每个 Bot 的资料页 … → 资源限制 可以单独覆盖。同一个 Bot 允许多个任务同时运行时，额外的任务用独立子工作区和独立屏幕。")
+                    Text("风险操作默认「一律批准」，想让删除、对外发消息等操作先等你确认就改成「先问我」。每个 Bot 的资料页 … → 资源限制 可以单独覆盖。同一个 Bot 允许多个任务同时运行时，额外的任务用独立子工作区和独立屏幕。")
                 }
 
                 Section {
@@ -328,6 +330,12 @@ struct CloudBotResourceRows: View {
             Text("共享登录").tag("shared")
             Text("独立浏览器与屏幕").tag("per_bot")
         }
+        if values.approval_mode != nil {
+            Picker("风险操作", selection: Binding(get: { values.approval_mode ?? "auto" }, set: { values.approval_mode = $0 })) {
+                Text("一律批准").tag("auto")
+                Text("先问我").tag("ask")
+            }
+        }
     }
 
     private func int(_ key: WritableKeyPath<CloudBotResourceValues, Int?>, _ fallback: Int) -> Binding<Int> {
@@ -391,6 +399,18 @@ struct CloudBotResourceView: View {
                 } footer: {
                     Text("独立模式下这个 Bot 有自己的浏览器资料（登录状态不与其他 Bot 共享）和自己的屏幕，「电脑」页显示它的屏幕。")
                 }
+                if defaults.approval_mode != nil {
+                    Section {
+                        Picker("风险操作", selection: Binding(get: { overrides.approval_mode ?? "default" },
+                                                          set: { overrides.approval_mode = $0 == "default" ? nil : $0 })) {
+                            Text("跟随默认（\(defaults.approval_mode == "ask" ? "先问我" : "一律批准")）").tag("default")
+                            Text("一律批准").tag("auto")
+                            Text("先问我").tag("ask")
+                        }
+                    } footer: {
+                        Text("一律批准：删除文件、对外发消息等风险操作不再弹审批卡，直接执行（任务事件里留一条批准记录）。先问我：按审批规则暂停，等你在手机上批准。")
+                    }
+                }
             } else if errorText == nil {
                 ProgressView()
             }
@@ -429,6 +449,7 @@ struct CloudBotResourceView: View {
             if let v = overrides[keyPath: item.key] { body[item.name] = v } else { body[item.name] = NSNull() }
         }
         body["browser_profile"] = overrides.browser_profile ?? NSNull()
+        if defaults?.approval_mode != nil { body["approval_mode"] = overrides.approval_mode ?? NSNull() }
         saving = true
         Task {
             do {

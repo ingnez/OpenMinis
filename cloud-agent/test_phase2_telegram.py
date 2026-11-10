@@ -57,6 +57,7 @@ class FakeTelegram(BaseHTTPRequestHandler):
 
 
 class TelegramTests(CloudServerTestCase):
+    approval_mode = "ask"
     @classmethod
     def setUpClass(cls):
         super().setUpClass()

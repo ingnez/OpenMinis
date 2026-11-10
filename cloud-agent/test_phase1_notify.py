@@ -46,6 +46,7 @@ class NotifyUnitTests(unittest.TestCase):
 
 
 class NotifyServerTests(CloudServerTestCase):
+    approval_mode = "ask"
     DEVICE_KEY = "barkDeviceKey9876"
 
     def received(self, n, timeout=10):

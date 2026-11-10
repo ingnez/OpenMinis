@@ -9,6 +9,7 @@ from test_phase1_support import CloudServerTestCase, FakeModelHandler, NotifySin
 
 
 class SendMessageDraftTests(CloudServerTestCase):
+    approval_mode = "ask"
     def run_send(self, decision, policy_disabled=False):
         NotifySinkHandler.received.clear()
         if policy_disabled:

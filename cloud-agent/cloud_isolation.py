@@ -12,7 +12,9 @@ import threading
 import time
 import uuid
 
-BOT_KEYS = ("max_tasks_per_bot", "queue_cap", "cpu_percent", "memory_mb", "task_timeout_min", "bg_jobs_max", "browser_profile")
+BOT_KEYS = ("max_tasks_per_bot", "queue_cap", "cpu_percent", "memory_mb", "task_timeout_min", "bg_jobs_max", "browser_profile",
+            "approval_mode")
+APPROVAL_MODES = ("auto", "ask")
 
 DEFAULTS = {
     "max_tasks_total": 3,          # 全局同时运行的任务数，0 = 不限
@@ -26,6 +28,7 @@ DEFAULTS = {
         "task_timeout_min": 0,     # 单个任务最长运行分钟，0 = 不限
         "bg_jobs_max": 4,          # 每个 Bot 同时运行的后台命令数，0 = 不限
         "browser_profile": "shared",  # shared = 所有 Bot 共用登录状态；per_bot = 独立浏览器资料与独立屏幕
+        "approval_mode": "auto",      # 风险操作：auto = 一律批准（记入审计）；ask = 按规则先问我
     },
     "bot_overrides": {},
     "max_displays": 4,             # 同时打开的独立屏幕数，0 = 不限
@@ -91,6 +94,10 @@ def _validate_bot(d, name, partial):
         if k == "browser_profile":
             if v not in ("shared", "per_bot"):
                 raise SettingsError("browser_profile 只能是 shared 或 per_bot")
+            out[k] = v
+        elif k == "approval_mode":
+            if v not in APPROVAL_MODES:
+                raise SettingsError("approval_mode 只能是 auto（一律批准）或 ask（先问我）")
             out[k] = v
         elif k == "max_tasks_per_bot":
             out[k] = _int(v, k, 1, 64)
