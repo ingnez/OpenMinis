@@ -69,3 +69,18 @@ actor ChatStore {
  func loadMessages(sessionId: String) -> [CloudStoredRow] { [] }
  func saveCloudTaskMessage(id: String, sessionId: String, parts: [ContentPart]) -> Bool { true }
 }
+
+// 语音（每个 Bot 的朗读引擎用到）：与 Providers/Voice 中的签名一致
+enum VoiceOutputFormat { case mp3, wav }
+struct VoiceOutputRequest {
+    let input: String; let model: String?; let voice: String?; let speed: Float?; let responseFormat: VoiceOutputFormat; let resolvedModel: LLMModel?
+    init(input: String, model: String? = nil, voice: String? = nil, speed: Float? = nil, responseFormat: VoiceOutputFormat = .mp3, resolvedModel: LLMModel? = nil) {
+        self.input = input; self.model = model; self.voice = voice; self.speed = speed; self.responseFormat = responseFormat; self.resolvedModel = resolvedModel
+    }
+}
+protocol VoiceOutputCapable { func synthesize(_ request: VoiceOutputRequest) async throws -> Data; var supportsVoiceOutput: Bool { get } }
+@MainActor enum VoiceProviderResolver {
+    static func resolvedOutputCandidates() -> [ModelEntry] { [] }
+    static func outputProvider(for entry: ModelEntry) -> (any VoiceOutputCapable)? { nil }
+}
+enum VoiceTextSanitizer { static func sanitize(_ text: String) -> String { text } }
