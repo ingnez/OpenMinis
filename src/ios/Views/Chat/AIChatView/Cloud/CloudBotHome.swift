@@ -320,7 +320,7 @@ final class CloudBotHomeModel: ObservableObject {
         let conn = CloudConnection.shared
         let link = CloudLinkSupervisor.shared
         guard conn.canAutoConnect || conn.isConnected else {
-            bannerText = "还没有连接云电脑：点左上角头像 › 云电脑设置，填写 VPS 并安装服务"
+            bannerText = "还没有连接云电脑：点左上角齿轮 › 云电脑设置，填写 VPS 并点「安装 / 更新服务器 Agent 服务」"
             loaded = true
             return
         }
@@ -470,6 +470,8 @@ struct CloudBotHomeScreen: View {
     @State private var showCreate = false
     @State private var showCreateGroup = false
     @State private var showHub = false
+    /// 打开 Bot 设置时直接进「云电脑设置」（连接出问题的修复按钮用）
+    @State private var hubOpensCloud = false
     @State private var showConnectApps = false
     @State private var showPrimaryPicker = false
     @State private var sectionFor: CloudBot?
@@ -501,7 +503,7 @@ struct CloudBotHomeScreen: View {
             ZStack(alignment: .bottom) {
                 ScrollView {
                     VStack(spacing: 0) {
-                        CloudLinkBanner(onOpenSettings: onOpenSettings)
+                        CloudLinkBanner(onOpenSettings: openCloudSettings)
                             .padding(.horizontal, 16).padding(.bottom, 8)
                         if let until = model.dutyUntil, until > Date() {
                             HStack(spacing: 8) {
@@ -581,7 +583,7 @@ struct CloudBotHomeScreen: View {
                             }
                             .foregroundStyle(.secondary)
                         }
-                        CloudLinkDot(onOpenSettings: onOpenSettings)
+                        CloudLinkDot(onOpenSettings: openCloudSettings)
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -638,7 +640,10 @@ struct CloudBotHomeScreen: View {
                 .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showHub) {
-            NavigationStack { CloudBotHubView(onDone: { showHub = false }) }
+            NavigationStack {
+                CloudBotHubView(onDone: { showHub = false }, openCloudFirst: hubOpensCloud,
+                                onOpenAppSettings: { showHub = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onOpenSettings() } })
+            }
         }
         .cloudBotSaveToast()
         .modifier(CloudBotHomeMenuSheets(model: model, showPrimaryPicker: $showPrimaryPicker,
@@ -690,8 +695,8 @@ struct CloudBotHomeScreen: View {
     /// 左上角设置按钮：和右上角「+」同样的系统工具栏样式（iOS 26 上自动是玻璃按钮），点一下打开设置，长按有更多入口
     private var avatarMenu: some View {
         Menu {
-            Button { onOpenSettings() } label: { Label("设置", systemImage: "gear") }
-            Button { showHub = true } label: { Label("云电脑与 Bot 管理", systemImage: "square.grid.2x2") }
+            Button { openBotSettings() } label: { Label("Bot 设置（云电脑、保管库）", systemImage: "gear") }
+            Button { onOpenSettings() } label: { Label("App 通用设置", systemImage: "slider.horizontal.3") }
             Divider()
             Button { onSwitchToLocal() } label: { Label("切换到本地模式", systemImage: "iphone") }
         } label: {
@@ -699,9 +704,22 @@ struct CloudBotHomeScreen: View {
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
         } primaryAction: {
-            onOpenSettings()
+            // Bot 模式的设置：云电脑设置（安装 / 更新服务器 Agent 服务）、保管库、Bot 管理
+            openBotSettings()
         }
         .accessibilityLabel("设置")
+    }
+
+    private func openBotSettings() {
+        hubOpensCloud = false
+        showHub = true
+    }
+
+    /// 连接诊断、离线横幅里的「检查连接设置」「去设置」：直接到云电脑设置
+    private func openCloudSettings() {
+        hubOpensCloud = true
+        // 可能是从连接诊断的弹窗里点的：等那个弹窗收起再打开，否则两个 sheet 冲突、什么都不出现
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showHub = true }
     }
 
     private var bottomBar: some View {
@@ -763,11 +781,24 @@ struct CloudAppearancePicker: View {
 /// 左下角入口：Bot 管理、插件、例行任务、记忆、页面、云电脑设置
 struct CloudBotHubView: View {
     let onDone: () -> Void
+    var openCloudFirst = false
+    var onOpenAppSettings: (() -> Void)? = nil
+    @State private var showCloud = false
 
     var body: some View {
         List {
             Section {
+                NavigationLink(destination: CloudAgentSettingsView()) {
+                    Label("云电脑设置", systemImage: "server.rack")
+                }
+                NavigationLink(destination: CloudAgentSettingsView()) {
+                    Label("安装 / 更新服务器 Agent 服务", systemImage: "arrow.down.circle")
+                }
                 CloudVaultSettingsRow()
+            } footer: {
+                Text("连接 VPS、安装或更新服务器上的 Agent 服务、代理和桌面环境都在「云电脑设置」里。")
+            }
+            Section {
                 CloudAppearancePicker()
             }
             Section {
@@ -783,10 +814,16 @@ struct CloudBotHubView: View {
             Section {
                 NavigationLink(destination: CloudUsageView()) { Label("用量与每日上限", systemImage: "chart.bar") }
                 NavigationLink(destination: CloudBackupView()) { Label("备份与恢复", systemImage: "externaldrive") }
-                NavigationLink(destination: CloudAgentSettingsView()) { Label("云电脑设置", systemImage: "server.rack") }
+            }
+            if let onOpenAppSettings {
+                Section {
+                    Button { onOpenAppSettings() } label: { Label("App 通用设置（模型、外观、语言）", systemImage: "slider.horizontal.3") }
+                }
             }
         }
-        .navigationTitle("云电脑与 Bot")
+        .navigationDestination(isPresented: $showCloud) { CloudAgentSettingsView() }
+        .onAppear { if openCloudFirst && !showCloud { showCloud = true } }
+        .navigationTitle("Bot 设置")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { onDone() } } }
     }

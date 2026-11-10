@@ -60,6 +60,8 @@ jobs:
         run: swiftc --version
       - name: 本地模式没有云端入口
         run: python3 scripts/check_local_cloud_entry.py
+      - name: Bot 模式设置入口
+        run: python3 scripts/check_bot_settings_entry.py
       - name: 类型检查替身与真实声明一致
         run: python3 scripts/check_typecheck_stubs.py
       - name: 断线重连逻辑测试
