@@ -914,6 +914,30 @@ struct CloudSessionView: View {
         .onChange(of: inputPrompt.isEmpty) { empty in
             if !empty { warmUp() }
         }
+        .onChange(of: activeTaskStatus) { status in
+            // 多 Bot 任务也进灵动岛 / 锁屏实时活动（与本地模式同一套）
+            guard let theme else { return }
+            switch status {
+            case "running", "queued", "waiting_user":
+                CloudBotLiveActivity.began(sessionId: sessionId, botName: theme.name)
+                if status == "waiting_user" { CloudBotLiveActivity.progress(sessionId: sessionId, toolName: "", status: "等你确认") }
+            case "completed":
+                let summary = turns.last(where: { $0.message.role == .assistant })?.message.content ?? liveText
+                CloudBotLiveActivity.finished(sessionId: sessionId, summary: CloudMessageText.display(summary).text, succeeded: true)
+            case "failed", "cancelled", "interrupted", "limit_reached":
+                CloudBotLiveActivity.finished(sessionId: sessionId, summary: "", succeeded: false)
+            default:
+                break
+            }
+        }
+        .onChange(of: taskEvents.count) { _ in
+            guard theme != nil, let ev = taskEvents.last(where: { ($0["type"] as? String) == "tool_call" }) else { return }
+            let payload = ev["payload"] as? [String: Any] ?? [:]
+            let name = payload["tool"] as? String ?? payload["name"] as? String ?? ""
+            let args = payload["arguments"] as? [String: Any] ?? [:]
+            let detail = (args["action"] as? String) ?? (args["path"] as? String) ?? (args["command"] as? String).map { String($0.prefix(40)) } ?? ""
+            CloudBotLiveActivity.progress(sessionId: sessionId, toolName: name, status: detail)
+        }
         .onDisappear {
             if CloudLinkSupervisor.shared.visibleSessionId == sessionId { CloudLinkSupervisor.shared.visibleSessionId = nil }
         }
