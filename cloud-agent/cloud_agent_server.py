@@ -638,7 +638,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.42.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.43.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -2283,6 +2283,7 @@ def search_everything(q, limit=60):
             "SELECT gm.group_id, gm.id, gm.sender, gm.content, gm.timestamp, g.name FROM group_messages gm JOIN groups g ON g.group_id = gm.group_id "
             "WHERE gm.kind IN ('text', 'task', 'task_result') AND gm.content LIKE ? ESCAPE '\\' ORDER BY gm.timestamp DESC LIMIT ?", (like, limit)).fetchall()
         trows = cloud_botthreads.search(conn, like, limit)
+        extra = search_extras(conn, like)
     finally:
         conn.close()
 
@@ -2304,7 +2305,35 @@ def search_everything(q, limit=60):
                "snippet": snippet(r["text"]), "timestamp": r["ts"], "bot_name": tn.get(r["sender"], r["sender"]),
                "title": f"{tn.get(r['sender'], r['sender'])} ↔ {tn.get(r['recipient'], r['recipient'])}"} for r in trows]
     items.sort(key=lambda x: -(x["timestamp"] or 0))
-    return items[:limit]
+    # 页面 / 例行任务 / 保管库放在聊天记录前面：条目少、按名字找的时候最想要
+    return (extra + items)[:limit]
+
+def search_extras(conn, like):
+    """统一搜索里的非聊天条目：页面（标题 / 摘要）、例行任务（名字 / 内容）、保管库（只搜标题，绝不碰密文）。"""
+    out = []
+    try:
+        for r in conn.execute("SELECT p.page_id, p.title, p.summary, p.updated_at, s.persona_id FROM pages p LEFT JOIN sessions s ON s.session_id = p.session_id "
+                              "WHERE COALESCE(s.incognito, 0) = 0 AND (p.title LIKE ? ESCAPE '\\' OR p.summary LIKE ? ESCAPE '\\') "
+                              "ORDER BY p.updated_at DESC LIMIT 10", (like, like)).fetchall():
+            out.append({"type": "page", "page_id": r[0], "title": r[1] or "页面", "snippet": (r[2] or "")[:120],
+                        "timestamp": r[3], "bot_id": r[4] or ""})
+    except sqlite3.Error:
+        pass
+    try:
+        for r in conn.execute("SELECT routine_id, name, prompt, schedule, updated_at, persona_id FROM routines "
+                              "WHERE name LIKE ? ESCAPE '\\' OR prompt LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT 10", (like, like)).fetchall():
+            out.append({"type": "routine", "routine_id": r[0], "title": r[1] or "例行任务", "snippet": f"{r[3] or ''} · {(r[2] or '')[:100]}",
+                        "timestamp": r[4], "bot_id": r[5] or ""})
+    except sqlite3.Error:
+        pass
+    try:
+        for r in conn.execute("SELECT id, kind, title, updated_at FROM vault_items WHERE title LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT 10",
+                              (like,)).fetchall():
+            out.append({"type": "vault", "item_id": r[0], "title": r[2], "snippet": {"login": "登录", "card": "银行卡", "contact": "联系信息"}.get(r[1], r[1]),
+                        "timestamp": r[3]})
+    except sqlite3.Error:
+        pass
+    return out
 
 def _thread_names():
     names = {p["persona_id"]: p["name"] for p in list_personas()}

@@ -100,6 +100,27 @@ private func cloudInt(_ v: Any?) -> Int { (v as? NSNumber)?.intValue ?? Int(v as
 // MARK: - 首页搜索：搜聊天记录
 
 struct CloudSearchHit: Identifiable {
+    /// 非聊天条目打开到哪里：page:<id>:<标题>、nav:routines、nav:vault
+    static func navTarget(_ d: [String: Any]) -> String? {
+        switch d["type"] as? String {
+        case "page": return (d["page_id"] as? String).map { "page:\($0):" + (d["title"] as? String ?? "") }
+        case "routine": return "nav:routines"
+        case "vault": return "nav:vault"
+        default: return nil
+        }
+    }
+
+    var icon: String {
+        switch kind {
+        case "group": return "person.3.fill"
+        case "bot_thread": return "arrow.left.arrow.right"
+        case "page": return "doc.richtext"
+        case "routine": return "clock.arrow.circlepath"
+        case "vault": return "lock.fill"
+        default: return role == "user" ? "person.fill" : "bubble.left.fill"
+        }
+    }
+
     let id: String
     let kind: String        // bot / group
     let target: String      // botId 或 group:<gid>
@@ -120,6 +141,11 @@ struct CloudSearchHit: Identifiable {
             // Bot 之间的对话：点开只读线程
             return CloudSearchHit(id: "t\(index)", kind: kind, target: CloudBotThreadRules.route(bots[0], bots[1]),
                                   title: d["title"] as? String ?? "Bot 之间的对话", snippet: d["snippet"] as? String ?? "", role: "", timestamp: ts)
+        }
+        if let nav = CloudSearchHit.navTarget(d) {
+            // 统一搜索：页面 / 例行任务 / 保管库（只有标题）
+            return CloudSearchHit(id: "x\(index)", kind: kind, target: nav, title: d["title"] as? String ?? "",
+                                  snippet: d["snippet"] as? String ?? "", role: "", timestamp: ts)
         }
         let bot = d["bot_id"] as? String ?? ""
         guard !bot.isEmpty else { return nil }
@@ -170,7 +196,7 @@ struct CloudSearchResultsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("聊天记录").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                Text("聊天记录、页面、例行任务、保管库标题").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
                 if model.searching { ProgressView().scaleEffect(0.7) }
                 Spacer()
             }
@@ -186,7 +212,7 @@ struct CloudSearchResultsSection: View {
                     onOpen(hit.target)
                 } label: {
                     HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: hit.kind == "group" ? "person.3.fill" : hit.kind == "bot_thread" ? "arrow.left.arrow.right" : (hit.role == "user" ? "person.fill" : "bubble.left.fill"))
+                        Image(systemName: hit.icon)
                             .font(.system(size: 13)).foregroundStyle(.secondary).frame(width: 22, height: 22)
                         VStack(alignment: .leading, spacing: 3) {
                             HStack {

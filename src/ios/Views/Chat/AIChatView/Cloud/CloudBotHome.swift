@@ -614,7 +614,7 @@ struct CloudBotHomeScreen: View {
                         }
                         if !search.trimmingCharacters(in: .whitespaces).isEmpty {
                             CloudSearchResultsSection(model: searchModel, query: search) { target in
-                                if target.hasPrefix("group:") { path = [target] } else { open(target) }
+                                if ["group:", "nav:", "page:"].contains(where: target.hasPrefix) { path = [target] } else { open(target) }
                             }
                         }
                         if model.loaded && model.bots.isEmpty && model.bannerText == nil {
@@ -677,6 +677,13 @@ struct CloudBotHomeScreen: View {
                     CloudGroupChatView(groupId: String(id.dropFirst(6)))
                 } else if let pair = CloudBotThreadRules.parseRoute(id) {
                     CloudBotThreadView(a: pair.0, b: pair.1)
+                } else if id == "nav:routines" {
+                    CloudRoutinesView()
+                } else if id == "nav:vault" {
+                    CloudVaultView()
+                } else if id.hasPrefix("page:") {
+                    let rest = id.dropFirst(5).split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                    CloudPageDetailView(pageId: String(rest.first ?? ""), title: rest.count > 1 ? String(rest[1]) : "页面")
                 } else if id == "hidden" {
                     CloudHiddenBotsPage(model: model)
                 } else if id.hasPrefix("detail:"), let bot = model.bot(String(id.dropFirst(7))) {
