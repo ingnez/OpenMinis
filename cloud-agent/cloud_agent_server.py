@@ -38,6 +38,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import hashlib
+import hmac
 import base64
 import binascii
 import shutil
@@ -58,6 +59,8 @@ import cloud_llm
 import cloud_efficiency as eff
 import cloud_appfeed
 import cloud_audit
+import cloud_ws
+import select
 import gzip
 from collections import deque
 import cloud_desktop
@@ -3414,6 +3417,19 @@ def is_quiet_result(text):
     t = (text or "").strip()
     return any(t.startswith(m) or t.endswith(m) for m in PROACTIVE_SKIP_MARKERS)
 
+DESKTOP_STREAM_MAX_SECONDS = 15 * 60
+
+
+def desktop_frame(display, width):
+    """推流用的一帧（测试里会替换）；0.2 秒内多个观看者共用同一张截屏。"""
+    return cloud_desktop.thumbnail(display, width=width, max_age=0.2)
+
+
+def token_ok(given):
+    """常数时间比较服务 Token，避免按耗时猜出 Token。"""
+    return bool(SERVER_TOKEN) and hmac.compare_digest(str(given).encode(), str(SERVER_TOKEN).encode())
+
+
 def daily_feed(hours=24, limit=20):
     """「今日」：最近 hours 小时例行任务 / 主动消息的结果（Bot 说 [SKIP] 的不算），新的在前。"""
     since = time.time() - hours * 3600
@@ -4065,7 +4081,7 @@ class Handler(BaseHTTPRequestHandler):
         # Attachment download endpoint with path security & Bearer auth
         if "/attachments/" in path:
             auth = self.headers.get("Authorization", "")
-            if not auth.startswith("Bearer ") or auth[7:].strip() != SERVER_TOKEN:
+            if not auth.startswith("Bearer ") or not token_ok(auth[7:].strip()):
                 self._send(401, {"error": "Unauthorized"})
                 return
             
@@ -4100,7 +4116,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
         auth = self.headers.get("Authorization", "")
-        if not auth.startswith("Bearer ") or auth[7:].strip() != SERVER_TOKEN:
+        if not auth.startswith("Bearer ") or not token_ok(auth[7:].strip()):
             self._send(401, {"error": "Unauthorized"})
             return
 
@@ -4222,6 +4238,10 @@ class Handler(BaseHTTPRequestHandler):
                       "token_proxy": h["websockify_mode"] == "token" if h["websockify_mode"] else cloud_displays.token_proxy_enabled(),
                       "tools": cloud_desktop.is_desktop_available()})
             self._send(200, h)
+            return
+
+        if path == "/v1/desktop/stream":
+            self._desktop_stream(query_params)
             return
 
         if path == "/v1/desktop/thumbnail":
@@ -4708,9 +4728,71 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send(404, {"error": "Not found"})
 
+    def _desktop_stream(self, query_params):
+        """WebSocket：把云电脑画面按 1–5 帧/秒推给手机（画面没变就不发），最长 15 分钟，手机关掉预览就结束。"""
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        if self.headers.get("Upgrade", "").lower() != "websocket" or not cloud_ws.valid_key(key):
+            self._send(400, {"error": "需要 WebSocket 连接"})
+            return
+        bid = (query_params.get("bot_id") or [None])[0]
+        display = cloud_displays.MAIN_DISPLAY
+        if bid and get_persona(bid):
+            info = DISPLAYS.info(bid)
+            if info:
+                display = info["display"]
+        try:
+            fps = min(5.0, max(1.0, float((query_params.get("fps") or ["3"])[0])))
+        except ValueError:
+            fps = 3.0
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", cloud_ws.accept_key(key))
+        self.end_headers()
+        self.wfile.flush()
+        self.close_connection = True
+        sock = self.connection
+        deadline = time.time() + DESKTOP_STREAM_MAX_SECONDS
+        last_digest, last_send, misses = None, time.time(), 0
+        try:
+            while time.time() < deadline:
+                started = time.time()
+                readable, _, _ = select.select([sock], [], [], 0)
+                if readable:
+                    frame = cloud_ws.read_frame(self.rfile)
+                    if frame is None or frame[0] == cloud_ws.OP_CLOSE:
+                        break
+                    if frame[0] == cloud_ws.OP_PING:
+                        self.wfile.write(cloud_ws.encode_frame(cloud_ws.OP_PONG, frame[1]))
+                if bid:
+                    DISPLAYS.touch(bid)
+                data, _mime = desktop_frame(display, 720)
+                if data:
+                    misses = 0
+                    digest = hashlib.sha1(data).digest()
+                    if digest != last_digest:
+                        self.wfile.write(cloud_ws.encode_frame(cloud_ws.OP_BINARY, data))
+                        self.wfile.flush()
+                        last_digest, last_send = digest, time.time()
+                else:
+                    misses += 1   # 截屏偶尔失败：继续用上一帧；连续失败就慢下来
+                if time.time() - last_send > 10:
+                    self.wfile.write(cloud_ws.encode_frame(cloud_ws.OP_PING, b"k"))
+                    self.wfile.flush()
+                    last_send = time.time()
+                interval = (1.0 / fps) * (4 if misses > 3 else 1)
+                time.sleep(max(0.05, interval - (time.time() - started)))
+            try:
+                self.wfile.write(cloud_ws.encode_frame(cloud_ws.OP_CLOSE, (1000).to_bytes(2, "big")))
+                self.wfile.flush()
+            except OSError:
+                pass
+        except (OSError, ValueError):
+            pass    # 手机断开：正常结束
+
     def _authorized(self):
         auth = self.headers.get("Authorization", "")
-        if not auth.startswith("Bearer ") or auth[7:].strip() != SERVER_TOKEN:
+        if not auth.startswith("Bearer ") or not token_ok(auth[7:].strip()):
             self._send(401, {"error": "Unauthorized"})
             return False
         return True

@@ -267,5 +267,55 @@ class SharedLibraryTests(CloudServerTestCase):
         self.assertTrue(any(i["id"] == guide["id"] for i in self.request("GET", "/v1/bots/liba/library")[1]["items"]))
 
 
+
+class DesktopStreamTests(CloudServerTestCase):
+    def _connect(self, token):
+        import base64, os, socket
+        sock = socket.create_connection(("127.0.0.1", self.api_port), timeout=5)
+        key = base64.b64encode(os.urandom(16)).decode()
+        sock.sendall((f"GET /v1/desktop/stream?fps=5 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                      f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer {token}\r\n\r\n").encode())
+        return sock, key
+
+    def test_01_streams_changed_frames_and_closes(self):
+        import cloud_ws, os, struct
+        frames = iter([b"\xff\xd8A", b"\xff\xd8A", b"\xff\xd8B"] + [b"\xff\xd8B"] * 100)
+        orig = self.srv.desktop_frame
+        self.srv.desktop_frame = lambda display, width: (next(frames), "image/jpeg")
+        try:
+            sock, key = self._connect(self.token)
+            f = sock.makefile("rb")
+            status = f.readline()
+            self.assertIn(b"101", status)
+            headers = {}
+            while True:
+                line = f.readline().strip()
+                if not line:
+                    break
+                k, v = line.decode().split(":", 1)
+                headers[k.lower()] = v.strip()
+            self.assertEqual(headers["sec-websocket-accept"], cloud_ws.accept_key(key))
+            got = []
+            while len(got) < 2:
+                h = f.read(2)
+                n = h[1] & 0x7F
+                got.append((h[0] & 0x0F, f.read(n)))
+            # 相同的画面不重复发
+            self.assertEqual(got, [(cloud_ws.OP_BINARY, b"\xff\xd8A"), (cloud_ws.OP_BINARY, b"\xff\xd8B")])
+            mask = os.urandom(4)
+            sock.sendall(bytes([0x88, 0x80 | 2]) + mask + bytes(b ^ mask[i] for i, b in enumerate(struct.pack("!H", 1000))))
+            rest = f.read()   # 服务器回关闭帧后断开
+            self.assertTrue(rest.endswith(bytes([0x88, 2, 0x03, 0xE8])) or rest == b"")
+            sock.close()
+        finally:
+            self.srv.desktop_frame = orig
+
+    def test_02_rejects_bad_token_and_plain_http(self):
+        sock, _ = self._connect("wrong")
+        self.assertIn(b"401", sock.makefile("rb").readline())
+        sock.close()
+        self.assertEqual(self.request("GET", "/v1/desktop/stream")[0], 400)
+
+
 if __name__ == "__main__":
     unittest.main()

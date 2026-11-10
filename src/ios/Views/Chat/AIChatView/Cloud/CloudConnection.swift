@@ -517,6 +517,24 @@ public final class CloudConnection: ObservableObject {
     static func tunnelDropped(_ e: URLError) -> Bool {
         [.cannotConnectToHost, .networkConnectionLost, .cannotFindHost, .timedOut, .notConnectedToInternet].contains(e.code)
     }
+    /// 云电脑画面推流：WebSocket 走同一条 SSH 隧道（ws://127.0.0.1:<端口>），服务器画面变了才推一帧 JPEG
+    public func desktopStream(botId: String, fps: Int = 3) -> URLSessionWebSocketTask? {
+        guard isConnected, botId.isEmpty || botId.range(of: #"^[a-z0-9][a-z0-9_-]{0,31}$"#, options: .regularExpression) != nil,
+              let token = getToken(), !token.isEmpty else { return nil }
+        var c = URLComponents()
+        c.scheme = "ws"
+        c.host = "127.0.0.1"
+        c.port = apiPort
+        c.path = "/v1/desktop/stream"
+        c.queryItems = [URLQueryItem(name: "fps", value: String(min(5, max(1, fps))))] + (botId.isEmpty ? [] : [URLQueryItem(name: "bot_id", value: botId)])
+        guard let url = c.url else { return nil }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        let task = longHTTP.webSocketTask(with: req)
+        task.maximumMessageSize = 4 * 1024 * 1024
+        return task
+    }
+
     /// 下载会话工作区里的附件（资料库预览、分享）；只允许 /v1/sessions/<id>/attachments/<文件名>
     public func downloadAttachment(path: String) async throws -> Data {
         guard isConnected else { throw failure("云端连接已断开") }
