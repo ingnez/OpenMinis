@@ -602,6 +602,8 @@ struct CloudSessionView: View {
     @State private var messages: [[String: Any]] = []
     @State private var tasks: [[String: Any]] = []
     @State private var inputPrompt: String = ""
+    @State private var replyTarget: CloudReplyTarget?
+    @State private var pendingExtras: [String: Any] = [:]
     @State private var activeTaskId: String? = nil
     @State private var activeTaskStatus: String = "idle"
     @State private var taskEvents: [[String: Any]] = []
@@ -695,25 +697,15 @@ struct CloudSessionView: View {
                             ForEach(Array(turns.enumerated()), id: \.offset) { idx, turn in
                                 let msg = turn.message
                                 if msg.role == .user {
-                                    CloudProseUser(content: msg.content, accent: theme.accent)
-                                        .contextMenu {
-                                            Button { UIPasteboard.general.string = CloudMessageText.display(msg.content).text } label: { Label("复制", systemImage: "doc.on.doc") }
-                                        }
+                                    CloudUserTurnRow(content: msg.content, accent: theme.accent, extras: CloudMessageExtras(turn.raw),
+                                                     onReply: { replyTarget = $0 })
                                 } else {
                                     let prevAssistant = idx > 0 && turns[idx - 1].message.role == .assistant
                                     CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
                                                            showHeader: !prevAssistant, collapsible: true)
-                                    HStack(spacing: 12) {
-                                        Button { UIPasteboard.general.string = msg.content; CloudHaptics.success() } label: {
-                                            Image(systemName: "doc.on.doc").font(.caption2)
-                                        }
-                                        .accessibilityLabel("复制回复")
-                                        if let line = CloudLatency.line(for: turn.raw, tasks: tasks) {
-                                            Text(line).font(.caption2)
-                                        }
-                                    }
-                                    .foregroundStyle(.tertiary)
-                                    .buttonStyle(.plain)
+                                    CloudAssistantFooter(text: msg.content, latency: CloudLatency.line(for: turn.raw, tasks: tasks),
+                                                         extras: CloudMessageExtras(turn.textRaw), selfId: theme.botId,
+                                                         onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 })
                                 }
                             }
                         }
@@ -779,6 +771,7 @@ struct CloudSessionView: View {
                     }
                     .padding()
                 }
+                .environment(\.cloudChatActions, chatActions)
                 .overlay(alignment: .bottomTrailing) {
                     if theme != nil && messages.count > 4 {
                         CloudScrollButtons(onTop: { withAnimation { proxy.scrollTo("chat-top", anchor: .top) } },
@@ -1133,6 +1126,9 @@ struct CloudSessionView: View {
             if working, let tool = liveTool {
                 CloudLiveTerminalCard(tool: tool)
             }
+            if let r = replyTarget {
+                CloudReplyBanner(excerpt: r.excerpt) { replyTarget = nil }
+            }
             if !attachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -1421,8 +1417,34 @@ struct CloudSessionView: View {
         CloudBotHomeModel.shared.bots.first(where: { $0.id == botId })?.instructions ?? ""
     }
 
+    /// 卡片用的动作：选项卡点选后作为下一条消息发出（带 choice_answer，服务器标记卡片已答）
+    private var chatActions: CloudChatActions {
+        CloudChatActions(answerChoice: { mid, selected, custom, dismissed, text in
+            var ans: [String: Any] = ["message_id": mid, "selected": selected, "dismissed": dismissed]
+            if let custom { ans["custom"] = custom }
+            pendingExtras = ["choice_answer": ans]
+            inputPrompt = text
+            sendTask()
+        }, sessionId: sessionId)
+    }
+
+    /// 用户给 Bot 的消息点表情（nil = 取消）
+    private func reactToBot(_ messageId: Int, _ emoji: String?) {
+        CloudHaptics.selection()
+        Task {
+            try? await CloudRunModelService.react(sessionId: sessionId, messageId: messageId, emoji: emoji)
+            loadSessionDetail()
+        }
+    }
+
     private func submitPrepared(content: String, body rawBody: [String: Any]) {
         var body = rawBody
+        if let r = replyTarget {
+            body["reply_to"] = r.id      // 引用回复
+            replyTarget = nil
+        }
+        for (k, v) in pendingExtras { body[k] = v }
+        pendingExtras = [:]
         // 思考深度：Bot 自己设置了就由服务器使用；否则带上手机默认
         let effort = theme.flatMap { CloudEffort(rawValue: $0.effort) } ?? CloudEffort.globalDefault
         if effort != .off { body["reasoning_effort"] = effort.rawValue }

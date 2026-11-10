@@ -31,6 +31,10 @@ struct CloudPathPolicyTests {
             ("/v1/bots/helper?soft=1", true),
             ("/v1/vault/uses?item_id=v_0123456789", true),
             ("/v1/vault/uses?item_id=../x", false),
+            ("/v1/workers?bot=writer", true),
+            ("/v1/workers?session_id=sess_0123456789ab", true),
+            ("/v1/workers?bot=../x", false),
+            ("/v1/workers?session_id=sess_x&bot=a", false),
             ("/v1/vault?q=x", false),
             ("/v1/bots/helper?soft=2", false),
             // 不允许的

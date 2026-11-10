@@ -36,6 +36,7 @@ struct CloudAssistantTurnView: View {
         case injected(AssistantBlock)
         case reset(AssistantBlock)
         case tools([AssistantBlock])
+        case card(CloudCards.Card)
     }
 
     private var segments: [Segment] {
@@ -45,7 +46,15 @@ struct CloudAssistantTurnView: View {
             switch b.kind {
             case .text:
                 if !run.isEmpty { out.append(.tools(run)); run = [] }
-                if !b.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { out.append(.text(b)) }
+                if !b.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    // 用单独一行 --- 分开的两三个意思：拆成几个气泡
+                    let beats = collapsible ? CloudBeats.split(b.content) : [b.content]
+                    if beats.count > 1 {
+                        for part in beats { out.append(.text(AssistantBlock(kind: .text, content: part))) }
+                    } else {
+                        out.append(.text(b))
+                    }
+                }
             case .thinking:
                 if !run.isEmpty { out.append(.tools(run)); run = [] }
                 if !b.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { out.append(.thinking(b)) }
@@ -56,6 +65,9 @@ struct CloudAssistantTurnView: View {
                     out.append(.injected(b))
                 } else if id.hasPrefix(CloudEventApplier.resetPrefix) {
                     out.append(.reset(b))
+                } else if let card = CloudCards.decode(b) {
+                    if !run.isEmpty { out.append(.tools(run)); run = [] }
+                    out.append(.card(card))
                 }
             default:
                 run.append(b)
@@ -85,6 +97,8 @@ struct CloudAssistantTurnView: View {
                     CloudResetNoteView(block: block)
                 case .tools(let blocks):
                     CloudToolRunView(blocks: blocks)
+                case .card(let card):
+                    CloudCardView(card: card, accent: accent)
                 }
             }
             if !liveReasoning.isEmpty {

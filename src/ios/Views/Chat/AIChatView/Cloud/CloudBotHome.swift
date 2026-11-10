@@ -391,6 +391,11 @@ struct CloudBotHomeRow: View {
                 }
                 HStack(spacing: 8) {
                     if status.busy { CloudBotStatusChip(status: status) }
+                    if bot.runningWorkers > 0 {
+                        Label("\(bot.runningWorkers)", systemImage: "gearshape.2.fill")
+                            .font(.caption2.weight(.semibold)).foregroundStyle(.green)
+                            .accessibilityLabel("\(bot.runningWorkers) 个后台任务进行中")
+                    }
                     Text(previewText).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     Spacer(minLength: 0)
                     if unread {
@@ -407,6 +412,7 @@ struct CloudBotHomeRow: View {
         if CloudBotLock.shared.isLocked(bot.id) { return "已上锁" }
         if bot.waitingApprovals > 0 && bot.lastPreview.isEmpty { return "等你处理" }
         if bot.runningTasks > 0 && bot.lastPreview.isEmpty { return "正在处理…" }
+        if bot.runningWorkers > 0 && bot.lastPreview.isEmpty { return "后台任务进行中…" }
         if !bot.lastPreview.isEmpty { return bot.lastPreview }
         return bot.summary.isEmpty ? "开始对话" : bot.summary
     }

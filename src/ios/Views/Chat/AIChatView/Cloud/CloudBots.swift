@@ -31,6 +31,8 @@ struct CloudBot: Identifiable, Hashable {
     var lastAt: Double
     var runningTasks: Int
     var queuedTasks: Int
+    /// 进行中 / 排队的后台任务数（服务器 running_workers）
+    var runningWorkers = 0
     var waitingApprovals: Int
     var notify: Bool
     var routinesEnabled: Int
@@ -97,6 +99,7 @@ struct CloudBot: Identifiable, Hashable {
         lastAt = (last?["at"] as? NSNumber)?.doubleValue ?? 0
         runningTasks = d["running_tasks"] as? Int ?? 0
         queuedTasks = d["queued_tasks"] as? Int ?? 0
+        runningWorkers = d["running_workers"] as? Int ?? 0
         waitingApprovals = d["waiting_approvals"] as? Int ?? 0
         notify = d["notify"] as? Bool ?? true
         routinesEnabled = d["routines_enabled"] as? Int ?? 0

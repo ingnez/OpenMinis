@@ -23,6 +23,7 @@ enum CloudPathPolicy {
         case "/v1/memory": return q(#"^[A-Za-z0-9_=&%.\-]{1,600}$"#)
         case "/v1/sessions", "/v1/routines", "/v1/audit": return q(#"^bot=[a-z0-9_-]{1,32}$"#)
         case "/v1/vault/uses": return q(#"^item_id=v_[a-f0-9]{10}$"#)
+        case "/v1/workers": return q(#"^(bot=[a-z0-9_-]{1,32}|session_id=sess_[a-f0-9]{12})$"#)
         default: return false
         }
     }

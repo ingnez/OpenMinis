@@ -357,6 +357,8 @@ struct CloudBotDetailView: View {
                 .listRowBackground(Color.clear)
             }
 
+            CloudBotOverviewSection(bot: bot)
+
             Section {
                 NavigationLink { CloudBotSoulView(bot: bot, onSaved: { await refresh(); await onChanged() }) } label: {
                     LabeledContent("灵魂设定", value: bot.soul.isEmpty ? "未设置" : (bot.soul["language"] ?? "已设置"))

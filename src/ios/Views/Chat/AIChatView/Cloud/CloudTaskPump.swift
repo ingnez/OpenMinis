@@ -171,15 +171,20 @@ enum CloudHistoryAdapter {
         let message: ChatMessage
         /// 这一轮最后一条原始消息（取时间戳算耗时）
         let raw: [String: Any]
+        /// 这一轮最后一条有文字的原始消息（表情回应、引用回复针对它）
+        var textRaw: [String: Any] = [:]
     }
 
     static func turns(from messages: [[String: Any]]) -> [Turn] {
         var out: [Turn] = []
         var current: ChatMessage?
         var currentRaw: [String: Any] = [:]
+        var currentTextRaw: [String: Any] = [:]
+        var toolNames: [String: String] = [:]
         func flush() {
-            if let c = current, !c.blocks.isEmpty || c.error != nil { out.append(Turn(message: c, raw: currentRaw)) }
+            if let c = current, !c.blocks.isEmpty || c.error != nil { out.append(Turn(message: c, raw: currentRaw, textRaw: currentTextRaw)) }
             current = nil
+            currentTextRaw = [:]
         }
         for m in messages {
             let role = m["role"] as? String ?? ""
@@ -206,12 +211,15 @@ enum CloudHistoryAdapter {
                 if let r = m["reasoning"] as? String, !r.isEmpty {
                     CloudEventApplier.apply(msg, type: "reasoning", payload: ["content": r])
                 }
-                if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !CloudCards.hidesText(m) {
                     CloudEventApplier.apply(msg, type: "thought", payload: ["content": content])
                     msg.content += (msg.content.isEmpty ? "" : "\n\n") + content
+                    currentTextRaw = m
                 }
+                for card in CloudCards.cards(in: m) { msg.blocks.append(CloudCards.block(card)) }
                 for call in toolCalls(m) {
                     let fn = call["function"] as? [String: Any] ?? [:]
+                    if let cid = call["id"] as? String { toolNames[cid] = fn["name"] as? String ?? "" }
                     let argText = fn["arguments"] as? String ?? ""
                     let args = argText.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
                     CloudEventApplier.apply(msg, type: "tool_call", payload: [
@@ -226,6 +234,9 @@ enum CloudHistoryAdapter {
                 var payload: [String: Any] = ["id": m["tool_call_id"] as? String ?? "", "result": parsed]
                 if let ms = m["duration_ms"] { payload["duration_ms"] = ms }
                 CloudEventApplier.apply(msg, type: "tool_result", payload: payload)
+                if toolNames[m["tool_call_id"] as? String ?? ""] == "spawn_task", let card = CloudCards.workerCard(fromToolResult: parsed) {
+                    msg.blocks.append(CloudCards.block(card))      // 派出去的后台任务：卡片显示实时状态
+                }
             default:
                 continue
             }
