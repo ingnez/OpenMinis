@@ -282,6 +282,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSpotlightRules.swift scripts/CloudSpotlightTests.swift -o /tmp/cloud-spotlight-tests
           /tmp/cloud-spotlight-tests
+      - name: 病区语音开关测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWardVoice.swift scripts/CloudWardVoiceTests.swift -o /tmp/cloud-wardvoice-tests
+          /tmp/cloud-wardvoice-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -442,6 +447,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWardVoice.swift scripts/CloudWardVoiceTests.swift -o /tmp/cloud-wardvoice-tests
+          /tmp/cloud-wardvoice-tests | tee cloud-wardvoice-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSpotlightRules.swift scripts/CloudSpotlightTests.swift -o /tmp/cloud-spotlight-tests
           /tmp/cloud-spotlight-tests | tee cloud-spotlight-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSmartField.swift scripts/CloudSmartFieldTests.swift -o /tmp/cloud-smartfield-tests
@@ -781,6 +788,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWardVoice.swift scripts/CloudWardVoiceTests.swift -o /tmp/cloud-wardvoice-tests
+          /tmp/cloud-wardvoice-tests | tee cloud-wardvoice-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSpotlightRules.swift scripts/CloudSpotlightTests.swift -o /tmp/cloud-spotlight-tests
           /tmp/cloud-spotlight-tests | tee cloud-spotlight-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSmartField.swift scripts/CloudSmartFieldTests.swift -o /tmp/cloud-smartfield-tests

@@ -676,6 +676,7 @@ struct CloudBotHomeScreen: View {
                             }
                             Divider()
                             CloudNightModeMenu()
+                            CloudWardVoiceMenu()
                         } label: { Label(model.dutyUntil == nil ? "值班模式" : "值班中…", systemImage: "cross.case") }
                     } label: { Image(systemName: "plus") }
                     .accessibilityLabel("新建")

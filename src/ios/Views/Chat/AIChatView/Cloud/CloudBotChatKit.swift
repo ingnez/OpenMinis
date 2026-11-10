@@ -593,12 +593,17 @@ final class CloudDictation: ObservableObject {
         }
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker])
+            // 病区降噪打开时用系统通话语音处理（回声消除 + 降噪），否则保持原声 .measurement
+            let denoise = CloudWardVoice.denoise
+            try session.setCategory(.playAndRecord, mode: denoise ? .voiceChat : .measurement,
+                                    options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             let req = SFSpeechAudioBufferRecognitionRequest()
             req.shouldReportPartialResults = true
             request = req
             let input = engine.inputNode
+            // 必须在读输入格式、装 tap 之前切换；失败就当没开（照常录原声）
+            if input.isVoiceProcessingEnabled != denoise { try? input.setVoiceProcessingEnabled(denoise) }
             input.removeTap(onBus: 0)
             input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in req.append(buffer) }
             engine.prepare()

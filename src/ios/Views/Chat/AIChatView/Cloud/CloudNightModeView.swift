@@ -47,3 +47,14 @@ struct CloudNightModeMenu: View {
         .pickerStyle(.menu)
     }
 }
+
+/// 值班菜单里的「病区语音」两个开关（默认都关）
+struct CloudWardVoiceMenu: View {
+    @AppStorage(CloudWardVoice.denoiseKey) private var denoise = false
+    @AppStorage(CloudWardVoice.doubleTapKey) private var doubleTap = false
+
+    var body: some View {
+        Toggle(isOn: $denoise) { Label("嘈杂环境降噪（系统通话降噪）", systemImage: "waveform.badge.minus") }
+        Toggle(isOn: $doubleTap) { Label("双击消息区开语音", systemImage: "hand.tap") }
+    }
+}
