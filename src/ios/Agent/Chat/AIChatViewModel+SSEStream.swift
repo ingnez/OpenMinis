@@ -464,6 +464,10 @@ extension AIChatViewModel {
             }
         }
         defer { stallTick.cancel() }
+        // [T-steer-interrupt] A new output starts: earlier requests were already
+        // served at a tool gap.
+        let steerOwner = ObjectIdentifier(self)
+        LocalSteerAbort.clear(steerOwner)
         do {
         while true {
             stallWatchdog.beginWait(at: Date())
@@ -482,6 +486,40 @@ extension AIChatViewModel {
             stallWatchdog.endWait()
             guard let event = maybeEvent else { break }
             try Task.checkCancellation()
+            // [T-steer-interrupt] The user sent a message while the model is
+            // still writing plain text: end this reply here (as a normal end of
+            // turn) so the turn-end drain hands the message to the model now.
+            // Not while a tool call is being streamed — that waits for the gap —
+            // and not before any text arrived (an empty end of turn would read
+            // as an empty response and be retried).
+            if LocalSteerAbort.shouldAbort(steerOwner,
+                                           toolStarted: currentStreamingToolId != nil || !result.toolEntries.isEmpty
+                                               || result.assistantText.isEmpty) {
+                logger.info("[Steer] user message mid-stream: ending this reply early")
+                if let blockIdx = currentTextBlockIdx, !result.assistantText.isEmpty {
+                    let text = result.assistantText
+                    await MainActor.run {
+                        guard msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count else { return }
+                        self.setStreamingTextBlockContent(
+                            msgIdx: msgIdx,
+                            blockIdx: blockIdx,
+                            text: text,
+                            parsedMarkdown: MarkdownContent(prepareMarkdownForRender(text)),
+                            cacheAttributedString: true,
+                            requestScroll: false
+                        )
+                    }
+                }
+                if let thinkIdx = currentThinkingBlockIdx, !result.thinkingText.isEmpty {
+                    let finalThinking = result.thinkingText
+                    await MainActor.run {
+                        guard msgIdx < messages.count, thinkIdx < messages[msgIdx].blocks.count else { return }
+                        messages[msgIdx].blocks[thinkIdx].content = finalThinking
+                    }
+                }
+                if result.stopReason == nil { result.stopReason = .endTurn }
+                break
+            }
             // [StreamDiag] Per-event timeline. Throttled: the first 5 events of
             // a stream (covers "did the first byte ever arrive"), then only when
             // a gap exceeds 5s — enough to reconstruct the arrival timeline

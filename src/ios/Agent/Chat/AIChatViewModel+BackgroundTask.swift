@@ -889,6 +889,19 @@ extension AIChatViewModel {
     func resetCurrentSession() {
         guard remoteDeviceId == nil, !isRetiredByReset else { return }
         isRetiredByReset = true
+        // [T-reset-snapshot] 先存对话快照（memory/snapshots/），今天的记忆日志里只留一行指针
+        let snapshotTurns: [LocalResetSnapshot.Turn] = messages.compactMap { m in
+            switch m.role {
+            case .user: return LocalResetSnapshot.Turn(role: "user", text: m.content)
+            case .assistant:
+                let text = m.blocks.filter { $0.kind == .text }.map(\.content).joined(separator: "\n")
+                return LocalResetSnapshot.Turn(role: "assistant", text: text)
+            default: return nil
+            }
+        }
+        if let snap = LocalResetSnapshot.make(snapshotTurns) {
+            LocalResetSnapshot.save(snap, memoryDir: Self.minisMemoryPersistentDir)
+        }
         let oldSessionId = sessionId
         let oldTask = currentTask
         let oldCompactTask = compactTask

@@ -86,6 +86,8 @@ extension AIChatViewModel {
         // (silent or deferred) are not the user answering and leave it alone.
         if !silent && !deferUntilIdle {
             supersedePendingUserAsk()
+            // [T-steer-interrupt] 插话：模型正在输出纯文字时提前结束这段，消息马上交给模型
+            LocalSteerAbort.request(ObjectIdentifier(self))
         }
         let pendingAttachments = attachments
         // [T-paste-live-bubble-card] Same birth-time card plan as send(): the

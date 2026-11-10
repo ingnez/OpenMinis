@@ -60,6 +60,10 @@ jobs:
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudEventLedger.swift scripts/CloudEventLedgerTests.swift -o /tmp/cloud-ledger-tests
           /tmp/cloud-ledger-tests
           /tmp/cloud-path-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Agent/Chat/LocalSteerAbort.swift scripts/LocalSteerAbortTests.swift -o /tmp/local-steer-tests
+          /tmp/local-steer-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Agent/Chat/LocalResetSnapshot.swift scripts/LocalResetSnapshotTests.swift -o /tmp/local-reset-snapshot-tests
+          /tmp/local-reset-snapshot-tests
 
   cloud-computer-linux:
     if: ${{ !inputs.quick }}
