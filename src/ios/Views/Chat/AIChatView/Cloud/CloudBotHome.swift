@@ -247,6 +247,7 @@ struct CloudBotHomeRow: View {
     }
 
     private var previewText: String {
+        if CloudBotLock.shared.isLocked(bot.id) { return "已上锁" }
         if bot.waitingApprovals > 0 && bot.lastPreview.isEmpty { return "等你处理" }
         if bot.runningTasks > 0 && bot.lastPreview.isEmpty { return "正在处理…" }
         if !bot.lastPreview.isEmpty { return bot.lastPreview }
@@ -301,8 +302,8 @@ struct CloudBotHomeScreen: View {
                         if let primary = model.primary, search.isEmpty {
                             hero(primary)
                         }
-                        if search.isEmpty && !model.feed.isEmpty {
-                            CloudTodayFeed(items: model.feed, bots: model.bots)
+                        if search.isEmpty && model.feed.contains(where: { !CloudBotLock.shared.isLocked($0.botId) }) {
+                            CloudTodayFeed(items: model.feed.filter { !CloudBotLock.shared.isLocked($0.botId) }, bots: model.bots)
                         }
                         LazyVStack(spacing: 0) {
                             ForEach(groupsMatching) { g in
@@ -557,9 +558,13 @@ struct CloudBotChatView: View {
     @State private var showDetail = false
     @State private var showComputer = false
 
+    @ObservedObject private var lock = CloudBotLock.shared
+
     var body: some View {
         Group {
-            if let sid = sessionId, let bot = model.bot(botId) {
+            if let bot = model.bot(botId), lock.needsUnlock(botId) {
+                CloudBotLockedView(bot: bot)
+            } else if let sid = sessionId, let bot = model.bot(botId) {
                 CloudSessionView(sessionId: sid, sessionTitle: bot.name,
                                  model: UserDefaults.standard.string(forKey: "OpenMinisCloud_manualModel") ?? "",
                                  selectedInstanceId: UserDefaults.standard.string(forKey: "OpenMinisCloud_selectedInstanceId") ?? "",

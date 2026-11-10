@@ -210,6 +210,7 @@ struct CloudBotEditSheet: View {
                     Text("用于在 Bot 对话里朗读回复；保存在本机。")
                 }
                 CloudProactiveSection(botId: bot.id, botName: bot.name)
+                CloudBotLockSection(botId: bot.id)
                 Section {
                     Toggle("快速模式", isOn: $bot.fastMode)
                 } footer: {
