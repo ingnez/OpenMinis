@@ -37,6 +37,7 @@ struct CloudAssistantTurnView: View {
         case reset(AssistantBlock)
         case tools([AssistantBlock])
         case card(CloudCards.Card)
+        case notice(String)
     }
 
     private var segments: [Segment] {
@@ -65,6 +66,9 @@ struct CloudAssistantTurnView: View {
                     out.append(.injected(b))
                 } else if id.hasPrefix(CloudEventApplier.resetPrefix) {
                     out.append(.reset(b))
+                } else if id.hasPrefix(CloudEventApplier.visionPrefix) {
+                    if !run.isEmpty { out.append(.tools(run)); run = [] }
+                    out.append(.notice(b.content))
                 } else if let card = CloudCards.decode(b) {
                     if !run.isEmpty { out.append(.tools(run)); run = [] }
                     out.append(.card(card))
@@ -99,6 +103,8 @@ struct CloudAssistantTurnView: View {
                     CloudToolRunView(blocks: blocks)
                 case .card(let card):
                     CloudCardView(card: card, accent: accent)
+                case .notice(let text):
+                    CloudNoticeCapsule(text: text, systemImage: "eye")
                 }
             }
             if !liveReasoning.isEmpty {
@@ -447,5 +453,21 @@ struct CloudSnapshotSheet: View {
         } catch {
             failed = true
         }
+    }
+}
+
+/// 对话里的小提示胶囊（如「用 X 读图」）：浅色 / 深色都用系统次要色
+struct CloudNoticeCapsule: View {
+    let text: String
+    let systemImage: String
+
+    var body: some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color(.secondarySystemFill)))
+            .accessibilityElement(children: .combine)
     }
 }

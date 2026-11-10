@@ -348,9 +348,19 @@ enum CloudAttachmentKit {
         let maxSide: CGFloat = 1600
         let scale = min(1, maxSide / max(image.size.width, image.size.height))
         let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-        let resized = UIGraphicsImageRenderer(size: size).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
-        guard let data = resized.jpegData(compressionQuality: 0.8) else { return nil }
+        // 按像素画（scale = 1）：默认按屏幕倍数画，1600pt 的图会变成 4800px，超过发给模型的大小上限后图片被丢掉
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let resized = UIGraphicsImageRenderer(size: size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+        guard let data = CloudImageBudget.fit(resized) else { return nil }
         return CloudPendingAttachment(filename: name, data: data, isImage: true, thumbnail: resized)
+    }
+
+    /// 发给模型看的图片：拍照 / 相册的直接用；从「文件」里选的图片解码后同样压缩；不是图片返回 nil
+    static func visionData(_ item: CloudPendingAttachment) -> Data? {
+        if item.isImage { return item.data.count <= CloudImageBudget.maxBytes ? item.data : UIImage(data: item.data).flatMap(CloudImageBudget.fit) }
+        guard CloudImageBudget.isImageName(item.filename), let img = UIImage(data: item.data) else { return nil }
+        return image(img, name: item.filename)?.data
     }
 
     /// 扫描的多页文档合成一个 PDF

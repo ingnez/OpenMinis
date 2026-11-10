@@ -60,6 +60,8 @@ enum CloudEventApplier {
     /// 插话（运行中发出、模型已收到的消息）和 /reset 分隔线都用 info 块，toolUseId 带这两个前缀
     static let injectPrefix = "inject-"
     static let resetPrefix = "reset-"
+    /// 主模型不能看图、改由看图模型读图：「用 X 读图」小胶囊
+    static let visionPrefix = "vision-"
 
     /// eventId：事件自己的 id，工具调用没给 id 时用它生成稳定的 id（重放同一事件不会多出一步）
     static func apply(_ message: ChatMessage, type: String, payload: [String: Any], eventId: Int? = nil) {
@@ -126,6 +128,11 @@ enum CloudEventApplier {
                     CloudStepPreviews.shared.put(id, preview)
                 }
             }
+        case "vision_route":
+            let model = payload["model"] as? String ?? "看图模型"
+            let id = visionPrefix + model
+            guard !message.blocks.contains(where: { $0.toolUseId == id }) else { return }
+            message.blocks.append(AssistantBlock(kind: .info, content: "用 \(model) 读图", toolUseId: id))
         case "error":
             if let err = payload["error"] as? String { message.error = err }
         case "final":

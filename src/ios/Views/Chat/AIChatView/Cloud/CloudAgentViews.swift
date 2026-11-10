@@ -1460,11 +1460,12 @@ struct CloudSessionView: View {
                 let text = (content.isEmpty ? "请查看附件。" : content) + "\n\n" + lines.joined(separator: "\n")
                 var newBody = body
                 newBody["content"] = text
-                let images = items.filter { $0.isImage && $0.data.count < 1_400_000 }.prefix(4)
+                // 图片按图片发给模型（不只给路径）：大图先压缩，不再悄悄丢掉
+                let images = items.compactMap(CloudAttachmentKit.visionData).prefix(4)
                 if !images.isEmpty {
                     var parts: [[String: Any]] = [["type": "text", "text": text]]
-                    for img in images {
-                        parts.append(["type": "image_url", "image_url": ["url": "data:image/jpeg;base64," + img.data.base64EncodedString()]])
+                    for data in images {
+                        parts.append(["type": "image_url", "image_url": ["url": "data:image/jpeg;base64," + data.base64EncodedString()]])
                     }
                     newBody["message_parts"] = parts
                 }

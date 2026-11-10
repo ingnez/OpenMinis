@@ -47,6 +47,7 @@ struct CloudPerfView: View {
     @State private var autoModel = false
     @State private var quickAck = true
     @State private var fastModel = ""
+    @State private var visionModel = ""
     @State private var failover: [[String: Any]] = []
 
     private var recent: [[String: Any]] { data["recent"] as? [[String: Any]] ?? [] }
@@ -109,6 +110,13 @@ struct CloudPerfView: View {
                         .multilineTextAlignment(.trailing)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .onSubmit { save(["fast_model": fastModel.trimmingCharacters(in: .whitespaces)]) }
+                }
+                HStack {
+                    Text("看图模型")
+                    TextField("留空：自动选能看图的", text: $visionModel)
+                        .multilineTextAlignment(.trailing)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .onSubmit { save(["vision_model": visionModel.trimmingCharacters(in: .whitespaces)]) }
                 }
                 Toggle("简单问题自动用小模型", isOn: $autoModel).onChange(of: autoModel) { v in save(["auto_model": v]) }
                     .disabled(fastModel.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -181,6 +189,7 @@ struct CloudPerfView: View {
             trimTokens = s["context_trim_tokens"] as? Int ?? 48000
             autoTitle = s["auto_title"] as? Bool ?? true
             fastModel = s["fast_model"] as? String ?? ""
+            visionModel = s["vision_model"] as? String ?? ""
             autoModel = s["auto_model"] as? Bool ?? false
             quickAck = s["quick_ack"] as? Bool ?? true
             failover = s["failover"] as? [[String: Any]] ?? []

@@ -60,6 +60,7 @@ DEFAULTS = {
     "quick_ack": True,                 # 主模型 1.5 秒还没出字时，用 fast_model 先回一句简短确认（没设 fast_model 就不做）
     "private_bots": [],                # 手机上用 Face ID 锁住的 Bot：推送里不显示它们的内容
     "fast_model": "",                  # 起标题 / 摘要用的小模型（与当前任务同一服务商），空 = 不调模型，只截取首句
+    "vision_model": "",                # 看图模型（与当前任务同一服务商）：主模型确实不能看图时用它把图片读成文字；空 = 用服务商列表里登记能看图的模型
     "failover": [],                    # 主模型连续失败（5xx / 超时 / 断连）时依次换用：[{"credential": 名称, "model": 模型}]，最多 3 个
 }
 
@@ -191,9 +192,9 @@ def validate(patch, current):
             if not isinstance(v, bool):
                 raise SettingsError(f"{k} 必须是布尔值")
             s[k] = v
-        elif k == "fast_model":
+        elif k in ("fast_model", "vision_model"):
             if not isinstance(v, str) or len(v) > 120 or (v and not re.match(r"^[A-Za-z0-9._:/@+-]+$", v)):
-                raise SettingsError("fast_model 是模型 ID（最多 120 个字符），留空表示不用")
+                raise SettingsError(f"{k} 是模型 ID（最多 120 个字符），留空表示不用")
             s[k] = v
         elif k == "failover":
             if not isinstance(v, list) or len(v) > 3:

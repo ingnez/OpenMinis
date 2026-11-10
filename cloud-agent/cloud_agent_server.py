@@ -66,6 +66,7 @@ import select
 import gzip
 from collections import deque
 import cloud_desktop
+import cloud_vision
 import cloud_secrets
 import cloud_policy
 import cloud_cron
@@ -310,6 +311,7 @@ def init_db():
     cloud_vault.ensure_schema(conn)
     cloud_workers.ensure_schema(conn)
     cloud_runmodel.ensure_schema(conn)
+    cloud_vision.ensure_schema(conn)
     cloud_vault.set_loader(get_db_connection)
     cloud_plugins.ensure_schema(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS app_settings (name TEXT PRIMARY KEY, value TEXT)")
@@ -560,7 +562,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.12.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.13.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -4058,6 +4060,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     front_session = depth == 0 and session_is_front(session_id)
     if front_session:
         system_text += FRONT_NOTE
+    system_text += cloud_runmodel.ATTACHMENT_NOTE
     if depth == 0:
         system_text += cloud_runmodel.REPLY_STYLE_NOTE + cloud_runmodel.MEMORY_NOTE
         if not session_incognito(session_id):
@@ -4147,6 +4150,56 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         threading.Thread(target=_quick_ack, args=(task_id, session_id, initial_content, rs_perf["fast_model"], chat_url, api_key, perf),
                          daemon=True).start()
 
+    loop_guard = cloud_runmodel.LoopGuard()
+    vision = {"blocked": False}
+
+    def route_vision(reason):
+        """主模型不能看图：用看图模型把图片读成文字换进上下文。成功返回 True；没有可用的看图模型返回 False。"""
+        base = cloud_vision.base_of(route["url"])
+        vconn = get_db_connection()
+        try:
+            vm = (rs_perf.get("vision_model") or "").strip()
+            if not vm:
+                cloud_vision.probe(vconn, base, route["key"])
+                cands = cloud_vision.vision_models(vconn, base, exclude=route["model"])
+                vm = cands[0] if cands else ""
+            if not vm or vm == route["model"] or cloud_vision.supports(vconn, base, vm) is False:
+                return False
+            hdrs = {"Content-Type": "application/json", "Authorization": f"Bearer {route['key']}"}
+
+            def describe(url):
+                resp, _t = call_chat(route["url"], hdrs, {"model": vm, "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": cloud_vision.DESCRIBE_PROMPT}, {"type": "image_url", "image_url": {"url": url}}]}]},
+                    None, stream=False)
+                text = (((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+                if not text:
+                    raise RuntimeError("看图模型没有返回内容")
+                return text
+            messages[:] = cloud_vision.replace_images(vconn, messages, vm, describe)
+            perf["vision_model"] = vm
+            log_event(task_id, "vision_route", {"model": vm, "reason": reason})
+            return True
+        except Exception as e:
+            print(f"vision route failed: {type(e).__name__}", flush=True)
+            return False
+        finally:
+            vconn.close()
+
+    if cloud_vision.has_images(messages):
+        _vc = get_db_connection()
+        try:
+            _base = cloud_vision.base_of(route["url"])
+            if cloud_vision.supports(_vc, _base, route["model"]) is None:
+                cloud_vision.probe(_vc, _base, route["key"])
+            _cap = cloud_vision.supports(_vc, _base, route["model"])
+        finally:
+            _vc.close()
+        if _cap is False and not route_vision("model_caps"):
+            vision["blocked"] = True
+
+    class VisionRetry(Exception):
+        pass
+
     def call_with_failover(send_msgs, tools):
         nonlocal model
         retried = False
@@ -4161,6 +4214,17 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             except Exception as e:
                 if is_task_cancelled(task_id):
                     raise
+                if cloud_vision.has_images(send_msgs) and cloud_vision.is_unsupported_error(
+                        _err_text(e) if isinstance(e, urllib.error.HTTPError) else str(e)):
+                    # 服务商明确说这个模型不收图片：记下来（以后直接走看图模型），这次转给看图模型读图后重来
+                    _vc = get_db_connection()
+                    try:
+                        cloud_vision.record(_vc, cloud_vision.base_of(route["url"]), route["model"], False, "error")
+                    finally:
+                        _vc.close()
+                    if not route_vision("error"):
+                        vision["blocked"] = True
+                    raise VisionRetry()
                 if perf.get("auto_model") and route["model"] == perf["auto_model"]:
                     # 快速模型不行（不存在 / 出错）：本任务直接换回主模型，不算失败
                     log_event(task_id, "status", {"message": f"快速模型不可用（{sanitize_err(e)[:60]}），改用 {main_model}"})
@@ -4198,6 +4262,13 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             if is_task_cancelled(task_id):
                 final_status = "cancelled"
                 break
+            if vision["blocked"]:
+                # 没有能看图的模型：立刻如实回复，不让主模型去装 OCR 之类的东西
+                log_event(task_id, "thought", {"content": cloud_vision.NO_VISION_REPLY})
+                messages.append({"role": "assistant", "content": cloud_vision.NO_VISION_REPLY})
+                insert_message(session_id, "assistant", cloud_vision.NO_VISION_REPLY, meta={"vision": "unavailable"})
+                answered = True
+                break
             take_injected()
             try:
                 send_msgs, trim_note = cloud_llm.trim_messages(messages, rs_perf.get("context_trim_tokens", 0))
@@ -4212,6 +4283,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 live_update(task_id, "", reasoning="", tool=None)
                 try:
                     resp, timing = call_with_failover(send_msgs, tools)
+                except VisionRetry:
+                    live_clear(task_id)
+                    continue
                 except cloud_llm.Aborted:
                     # 用户插话：丢掉这次还没说完的回复，带上新消息重新问
                     live_clear(task_id)
@@ -4302,6 +4376,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                         fn_args = {k: v for k, v in fn_args.items() if k != "tool_title"}   # 只给人看的标题，不传给工具
                     started_at = time.time()
                     live_update(task_id, tool={"id": tc_id, "name": fn_name, "output": ""})
+                    blocked = loop_guard.check(fn_name, fn_args)
+                    if blocked:
+                        return (tc_id, fn_name, blocked, 0)
 
                     policy = current_approval_policy()
                     hit = cloud_policy.evaluate(fn_name, fn_args, policy)
@@ -4361,6 +4438,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                         if isinstance(res, dict) and res.get("error") == "needs_auth":
                             log_event(task_id, "auth_required", {"plugin": res.get("plugin"), "message": res.get("message")})
                     else: res = {"error": f"Unknown tool {fn_name}"}
+                    loop_guard.spend(fn_name, fn_args, int((time.time() - started_at) * 1000))
                     return (tc_id, fn_name, res, int((time.time() - started_at) * 1000))
 
                 def post_tool(tc_id, fn_name, res, duration_ms=None):
@@ -5752,7 +5830,7 @@ class Handler(BaseHTTPRequestHandler):
                              "median": {k: med(k) for k in ("ttft_ms", "first_text_ms", "total_ms", "queued_ms", "prompt_tokens", "completion_tokens", "cached_tokens", "tool_defs")},
                              "pool": dict(cloud_llm.POOL.stats),
                              "settings": {k: resource_settings().get(k) for k in ("stream", "lazy_tools", "parallel_tools", "prompt_cache", "context_trim_tokens",
-                                                                  "auto_title", "auto_model", "quick_ack", "fast_model", "failover", "duty_until")}})
+                                                                  "auto_title", "auto_model", "quick_ack", "fast_model", "vision_model", "failover", "duty_until")}})
             return
 
         if path == "/v1/usage":
@@ -7371,6 +7449,18 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"error": "message_parts size exceeds 2MB limit"})
                     return
                 db_user_content = json.dumps(message_parts, ensure_ascii=False)
+            else:
+                # 只带了附件路径的图片（老版本 App、从「文件」里选的图片）：服务器自己把图片作为图片内容带上
+                def _resolve_upload(rel, _sid=sid):
+                    target, err = safe_path_resolve(_sid, rel)
+                    return None if err else target
+                try:
+                    auto_parts = cloud_vision.parts_from_uploads(content, _resolve_upload)
+                except Exception as e:
+                    print(f"upload image parts failed: {type(e).__name__}", flush=True)
+                    auto_parts = None
+                if auto_parts:
+                    db_user_content = json.dumps(auto_parts, ensure_ascii=False)
 
             model = req_json.get("model", "gpt-4o")
             client_effort = req_json.get("reasoning_effort")

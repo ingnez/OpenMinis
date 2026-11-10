@@ -220,3 +220,51 @@ MEMORY_NOTE = (
     "更早的事用 memory_search 查。\n[技能] 完成了一套以后可能重复的多步流程（比如某网站的下单步骤），用 skill_save 存成技能；"
     "遇到类似任务先 skill_load。\n[例行任务] 用户的请求是周期性的（每天 / 每周 / 到点提醒 / 有变化告诉我）时，主动用 routine_create 建一个，"
     "建之前用一句话说明时间。监控类（「X 有变化时告诉我」）的例行任务在没有变化时只回复 [SKIP]，不要发「无变化」。")
+
+
+# ---------- 附件与长时间等待的规矩（所有 Bot） ----------
+
+ATTACHMENT_NOTE = (
+    "\n\n【附件与等待】用户发来的图片已经作为图片直接给你看了（看不了时系统会先转成文字给你），"
+    "不要为了读图片 / 附件去安装 OCR、pip / apt 装包或下载模型；已有内置能力就直接用。"
+    "安装、等待、重试这类步骤累计超过约 60 秒还没有进展，就停下来如实告诉用户卡在哪里，不要反复换源重试。"
+    "说「完成了」之前先核对结果（看输出、读文件或截图），没核对过就说明还没确认。")
+
+_INSTALL_RE = re.compile(
+    r"\b(pip3?|python3? -m pip|apt(-get)?|yum|dnf|apk|brew|npm|pnpm|yarn|conda|cargo)\b[^|;&\n]{0,40}\b(install|add)\b"
+    r"|\bsleep\s+\d|\btimeout\s+\d|\bwhile\b.*\bsleep\b|\bwget\b|\bcurl\b[^|;&\n]*\b(-o|-O|--output)\b|tesseract|easyocr|paddleocr",
+    re.I)
+
+
+class LoopGuard:
+    """一次任务里的「安装 / 等待 / 重试」预算：这类命令累计超过 budget 秒，或同一步原样重复 repeat 次，就不再执行，
+    改为返回提示让模型停下来向用户说明。"""
+
+    def __init__(self, budget=60.0, max_calls=4, repeat=3):
+        self.budget, self.max_calls, self.repeat = budget, max_calls, repeat
+        self.spent = 0.0
+        self.calls = 0
+        self.last_key = None
+        self.same = 0
+
+    @staticmethod
+    def is_install_or_wait(name, args):
+        return name == "shell_execute" and bool(_INSTALL_RE.search(str((args or {}).get("command") or "")))
+
+    def check(self, name, args):
+        """执行前调用：返回 None 表示放行，否则返回给模型的工具结果。"""
+        key = name + ":" + json.dumps(args or {}, sort_keys=True, ensure_ascii=False)[:500]
+        self.same = self.same + 1 if key == self.last_key else 1
+        self.last_key = key
+        if self.same >= self.repeat:
+            return {"error": "同一步已经原样重复了好几次，没有进展。停止重试，向用户说明卡在哪里、需要什么。", "blocked": "repeat"}
+        if self.is_install_or_wait(name, args):
+            if self.spent >= self.budget or self.calls >= self.max_calls:
+                return {"error": f"安装 / 等待类步骤已用掉约 {int(self.spent)} 秒（{self.calls} 次），按规定停止。"
+                                 "现在直接告诉用户情况和下一步建议，不要再换源或重试。", "blocked": "install_budget"}
+            self.calls += 1
+        return None
+
+    def spend(self, name, args, duration_ms):
+        if self.is_install_or_wait(name, args) and duration_ms:
+            self.spent += duration_ms / 1000.0
