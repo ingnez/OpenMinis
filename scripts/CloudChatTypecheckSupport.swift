@@ -84,3 +84,10 @@ protocol VoiceOutputCapable { func synthesize(_ request: VoiceOutputRequest) asy
     static func outputProvider(for entry: ModelEntry) -> (any VoiceOutputCapable)? { nil }
 }
 enum VoiceTextSanitizer { static func sanitize(_ text: String) -> String { text } }
+
+// 多 Bot 任务的实时活动（真实实现在 Agent/Background/CloudBotLiveActivity.swift）
+@MainActor enum CloudBotLiveActivity {
+    static func began(sessionId: String, botName: String) {}
+    static func progress(sessionId: String, toolName: String, status: String) {}
+    static func finished(sessionId: String, summary: String, succeeded: Bool) {}
+}

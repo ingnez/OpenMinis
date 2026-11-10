@@ -454,6 +454,8 @@
 		E5T000006 /* SendPromptResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5T000016 /* SendPromptResult.swift */; };
 		E5T000007 /* GetSessionStatusIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5T000017 /* GetSessionStatusIntent.swift */; };
 		E5T000008 /* QuickTaskIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5T000018 /* QuickTaskIntent.swift */; };
+		E5CLD00001 /* CloudIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5CLD00011 /* CloudIntents.swift */; };
+		E5CLD00002 /* CloudBotLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5CLD00012 /* CloudBotLiveActivity.swift */; };
 		E5T000009 /* FollowUpSessionIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5T000019 /* FollowUpSessionIntent.swift */; };
 		E5T00000A /* RetryRunIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5T00001A /* RetryRunIntent.swift */; };
 		E5T00000B /* UserMessageEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5T00001B /* UserMessageEntity.swift */; };
@@ -1279,6 +1281,8 @@
 		E5T000016 /* SendPromptResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendPromptResult.swift; sourceTree = "<group>"; };
 		E5T000017 /* GetSessionStatusIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GetSessionStatusIntent.swift; sourceTree = "<group>"; };
 		E5T000018 /* QuickTaskIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickTaskIntent.swift; sourceTree = "<group>"; };
+		E5CLD00011 /* CloudIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudIntents.swift; sourceTree = "<group>"; };
+		E5CLD00012 /* CloudBotLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudBotLiveActivity.swift; sourceTree = "<group>"; };
 		E5T000019 /* FollowUpSessionIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowUpSessionIntent.swift; sourceTree = "<group>"; };
 		E5T00001A /* RetryRunIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RetryRunIntent.swift; sourceTree = "<group>"; };
 		E5T00001B /* UserMessageEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMessageEntity.swift; sourceTree = "<group>"; };
@@ -2230,6 +2234,7 @@
 				E5T000016 /* SendPromptResult.swift */,
 				E5T000017 /* GetSessionStatusIntent.swift */,
 				E5T000018 /* QuickTaskIntent.swift */,
+				E5CLD00011 /* CloudIntents.swift */,
 				E5T000019 /* FollowUpSessionIntent.swift */,
 				E5SD00019 /* ShortcutRunTracker.swift */,
 				E5T00001A /* RetryRunIntent.swift */,
@@ -2452,6 +2457,7 @@
 			isa = PBXGroup;
 			children = (
 				E5G000012 /* AgentLiveActivityManager.swift */,
+				E5CLD00012 /* CloudBotLiveActivity.swift */,
 				E5G000011 /* BackgroundKeepAliveManager.swift */,
 				E53000016 /* CacheKeepAliveManager.swift */,
 			);
@@ -3280,6 +3286,8 @@
 				E5T000006 /* SendPromptResult.swift in Sources */,
 				E5T000007 /* GetSessionStatusIntent.swift in Sources */,
 				E5T000008 /* QuickTaskIntent.swift in Sources */,
+				E5CLD00001 /* CloudIntents.swift in Sources */,
+				E5CLD00002 /* CloudBotLiveActivity.swift in Sources */,
 				E5T000009 /* FollowUpSessionIntent.swift in Sources */,
 				E5SD00009 /* ShortcutRunTracker.swift in Sources */,
 				E5T00000A /* RetryRunIntent.swift in Sources */,
