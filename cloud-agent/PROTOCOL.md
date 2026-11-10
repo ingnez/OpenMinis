@@ -551,3 +551,7 @@
 
 `GET /v1/exams` → `{"exams": [{id, name, day: "YYYY-MM-DD", notes, days_left}]}`（结束超过 3 天的不返回）。`POST /v1/exams {name, day, notes?}`、`PUT /v1/exams/<id>`（部分字段）、`DELETE /v1/exams/<id>`。
 30 天内的考试会以「[考试倒计时] …」加在每一轮末尾（不进系统提示）。
+
+## 每周自我改进（2.26.0）
+
+例行任务的 prompt 里写 `{{weekly_stats}}`，触发时会换成这个 Bot 最近 7 天的统计：任务数和失败、「今日」动态的赞踩和评论、用户对回答点的负面表情（附回答开头 80 字）、最近 5 条错误（打码）。App 的「每周自我改进」开关就是一个每周日 21:00 的这种例行任务。

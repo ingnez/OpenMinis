@@ -623,7 +623,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.25.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.26.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -5186,6 +5186,49 @@ def fire_followups(routine, run):
     return started
 
 
+WEEKLY_STATS_TOKEN = "{{weekly_stats}}"
+NEGATIVE_EMOJI = ("👎", "😡", "😤", "🙄", "😒", "❌", "💩")
+
+
+def weekly_stats(bot_id, days=7, now=None):
+    """「每周自我改进」用的本周数据：任务数和失败、用户给的赞踩和评论、对回答点的负面表情（附那条回答开头）。不含其它对话内容。"""
+    now = now or time.time()
+    since = now - days * 86400
+    bot = bot_id or ""
+    conn = get_db_connection()
+    try:
+        st = dict(conn.execute("SELECT t.status, COUNT(*) FROM tasks t JOIN sessions s ON s.session_id = t.session_id "
+                               "WHERE COALESCE(s.persona_id, '') = ? AND t.created_at >= ? GROUP BY t.status", (bot, since)).fetchall())
+        fb = conn.execute("SELECT f.liked, f.comment, t.name FROM feed_feedback f JOIN routine_runs r ON r.run_id = f.run_id "
+                          "JOIN routines t ON t.routine_id = r.routine_id WHERE COALESCE(t.persona_id, '') = ? AND f.at >= ?", (bot, since)).fetchall()
+        neg = conn.execute("SELECT x.emoji, m.content FROM message_reactions x JOIN messages m ON m.id = x.message_id "
+                           "JOIN sessions s ON s.session_id = x.session_id WHERE x.actor = 'user' AND COALESCE(s.persona_id, '') = ? "
+                           "AND x.at >= ? AND m.role = 'assistant'", (bot, since)).fetchall()
+        errs = conn.execute("SELECT e.payload FROM task_events e JOIN tasks t ON t.task_id = e.task_id JOIN sessions s ON s.session_id = t.session_id "
+                            "WHERE e.event_type = 'error' AND COALESCE(s.persona_id, '') = ? AND e.timestamp >= ? ORDER BY e.id DESC LIMIT 5", (bot, since)).fetchall()
+    finally:
+        conn.close()
+    total = sum(st.values())
+    lines = [f"本周（{days} 天）任务 {total} 个：完成 {st.get('completed', 0)}，失败 {st.get('failed', 0)}，达到轮数上限 {st.get('limit_reached', 0)}，被取消 {st.get('cancelled', 0)}。"]
+    likes = sum(1 for f in fb if f[0] == 1)
+    dislikes = sum(1 for f in fb if f[0] == -1)
+    if fb:
+        lines.append(f"「今日」动态反馈：👍 {likes}，👎 {dislikes}。")
+        lines += [f"· 「{n}」{'👍' if l == 1 else '👎' if l == -1 else ''} {c}".rstrip() for l, c, n in fb if c or l == -1][:8]
+    bad = [(e, c) for e, c in neg if e in NEGATIVE_EMOJI]
+    if bad:
+        lines.append(f"用户对 {len(bad)} 条回答点了负面表情，那几条的开头：")
+        lines += [f"· {e} {' '.join(str(c or '').split())[:80]}" for e, c in bad[:6]]
+    for (payload,) in errs:
+        try:
+            lines.append("· 出错：" + scrub_text(str((json.loads(payload or "{}") or {}).get("error") or ""))[:120])
+        except ValueError:
+            pass
+    if total == 0 and not fb and not bad:
+        lines.append("本周没有足够的数据。")
+    return scrub_text("\n".join(lines))
+
+
 def launch_routine_run(routine, trigger="schedule", context=None):
     """启动一次例行任务。返回 run dict（含 run_id / task_id / status）。"""
     run_id = "run_" + uuid.uuid4().hex[:12]
@@ -5221,7 +5264,13 @@ def launch_routine_run(routine, trigger="schedule", context=None):
     instructions = routine.get("instructions") or ROUTINE_DEFAULT_INSTRUCTIONS
     fired = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(now))
     how = "手动运行" if trigger == "manual" else ("上一步完成后" if chain_depth(trigger) else "按计划")
-    content = f"[例行任务「{routine['name']}」于 {fired} 触发（{how}）]\n{routine['prompt']}"
+    prompt = routine['prompt']
+    if WEEKLY_STATS_TOKEN in prompt:
+        try:
+            prompt = prompt.replace(WEEKLY_STATS_TOKEN, weekly_stats(routine.get("persona_id") or ""))
+        except Exception as e:
+            prompt = prompt.replace(WEEKLY_STATS_TOKEN, f"（本周数据没取到：{type(e).__name__}）")
+    content = f"[例行任务「{routine['name']}」于 {fired} 触发（{how}）]\n{prompt}"
     if context:
         content += "\n\n[工作流上一步的结果]\n" + context
     conn = get_db_connection()
