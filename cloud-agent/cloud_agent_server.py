@@ -2006,6 +2006,15 @@ def auto_title(session_id, provider_config, model):
 
 # ---------------- 提速：流式、连接复用、快速模式、性能记录 ----------------
 PARALLEL_SAFE_TOOLS = {"file_read", "memory_search", "skill_load", "list_bots", "background_jobs", "request_tools"}
+DUTY_NOTE = ("\n[值班模式] 用户正在值班（临床一线，随时被打断）：回答极简，先给结论、数字和要做的动作，"
+             "用短句或要点，不寒暄、不铺垫；涉及剂量 / 换算时写明单位并提醒核对医嘱与说明书。")
+
+
+def on_duty(rs=None):
+    rs = rs or resource_settings()
+    return float(rs.get("duty_until") or 0) > time.time()
+
+
 FAST_MODE_NOTE = "\n[快速模式] 用户希望快：直接给结论，回答尽量短；能一步完成就不要多步规划，非必要不调用工具。"
 PERF = deque(maxlen=200)
 _STREAM_UNSUPPORTED = set()
@@ -2756,6 +2765,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     if _bot_fast(session_id):
         system_text += FAST_MODE_NOTE
     dynamic_note = mention_note(session_id, initial_content)
+    if on_duty():
+        # 放在本轮末尾而不是系统提示里：系统提示不变，前缀缓存照样命中
+        dynamic_note = (dynamic_note or "") + DUTY_NOTE
     messages = [{"role": "system", "content": system_text.lstrip()}]
     for r_role, r_content, r_tc, r_tcid in rows:
         m = {"role": r_role}
@@ -3292,6 +3304,8 @@ def on_routine_finished(routine, run):
         return None
     if run.get("status") == "completed" and is_quiet_result(run.get("result")):
         return None     # 主动消息：Bot 觉得这次没什么值得说的，就不打扰
+    if run.get("status") == "completed" and on_duty() and (routine.get("name") or "").startswith("主动消息"):
+        return None     # 值班中不推送主动消息（失败仍然通知）
     cfg = current_notify_config()
     label = {"completed": "完成", "failed": "失败", "limit_reached": "达到轮数上限", "cancelled": "已取消",
              "interrupted": "中断"}.get(run.get("status"), run.get("status"))
@@ -4144,7 +4158,7 @@ class Handler(BaseHTTPRequestHandler):
                              "median": {k: med(k) for k in ("ttft_ms", "first_text_ms", "total_ms", "queued_ms", "prompt_tokens", "completion_tokens", "cached_tokens", "tool_defs")},
                              "pool": dict(cloud_llm.POOL.stats),
                              "settings": {k: resource_settings().get(k) for k in ("stream", "lazy_tools", "parallel_tools", "prompt_cache", "context_trim_tokens",
-                                                                  "auto_title", "auto_model", "fast_model", "failover")}})
+                                                                  "auto_title", "auto_model", "fast_model", "failover", "duty_until")}})
             return
 
         if path == "/v1/usage":

@@ -61,6 +61,28 @@ final class CloudBotHomeModel: ObservableObject {
     var pendingPrompt: CloudBotPendingPrompt?
     /// 分享进来的内容还没选 Bot：首页弹出选择表
     @Published var showSharePicker = false
+    /// 值班模式到什么时候（服务器 resources.duty_until）；nil = 没在值班
+    @Published private(set) var dutyUntil: Date?
+
+    func setDuty(hours: Double?) async {
+        let until: Double
+        if let hours { until = Date().addingTimeInterval(hours * 3600).timeIntervalSince1970 } else { until = 0 }
+        do {
+            _ = try await CloudQuiet.retry { try await CloudConnection.shared.request(method: "PUT", path: "/v1/resources", body: ["duty_until": until]) }
+            dutyUntil = until > 0 ? Date(timeIntervalSince1970: until) : nil
+            CloudHaptics.success()
+        } catch {
+            bannerText = "值班模式没设置成功：\(error.localizedDescription.prefix(80))"
+        }
+    }
+
+    /// 到明早 8 点的小时数（夜班下班）
+    static func hoursUntilMorning() -> Double {
+        let cal = Calendar.current
+        var target = cal.date(bySettingHour: 8, minute: 0, second: 0, of: Date()) ?? Date()
+        if target <= Date() { target = cal.date(byAdding: .day, value: 1, to: target) ?? target }
+        return target.timeIntervalSinceNow / 3600
+    }
 
     func deliverShare(to botId: String) {
         pendingPrompt?.botId = botId
@@ -145,6 +167,10 @@ final class CloudBotHomeModel: ObservableObject {
             publishToWidget()
             // 旧版服务器没有群聊接口：忽略错误
             groups = (try? await CloudGroupService.list()) ?? groups
+            if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/resources"),
+               let until = (r["settings"] as? [String: Any])?["duty_until"] as? Double {
+                dutyUntil = until > Date().timeIntervalSince1970 ? Date(timeIntervalSince1970: until) : nil
+            }
         } catch let error as URLError where CloudConnection.tunnelDropped(error) {
             bannerText = nil
             link.handle(.requestFailed)
@@ -240,6 +266,16 @@ struct CloudBotHomeScreen: View {
                     VStack(spacing: 0) {
                         CloudLinkBanner(onOpenSettings: onOpenSettings)
                             .padding(.horizontal, 16).padding(.bottom, 8)
+                        if let until = model.dutyUntil, until > Date() {
+                            HStack(spacing: 8) {
+                                Image(systemName: "cross.case.fill").foregroundStyle(.red)
+                                Text("值班中 · 到 \(until.formatted(date: .omitted, time: .shortened))：回答极简，不推送主动消息")
+                                    .font(.footnote)
+                                Spacer()
+                                Button("结束") { Task { await model.setDuty(hours: nil) } }.font(.footnote)
+                            }
+                            .padding(.vertical, 4).padding(.horizontal, 16)
+                        }
                         if let banner = model.bannerText {
                             Button { Task { await model.refresh(forceReconnect: true) } } label: {
                                 Text(banner + "（点此重试）")
@@ -316,6 +352,14 @@ struct CloudBotHomeScreen: View {
                         Button { showCreate = true } label: { Label("新 Bot", systemImage: "person.crop.circle.badge.plus") }
                         Button { showCreateGroup = true } label: { Label("新群聊", systemImage: "person.3") }
                             .disabled(model.bots.isEmpty)
+                        Menu {
+                            Button("8 小时") { Task { await model.setDuty(hours: 8) } }
+                            Button("12 小时") { Task { await model.setDuty(hours: 12) } }
+                            Button("到明早 8 点") { Task { await model.setDuty(hours: CloudBotHomeModel.hoursUntilMorning()) } }
+                            if model.dutyUntil != nil {
+                                Button("结束值班", role: .destructive) { Task { await model.setDuty(hours: nil) } }
+                            }
+                        } label: { Label(model.dutyUntil == nil ? "值班模式" : "值班中…", systemImage: "cross.case") }
                     } label: { Image(systemName: "plus") }
                     .accessibilityLabel("新建")
                 }

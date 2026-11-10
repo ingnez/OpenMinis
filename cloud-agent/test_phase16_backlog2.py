@@ -60,5 +60,35 @@ class AutoModelTests(CloudServerTestCase):
             self.request("PUT", "/v1/resources", {"auto_model": False, "fast_model": ""})
 
 
+
+class DutyModeTests(CloudServerTestCase):
+    def test_01_duty_note_and_quiet_proactive(self):
+        import time
+        FakeModelHandler.scripts["m-duty"] = lambda d: {"role": "assistant", "content": "ok"}
+        self.assertEqual(self.request("PUT", "/v1/resources", {"duty_until": "x"})[0], 400)
+        self.assertEqual(self.request("PUT", "/v1/resources", {"duty_until": time.time() + 3600})[0], 200)
+        try:
+            sid = self.new_session()
+            self.wait_status(self.submit(sid, "去甲肾上腺素泵速", "m-duty")[1]["task_id"], ("completed",))
+            req = FakeModelHandler.requests[-1]
+            self.assertIn("值班模式", req["messages"][-1]["content"])
+            self.assertNotIn("值班模式", req["messages"][0]["content"])
+            sent = []
+            orig = self.srv.user_notify
+            self.srv.user_notify = lambda *a, **k: sent.append(a)
+            try:
+                self.srv.on_routine_finished({"name": "主动消息 · 总管", "notify": True}, {"status": "completed", "result": "明天有考试"})
+                self.assertEqual(sent, [])
+                self.srv.on_routine_finished({"name": "每日简报", "notify": True}, {"status": "completed", "result": "x"})
+                self.assertEqual(len(sent), 1)
+            finally:
+                self.srv.user_notify = orig
+        finally:
+            self.request("PUT", "/v1/resources", {"duty_until": 0})
+        sid = self.new_session()
+        self.wait_status(self.submit(sid, "你好", "m-duty")[1]["task_id"], ("completed",))
+        self.assertNotIn("值班模式", FakeModelHandler.requests[-1]["messages"][-1]["content"])
+
+
 if __name__ == "__main__":
     unittest.main()

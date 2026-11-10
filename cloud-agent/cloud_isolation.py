@@ -52,6 +52,7 @@ DEFAULTS = {
     "context_trim_tokens": 48000,      # 上下文估算超过这么多 token 时自动精简，0 = 不精简
     "bark_fallback": "auto",           # App 关闭时用 Bark 兜底：auto（配置了 Bark 就兜底）/ on / off
     "auto_title": True,                # 第一轮回答后给对话起一个短标题
+    "duty_until": 0,                   # 值班模式到这个时间（UNIX 秒）为止；0 = 没在值班
     "auto_model": False,               # 简单的短问题自动用 fast_model 回答（失败回到主模型）
     "fast_model": "",                  # 起标题 / 摘要用的小模型（与当前任务同一服务商），空 = 不调模型，只截取首句
     "failover": [],                    # 主模型连续失败（5xx / 超时 / 断连）时依次换用：[{"credential": 名称, "model": 模型}]，最多 3 个
@@ -169,6 +170,10 @@ def validate(patch, current):
             if not isinstance(v, bool):
                 raise SettingsError("auto_title 必须是布尔值")
             s[k] = v
+        elif k == "duty_until":
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or v < 0 or v > 4102444800:
+                raise SettingsError("duty_until 是 UNIX 时间戳（0 = 关闭）")
+            s[k] = float(v)
         elif k == "auto_model":
             if not isinstance(v, bool):
                 raise SettingsError("auto_model 必须是布尔值")
