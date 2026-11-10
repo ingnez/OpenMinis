@@ -338,3 +338,20 @@ extension AIChatView {
         }
     }
 }
+
+// MARK: - 看图页「问问这张图」
+
+extension AIChatView {
+    /// 把这张图（尽量用原件）放回输入框的附件里，再起个头，让你接着问
+    func askAboutImage(_ image: UIImage, source: ImageExport.Source?) {
+        Task { @MainActor in
+            if let source, let original = await ImageExport.loadOriginal(source) {
+                vm.addImageAttachment(data: original.data, fileExtension: original.type?.preferredFilenameExtension)
+            } else if let data = image.jpegData(compressionQuality: 0.9) {
+                vm.addImageAttachment(data: data, fileExtension: "jpg")
+            }
+            if vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { vm.inputText = "关于这张图片：" }
+            vm.requestComposerFocusSignal.send()
+        }
+    }
+}

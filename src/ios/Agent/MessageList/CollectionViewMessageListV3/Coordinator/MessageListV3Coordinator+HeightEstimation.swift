@@ -257,7 +257,7 @@ extension CollectionViewMessageListV3.Coordinator {
                     let attachCount = msg.attachments.isEmpty
                         ? msg.inputAttachments.count : msg.attachments.count
                     let imgH = UserAttachmentTileMetrics.blockHeight(
-                        count: attachCount,
+                        for: msg,
                         availableWidth: width - 32 /*cell*/ - 60 /*Spacer*/
                     )
                     return imgH + 44

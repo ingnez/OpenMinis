@@ -998,7 +998,8 @@ struct AIChatView: View {
             Text(AppLocalized("\(name) is unavailable. It may have been deleted or not yet synced from iCloud."))
         }
         .fullScreenCover(item: $imageGallery) { presentation in
-            MessageImageGallery(items: presentation.items, startIndex: presentation.startIndex)
+            MessageImageGallery(items: presentation.items, startIndex: presentation.startIndex,
+                                onAsk: presentation.onAsk ?? { img, source in askAboutImage(img, source: source) })
         }
         .onReceive(NotificationCenter.default.publisher(for: MarkdownImageTapRouter.tappedNotification)) { note in
             handleMarkdownImageTap(note)

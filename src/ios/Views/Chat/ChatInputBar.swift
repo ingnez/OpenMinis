@@ -179,6 +179,9 @@ struct InputAttachmentGridView: View {
     /// sibling the preview reported opening on the LAST chip regardless of
     /// which one was tapped.
     @State private var previewTarget: AttachmentPreviewTarget?
+    /// 正在裁剪 / 标注的图片；改完写回缓存文件，版本号 +1 让缩略图重画
+    @State private var markupTarget: AttachmentPreviewTarget?
+    @State private var editVersion: [UUID: Int] = [:]
 
     var body: some View {
         FlowLayout(hSpacing: 8, vSpacing: 8) {
@@ -188,6 +191,15 @@ struct InputAttachmentGridView: View {
                 }, onPreview: {
                     previewTarget = AttachmentPreviewTarget(id: attachment.id)
                 })
+                .id("\(attachment.id)-\(editVersion[attachment.id] ?? 0)")
+                .contextMenu {
+                    if attachment.kind == .image, attachment.loadState == .ready {
+                        Button { markupTarget = AttachmentPreviewTarget(id: attachment.id) } label: {
+                            Label("裁剪和标注", systemImage: "pencil.tip.crop.circle")
+                        }
+                    }
+                    Button(role: .destructive) { onRemove(attachment) } label: { Label("移除", systemImage: "trash") }
+                }
                 .opacity(draggingID == attachment.id ? 0.4 : 1)
                 .onDrag {
                     draggingID = attachment.id
@@ -205,6 +217,17 @@ struct InputAttachmentGridView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 6)  // room for × button overhang (offset y: -4)
+        .fullScreenCover(item: $markupTarget) { target in
+            if let a = attachments.first(where: { $0.id == target.id }) {
+                ImageMarkupSheet(fileURL: a.cacheURL) { url in
+                    if let thumb = downsampleImageData((try? Data(contentsOf: url)) ?? Data(), maxPixelSize: 256) {
+                        MinisMediaCache.shared.setThumbnail(thumb, for: url.path)
+                    }
+                    editVersion[a.id, default: 0] += 1
+                }
+                .ignoresSafeArea()
+            }
+        }
         .sheet(item: $previewTarget) { target in
             AttachmentPreviewSheet(
                 attachments: attachments.filter { $0.loadState == .ready },
@@ -785,6 +808,27 @@ enum UserAttachmentTileMetrics {
         let rows = ceil(CGFloat(count) / CGFloat(perRow))
         return rows * tile + (rows - 1) * gap + vStackSpacing
     }
+
+    /// 图片叠成一摞（ImageStackLayout），其余附件仍是 64pt 小方块；两块上下排，中间隔 `gap`。
+    static func blockHeight(imageCount: Int, otherCount: Int, availableWidth: CGFloat) -> CGFloat {
+        guard imageCount + otherCount > 0 else { return 0 }
+        let stack = ImageStackLayout.height(count: imageCount)
+        let tiles = otherCount > 0 ? blockHeight(count: otherCount, availableWidth: availableWidth) - vStackSpacing : 0
+        return stack + tiles + (imageCount > 0 && otherCount > 0 ? gap : 0) + vStackSpacing
+    }
+
+    /// 一条用户消息的附件块高度：发出后读 `attachments`，排队时读 `inputAttachments`
+    static func blockHeight(for message: ChatMessage, availableWidth: CGFloat) -> CGFloat {
+        let images: Int, total: Int
+        if message.attachments.isEmpty {
+            total = message.inputAttachments.count
+            images = message.inputAttachments.filter { $0.kind == .image }.count
+        } else {
+            total = message.attachments.count
+            images = message.attachments.filter { $0.isImage && $0.pastedId == nil }.count
+        }
+        return blockHeight(imageCount: images, otherCount: total - images, availableWidth: availableWidth)
+    }
 }
 
 struct UserAttachmentList: View {
@@ -803,14 +847,42 @@ struct UserAttachmentList: View {
         attachments.filter { $0.isImage }
     }
 
+    /// 叠成一摞的图片（贴的文字引用不算）
+    private var stackImages: [AttachmentMeta] {
+        attachments.filter { $0.isImage && $0.pastedId == nil }
+    }
+
     var body: some View {
+        let images = stackImages
+        let others = attachments.filter { !($0.isImage && $0.pastedId == nil) }
+        VStack(alignment: .trailing, spacing: UserAttachmentTileMetrics.gap) {
+            if !images.isEmpty {
+                ImageCardStack(sources: images.map { meta in
+                    ImageStackSource(id: minisMediaCacheKey(for: meta.minisURL), load: { await Self.loadDisplay(meta, maxPixel: 640) })
+                }, onOpen: { i in if images.indices.contains(i) { openGallery(startingAt: images[i]) } })
+            }
+            if !others.isEmpty { tiles(others) }
+        }
+    }
+
+    /// 卡片用的小图（640px），走共享缓存
+    @MainActor
+    static func loadDisplay(_ meta: AttachmentMeta, maxPixel: CGFloat) async -> UIImage? {
+        let key = "stack\(Int(maxPixel)):\(minisMediaCacheKey(for: meta.minisURL))"
+        if let cached = NativeMediaImageCache.shared.image(for: key) { return cached }
+        guard let url = URL(string: meta.minisURL), let fileURL = resolveMinisFileURLCached(url: url) else { return nil }
+        let img = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard let data = try? Data(contentsOf: fileURL) else { return nil }
+            return downsampleImageData(data, maxPixelSize: maxPixel)
+        }.value
+        if let img { NativeMediaImageCache.shared.set(img, for: key) }
+        return img
+    }
+
+    private func tiles(_ list: [AttachmentMeta]) -> some View {
         FlowLayout(hSpacing: UserAttachmentTileMetrics.gap, vSpacing: UserAttachmentTileMetrics.gap, alignment: .trailing) {
-            ForEach(attachments) { meta in
-                if meta.isImage {
-                    AsyncImageTile(meta: meta, tileSize: tileSize) {
-                        openGallery(startingAt: meta)
-                    }
-                } else if meta.isVideo {
+            ForEach(list) { meta in
+                if meta.isVideo {
                     AsyncVideoTile(meta: meta, tileSize: tileSize)
                 } else if meta.pastedId != nil {
                     pastedTile(meta)
@@ -990,12 +1062,32 @@ struct QueuedAttachmentPreview: View {
     private let tileSize: CGFloat = UserAttachmentTileMetrics.tile
 
     var body: some View {
+        let images = attachments.filter { $0.kind == .image }
+        let others = attachments.filter { $0.kind != .image }
+        VStack(alignment: .trailing, spacing: UserAttachmentTileMetrics.gap) {
+            if !images.isEmpty {
+                // 排队中：和发出后同一摞卡片（行高不跳），上面转圈表示还没发出
+                ImageCardStack(sources: images.map { a in
+                    ImageStackSource(id: a.cacheURL.absoluteString, load: {
+                        let url = a.cacheURL
+                        return await Task.detached { () -> UIImage? in
+                            guard let d = try? Data(contentsOf: url) else { return nil }
+                            return downsampleImageData(d, maxPixelSize: 640)
+                        }.value
+                    }, state: a.loadState == .failed ? .failed : .uploading(nil))
+                }, onOpen: { _ in })
+                .opacity(0.85)
+            }
+            if !others.isEmpty { queuedTiles(others) }
+        }
+    }
+
+    private func queuedTiles(_ list: [InputAttachment]) -> some View {
         FlowLayout(hSpacing: UserAttachmentTileMetrics.gap, vSpacing: UserAttachmentTileMetrics.gap, alignment: .trailing) {
-            ForEach(attachments) { attachment in
+            ForEach(list) { attachment in
                 switch attachment.kind {
                 case .image:
-                    AsyncCacheURLImageTile(cacheURL: attachment.cacheURL, tileSize: tileSize)
-                        .opacity(0.7)
+                    EmptyView()
                 case .video:
                     placeholderTile(icon: "film", fileName: attachment.fileName)
                 case .document:

@@ -130,7 +130,7 @@ extension CollectionViewMessageListV3.Coordinator {
             let usableTextWidth = max(cvWidth - 32 /*cell*/ - 60 /*Spacer*/ - 28 /*bubble pad*/ - withdrawButtonWidth, 80)
 
             let attachH = UserAttachmentTileMetrics.blockHeight(
-                count: attachCount,
+                for: message,
                 availableWidth: cvWidth - 32 /*cell*/ - 60 /*Spacer*/
             )
 
