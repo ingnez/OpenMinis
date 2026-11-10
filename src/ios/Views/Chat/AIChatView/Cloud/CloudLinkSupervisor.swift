@@ -11,7 +11,7 @@ import BackgroundTasks
 final class CloudLinkSupervisor: ObservableObject {
     static let shared = CloudLinkSupervisor()
     /// App 内置的服务器 Agent 版本（与 cloud_agent_server.AGENT_VERSION 一致，测试会核对）
-    static let bundledAgentVersion = "2.5.2"
+    static let bundledAgentVersion = "2.6.0"
     nonisolated static let refreshTaskId = "com.openminis.app.cloud-refresh"
     nonisolated static let barkFallbackKey = "OpenMinisCloud_barkFallback"   // "auto" / "on" / "off"
 
@@ -39,6 +39,7 @@ final class CloudLinkSupervisor: ObservableObject {
     private var lastPathSignature = ""
     private var loopTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
+    private var presenceTask: Task<Void, Never>?
     private var feedTask: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
     private let conn = CloudConnection.shared
@@ -91,6 +92,7 @@ final class CloudLinkSupervisor: ObservableObject {
             conn.markStale()        // 挂起后隧道多半已死：回来后的第一次请求先探测
             heartbeatTask?.cancel()
             postPresence(foreground: false)
+            startBackgroundPresence()
             Self.scheduleRefresh()
             return
         }
@@ -165,6 +167,19 @@ final class CloudLinkSupervisor: ObservableObject {
         if let d = h["desktop"] as? [String: Any] {
             desktopMissing = (d["installed"] as? Bool) == false
             desktopProblem = (d["ok"] as? Bool) == false && !desktopMissing ? d["message"] as? String : nil
+        }
+    }
+
+    /// 进程还活着（后台没被挂起）时每 25 秒报到一次：服务器据此只走 App 自己的本地通知，不发外部推送。
+    /// 被系统挂起或杀掉后报到自然停下，约 90 秒后服务器改用设置里的推送渠道兜底。
+    private func startBackgroundPresence() {
+        presenceTask?.cancel()
+        presenceTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 25_000_000_000)
+                guard let self, !Task.isCancelled, self.inBackground else { return }
+                self.postPresence(foreground: false)
+            }
         }
     }
 
@@ -260,7 +275,14 @@ final class CloudLinkSupervisor: ObservableObject {
         let center = UNUserNotificationCenter.current()
         for item in items {
             let sid = item["session_id"] as? String
+            if item["kind"] as? String == "bots_changed" {
+                // 主 Bot 新建 / 删除 / 恢复了 Bot：首页马上刷新，不弹通知
+                Task { await CloudBotHomeModel.shared.refresh() }
+                continue
+            }
             if !inBackground, let sid, sid == visibleSessionId { continue }
+            // 服务器已经用 Bark / ntfy / Telegram 推过（那时 App 不在）：不再弹第二次
+            if item["external"] as? Bool == true { continue }
             let content = UNMutableNotificationContent()
             content.title = item["title"] as? String ?? "云电脑"
             content.body = item["body"] as? String ?? ""
