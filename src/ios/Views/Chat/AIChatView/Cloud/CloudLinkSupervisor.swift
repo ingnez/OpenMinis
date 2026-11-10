@@ -264,6 +264,11 @@ final class CloudLinkSupervisor: ObservableObject {
             let content = UNMutableNotificationContent()
             content.title = item["title"] as? String ?? "云电脑"
             content.body = item["body"] as? String ?? ""
+            if let bid = item["bot_id"] as? String, CloudBotLock.isLockedStored(bid) {
+                // 旧服务器不会替我们隐藏：本机再兜一层
+                content.title = "OpenMinis"
+                content.body = "有一条新消息（已上锁的 Bot）"
+            }
             content.sound = .default
             content.threadIdentifier = "cloud-" + (item["bot_id"] as? String ?? sid ?? "main")
             var info: [String: Any] = ["cloud_kind": item["kind"] as? String ?? ""]

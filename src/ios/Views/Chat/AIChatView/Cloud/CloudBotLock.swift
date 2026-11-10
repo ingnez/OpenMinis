@@ -7,7 +7,7 @@ import UIKit
 @MainActor
 final class CloudBotLock: ObservableObject {
     static let shared = CloudBotLock()
-    private static let key = "OpenMinisCloud_lockedBots"
+    nonisolated private static let key = "OpenMinisCloud_lockedBots"
 
     @Published private(set) var locked: Set<String>
     @Published private(set) var unlocked: Set<String> = []
@@ -21,6 +21,18 @@ final class CloudBotLock: ObservableObject {
     }
 
     func isLocked(_ botId: String) -> Bool { locked.contains(botId) }
+
+    /// 给通知、实时活动这类不在主线程视图里的地方用：直接读本机记录
+    nonisolated static func isLockedStored(_ botId: String) -> Bool {
+        (UserDefaults.standard.stringArray(forKey: key) ?? []).contains(botId)
+    }
+
+    /// 告诉云端哪些 Bot 上了锁，让 Bark 等推送也不带内容；失败下次刷新再同步
+    func syncToServer() async {
+        _ = try? await CloudQuiet.retry(3, {
+            try await CloudConnection.shared.request(method: "PUT", path: "/v1/resources", body: ["private_bots": Array(locked).sorted()])
+        })
+    }
     func needsUnlock(_ botId: String) -> Bool { locked.contains(botId) && !unlocked.contains(botId) }
 
     func set(_ botId: String, locked on: Bool) async -> Bool {
@@ -30,6 +42,7 @@ final class CloudBotLock: ObservableObject {
         if on { locked.insert(botId) } else { locked.remove(botId) }
         unlocked.insert(botId)
         UserDefaults.standard.set(Array(locked), forKey: Self.key)
+        Task { await syncToServer() }
         return true
     }
 

@@ -918,13 +918,15 @@ struct CloudSessionView: View {
         .onChange(of: activeTaskStatus) { status in
             // 多 Bot 任务也进灵动岛 / 锁屏实时活动（与本地模式同一套）
             guard let theme else { return }
+            // 上锁的 Bot：灵动岛 / 锁屏不显示名字、工具和回复内容
+            let locked = CloudBotLock.isLockedStored(theme.botId)
             switch status {
             case "running", "queued", "waiting_user":
-                CloudBotLiveActivity.began(sessionId: sessionId, botName: theme.name)
+                CloudBotLiveActivity.began(sessionId: sessionId, botName: locked ? "已上锁的 Bot" : theme.name)
                 if status == "waiting_user" { CloudBotLiveActivity.progress(sessionId: sessionId, toolName: "", status: "等你确认") }
             case "completed":
                 let summary = turns.last(where: { $0.message.role == .assistant })?.message.content ?? liveText
-                CloudBotLiveActivity.finished(sessionId: sessionId, summary: CloudMessageText.display(summary).text, succeeded: true)
+                CloudBotLiveActivity.finished(sessionId: sessionId, summary: locked ? "已完成" : CloudMessageText.display(summary).text, succeeded: true)
             case "failed", "cancelled", "interrupted", "limit_reached":
                 CloudBotLiveActivity.finished(sessionId: sessionId, summary: "", succeeded: false)
             default:
@@ -932,7 +934,7 @@ struct CloudSessionView: View {
             }
         }
         .onChange(of: taskEvents.count) { _ in
-            guard theme != nil, let ev = taskEvents.last(where: { ($0["type"] as? String) == "tool_call" }) else { return }
+            guard let theme, !CloudBotLock.isLockedStored(theme.botId), let ev = taskEvents.last(where: { ($0["type"] as? String) == "tool_call" }) else { return }
             let payload = ev["payload"] as? [String: Any] ?? [:]
             let name = payload["tool"] as? String ?? payload["name"] as? String ?? ""
             let args = payload["arguments"] as? [String: Any] ?? [:]

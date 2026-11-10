@@ -220,5 +220,23 @@ class WorkflowTriggerTests(CloudServerTestCase):
             self.srv.launch_routine_run = orig
 
 
+
+class PrivateBotNotifyTests(CloudServerTestCase):
+    def test_01_locked_bot_notifications_are_redacted(self):
+        self.assertEqual(self.request("PUT", "/v1/resources", {"private_bots": ["secretbot"]})[0], 200)
+        self.assertEqual(self.request("PUT", "/v1/resources", {"private_bots": ["Bad Id"]})[0], 400)
+        added = []
+        orig = self.srv.APP_FEED.add
+        self.srv.APP_FEED.add = lambda kind, title, body, **k: added.append((title, body))
+        try:
+            self.srv.user_notify(None, "reply", "秘密 Bot 回复了", "化验结果：阳性", bot_id="secretbot")
+            self.srv.user_notify(None, "reply", "总管回复了", "明天见", bot_id="other")
+        finally:
+            self.srv.APP_FEED.add = orig
+            self.request("PUT", "/v1/resources", {"private_bots": []})
+        self.assertEqual(added[0], ("OpenMinis", "有一条新消息（已上锁的 Bot）"))
+        self.assertEqual(added[1], ("总管回复了", "明天见"))
+
+
 if __name__ == "__main__":
     unittest.main()

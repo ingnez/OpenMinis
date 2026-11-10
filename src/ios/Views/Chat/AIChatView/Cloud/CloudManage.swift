@@ -142,7 +142,11 @@ final class CloudSearchModel: ObservableObject {
                 let r = try await CloudConnection.shared.request(method: "GET", path: "/v1/search?q=" + CloudQuery.encode(String(q.prefix(100))))
                 guard !Task.isCancelled else { return }
                 let items = r["results"] as? [[String: Any]] ?? []
-                self.hits = items.enumerated().compactMap { CloudSearchHit.parse($0.element, index: $0.offset) }
+                // 上锁 Bot 的对话不出现在搜索结果里（包括它在群聊里说的话）
+                self.hits = items.enumerated().compactMap { pair -> CloudSearchHit? in
+                    if let bid = pair.element["bot_id"] as? String, CloudBotLock.isLockedStored(bid) { return nil }
+                    return CloudSearchHit.parse(pair.element, index: pair.offset)
+                }
                 self.errorText = nil
             } catch {
                 if !Task.isCancelled { self.errorText = error.localizedDescription }

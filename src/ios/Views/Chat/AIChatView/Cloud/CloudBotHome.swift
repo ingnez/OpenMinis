@@ -169,9 +169,16 @@ final class CloudBotHomeModel: ObservableObject {
             publishToWidget()
             // 旧版服务器没有群聊接口：忽略错误
             groups = (try? await CloudGroupService.list()) ?? groups
-            if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/resources"),
-               let until = (r["settings"] as? [String: Any])?["duty_until"] as? Double {
-                dutyUntil = until > Date().timeIntervalSince1970 ? Date(timeIntervalSince1970: until) : nil
+            if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/resources") {
+                let settings = r["settings"] as? [String: Any] ?? [:]
+                if let until = settings["duty_until"] as? Double {
+                    dutyUntil = until > Date().timeIntervalSince1970 ? Date(timeIntervalSince1970: until) : nil
+                }
+                // 云端记录的上锁 Bot 和本机不一致（比如重装了云端）就再同步一次
+                let lock = CloudBotLock.shared
+                if let serverLocked = settings["private_bots"] as? [String], Set(serverLocked) != lock.locked {
+                    Task { await lock.syncToServer() }
+                }
             }
             // 旧服务器没有 /v1/feed：保持空
             if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/feed"),
