@@ -217,6 +217,10 @@ enum CloudBotService {
     static func newIncognitoSession(_ bot: CloudBot) async throws -> String {
         let resp = try await connected().request(method: "POST", path: "/v1/sessions",
                                                  body: ["title": bot.label + " · 无痕", "persona_id": bot.id, "incognito": true])
+        // 旧版服务器不认 incognito，会建成普通对话：这时不能当无痕用
+        guard resp["incognito"] as? Bool == true else {
+            throw NSError(domain: "OpenMinisCloud", code: 1, userInfo: [NSLocalizedDescriptionKey: "云端版本太旧，不支持无痕对话；请先在设置里更新云端"])
+        }
         return resp["session_id"] as? String ?? ""
     }
 

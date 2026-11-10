@@ -561,6 +561,7 @@ struct CloudBotChatView: View {
     @ObservedObject private var lock = CloudBotLock.shared
     /// 当前是无痕对话时记下它和之前的对话，结束后删掉并回到原来的对话
     @State private var incognito: (id: String, previous: String?)?
+    @State private var incognitoError: String?
 
     var body: some View {
         Group {
@@ -652,6 +653,9 @@ struct CloudBotChatView: View {
             }
         }
         .task { await prepare() }
+        .alert("没能开无痕对话", isPresented: Binding(get: { incognitoError != nil }, set: { if !$0 { incognitoError = nil } })) {
+            Button("好", role: .cancel) {}
+        } message: { Text(incognitoError ?? "") }
         .onDisappear { model.markSeen(botId); CloudBotSpeaker.stop()
             // 推到电脑 / 资料页时也会触发 onDisappear：这时不结束无痕
             if !showComputer && !showDetail { endIncognito(restore: true) }
@@ -699,7 +703,7 @@ struct CloudBotChatView: View {
             incognito = (sid, sessionId)
             sessionId = sid
         } catch {
-            errorText = error.localizedDescription
+            incognitoError = error.localizedDescription
         }
     }
 
