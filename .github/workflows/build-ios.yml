@@ -7,6 +7,11 @@ on:
         description: "只跑几分钟的云端 Swift 快速类型检查（推送前预检），不构建 IPA"
         type: boolean
         default: false
+      mac_runner:
+        description: "macOS 机器标签。macos-26 连续两次 15 分钟都没分到机器（runner 为空、0 步），默认改用 macos-15 + Xcode 26"
+        type: choice
+        options: [macos-15, macos-26, macos-latest]
+        default: macos-15
 
 permissions:
   contents: read
@@ -23,10 +28,17 @@ jobs:
   # 所以其余检查都放到下面的 Linux 任务里，几分钟就有结果。
   quick-typecheck:
     if: ${{ inputs.quick }}
-    runs-on: macos-26
+    runs-on: ${{ inputs.mac_runner || 'macos-15' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: 选择 Xcode 26（macos-15 / latest 镜像上默认可能是 Xcode 16）
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$X" ]; then sudo xcode-select -s "$X/Contents/Developer"; fi
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcodebuild -version | head -1 | grep -qE 'Xcode 2[6-9]' || { echo "::error::这台机器上没有 Xcode 26（$(xcodebuild -version | head -1)），换 mac_runner 再试"; exit 1; }
       - name: Swift 文件都在 Xcode 工程里
         run: python3 scripts/check_xcode_membership.py
       - name: 实时语音协议回归与 iOS 类型检查
@@ -210,7 +222,7 @@ jobs:
             cloud-proxy.log
   build:
     if: ${{ !inputs.quick }}
-    runs-on: macos-26
+    runs-on: ${{ inputs.mac_runner || 'macos-15' }}
     timeout-minutes: 350
 
     steps:
@@ -219,6 +231,14 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+
+      - name: 选择 Xcode 26（macos-15 / latest 镜像上默认可能是 Xcode 16）
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$X" ]; then sudo xcode-select -s "$X/Contents/Developer"; fi
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcodebuild -version | head -1 | grep -qE 'Xcode 2[6-9]' || { echo "::error::这台机器上没有 Xcode 26（$(xcodebuild -version | head -1)），换 mac_runner 再试"; exit 1; }
 
       - name: iOS 16 API 兼容预检
         run: |
