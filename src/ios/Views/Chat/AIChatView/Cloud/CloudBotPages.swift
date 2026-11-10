@@ -515,7 +515,9 @@ struct CloudBotLibraryView: View {
         }
         .navigationTitle("资料库")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(item: $pendingPage) { p in CloudPageDetailView(pageId: p.id, title: p.title) }
+        .navigationDestination(isPresented: Binding(get: { pendingPage != nil }, set: { if !$0 { pendingPage = nil } })) {
+            if let p = pendingPage { CloudPageDetailView(pageId: p.id, title: p.title) }
+        }
         .quickLookPreview($quickLook)
         .task { await load() }
         .refreshable { await load() }
@@ -754,7 +756,7 @@ struct CloudComputerView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .opacity(0.01).frame(width: 1, height: 1)
-                .onChange(of: keyboardText) { _, value in forwardKeyboard(value) }
+                .onChange(of: keyboardText) { value in forwardKeyboard(value) }
                 .onSubmit { send(["action": "key", "key": "Return"]); keyboardFocused = true }
         }
         .safeAreaInset(edge: .top) { topBar }

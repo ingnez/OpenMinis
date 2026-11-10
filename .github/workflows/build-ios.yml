@@ -52,6 +52,17 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: iOS 16 API 兼容预检
+        run: |
+          # 部署目标是 iOS 16：禁止双参数 onChange（iOS 17+）；云端页面里禁止未加 #available 的 iOS 17 专属 API
+          if grep -rnE --include='*.swift' 'onChange\(of:[^)]*\) \{ *[_a-zA-Z]+ *, ' src/ios | grep -v '/MinisTests/'; then
+            echo "::error::发现 iOS 17 才有的双参数 onChange，请改成 .onChange(of: x) { newValue in ... }"; exit 1
+          fi
+          if grep -rnE --include='*.swift' 'AVAudioApplication|navigationDestination\(item:|@Observable\b|ContentUnavailableView|\.sensoryFeedback|\.symbolEffect|\.scrollPosition\(' src/ios/Views/Chat/AIChatView/Cloud src/ios/Views/ContentView; then
+            echo "::error::云端 / 首页代码使用了 iOS 17+ API，请改用 iOS 16 写法或用 #available 包起来"; exit 1
+          fi
+          echo "iOS 16 API 预检通过"
+
       - name: 云端 Agent 服务集成验证与资源打包
         run: |
           set -o pipefail
@@ -64,7 +75,7 @@ jobs:
           /tmp/cloud-model-tests | tee cloud-model-test.log
           swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift -o /tmp/cloud-chat-tests
           /tmp/cloud-chat-tests | tee cloud-chat-test.log
-          xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios17.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift 2>&1 | tee cloud-connection-typecheck.log
+          xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift 2>&1 | tee cloud-connection-typecheck.log
 
       - name: Show toolchain
         run: |

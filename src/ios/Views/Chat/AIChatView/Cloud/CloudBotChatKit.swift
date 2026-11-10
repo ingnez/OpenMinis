@@ -428,7 +428,7 @@ final class CloudDictation: ObservableObject {
                     self.errorText = "请在 设置 → 隐私 中允许语音识别"
                     return
                 }
-                AVAudioApplication.requestRecordPermission { ok in
+                AVAudioSession.sharedInstance().requestRecordPermission { ok in
                     Task { @MainActor in
                         if ok { self.begin(language: language) } else { self.errorText = "请在 设置 → 隐私 中允许麦克风" }
                     }
@@ -536,7 +536,7 @@ struct CloudBotVoiceCallView: View {
                 dictation.transcript = ""
             }
         }
-        .onChange(of: isWorking) { _, working in
+        .onChange(of: isWorking) { working in
             // Bot 说完（任务结束后朗读）再继续听；朗读由对话页负责
             if !working {
                 Task {

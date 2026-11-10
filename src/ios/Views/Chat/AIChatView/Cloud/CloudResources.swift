@@ -77,7 +77,7 @@ struct CloudNumberRow: View {
             }
             if let footnote { Text(footnote).font(.caption2).foregroundStyle(.secondary) }
         }
-        .onChange(of: value) { _, v in value = min(max(v, range.lowerBound), range.upperBound) }
+        .onChange(of: value) { v in value = min(max(v, range.lowerBound), range.upperBound) }
     }
 }
 

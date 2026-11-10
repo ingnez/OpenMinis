@@ -794,13 +794,13 @@ struct CloudSessionView: View {
                 }
             }
         }
-        .onChange(of: messages.count) { _, _ in
+        .onChange(of: messages.count) { _ in
             // 语音对话中：Bot 回复后按它的语音设置朗读
             guard showVoiceCall, let theme, let last = messages.last, last["role"] as? String == "assistant",
                   let text = last["content"] as? String, !text.isEmpty else { return }
             CloudBotSpeaker.speak(CloudMessageText.display(text).text, botId: theme.botId)
         }
-        .onChange(of: dictation.transcript) { _, text in
+        .onChange(of: dictation.transcript) { text in
             guard dictation.isRecording else { return }
             inputPrompt = dictationBase.isEmpty ? text : dictationBase + " " + text
         }
