@@ -481,3 +481,10 @@
 - 模型能力登记 `model_caps`：只记有依据的结论——服务商 `/models` 写明了输入模态，或调用时服务商明确报错不支持图片。没有依据就照常发图片，不按模型名猜。
 - 确实不能看图时：用资源设置 `vision_model`（同一服务商；空 = 登记里能看图的模型）把图片读成文字（同一张图只读一次），事件 `vision_route {model, reason}`，App 显示「用 X 读图」。没有可用的看图模型：立即回复请用户在设置里选看图模型，不调用主模型。
 - 所有 Bot 的系统提示加了附件与等待规矩；`LoopGuard`：安装 / 等待类命令累计超过 60 秒或 4 次、同一步原样重复 3 次，就不再执行，返回 `blocked` 提示让模型停下来说明。
+
+## 本地交接给 Bot（2.14.0）
+
+`POST /v1/handoff`（请求体上限 36 MB）：`{goal, summary?, progress?, outputs?, remaining?, files?: [{filename, data_base64}], target_bot?, model?, provider?}`。
+没有 `target_bot` 时交给主 Bot，消息里提示它自己做或 `delegate_task` 给最合适的 Bot、长活用 `spawn_task`；有就直接交给它。
+文件存进目标会话工作区 `attachments/`（≤10 个、每个 ≤20 MB），消息文字经过脱敏。进 Bot 那条连续对话（它正忙就另开会话）。
+返回 `{session_id, task_id, bot_id, bot_name, routed, files}`；完成时照常推送通知。

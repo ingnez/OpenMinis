@@ -67,6 +67,7 @@ import gzip
 from collections import deque
 import cloud_desktop
 import cloud_vision
+import cloud_handoff
 import cloud_secrets
 import cloud_policy
 import cloud_cron
@@ -562,7 +563,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.13.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.14.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -2856,6 +2857,75 @@ def tool_worker(task_id, session_id, name, args, model, provider_config):
         started = _worker_launch(wid)
         return {"id": wid, "status": "running" if started else "queued"}
     return {"error": "unknown tool"}
+
+def _handoff_session(bot_id, title):
+    """交接进 Bot 那条连续对话（空闲时）；它正忙就另开一个会话，免得插进正在做的事。"""
+    conn = get_db_connection()
+    try:
+        r = conn.execute("SELECT s.session_id FROM sessions s WHERE s.persona_id = ? AND s.title NOT LIKE '例行任务：%' "
+                         "AND s.session_id NOT IN (SELECT worker_session FROM bot_workers) "
+                         "AND s.session_id NOT IN (SELECT to_session FROM bot_delegations) ORDER BY s.created_at DESC LIMIT 1",
+                         (bot_id,)).fetchone()
+        sid = r[0] if r else None
+        if sid and conn.execute("SELECT 1 FROM tasks WHERE session_id = ? AND status IN ('running', 'waiting_user')", (sid,)).fetchone():
+            sid = None
+        if not sid:
+            sid = "sess_" + uuid.uuid4().hex[:12]
+            conn.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, NULL, ?, '', ?, ?)",
+                         (sid, title, time.time(), bot_id))
+            conn.commit()
+        return sid
+    finally:
+        conn.close()
+
+def start_handoff(req):
+    """本地模式交接：打包的上下文和文件交给指定 Bot；没指定就交给主 Bot 分派。返回会话 / 任务 / Bot。"""
+    fields, files = cloud_handoff.clean(req)
+    target_id = req.get("target_bot")
+    routed = not target_id
+    if routed:
+        target_id = primary_bot_id()
+        if not target_id:
+            raise cloud_handoff.HandoffError("还没有主 Bot，请先在 Bot 模式里设置一个主 Bot")
+    bot = get_persona(target_id)
+    if not bot:
+        raise cloud_handoff.HandoffError(f"没有这个 Bot：{target_id}")
+    if bot.get("model") and bot.get("credential"):
+        run_model = bot["model"]
+        provider, _st, err = resolve_provider({"protocol": "chat", "credential": bot["credential"]})
+    else:
+        run_model = req.get("model") if isinstance(req.get("model"), str) and req.get("model") else None
+        provider, _st, err = resolve_provider(req.get("provider") or {})
+    if err or not provider or not run_model:
+        raise cloud_handoff.HandoffError(f"{bot.get('name') or target_id} 没有可用的模型：{err or '请在 Bot 设置里选模型'}")
+    sid = _handoff_session(target_id, "本地交接：" + (fields.get("goal") or fields.get("summary") or "")[:40])
+    saved = []
+    for f in files:
+        try:
+            data = base64.b64decode(f["data_base64"], validate=True)
+        except (ValueError, TypeError):
+            raise cloud_handoff.HandoffError(f"文件 {f['filename']} 不是合法的 base64")
+        if len(data) > cloud_handoff.MAX_FILE_BYTES:
+            raise cloud_handoff.HandoffError(f"文件 {f['filename']} 超过 20 MB")
+        saved.append(save_upload(sid, f["filename"], data)["file_path"])
+    content = cloud_handoff.compose(fields, saved, routed, redact=cloud_vault.redact)
+    now = time.time()
+    tid = "task_" + uuid.uuid4().hex[:12]
+    conn = get_db_connection()
+    try:
+        conn.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
+                     (tid, sid, run_model, now))
+        conn.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'user', ?, ?, ?)",
+                     (sid, content, now, json.dumps({"handoff": {"from": "local", "routed": routed}}, ensure_ascii=False)))
+        conn.commit()
+    finally:
+        conn.close()
+    with active_tasks_lock:
+        active_tasks[tid] = {"process": None, "cancelled": False, "pid": None}
+    log_event(tid, "status", {"message": "已从本地模式接手" + ("（主 Bot 分派）" if routed else "")})
+    threading.Thread(target=run_agent_task, args=(tid, sid, content, run_model, provider, ""), daemon=True, name="handoff").start()
+    return {"session_id": sid, "task_id": tid, "bot_id": target_id, "bot_name": bot.get("name") or target_id,
+            "routed": routed, "files": saved}
 
 def start_delegation(task_id, session_id, kind, target_id, body, priority="normal", report_back=True,
                      model=None, provider_config=None, waiting=False):
@@ -6360,7 +6430,8 @@ class Handler(BaseHTTPRequestHandler):
             return None
 
         # 附件上传（base64）放宽到 36MB，其余接口仍限制 5MB
-        limit = 36 * 1024 * 1024 if re.match(r"^/v1/sessions/[A-Za-z0-9_-]{1,64}/upload$", urlparse(self.path).path) else 5 * 1024 * 1024
+        _lp = urlparse(self.path).path
+        limit = 36 * 1024 * 1024 if (re.match(r"^/v1/sessions/[A-Za-z0-9_-]{1,64}/upload$", _lp) or _lp == "/v1/handoff") else 5 * 1024 * 1024
         if length < 0 or length > limit:
             self._send(400 if length < 0 else 413, {"error": "Invalid body size or exceeds limit"})
             return None
@@ -6905,6 +6976,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.startswith("/v1/workers/"):
             self._workers("POST", path, {}, req_json)
+            return
+        if path == "/v1/handoff":
+            try:
+                self._send(200, start_handoff(req_json))
+            except cloud_handoff.HandoffError as e:
+                self._send(400, {"error": str(e)})
             return
         m_react = re.match(r"^/v1/sessions/(sess_[a-f0-9]{12})/messages/(\d{1,12})/reaction$", path)
         if m_react:
