@@ -78,6 +78,28 @@ enum CloudVoiceBridge {
         return "云电脑任务 \(taskId) 已运行 30 分钟仍未结束，可稍后再问进度。"
     }
 
+    /// 云端 Bot 实时通话挂断后，把文字记录追加进这个 Bot 的会话（不会触发 Bot 运行）。
+    /// 失败返回提示文字；旧服务器（2.5.0 以前）没有这个接口时提示更新。
+    static func saveTranscript(sessionId: String, lines: [[String: Any]]) async -> String? {
+        guard !sessionId.isEmpty, !lines.isEmpty else { return nil }
+        do {
+            let conn = CloudConnection.shared
+            if !conn.isConnected { try await conn.connect() }
+            // 同一份记录带同一个 nonce：重试时服务器不会重复写入
+            let body: [String: Any] = ["lines": lines, "nonce": UUID().uuidString]
+            _ = try await CloudQuiet.retry(3) {
+                try await conn.request(method: "POST", path: "/v1/sessions/\(sessionId)/transcript", body: body)
+            }
+            return nil
+        } catch {
+            let text = error.localizedDescription
+            if text.contains("版本过旧") {
+                return "云端服务版本较旧，通话记录没有存进对话。到设置里「更新云端服务」后就能保存。"
+            }
+            return "通话记录没有存进对话：\(text)"
+        }
+    }
+
     private static func startTask(prompt: String) async throws -> String {
         let d = UserDefaults.standard
         let instanceId = d.string(forKey: "OpenMinisCloud_selectedInstanceId") ?? ""

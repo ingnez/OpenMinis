@@ -20,7 +20,17 @@ struct RealtimeVoiceView: View {
     @StateObject private var catalog = RealtimeModelCatalog()
     @AppStorage("realtimeVoice.modelsByProvider") private var modelSelections = "{}"
     @State private var selectionProvider = ""
+    private var title = "实时语音"
+    private var fallbackTitle: String?
+    private var onFallback: (() -> Void)?
     init(chat: AIChatViewModel) { _session = StateObject(wrappedValue: RealtimeVoiceSession(chat: chat)) }
+    /// 接到其它对话（如云端 Bot）；连不上时可以退回到对方提供的轮流模式
+    init(host: RealtimeVoiceHost, title: String, fallbackTitle: String? = nil, onFallback: (() -> Void)? = nil) {
+        _session = StateObject(wrappedValue: RealtimeVoiceSession(host: host))
+        self.title = title
+        self.fallbackTitle = fallbackTitle
+        self.onFallback = onFallback
+    }
     private var supportedProviders: [ProviderInstance] {
         providers.instances.filter { $0.isEnabled && ($0.providerType == .openAI || $0.providerType == .openAIResponses || $0.providerType == .gemini) && $0.credentialType == .apiKey }
     }
@@ -78,12 +88,17 @@ struct RealtimeVoiceView: View {
                     } label: { Label("开始实时通话", systemImage: "phone.fill").frame(maxWidth: .infinity) }
                         .buttonStyle(.borderedProminent).controlSize(.large).padding(.horizontal, 28)
                         .disabled(providerID.isEmpty || model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if let onFallback {
+                        Button { session.finish(); onFallback() } label: {
+                            Label(fallbackTitle ?? "改用轮流通话", systemImage: "arrow.triangle.2.circlepath")
+                        }.font(.callout)
+                    }
                 }
                 Text("语音由所选实时模型处理，按服务商计费。文字记录在挂断后保存；退出或切到后台会挂断。")
                     .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 24)
             }
             .padding(.bottom, 16)
-            .navigationTitle("实时语音").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) { Button("关闭") { session.finish(); dismiss() } }
                 ToolbarItem(placement: .navigationBarTrailing) {

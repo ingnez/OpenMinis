@@ -608,6 +608,8 @@ struct CloudBotVoiceCallView: View {
     let theme: CloudBotChatTheme
     let isWorking: Bool
     let progress: String
+    /// 切到实时双向通话；nil 时不显示入口
+    var onRealtime: (() -> Void)? = nil
     let onUtterance: (String) -> Void
     @StateObject private var dictation = CloudDictation()
     @Environment(\.dismiss) private var dismiss
@@ -623,6 +625,12 @@ struct CloudBotVoiceCallView: View {
                 Text(dictation.transcript).font(.body).multilineTextAlignment(.center).padding(.horizontal, 32).lineLimit(4)
             }
             if let err = dictation.errorText { Text(err).font(.footnote).foregroundStyle(.red) }
+            if let onRealtime {
+                Button { dictation.stop(); onRealtime() } label: {
+                    Label("切到实时双向通话（可随时插话）", systemImage: "waveform.circle")
+                }
+                .font(.footnote)
+            }
             Spacer()
             HStack(spacing: 40) {
                 Button {

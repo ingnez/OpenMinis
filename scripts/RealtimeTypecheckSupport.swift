@@ -58,4 +58,5 @@ extension Notification.Name { static let newChatRequested = Notification.Name("n
  static var isAvailable: Bool { false }
  static func call(name: String, arguments: [String: Any]) async -> (output: String, watchTaskId: String?) { ("{}", nil) }
  static func waitForResult(taskId: String) async -> String { "" }
+ static func saveTranscript(sessionId: String, lines: [[String: Any]]) async -> String? { nil }
 }

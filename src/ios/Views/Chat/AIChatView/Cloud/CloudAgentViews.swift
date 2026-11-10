@@ -625,6 +625,9 @@ struct CloudSessionView: View {
     @State private var showScanner = false
     @State private var showFiles = false
     @State private var showVoiceCall = false
+    /// 通话方式：realtime = 实时双向（需在实时语音设置里选好服务商）；turns = 听完 → 发送 → 朗读
+    @State private var voiceMode = "turns"
+    @State private var realtimeNotice: String?
     @StateObject private var dictation = CloudDictation()
     @State private var dictationBase = ""
     @State private var showModelPicker = false
@@ -872,16 +875,27 @@ struct CloudSessionView: View {
         .sheet(isPresented: $showFiles) { CloudFilePicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showVoiceCall) {
             if let theme {
-                CloudBotVoiceCallView(theme: theme, isWorking: activeTaskStatus == "running" || activeTaskStatus == "waiting_user" || isSubmitting,
-                                      progress: CloudBotProgress.summarize(taskEvents, status: activeTaskStatus).0) { text in
-                    inputPrompt = text
-                    sendTask()
+                if voiceMode == "realtime" {
+                    CloudBotRealtimeCallView(botName: theme.name, persona: botPersona(theme.botId), sessionId: sessionId,
+                                             history: realtimeHistory(), delegate: { prompt in await delegateFromRealtime(prompt) },
+                                             onSaved: { problem in
+                                                 realtimeNotice = problem
+                                                 loadSessionDetail()
+                                             },
+                                             onFallback: { voiceMode = "turns" })
+                } else {
+                    CloudBotVoiceCallView(theme: theme, isWorking: activeTaskStatus == "running" || activeTaskStatus == "waiting_user" || isSubmitting,
+                                          progress: CloudBotProgress.summarize(taskEvents, status: activeTaskStatus).0,
+                                          onRealtime: { CloudBotSpeaker.stop(); voiceMode = "realtime" }) { text in
+                        inputPrompt = text
+                        sendTask()
+                    }
                 }
             }
         }
         .onChange(of: messages.count) { _ in
-            // 语音对话中：Bot 回复后按它的语音设置朗读
-            guard showVoiceCall, let theme, let last = messages.last, last["role"] as? String == "assistant",
+            // 语音对话中（轮流模式）：Bot 回复后按它的语音设置朗读；实时模式由实时模型转述
+            guard showVoiceCall, voiceMode == "turns", let theme, let last = messages.last, last["role"] as? String == "assistant",
                   let text = last["content"] as? String, !text.isEmpty else { return }
             CloudBotSpeaker.speak(CloudMessageText.display(text).text, botId: theme.botId)
         }
@@ -1070,6 +1084,10 @@ struct CloudSessionView: View {
         if let streamNotice {
             Label(streamNotice, systemImage: "arrow.triangle.2.circlepath").font(.caption).foregroundStyle(.secondary)
         }
+        if let realtimeNotice {
+            Label(realtimeNotice, systemImage: "waveform.badge.exclamationmark").font(.caption).foregroundStyle(.secondary)
+                .onTapGesture { self.realtimeNotice = nil }
+        }
     }
 
     @ViewBuilder
@@ -1179,7 +1197,7 @@ struct CloudSessionView: View {
                 composerIcon("slash.circle", label: "斜杠命令") {
                     if !inputPrompt.hasPrefix("/") { inputPrompt = "/" }
                 }
-                composerIcon("phone", label: "和 \(theme.name) 通话") { showVoiceCall = true }
+                composerIcon("phone", label: "和 \(theme.name) 通话") { openVoiceCall() }
                 Button {
                     if working { cancelActiveTask() } else if hasDraft { if dictation.isRecording { dictation.stop() }; sendTask() }
                 } label: {
@@ -1196,7 +1214,7 @@ struct CloudSessionView: View {
                 }
                 .disabled(isSubmitting || (!working && !hasDraft))
                 .accessibilityLabel(working ? "停止" : "发送")
-                Button { showVoiceCall = true } label: {
+                Button { openVoiceCall() } label: {
                     Image(systemName: "waveform").font(.system(size: 17, weight: .bold))
                         .foregroundStyle(Color(.systemBackground))
                         .frame(width: 40, height: 40)
@@ -1225,7 +1243,7 @@ struct CloudSessionView: View {
         switch id {
         case "/模型": showModelPicker = true
         case "/电脑": showComputer = true
-        case "/通话": showVoiceCall = true
+        case "/通话": openVoiceCall()
         case "/照片": showPhotos = true
         case "/文件": showFiles = true
         case "/记住": inputPrompt = "记住："
@@ -1249,6 +1267,41 @@ struct CloudSessionView: View {
     }
 
     /// 有附件时先上传（文件存到工作区，图片同时作为图片消息发给模型），再提交任务
+    /// 打开通话：选好了实时语音服务就用实时双向，否则轮流模式
+    private func openVoiceCall() {
+        voiceMode = CloudBotRealtimeAvailability.isConfigured ? "realtime" : "turns"
+        showVoiceCall = true
+    }
+
+    /// 实时通话里 Bot 要真正动手：走和输入框一样的发送流程，返回新任务 ID（交不出去返回 nil）
+    private func delegateFromRealtime(_ prompt: String) async -> String? {
+        let before = activeTaskId
+        let draft = inputPrompt
+        errorMessage = nil
+        inputPrompt = prompt
+        sendTask()
+        defer { if inputPrompt.isEmpty || inputPrompt == prompt { inputPrompt = draft } }
+        for _ in 0..<150 {
+            if let tid = activeTaskId, tid != before { return tid }
+            if !isSubmitting && errorMessage != nil { return nil }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        return nil
+    }
+
+    /// 实时通话开场带上的对话历史（只要可见文字）
+    private func realtimeHistory() -> [[String: String]] {
+        messages.compactMap { row in
+            guard let role = row["role"] as? String, role == "user" || role == "assistant",
+                  let text = row["content"] as? String, !text.isEmpty else { return nil }
+            return ["role": role, "text": CloudMessageText.display(text).text]
+        }
+    }
+
+    private func botPersona(_ botId: String) -> String {
+        CloudBotHomeModel.shared.bots.first(where: { $0.id == botId })?.instructions ?? ""
+    }
+
     private func submitPrepared(content: String, body rawBody: [String: Any]) {
         var body = rawBody
         // 思考深度：Bot 自己设置了就由服务器使用；否则带上手机默认

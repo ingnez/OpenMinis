@@ -37,7 +37,7 @@ with tempfile.TemporaryDirectory() as d:
  subprocess.run([d+'/test'],check=True)
 s=(folder/'RealtimeVoiceSession.swift').read_text()
 assert 'if completeValidation() { return }' in s
-assert s.index('if completeValidation() { return }') < s.index('for message in chat.effectiveAgentHistory()')
+assert s.index('if completeValidation() { return }') < s.index('for turn in host.historyTurns()')
 assert 'self.emit(self.connectionProtocol.audio(bytes))' in s
 assert 'guard active, epoch == generation else { return }' in s
 print('PASS：握手验证不上传历史、延迟麦克风授权、迟到诊断隔离')

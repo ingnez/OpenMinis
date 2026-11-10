@@ -18,7 +18,7 @@ final class RealtimeVoiceSession: ObservableObject {
     @Published var error: String?
     @Published var lines: [Line] = []
     @Published var elapsed = 0
-    private weak var chat: AIChatViewModel?
+    private let host: RealtimeVoiceHost
     private var socket: URLSessionWebSocketTask?
     private var transport: URLSession?
     private var receiveTask: Task<Void, Never>?
@@ -53,15 +53,14 @@ final class RealtimeVoiceSession: ObservableObject {
     private var cloudWatchers: [Task<Void, Never>] = []
     @Published var validationResult: String?
 
-    init(chat: AIChatViewModel) { self.chat = chat }
+    init(host: RealtimeVoiceHost) { self.host = host }
+    convenience init(chat: AIChatViewModel) { self.init(host: RealtimeLocalChatHost(chat: chat)) }
 
     func start(providerID: String, model: String, voice: String, preview: Bool, protocolMode: String = "automatic", validateOnly: Bool = false) async {
         guard !active else { return }
         if let saveTask { await saveTask.value }
         guard !active else { return }
-        guard let chat, !chat.isRetiredByReset, !chat.isProcessing, !chat.isCompacting else {
-            error = "请先停止当前生成，再开始实时通话。"; return
-        }
+        if let reason = host.blockReason { error = reason; return }
         guard let provider = ProviderConfigStore.shared.instance(for: providerID), provider.isEnabled,
               let key = ProviderKeychainHelper.loadAPIKey(instanceId: provider.id), !key.isEmpty else {
             error = "请先在服务商设置中配置支持实时音频的 API 密钥。"; return
@@ -92,7 +91,7 @@ final class RealtimeVoiceSession: ObservableObject {
             guard url.scheme == "wss" else {
                 fail("实时通话需要 HTTPS/WSS 服务商地址，请配置加密连接。"); return
             }
-            chat.stopSpeechForThisSession()
+            host.prepareForCall()
             VoiceOutputPlayer.shared.stopAll()
             oldIdleDisabled = UIApplication.shared.isIdleTimerDisabled
             UIApplication.shared.isIdleTimerDisabled = true
@@ -179,13 +178,8 @@ final class RealtimeVoiceSession: ObservableObject {
             guard !seeded else { return }; seeded = true
             if completeValidation() { return }
             // 仅传递可见文本；已压缩会话携带摘要，不发送工具内部数据或附件。
-            if let chat {
-                for message in chat.effectiveAgentHistory() {
-                    let text = message.parts.compactMap { part -> String? in
-                        if case .text(let s) = part { return s }; return nil
-                    }.joined(separator: "\n")
-                    if !text.isEmpty { emit(RealtimeVoiceProtocol.history(role: message.role.rawValue, text: text)) }
-                }
+            for turn in host.historyTurns() {
+                emit(RealtimeVoiceProtocol.history(role: turn.role, text: turn.text))
             }
             // 单一发送队列保证历史事件先于麦克风音频送达。
             guard active else { return }
@@ -263,13 +257,10 @@ final class RealtimeVoiceSession: ObservableObject {
 
     private var instructions: String {
         if validationOnly { return "Connection validation only. Do not generate a response." }
-        if !voiceTools.isEmpty {
-            return SystemPromptBuilder.identitySection() + "\n你正在实时语音通话。默认中文，回答简洁自然。需要真实执行的工作（查资料、上网、跑代码、处理文件）用 cloud_task_start 交给用户的云电脑在后台完成，先口头说明已交给云电脑；收到“云电脑任务完成通知”后用一两句话转述结果。用户问进度时调用 cloud_task_status；cloud_routine_run 可运行已保存的例行任务。没有工具结果之前不得声称已完成。"
-        }
-        return SystemPromptBuilder.identitySection() + "\n你正在实时语音通话。默认中文，回答简洁自然。没有可执行工具，不得声称已执行外部操作。"
+        return host.instructions(toolsEnabled: !voiceTools.isEmpty)
     }
     private var voiceTools: [[String: Any]] {
-        (validationOnly || !CloudVoiceBridge.isAvailable) ? [] : RealtimeVoiceProtocol.cloudTools
+        (validationOnly || !host.toolsAvailable) ? [] : RealtimeVoiceProtocol.cloudTools
     }
     private static func parseArguments(_ text: String?) -> [String: Any] {
         guard let text, let data = text.data(using: .utf8),
@@ -281,8 +272,9 @@ final class RealtimeVoiceSession: ObservableObject {
         let lineID = "tool-" + callId
         updateLine(id: lineID, role: "assistant", text: "[已调用云电脑：\(name)]", append: false)
         status = "正在调用云电脑"
+        let host = self.host
         Task { [weak self] in
-            let result = await CloudVoiceBridge.call(name: name, arguments: args)
+            let result = await host.callTool(name: name, arguments: args)
             guard let self, self.active, self.epoch == generation else { return }
             self.deliverToolOutput(callId: callId, name: name, output: result.output)
             if let taskId = result.watchTaskId { self.watchCloudTask(taskId, generation: generation) }
@@ -301,8 +293,9 @@ final class RealtimeVoiceSession: ObservableObject {
         if responseRunning { pendingResponseCreate = true } else { emit(["type": "response.create"]) }
     }
     private func watchCloudTask(_ taskId: String, generation: UUID) {
+        let host = self.host
         let watcher = Task { [weak self] in
-            let summary = await CloudVoiceBridge.waitForResult(taskId: taskId)
+            let summary = await host.waitForResult(taskId: taskId)
             guard !summary.isEmpty, let self, self.active, self.epoch == generation else { return }
             self.announce("[云电脑任务完成通知] " + summary + "\n请用一两句话口头告诉用户。")
         }
@@ -376,14 +369,10 @@ final class RealtimeVoiceSession: ObservableObject {
         if event["setupComplete"] != nil {
             guard !seeded else { return }; seeded = true
             if completeValidation() { return }
-            if let chat {
-                let turns: [[String: Any]] = chat.effectiveAgentHistory().compactMap { message in
-                    let text = message.parts.compactMap { part -> String? in if case .text(let s) = part { return s }; return nil }.joined(separator: "\n")
-                    guard !text.isEmpty else { return nil }
-                    return ["role": message.role.rawValue == "assistant" ? "model" : "user", "parts": [["text": text]]]
-                }
-                if !turns.isEmpty { emit(["clientContent": ["turns": turns, "turnComplete": false]]) }
+            let turns: [[String: Any]] = host.historyTurns().map { turn -> [String: Any] in
+                ["role": turn.role == "assistant" ? "model" : "user", "parts": [["text": turn.text]]]
             }
+            if !turns.isEmpty { emit(["clientContent": ["turns": turns, "turnComplete": false]]) }
             authorizeAndBeginAudio(); return
         }
         guard audioStarted else { return }
@@ -520,21 +509,10 @@ final class RealtimeVoiceSession: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = oldIdleDisabled
         status = reason
         let transcript = lines.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        guard let chat, !chat.isRetiredByReset, !transcript.isEmpty else { return }
-        // 按服务端会话顺序写入，而不是按异步转写返回顺序。
-        saveTask = Task { @MainActor in
-            await chat.ensureSession()
-            for line in transcript {
-                guard !chat.isRetiredByReset else { return }
-                var message = AgentMessage(role: line.role == "user" ? .user : .assistant,
-                                           parts: [.text(line.text)], isInterrupted: line.interrupted)
-                message.dbMessageId = await chat.persistAgentMessage(message)
-                guard !chat.isRetiredByReset else { return }
-                chat.agentHistory.append(message)
-            }
-            guard !chat.isRetiredByReset else { return }
-            await chat.reloadMessagesFromDB(reason: "实时语音通话结束")
-        }
+            .map { RealtimeTranscriptLine(role: $0.role, text: $0.text, interrupted: $0.interrupted) }
+        guard !self.host.isRetired, !transcript.isEmpty else { return }
+        let host = self.host
+        saveTask = Task { @MainActor in await host.save(transcript: transcript) }
     }
 
     private func observeLifecycle() {
