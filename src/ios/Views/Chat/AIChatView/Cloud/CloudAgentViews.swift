@@ -254,8 +254,14 @@ struct CloudAgentSettingsView: View {
                         .foregroundColor(.accentColor)
                 }
 
-                NavigationLink(destination: CloudPersonasView()) {
-                    Label("云端人格", systemImage: "person.2.crop.square.stack")
+                NavigationLink(destination: CloudBotsView()) {
+                    Label("我的 Bot", systemImage: "person.2.crop.square.stack")
+                        .font(.headline)
+                        .foregroundColor(.accentColor)
+                }
+
+                NavigationLink(destination: CloudPluginsView()) {
+                    Label("插件市场", systemImage: "puzzlepiece.extension")
                         .font(.headline)
                         .foregroundColor(.accentColor)
                 }
@@ -557,6 +563,13 @@ struct CloudSessionView: View {
     let sessionTitle: String
     let model: String
     let selectedInstanceId: String
+
+    init(sessionId: String, sessionTitle: String, model: String, selectedInstanceId: String) {
+        self.sessionId = sessionId
+        self.sessionTitle = sessionTitle
+        self.model = model
+        self.selectedInstanceId = selectedInstanceId
+    }
 
     @ObservedObject private var connection = CloudConnection.shared
     @State private var messages: [[String: Any]] = []

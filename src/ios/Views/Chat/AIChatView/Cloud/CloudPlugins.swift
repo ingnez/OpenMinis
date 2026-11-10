@@ -1,0 +1,354 @@
+//
+//  CloudPlugins.swift
+//  Minis - 插件市场（/v1/plugins）
+//  插件 = MCP 连接器 + 技能包。内置目录、URL 清单安装、复用手机 MCP 配置；
+//  密钥加密保存在云电脑，需要授权时显示“需要授权”，在 Bot 详情页按 Bot 授权。
+//
+
+import Foundation
+import SwiftUI
+
+struct CloudPluginSecret: Identifiable, Hashable {
+    let id: String
+    let label: String
+    let isSet: Bool
+    let optional: Bool
+}
+
+struct CloudPlugin: Identifiable, Hashable {
+    let id: String
+    let kind: String
+    let name: String
+    let summary: String
+    let source: String
+    let status: String
+    let enabled: Bool
+    let defaultGrant: Bool
+    let lastError: String
+    let secrets: [CloudPluginSecret]
+    let installed: Bool
+    let homepage: String
+
+    init?(_ d: [String: Any], installed: Bool) {
+        guard let pid = (d["plugin_id"] as? String) ?? (d["id"] as? String) else { return nil }
+        id = pid
+        kind = d["kind"] as? String ?? "mcp"
+        name = d["name"] as? String ?? pid
+        summary = d["description"] as? String ?? ""
+        source = d["source"] as? String ?? "catalog"
+        status = d["status"] as? String ?? (installed ? "ready" : "available")
+        enabled = d["enabled"] as? Bool ?? true
+        defaultGrant = d["default_grant"] as? Bool ?? true
+        lastError = d["last_error"] as? String ?? ""
+        let raw = d["secrets"] as? [[String: Any]] ?? []
+        secrets = raw.compactMap { s -> CloudPluginSecret? in
+            guard let n = s["name"] as? String else { return nil }
+            return CloudPluginSecret(id: n, label: s["label"] as? String ?? n, isSet: s["set"] as? Bool ?? false,
+                                     optional: s["optional"] as? Bool ?? false)
+        }
+        self.installed = installed
+        let manifest = d["manifest"] as? [String: Any] ?? d
+        homepage = manifest["homepage"] as? String ?? ""
+    }
+
+    var statusText: String {
+        switch status {
+        case "ready": return kind == "skill" ? "技能包 · 已启用" : "可用"
+        case "needs_auth": return "需要授权：填写密钥"
+        case "missing_dependency": return "云电脑缺少依赖（uvx / npx），请重新安装服务器 Agent 或手动安装"
+        case "disabled": return "已停用"
+        case "error": return "出错：" + String(lastError.prefix(80))
+        default: return status
+        }
+    }
+}
+
+@MainActor
+enum CloudPluginService {
+    static func listAll() async throws -> (installed: [CloudPlugin], catalog: [CloudPlugin]) {
+        let resp = try await CloudBotService.connected().request(method: "GET", path: "/v1/plugins", body: nil)
+        let installed = (resp["installed"] as? [[String: Any]] ?? []).compactMap { CloudPlugin($0, installed: true) }
+        let catalog = (resp["catalog"] as? [[String: Any]] ?? []).compactMap { CloudPlugin($0, installed: false) }
+        return (installed, catalog)
+    }
+
+    static func list() async throws -> [CloudPlugin] {
+        try await listAll().installed
+    }
+
+    static func install(catalogId: String) async throws {
+        _ = try await CloudBotService.connected().request(method: "POST", path: "/v1/plugins/install", body: ["catalog_id": catalogId])
+    }
+
+    static func install(url: String) async throws {
+        _ = try await CloudBotService.connected().request(method: "POST", path: "/v1/plugins/install",
+                                                          body: ["url": url, "acknowledge_command": true])
+    }
+
+    static func update(_ id: String, _ body: [String: Any]) async throws {
+        _ = try await CloudBotService.connected().request(method: "PUT", path: "/v1/plugins/\(id)", body: body)
+    }
+
+    static func uninstall(_ id: String) async throws {
+        _ = try await CloudBotService.connected().request(method: "DELETE", path: "/v1/plugins/\(id)", body: nil)
+    }
+
+    static func tools(_ id: String) async throws -> [String] {
+        let resp = try await CloudBotService.connected().request(method: "GET", path: "/v1/plugins/\(id)/tools", body: nil)
+        let tools = resp["tools"] as? [[String: Any]] ?? []
+        return tools.compactMap { $0["name"] as? String }
+    }
+
+    /// 复用手机已配置的 MCP 服务器（请求头 / 环境变量作为密钥加密上传）。
+    static func importPhoneServers() async throws -> String {
+        let servers: [[String: Any]] = MCPStore.shared.servers.filter { $0.enabled }.map { s -> [String: Any] in
+            var item: [String: Any] = ["id": s.id]
+            if let note = s.note { item["note"] = note }
+            if let url = s.url, !url.isEmpty {
+                item["url"] = url
+                if let headers = s.headers { item["headers"] = headers }
+            } else {
+                item["command"] = s.command ?? ""
+                item["args"] = s.args ?? []
+                if let env = s.env { item["env"] = env }
+            }
+            return item
+        }
+        guard !servers.isEmpty else { return "手机上没有已启用的 MCP 服务器" }
+        let resp = try await CloudBotService.connected().request(method: "POST", path: "/v1/plugins/import-phone", body: ["servers": servers])
+        let results = resp["results"] as? [[String: Any]] ?? []
+        let ok = results.filter { $0["plugin_id"] != nil }.count
+        let failed = results.count - ok
+        return "已导入 \(ok) 个" + (failed > 0 ? "，\(failed) 个无法在云电脑使用（例如非 https 地址）" : "") + "。使用 OAuth 登录的服务器需要在云电脑重新授权。"
+    }
+}
+
+struct CloudPluginsView: View {
+    @State private var installed: [CloudPlugin] = []
+    @State private var catalog: [CloudPlugin] = []
+    @State private var loading = false
+    @State private var busy = false
+    @State private var errorText: String?
+    @State private var infoText: String?
+    @State private var manifestURL = ""
+    @State private var confirmURL = false
+
+    var body: some View {
+        List {
+            Section {
+                if installed.isEmpty && !loading {
+                    Text("还没有安装插件。").font(.footnote).foregroundStyle(.secondary)
+                }
+                ForEach(installed) { p in
+                    NavigationLink(destination: CloudPluginDetailView(plugin: p, onChanged: { await reload() })) {
+                        pluginRow(p)
+                    }
+                }
+            } header: {
+                Text("已安装")
+            } footer: {
+                Text("MCP 插件需在“我的 Bot”详情页授权给具体 Bot；不属于任何 Bot 的对话使用“默认授权”的插件。")
+            }
+
+            Section("插件目录") {
+                ForEach(catalog.filter { !$0.installed }) { p in
+                    HStack {
+                        pluginRow(p)
+                        Spacer()
+                        Button("安装") { run { try await CloudPluginService.install(catalogId: p.id) } }
+                            .buttonStyle(.borderless)
+                            .disabled(busy)
+                    }
+                }
+            }
+
+            Section {
+                Button {
+                    run { infoText = try await CloudPluginService.importPhoneServers() }
+                } label: {
+                    Label("导入手机上的 MCP 服务器", systemImage: "iphone.and.arrow.forward")
+                }
+                .disabled(busy)
+                TextField("插件清单 URL（https://…/plugin.json）", text: $manifestURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                Button("从 URL 安装") { confirmURL = true }
+                    .disabled(busy || !manifestURL.lowercased().hasPrefix("https://"))
+            } header: {
+                Text("更多来源")
+            }
+
+            if let infoText { Section { Text(infoText).font(.footnote).foregroundStyle(.secondary) } }
+            if let errorText { Section { Text(errorText).font(.footnote).foregroundStyle(.red) } }
+        }
+        .navigationTitle("插件市场")
+        .alert("从 URL 安装插件？", isPresented: $confirmURL) {
+            Button("安装", role: .destructive) {
+                let url = manifestURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                run { try await CloudPluginService.install(url: url) }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("第三方插件清单可能让云电脑运行它指定的命令。只安装你信任的来源。")
+        }
+        .task { await reload() }
+        .refreshable { await reload() }
+    }
+
+    private func pluginRow(_ p: CloudPlugin) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: p.kind == "skill" ? "book.closed" : "puzzlepiece.extension")
+                    .foregroundStyle(.tint)
+                Text(p.name).font(.body)
+            }
+            if !p.summary.isEmpty { Text(p.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+            if p.installed {
+                Text(p.statusText).font(.caption2).foregroundStyle(p.status == "ready" ? Color.green : Color.orange)
+            }
+        }
+    }
+
+    private func run(_ op: @escaping @MainActor () async throws -> Void) {
+        busy = true
+        Task {
+            do {
+                try await op()
+                await reload()
+            } catch {
+                errorText = error.localizedDescription
+            }
+            busy = false
+        }
+    }
+
+    private func reload() async {
+        loading = true
+        do {
+            let all = try await CloudPluginService.listAll()
+            installed = all.installed
+            catalog = all.catalog
+            errorText = nil
+        } catch {
+            errorText = error.localizedDescription
+        }
+        loading = false
+    }
+}
+
+struct CloudPluginDetailView: View {
+    let onChanged: @MainActor () async -> Void
+    @State private var plugin: CloudPlugin
+    @State private var secretValues: [String: String] = [:]
+    @State private var tools: [String] = []
+    @State private var busy = false
+    @State private var errorText: String?
+    @State private var infoText: String?
+    @Environment(\.dismiss) private var dismiss
+
+    init(plugin: CloudPlugin, onChanged: @escaping @MainActor () async -> Void) {
+        self.onChanged = onChanged
+        _plugin = State(initialValue: plugin)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Text(plugin.summary.isEmpty ? plugin.name : plugin.summary).font(.footnote)
+                LabeledContent("状态", value: plugin.statusText)
+                LabeledContent("来源", value: plugin.source)
+                if let url = URL(string: plugin.homepage), !plugin.homepage.isEmpty {
+                    Link("项目主页", destination: url)
+                }
+            }
+            if plugin.kind == "mcp" {
+                Section {
+                    Toggle("启用", isOn: Binding(get: { plugin.enabled }, set: { v in save(["enabled": v]) }))
+                    Toggle("默认授权（不属于任何 Bot 的对话可用）", isOn: Binding(get: { plugin.defaultGrant }, set: { v in save(["default_grant": v]) }))
+                }
+                if !plugin.secrets.isEmpty {
+                    Section {
+                        ForEach(plugin.secrets) { s in
+                            SecureField(s.isSet ? "\(s.label)（已保存，留空不修改）" : s.label,
+                                        text: Binding(get: { secretValues[s.id] ?? "" }, set: { secretValues[s.id] = $0 }))
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                        }
+                        Button("保存密钥") {
+                            let values = secretValues.filter { !$0.value.isEmpty }
+                            save(["secrets": values])
+                            secretValues = [:]
+                        }
+                        .disabled(busy || secretValues.values.allSatisfy { $0.isEmpty })
+                    } header: {
+                        Text("授权")
+                    } footer: {
+                        Text("密钥以 AES-256-GCM 加密保存在云电脑，之后只显示“已保存”。")
+                    }
+                }
+                Section {
+                    Button("测试连接并列出工具") { testTools() }.disabled(busy)
+                    ForEach(tools, id: \.self) { t in Text(t).font(.caption.monospaced()) }
+                } header: {
+                    Text("工具")
+                }
+            }
+            Section {
+                Button("卸载插件", role: .destructive) { uninstall() }.disabled(busy)
+            }
+            if let infoText { Section { Text(infoText).font(.footnote).foregroundStyle(.secondary) } }
+            if let errorText { Section { Text(errorText).font(.footnote).foregroundStyle(.red) } }
+        }
+        .navigationTitle(plugin.name)
+    }
+
+    private func refresh() async {
+        if let fresh = try? await CloudPluginService.list().first(where: { $0.id == plugin.id }) { plugin = fresh }
+    }
+
+    private func save(_ body: [String: Any]) {
+        busy = true
+        let pid = plugin.id
+        Task {
+            do {
+                try await CloudPluginService.update(pid, body)
+                await refresh()
+                await onChanged()
+                errorText = nil
+            } catch {
+                errorText = error.localizedDescription
+            }
+            busy = false
+        }
+    }
+
+    private func testTools() {
+        busy = true
+        let pid = plugin.id
+        Task {
+            do {
+                tools = try await CloudPluginService.tools(pid)
+                infoText = "连接成功，共 \(tools.count) 个工具"
+                errorText = nil
+            } catch {
+                errorText = error.localizedDescription
+            }
+            await refresh()
+            busy = false
+        }
+    }
+
+    private func uninstall() {
+        let pid = plugin.id
+        Task {
+            do {
+                try await CloudPluginService.uninstall(pid)
+                await onChanged()
+                dismiss()
+            } catch {
+                errorText = error.localizedDescription
+            }
+        }
+    }
+}

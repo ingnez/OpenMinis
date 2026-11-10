@@ -318,7 +318,7 @@ struct CloudRoutineEditor: View {
                 TextField("提示词（每次运行发送给云端 Agent）", text: $prompt, axis: .vertical)
                     .lineLimit(3...10)
                 if !personas.isEmpty {
-                    Picker("人格", selection: $personaId) {
+                    Picker("Bot", selection: $personaId) {
                         Text("默认").tag("")
                         ForEach(personas) { p in
                             Text(p.label).tag(p.id)

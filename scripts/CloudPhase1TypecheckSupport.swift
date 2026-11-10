@@ -50,3 +50,18 @@ extension ChatStore {
 extension Notification.Name {
  static let memoryFilesDidChange = Notification.Name("com.openminis.app.memoryFilesDidChange")
 }
+// Phase 3：插件市场复用手机 MCP 配置（Agent/Session/MCPStore.swift）。
+struct MCPServerConfig {
+ var id: String
+ var note: String?
+ var enabled: Bool
+ var url: String?
+ var headers: [String: String]?
+ var command: String?
+ var args: [String]?
+ var env: [String: String]?
+}
+@MainActor final class MCPStore: ObservableObject {
+ static let shared = MCPStore()
+ @Published private(set) var servers: [MCPServerConfig] = []
+}
