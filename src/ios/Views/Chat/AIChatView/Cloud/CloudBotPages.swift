@@ -533,6 +533,14 @@ struct CloudBotLibraryView: View {
             if let p = pendingPage { CloudPageDetailView(pageId: p.id, title: p.title) }
         }
         .quickLookPreview($quickLook)
+        .sheet(item: $shareFile) { f in CloudActivitySheet(items: [f.url]) }
+        .confirmationDialog(pendingDelete.map { "删除「\($0.title)」？" } ?? "",
+                            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+                            titleVisibility: .visible) {
+            Button("删除", role: .destructive) { if let t = pendingDelete { delete(t) }; pendingDelete = nil }
+        } message: {
+            Text("手机上传的文件会从云电脑上删除；对话里的图片和链接只从资料库移除，对话内容不变。")
+        }
         .task { await load() }
         .refreshable { await load() }
         .sheet(item: $preview) { p in
@@ -609,6 +617,59 @@ struct CloudBotLibraryView: View {
             }
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if kind == "link", let s = item["url"] as? String, let url = URL(string: s) {
+                ShareLink(item: url) { Label("分享", systemImage: "square.and.arrow.up") }
+                Button { UIPasteboard.general.url = url; CloudHaptics.success() } label: { Label("复制链接", systemImage: "link") }
+            } else if item["attachment_url"] != nil || kind == "media" {
+                Button { share(item) } label: { Label("分享", systemImage: "square.and.arrow.up") }
+            } else if item["page_id"] != nil {
+                Button { open(item) } label: { Label("打开", systemImage: "doc.richtext") }
+            }
+            Button(role: .destructive) { pendingDelete = CloudLibraryPage(id: item["id"] as? String ?? "", title: item["title"] as? String ?? "") } label: {
+                Label(item["attachment_url"] != nil ? "删除文件" : "从资料库移除", systemImage: "trash")
+            }
+        }
+    }
+
+    /// 下载附件 / 图片到临时文件后弹出系统分享面板
+    private func share(_ item: [String: Any]) {
+        let title = (item["title"] as? String ?? "附件").replacingOccurrences(of: "/", with: "-")
+        Task { @MainActor in
+            do {
+                var data: Data?
+                var name = title
+                if let path = item["attachment_url"] as? String {
+                    data = try await CloudConnection.shared.downloadAttachment(path: path)
+                } else if let mid = item["message_id"] as? Int, let part = item["part"] as? Int {
+                    let resp = try await CloudBotService.connected().request(method: "GET", path: "/v1/bots/\(bot.id)/library/media/\(mid)/\(part)", body: nil)
+                    if let url = resp["url"] as? String, let comma = url.firstIndex(of: ","), url.hasPrefix("data:") {
+                        data = Data(base64Encoded: String(url[url.index(after: comma)...]))
+                        name = "图片-\(mid)-\(part).jpg"
+                    }
+                }
+                guard let data else { errorText = "没有取到文件内容"; return }
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+                try data.write(to: url, options: .atomic)
+                shareFile = CloudShareFile(url: url)
+            } catch {
+                errorText = error.localizedDescription
+            }
+        }
+    }
+
+    private func delete(_ target: CloudLibraryPage) {
+        let before = items
+        items.removeAll { ($0["id"] as? String) == target.id }
+        CloudHaptics.tap()
+        Task { @MainActor in
+            do {
+                _ = try await CloudBotService.connected().request(method: "DELETE", path: "/v1/bots/\(bot.id)/library/\(target.id)", body: nil)
+            } catch {
+                items = before
+                errorText = "删除失败：\(error.localizedDescription)"
+            }
+        }
     }
 
     static func shortURL(_ s: String) -> String {
@@ -659,6 +720,8 @@ struct CloudBotLibraryView: View {
 
     @State private var pendingPage: CloudLibraryPage?
     @State private var quickLook: URL?
+    @State private var pendingDelete: CloudLibraryPage?
+    @State private var shareFile: CloudShareFile?
 
     private func load() async {
         loading = true
@@ -676,6 +739,20 @@ struct CloudBotLibraryView: View {
 struct CloudLibraryPage: Hashable, Identifiable {
     let id: String
     let title: String
+}
+
+struct CloudShareFile: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+/// 系统分享面板
+struct CloudActivitySheet: UIViewControllerRepresentable {
+    let items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
 
 struct CloudLibraryPreview: Identifiable {

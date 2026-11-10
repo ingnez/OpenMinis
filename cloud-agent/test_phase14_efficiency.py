@@ -152,5 +152,28 @@ class EfficiencyServerTests(CloudServerTestCase):
             self.srv.search_everything = orig
 
 
+    def test_07_library_delete(self):
+        import base64
+        self.request("PUT", "/v1/bots/libdel", {"name": "删", "instructions": "x"})
+        FakeModelHandler.scripts["m-libdel"] = lambda d: {"role": "assistant", "content": "见 https://example.com/keep 和 https://example.com/drop"}
+        sid = self.request("POST", "/v1/sessions", {"title": "l", "persona_id": "libdel"})[1]["session_id"]
+        t = self.submit(sid, "链接", "m-libdel")[1]
+        self.wait_status(t["task_id"], ("completed",))
+        up = self.request("POST", f"/v1/sessions/{sid}/upload", {"filename": "a.pdf", "data_base64": base64.b64encode(b"%PDF").decode()})[1]
+        items = self.request("GET", "/v1/bots/libdel/library")[1]["items"]
+        drop = next(i for i in items if i.get("url") == "https://example.com/drop")
+        f = next(i for i in items if i.get("attachment_url") == up["attachment_url"])
+        self.assertEqual(self.request("DELETE", f"/v1/bots/libdel/library/{drop['id']}")[0], 200)
+        self.assertEqual(self.request("DELETE", f"/v1/bots/libdel/library/{f['id']}")[0], 200)
+        left = self.request("GET", "/v1/bots/libdel/library")[1]["items"]
+        self.assertEqual([i.get("url") for i in left if i["kind"] == "link"], ["https://example.com/keep"])
+        self.assertFalse(any(i.get("attachment_url") for i in left), "上传的附件应被删除")
+        self.assertTrue(any("drop" in (m.get("content") or "") for m in self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]),
+                        "对话内容不能被改动")
+        self.assertEqual(self.request("DELETE", "/v1/bots/libdel/library/nope")[0], 404)
+        self.assertEqual(self.request("DELETE", "/v1/bots/ghost/library/x")[0], 404)
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -698,8 +698,30 @@ def bot_library(bot_id, limit=300):
                           "session_id": sid, "at": os.path.getmtime(full)})
     for pid, title, summary, sid, ts in pages:
         items.append({"kind": "file", "id": "p" + pid, "page_id": pid, "title": title, "summary": summary or "", "session_id": sid, "at": ts})
+    hidden = set(_settings_get(f"library_hidden:{bot_id}") or [])
+    items = [i for i in items if i["id"] not in hidden]
     items.sort(key=lambda i: i.get("at") or 0, reverse=True)
     return items[:limit]
+
+def library_delete(bot_id, item_id):
+    """从资料库删除一项：手机上传的附件直接删文件；对话里的图片、链接和页面只从资料库隐藏（对话内容不动）。"""
+    item = next((i for i in bot_library(bot_id, limit=100000) if i["id"] == item_id), None)
+    if not item:
+        return False
+    att = item.get("attachment_url")
+    if att:
+        m = re.match(r"^/v1/sessions/([A-Za-z0-9_-]{1,64})/attachments/(up_[A-Za-z0-9._-]{1,128})$", att)
+        if m:
+            target, err = safe_path_resolve(m.group(1), os.path.join("attachments", m.group(2)))
+            if not err and os.path.isfile(target):
+                os.remove(target)
+                return True
+    key = f"library_hidden:{bot_id}"
+    hidden = list(_settings_get(key) or [])
+    if item_id not in hidden:
+        hidden.append(item_id)
+        _settings_put(key, hidden[-5000:])
+    return True
 
 ATTACH_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -4666,6 +4688,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.startswith("/v1/bots/") and path.endswith("/telegram"):
             self._send(200, telegram_delete(path[len("/v1/bots/"):-len("/telegram")]))
+            return
+        m_lib = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/library/([A-Za-z0-9_-]{1,64})$", path)
+        if m_lib:
+            if not get_persona(m_lib.group(1)):
+                self._send(404, {"error": "Bot not found"})
+                return
+            ok = library_delete(m_lib.group(1), m_lib.group(2))
+            self._send(200 if ok else 404, {"deleted": ok} if ok else {"error": "资料库里没有这一项"})
             return
         m_grp = re.match(r"^/v1/groups/(grp_[a-f0-9]{10})$", path)
         if m_grp:
