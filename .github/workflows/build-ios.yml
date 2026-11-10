@@ -19,6 +19,8 @@ jobs:
     steps:
       - run: echo "mode=${{ inputs.quick && 'quick-typecheck' || 'full-build' }} ref=${{ github.ref_name }} sha=${{ github.sha }}"
 
+  # 只放必须用 Xcode / iOS SDK 的检查。macOS 机器排队可能很久（job 的 timeout 从拿到机器才开始算，排队超时是 GitHub 那边取消的），
+  # 所以其余检查都放到下面的 Linux 任务里，几分钟就有结果。
   quick-typecheck:
     if: ${{ inputs.quick }}
     runs-on: macos-26
@@ -27,10 +29,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Swift 文件都在 Xcode 工程里
         run: python3 scripts/check_xcode_membership.py
-      - name: 本地模式没有云端入口
-        run: python3 scripts/check_local_cloud_entry.py
-      - name: 类型检查替身与真实声明一致
-        run: python3 scripts/check_typecheck_stubs.py
       - name: 实时语音协议回归与 iOS 类型检查
         run: |
           set -o pipefail
@@ -46,9 +44,24 @@ jobs:
             echo "::error::云端 / 首页代码使用了 iOS 17+ API"; exit 1
           fi
       - name: 云端 Swift 类型检查（iOS 16 目标）
+        timeout-minutes: 12
         run: |
           set -o pipefail
           xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Agent/Intents/CloudIntents.swift src/ios/AgentWidget/CloudBotsWidget.swift 2>&1 | tee cloud-typecheck.log
+
+  # 与平台无关的快速检查：Python 脚本、只依赖 Foundation 的 Swift 规则测试、云端服务全部单元测试。Linux 机器基本不用排队。
+  quick-linux:
+    if: ${{ inputs.quick }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift 工具链
+        run: swiftc --version
+      - name: 本地模式没有云端入口
+        run: python3 scripts/check_local_cloud_entry.py
+      - name: 类型检查替身与真实声明一致
+        run: python3 scripts/check_typecheck_stubs.py
       - name: 断线重连逻辑测试
         run: |
           set -o pipefail
@@ -79,6 +92,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotThreads.swift scripts/CloudBotThreadsTests.swift -o /tmp/cloud-threads-tests
           /tmp/cloud-threads-tests
+      - name: 对话缓存（秒开）测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudChatCache.swift scripts/CloudChatCacheTests.swift -o /tmp/cloud-chatcache-tests
+          /tmp/cloud-chatcache-tests
       - name: 首页 Bot 状态测试
         run: |
           set -o pipefail
@@ -101,6 +119,12 @@ jobs:
           /tmp/local-steer-tests
           swiftc -swift-version 5 -parse-as-library src/ios/Agent/Chat/LocalResetSnapshot.swift scripts/LocalResetSnapshotTests.swift -o /tmp/local-reset-snapshot-tests
           /tmp/local-reset-snapshot-tests
+
+      - name: 云端服务单元与端到端场景测试
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s cloud-agent -p 'test*.py' 2>&1 | tail -40
 
   cloud-computer-linux:
     if: ${{ !inputs.quick }}
@@ -203,6 +227,8 @@ jobs:
           /tmp/cloud-handoff-tests | tee cloud-handoff-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotPresence.swift scripts/CloudBotPresenceTests.swift -o /tmp/cloud-presence-tests
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudChatCache.swift scripts/CloudChatCacheTests.swift -o /tmp/cloud-chatcache-tests
+          /tmp/cloud-chatcache-tests | tee cloud-chatcache-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotThreads.swift scripts/CloudBotThreadsTests.swift -o /tmp/cloud-threads-tests
           /tmp/cloud-threads-tests | tee cloud-threads-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReactionLogic.swift scripts/CloudReactionLogicTests.swift -o /tmp/cloud-reaction-tests
