@@ -173,13 +173,16 @@ struct CloudTextBlockView: View {
             if shown.images > 0 {
                 CloudMessageImages(content: block.content, alignment: .leading)
             }
-            if let one = CloudOneLine.split(shown.text) {
+            let src = CloudSourceLine.parse(shown.text)
+            let text = src?.rest ?? shown.text
+            if let one = CloudOneLine.split(text) {
                 CloudOneLineView(head: one.head, detail: one.detail, accent: accent)
-            } else if !shown.text.isEmpty {
-                SelectableMarkdownView(markdown: shown.text)
+            } else if !text.isEmpty {
+                SelectableMarkdownView(markdown: text)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            if let src { CloudSourceChip(parsed: src) }
         }
     }
 }

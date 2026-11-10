@@ -624,6 +624,12 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 每项可选 `allowed_bots: [bot_id]`（`[]` 或 `null` = 所有 Bot）。不在名单的 Bot 调用会被拒并记一条失败使用记录；`vault_list` 的 `allowed` 按调用的 Bot 计算。
 - `GET /v1/vault`（只给 App）每项多出提示：卡片 `expiry_hint`（MM/YY）、联系信息 `address_hint`（默认地址一行）、登录 `pw_weak` / `pw_reused`（布尔）。服务端解密后只算提示，密码、卡号、CVV 原值不外传；模型看到的 `for_model` 不含这些提示。`?q=` 搜索也覆盖两个提示字段。
 
+## 出处与把握度（2.38.0）
+
+- 回复风格提示：医学类回答最后一行写 `依据：…｜把握度：高/中/低`，说不出出处写 `依据：无明确出处｜把握度：低`，禁止编造。
+- `cloud_runmodel.source_line(text)` → `(依据, 把握度)` 或 None；App 端 `CloudSourceLine.parse` 同口径，渲染成彩色标签（低 = 橙色提醒核对）。
+- 这是提示词约束，不是事实核查：模型仍可能写错出处，App 标签只是让「没出处 / 把握度低」一眼可见。
+
 ## 工作台（2.37.0）
 
 - `GET /v1/workbench` → `{"items":[{"task_id","session_id","status":"running|waiting_user","bot_id","bot_name","title","started_at","elapsed_s","steps","last_tool"}],"running","waiting_you"}`（最近 24 小时内创建的任务，按开始时间排序）。

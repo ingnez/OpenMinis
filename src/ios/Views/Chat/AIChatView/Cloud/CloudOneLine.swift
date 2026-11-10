@@ -14,3 +14,28 @@ enum CloudOneLine {
         return (head, detail)
     }
 }
+
+/// 「依据：…｜把握度：高/中/低」行（服务器 cloud_runmodel.source_line 同口径）：从正文里取出来单独显示成标签
+enum CloudSourceLine {
+    static let prefix = "依据："
+    static let sep = "｜把握度："
+
+    struct Parsed: Equatable {
+        let source: String
+        let confidence: String?
+        let rest: String      // 去掉这一行后的正文
+        var lowConfidence: Bool { confidence == "低" || source.hasPrefix("无明确出处") }
+    }
+
+    static func parse(_ text: String) -> Parsed? {
+        var lines = text.components(separatedBy: "\n")
+        guard let i = lines.lastIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix(prefix) }) else { return nil }
+        let body = lines[i].trimmingCharacters(in: .whitespaces).dropFirst(prefix.count)
+        let parts = body.components(separatedBy: sep)
+        let source = parts[0].trimmingCharacters(in: .whitespaces)
+        let conf = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
+        lines.remove(at: i)
+        return Parsed(source: source, confidence: conf.isEmpty ? nil : conf,
+                      rest: lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+}

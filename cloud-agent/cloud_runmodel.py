@@ -171,7 +171,22 @@ REPLY_STYLE_NOTE = (
     "要用户做选择时用 ask_choice 给选项卡片，不要在文字里列 A/B/C 让用户打字。只需要表示收到 / 赞同 / 感谢时可以只用 react 回一个表情，不用再写字。"
     "内容超过一屏的报告、表格、看板用 page_write 存成页面，聊天里只放一句结论。"
     "一条回复里有两三个独立的意思时，用单独一行 --- 分开，手机会拆成几个气泡。"
-    "回复会超过 3 行时，第一行写「一句话：」加一句结论（数字、要做的动作），再空一行写细节；手机会把细节折叠起来。")
+    "回复会超过 3 行时，第一行写「一句话：」加一句结论（数字、要做的动作），再空一行写细节；手机会把细节折叠起来。"
+    "涉及医学（剂量、诊断、处理、指南）时，最后单独一行写「依据：指南 / 说明书 / 文献名（能给链接就给）｜把握度：高 / 中 / 低」；"
+    "说不出具体出处就写「依据：无明确出处｜把握度：低」，不要编造指南名、条款或文献。")
+
+SOURCE_PREFIX = "依据："
+
+
+def source_line(text):
+    """取回复里的「依据：…｜把握度：…」行 → (依据, 把握度)；没有返回 None。手机端 CloudSourceLine 同口径。"""
+    for line in reversed((text or "").splitlines()):
+        t = line.strip()
+        if t.startswith(SOURCE_PREFIX):
+            body = t[len(SOURCE_PREFIX):]
+            src, _, conf = body.partition("｜把握度：")
+            return src.strip(), (conf.strip() or None)
+    return None
 
 ONE_LINE_PREFIX = "一句话："
 

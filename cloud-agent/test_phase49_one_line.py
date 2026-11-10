@@ -24,5 +24,15 @@ class OneLineTests(unittest.TestCase):
         self.assertEqual(a, b)
 
 
+class SourceLineTests(unittest.TestCase):
+    def test_parse(self):
+        t = "一句话：示例结论\n\n细节\n依据：示例指南 2024｜把握度：中"
+        self.assertEqual(rm.source_line(t), ("示例指南 2024", "中"))
+        self.assertEqual(rm.source_line("依据：无明确出处｜把握度：低"), ("无明确出处", "低"))
+        self.assertEqual(rm.source_line("依据：只有出处"), ("只有出处", None))
+        self.assertIsNone(rm.source_line("普通回复"))
+        self.assertIn("不要编造", rm.REPLY_STYLE_NOTE)
+
+
 if __name__ == "__main__":
     unittest.main()
