@@ -109,6 +109,8 @@ def main():
     ap.add_argument("--server-dir", default=os.path.dirname(os.path.abspath(__file__)))
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--json")
+    ap.add_argument("--client", choices=["auto", "local", "bot", "both"], default="auto",
+                    help="模拟哪种 App 取数方式：local=本地云电脑（每 1 秒拉一次事件，只看整段文字）；bot=多 Bot（长轮询 + 正在生成的文字）")
     a = ap.parse_args()
     sys.path.insert(0, a.server_dir)
     td = tempfile.mkdtemp()
@@ -148,8 +150,9 @@ def main():
                 return True
         return False
 
+    clients = {"auto": ["auto"], "local": ["local"], "bot": ["bot"], "both": ["local", "bot"]}[a.client]
     results = {}
-    for scenario in ("chat", "tools"):
+    for client, scenario in [(c, sc) for c in clients for sc in ("chat", "tools")]:
         FakeModel.scenario = scenario
         rows = []
         for i in range(a.runs):
@@ -166,7 +169,8 @@ def main():
             live_after = -1
             status = "running"
             while True:
-                path = f"/v1/tasks/{tid}/events?after={cursor}" + (f"&wait=10&live_after={live_after}" if longpoll else "")
+                use_long = longpoll if client == "auto" else client == "bot"
+                path = f"/v1/tasks/{tid}/events?after={cursor}" + (f"&wait=15&live_after={live_after}" if use_long else "")
                 _st, ev = req("GET", path)
                 now = time.perf_counter() - t0
                 live = ev.get("live") or {}
@@ -179,11 +183,16 @@ def main():
                 if status not in ("queued", "running", "waiting_user"):
                     total = now
                     break
-                if not longpoll:
+                if client == "local":
+                    time.sleep(1.0)          # 与 CloudTaskPump 本地模式（wait=0）相同的 1 秒间隔
+                elif not use_long:
                     time.sleep(0.05)
             if first_text is None:
                 first_text = total
-            app = first_text if longpoll else math.ceil(first_text / APP_POLL_OLD_S) * APP_POLL_OLD_S
+            if client in ("local", "bot"):
+                app = first_text             # 已按该模式的真实取数方式测得
+            else:
+                app = first_text if longpoll else math.ceil(first_text / APP_POLL_OLD_S) * APP_POLL_OLD_S
             rows.append({"accept_ms": accept * 1000, "first_text_api_ms": first_text * 1000, "first_text_app_ms": app * 1000,
                          "total_ms": total * 1000, "request_tokens": sum(x["bytes"] for x in FakeModel.log) // 4,
                          "tool_defs": max((x["tools"] for x in FakeModel.log), default=0), "llm_calls": len(FakeModel.log),
@@ -191,7 +200,7 @@ def main():
         agg = {k: round(statistics.median([r[k] for r in rows]), 1) for k in ("accept_ms", "first_text_api_ms", "first_text_app_ms", "total_ms", "request_tokens", "tool_defs", "llm_calls")}
         agg["streamed"] = rows[0]["streamed"]
         agg["statuses"] = sorted({r["status"] for r in rows})
-        results[scenario] = agg
+        results[scenario if client == "auto" else f"{client}/{scenario}"] = agg
     out = {"server_dir": a.server_dir, "runs": a.runs, "ttft_ms": TTFT_MS, "token_ms": TOKEN_MS, "reply_tokens": REPLY_TOKENS,
            "longpoll": longpoll, "results": results}
     print(json.dumps(out, ensure_ascii=False, indent=2))
