@@ -242,6 +242,12 @@ struct CloudAgentSettingsView: View {
                             .foregroundColor(.accentColor)
                     }
 
+                    NavigationLink(destination: CloudPagesView()) {
+                        Label("云端页面库", systemImage: "doc.richtext")
+                            .font(.headline)
+                            .foregroundColor(.accentColor)
+                    }
+
                     NavigationLink(destination: CloudDesktopView()) {
                         Label("查看 / 接管云电脑桌面", systemImage: "display")
                             .font(.headline)

@@ -318,3 +318,16 @@
 - **POST /v1/notify/test**: 同步发送一条测试推送，成功 `200 {"ok": true}`，失败 `502 {"ok": false, "error": "HTTP 4xx | 异常类型"}`，未配置 `404`。
 - **发送格式**: Bark 为 `POST <url>` JSON `{"title", "body", "group"}`；ntfy 为 `POST <服务器根>/` JSON 发布 `{"topic", "title", "message", "tags"}`（标题可含中文），有令牌时带 `Authorization: Bearer`。超时 10 秒，禁止重定向，后台线程发送，失败只记录在 `last`。
 - **iOS**: 云电脑设置 → “完成推送”分区配置服务、地址、令牌与事件开关，可发送测试或关闭。
+
+## 5. 扩展接口（Grok Bot 对齐 Phase 2）
+
+### 5.1 页面库 (Pages)
+- **工具** `page_write {title, html, page_id?}`：保存报告 / 看板 / 交互式小工具为 HTML（≤2MB，可内联 CSS/JS）。片段自动补全为带 viewport 与深色模式的完整文档；传 `page_id` 更新并递增 `version`。
+- **GET /v1/pages**: `{"pages": [{"page_id", "title", "summary", "session_id", "task_id", "version", "created_at", "updated_at", "size"}]}`（按更新时间倒序，不含 HTML）。**GET /v1/pages/{id}** 附带 `html`；**GET /v1/pages/{id}/html** 直接返回 `text/html`，带 `Content-Security-Policy: sandbox allow-scripts; default-src 'none'…`（不能联网、不能读取同源接口）。**DELETE /v1/pages/{id}**。
+- **iOS**: 云电脑设置 → “云端页面库”，在非持久化、无 baseURL 的 WKWebView 中渲染；外部链接交给系统浏览器；可分享 HTML。
+
+### 5.2 云端子代理 (Sub agents)
+- **工具** `subagent_task {task, title?}`：在新会话（标题“子代理：…”）中以相同模型、凭据与工具运行子任务，阻塞到结束，返回 `{"status", "result", "subagent_task_id", "subagent_session_id"}`。子代理看不到父对话；工具列表中没有 `subagent_task`（深度上限 1）；每个父任务最多 `OPENMINIS_SUBAGENT_MAX`（默认 8）个。父任务取消时子代理一起取消；子代理命中审批规则同样挂起。父任务事件流新增 `subagent_started` / `subagent_finished`。子代理结束不单独推送。
+
+### 5.3 图片生成 (Image generation)
+- **工具** `image_generate {prompt, size?, model?}`：调用当前服务商 `POST {base_url}/images/generations`（`n = 1`，`size` ∈ 1024x1024 / 1024x1536 / 1536x1024 / 512x512 / auto，模型默认 `OPENMINIS_IMAGE_MODEL` 或 `gpt-image-1`），支持 `b64_json` 与 `url` 两种返回，图片保存为工作区 `attachments/image_*.png|jpg|webp`，结果含 `attachment_url`（§2 附件接口下载）。

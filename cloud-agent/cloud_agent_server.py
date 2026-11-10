@@ -18,6 +18,7 @@ OpenMinis Cloud Computer & Agent Service (cloud_agent_server.py) v2.0
 - Structured memory: memory_write / memory_search over SQLite FTS5 (trigram), shared Markdown format with the phone
 - Skills lazy-load: only a name + description index goes into the prompt; skill_load reads the full SKILL.md
 - Push: Bark / ntfy notifications on task completion, approvals and routine runs (config stored encrypted)
+- Pages library (page_write), cloud sub agents (subagent_task) and image generation (image_generate)
 """
 
 import os
@@ -50,6 +51,7 @@ import cloud_cron
 import cloud_memory
 import cloud_skills
 import cloud_notify
+import cloud_pages
 
 HOST = os.environ.get("OPENMINIS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
@@ -236,6 +238,7 @@ def init_db():
     cloud_memory.ensure_schema(conn)
     cloud_skills.ensure_schema(conn)
     cloud_notify.ensure_schema(conn)
+    cloud_pages.ensure_schema(conn)
 
     # Server restart: mark interrupted
     cursor.execute("UPDATE tasks SET status = 'interrupted' WHERE status IN ('running', 'queued', 'waiting_user')")
@@ -267,7 +270,12 @@ def set_task_cancelled(task_id):
 
 def is_task_cancelled(task_id):
     with active_tasks_lock:
-        return active_tasks.get(task_id, {}).get("cancelled", False)
+        entry = active_tasks.get(task_id, {})
+        if entry.get("cancelled", False):
+            return True
+        parent = entry.get("parent")
+        # 子代理随父任务一起取消
+        return bool(parent) and active_tasks.get(parent, {}).get("cancelled", False)
 
 def get_session_workspace(session_id):
     ws = os.path.join(GLOBAL_WORKSPACE, session_id)
@@ -700,6 +708,10 @@ SERVER_TOOL_NOTES = (
     "\n\n[云端记忆] memory_search 按关键词检索用户的长期记忆（手机同步的 memory/ 日志与 GLOBAL.md，以及云端写入的条目），"
     "开始新话题或需要用户偏好、人物、项目背景时先检索；memory_write 保存值得长期记住的新事实，category 取 "
     "profile（用户本人）/ rules（偏好与约定）/ people（人物）/ workstreams（项目进展）/ note（其他）。不要写入密码、密钥等凭据。"
+    "\n[页面库] 报告、表格、看板、可交互的小工具等适合长期查看的成果，用 page_write 保存为完整 HTML 页面（可内联 CSS/JS，不能依赖外部登录态），"
+    "用户可在手机“云端页面库”中打开；更新同一页面时传回 page_id。"
+    "\n[子代理] 可拆分、互不依赖的子任务可用 subagent_task 交给独立会话的子代理执行，它返回最终结论；子代理不能再派生子代理。"
+    "\n[生成图片] 用户要图片时调用 image_generate，图片保存在工作区 attachments/。"
 )
 
 def server_tool_notes(session_id):
@@ -728,6 +740,114 @@ def tool_skill_load(task_id, session_id, args):
     finally:
         conn.close()
     return {"name": skill["name"], "description": skill["description"], "content": skill["content"]}
+
+def tool_page_write(task_id, session_id, args):
+    if is_task_cancelled(task_id):
+        return {"error": "Cancelled"}
+    conn = get_db_connection()
+    try:
+        page = cloud_pages.write(conn, args.get("title"), args.get("html"), page_id=args.get("page_id") or None,
+                                 session_id=session_id, task_id=task_id)
+    except ValueError as e:
+        return {"error": str(e)}
+    except KeyError:
+        return {"error": f"page_id 不存在：{args.get('page_id')}"}
+    finally:
+        conn.close()
+    return {"status": "ok", "page_id": page["page_id"], "title": page["title"], "version": page["version"], "size": page["size"]}
+
+SUBAGENT_MAX_PER_TASK = int(os.environ.get("OPENMINIS_SUBAGENT_MAX", "8"))
+SUBAGENT_INSTRUCTIONS = (
+    "你是 OpenMinis 云端子代理，在用户的 Linux 云电脑上独立完成父代理交给你的一个子任务。"
+    "只做这个子任务，用工具核实结果，最后用简洁中文给出结论与关键依据（会原样返回给父代理）。不能再派生子代理。"
+)
+
+def tool_subagent_task(task_id, session_id, args, model, provider_config, depth):
+    if depth >= 1:
+        return {"error": "子代理不能再派生子代理"}
+    prompt = args.get("task")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return {"error": "task must be a non-empty string"}
+    title = (args.get("title") or prompt.strip().splitlines()[0])[:60]
+    with active_tasks_lock:
+        parent_entry = active_tasks.get(task_id)
+        if parent_entry is not None:
+            used = parent_entry.get("subagents", 0)
+            if used >= SUBAGENT_MAX_PER_TASK:
+                return {"error": f"本任务子代理数量已达上限 {SUBAGENT_MAX_PER_TASK}"}
+            parent_entry["subagents"] = used + 1
+    sid = "sess_" + uuid.uuid4().hex[:12]
+    tid = "task_" + uuid.uuid4().hex[:12]
+    now = time.time()
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at) VALUES (?, NULL, ?, ?, ?)",
+                  (sid, "子代理：" + title, SUBAGENT_INSTRUCTIONS, now))
+        c.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
+                  (tid, sid, model, now))
+        c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (sid, prompt, now))
+        conn.commit()
+    finally:
+        conn.close()
+    with active_tasks_lock:
+        active_tasks[tid] = {"process": None, "cancelled": False, "pid": None, "parent": task_id}
+    log_event(task_id, "subagent_started", {"task_id": tid, "session_id": sid, "title": title})
+    run_agent_task(tid, sid, prompt, model, provider_config, SUBAGENT_INSTRUCTIONS, depth=depth + 1)
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        status = (c.execute("SELECT status FROM tasks WHERE task_id = ?", (tid,)).fetchone() or ["failed"])[0]
+        last = c.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
+    finally:
+        conn.close()
+    result = (last[0] if last else "") or ""
+    log_event(task_id, "subagent_finished", {"task_id": tid, "session_id": sid, "status": status})
+    out = {"status": status, "subagent_task_id": tid, "subagent_session_id": sid, "result": result[:20000]}
+    if status != "completed":
+        out["error"] = f"子代理结束状态：{status}"
+    return out
+
+IMAGE_MODEL_DEFAULT = os.environ.get("OPENMINIS_IMAGE_MODEL", "gpt-image-1")
+IMAGE_SIZES = ("1024x1024", "1024x1536", "1536x1024", "512x512", "auto")
+
+def tool_image_generate(task_id, session_id, args, provider_config):
+    if is_task_cancelled(task_id):
+        return {"error": "Cancelled"}
+    prompt = args.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return {"error": "prompt must be a non-empty string"}
+    size = args.get("size") or "1024x1024"
+    if size not in IMAGE_SIZES:
+        return {"error": "size must be one of " + ", ".join(IMAGE_SIZES)}
+    model = args.get("model") or IMAGE_MODEL_DEFAULT
+    url = f"{provider_config.get('base_url', 'https://api.openai.com/v1').rstrip('/')}/images/generations"
+    try:
+        resp = call_llm(url, {"Content-Type": "application/json", "Authorization": f"Bearer {provider_config.get('api_key', '')}"},
+                        {"model": model, "prompt": prompt[:4000], "size": size, "n": 1})
+        item = (resp.get("data") or [{}])[0]
+        import base64
+        if item.get("b64_json"):
+            png = base64.b64decode(item["b64_json"])
+        elif item.get("url", "").startswith(("https://", "http://")):
+            opener = urllib.request.build_opener(NoRedirect)
+            with opener.open(urllib.request.Request(item["url"]), timeout=60) as r:
+                png = r.read(20 * 1024 * 1024 + 1)
+            if len(png) > 20 * 1024 * 1024:
+                return {"error": "生成的图片超过 20MB"}
+        else:
+            return {"error": "图片服务没有返回 b64_json 或 url"}
+    except Exception as e:
+        return {"error": "图片生成失败：" + sanitize_err(e)}
+    ws = get_session_workspace(session_id)
+    os.makedirs(os.path.join(ws, "attachments"), exist_ok=True)
+    ext = "jpg" if png[:3] == b"\xff\xd8\xff" else ("webp" if png[8:12] == b"WEBP" else "png")
+    filename = f"image_{uuid.uuid4().hex[:8]}.{ext}"
+    with open(os.path.join(ws, "attachments", filename), "wb") as f:
+        f.write(png)
+    return {"status": "ok", "action": "image_generate", "file_path": f"attachments/{filename}",
+            "attachment_url": f"/v1/sessions/{session_id}/attachments/{filename}", "bytes": len(png),
+            "revised_prompt": item.get("revised_prompt")}
 
 TOOL_DEFINITIONS = [
     {
@@ -869,8 +989,60 @@ TOOL_DEFINITIONS = [
                 "required": ["name"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "page_write",
+            "description": "Save a report / dashboard / small interactive tool as an HTML page in the user's Pages library (viewable on the phone). Pass page_id to update an existing page.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "html": {"type": "string", "description": "Full HTML document or a body fragment; inline CSS/JS only, max 2MB."},
+                    "page_id": {"type": "string", "description": "Existing page_id to update (optional)."}
+                },
+                "required": ["title", "html"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "subagent_task",
+            "description": "Delegate one self-contained sub task to a sub agent with its own fresh session and the same tools; blocks until it finishes and returns its final answer.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "Complete instructions; the sub agent cannot see this conversation."},
+                    "title": {"type": "string", "description": "Short label."}
+                },
+                "required": ["task"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "image_generate",
+            "description": "Generate an image with the provider's /images/generations endpoint and save it under attachments/.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string"},
+                    "size": {"type": "string", "enum": list(IMAGE_SIZES)},
+                    "model": {"type": "string", "description": "Image model (default from OPENMINIS_IMAGE_MODEL or gpt-image-1)."}
+                },
+                "required": ["prompt"]
+            }
+        }
     }
 ]
+
+def tools_for_depth(depth):
+    if depth >= 1:
+        return [t for t in TOOL_DEFINITIONS if t["function"]["name"] != "subagent_task"]
+    return TOOL_DEFINITIONS
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -882,7 +1054,7 @@ def call_llm(url, headers, body):
     with opener.open(req, timeout=120) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
-def run_agent_task(task_id, session_id, initial_content, model, provider_config, instructions):
+def run_agent_task(task_id, session_id, initial_content, model, provider_config, instructions, depth=0):
     api_key = provider_config.get("api_key", "")
     chat_url = f"{provider_config.get('base_url', 'https://api.openai.com/v1').rstrip('/')}/chat/completions"
 
@@ -933,7 +1105,7 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
                 break
             try:
                 resp = call_llm(chat_url, {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}, {
-                    "model": model, "messages": messages, "tools": TOOL_DEFINITIONS, "tool_choice": "auto", "stream": False
+                    "model": model, "messages": messages, "tools": tools_for_depth(depth), "tool_choice": "auto", "stream": False
                 })
             except Exception as e:
                 log_event(task_id, "error", {"error": sanitize_err(e)})
@@ -1017,6 +1189,9 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
                     elif fn_name == "memory_write": res = tool_memory_write(task_id, session_id, fn_args)
                     elif fn_name == "memory_search": res = tool_memory_search(task_id, session_id, fn_args)
                     elif fn_name == "skill_load": res = tool_skill_load(task_id, session_id, fn_args)
+                    elif fn_name == "page_write": res = tool_page_write(task_id, session_id, fn_args)
+                    elif fn_name == "subagent_task": res = tool_subagent_task(task_id, session_id, fn_args, model, provider_config, depth)
+                    elif fn_name == "image_generate": res = tool_image_generate(task_id, session_id, fn_args, provider_config)
                     else: res = {"error": f"Unknown tool {fn_name}"}
 
                     log_event(task_id, "tool_result", {"id": tc_id, "tool": fn_name, "result": res})
@@ -1076,7 +1251,8 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
         with active_tasks_lock:
             active_tasks.pop(task_id, None)
         try:
-            on_task_finished(task_id, session_id, final_status)
+            if depth == 0:
+                on_task_finished(task_id, session_id, final_status)
         except Exception as e:
             print(f"task notify failed: {type(e).__name__}")
 
@@ -1451,7 +1627,10 @@ class Handler(BaseHTTPRequestHandler):
                     "routines": True,
                     "memory_search": True,
                     "skills_lazy_load": True,
-                    "notify": True
+                    "notify": True,
+                    "pages": True,
+                    "subagents": True,
+                    "image_generate": True
                 },
                 "timestamp": time.time()
             })
@@ -1497,6 +1676,37 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer ") or auth[7:].strip() != SERVER_TOKEN:
             self._send(401, {"error": "Unauthorized"})
+            return
+
+        if path == "/v1/pages":
+            conn = get_db_connection()
+            try:
+                self._send(200, {"pages": cloud_pages.list_pages(conn)})
+            finally:
+                conn.close()
+            return
+
+        if path.startswith("/v1/pages/"):
+            rest = path[len("/v1/pages/"):]
+            pid, _, fmt = rest.partition("/")
+            conn = get_db_connection()
+            try:
+                page = cloud_pages.get(conn, pid) if cloud_pages.PAGE_ID_RE.match(pid) else None
+            finally:
+                conn.close()
+            if not page or fmt not in ("", "html"):
+                self._send(404, {"error": "Page not found"})
+                return
+            if fmt == "html":
+                body = page["html"].encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Security-Policy", "sandbox allow-scripts; default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self._send(200, page)
             return
 
         if path == "/v1/notify":
@@ -1833,6 +2043,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"name": name, "deleted": True})
             else:
                 self._send(404, {"error": "Credential not found"})
+            return
+
+        if path.startswith("/v1/pages/"):
+            pid = path[len("/v1/pages/"):]
+            conn = get_db_connection()
+            try:
+                ok = bool(cloud_pages.PAGE_ID_RE.match(pid)) and cloud_pages.delete(conn, pid)
+            finally:
+                conn.close()
+            if ok:
+                self._send(200, {"page_id": pid, "deleted": True})
+            else:
+                self._send(404, {"error": "Page not found"})
             return
 
         if path == "/v1/notify":

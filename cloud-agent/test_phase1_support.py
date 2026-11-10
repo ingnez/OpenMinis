@@ -32,6 +32,16 @@ class FakeModelHandler(BaseHTTPRequestHandler):
         data = json.loads(self.rfile.read(length).decode("utf-8"))
         FakeModelHandler.requests.append(data)
         FakeModelHandler.auth_headers.append(self.headers.get("Authorization", ""))
+        if self.path == "/v1/images/generations":
+            import base64
+            png = b"\x89PNG\r\n\x1a\n" + data.get("prompt", "").encode("utf-8")
+            body = json.dumps({"data": [{"b64_json": base64.b64encode(png).decode(), "revised_prompt": "rp"}]}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path != "/v1/chat/completions":
             self.send_response(404)
             self.end_headers()
