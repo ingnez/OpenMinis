@@ -669,9 +669,13 @@ struct CloudSessionView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.top, 60)
                         }
-                        ForEach(Array(CloudTaskFailure.visible(messages).enumerated()), id: \.offset) { _, msg in
+                        ForEach(Array(CloudTaskFailure.display(messages).enumerated()), id: \.offset) { _, item in
+                            let msg = item.message
                             let role = msg["role"] as? String ?? "user"
                             let content = msg["content"] as? String ?? ""
+                            if !item.steps.isEmpty {
+                                CloudStepsLine(steps: item.steps)
+                            }
                             Group {
                                 if let theme {
                                     CloudThemedBubble(role: role, content: content, accent: theme.accent)
@@ -1377,12 +1381,57 @@ struct CloudTaskEventRow: View {
 enum CloudTaskFailure {
     /// 只显示用户与助手的文字消息：工具结果（role=tool）、只有工具调用没有文字的助手消息、空消息都不显示
     static func visible(_ messages: [[String: Any]]) -> [[String: Any]] {
-        messages.filter { m in
+        display(messages).map(\.message)
+    }
+
+    struct Item {
+        let message: [String: Any]
+        let steps: [CloudStep]
+    }
+
+    /// 把工具调用 / 工具结果折叠成下一条可见消息上方的「执行了 N 步」
+    static func display(_ messages: [[String: Any]]) -> [Item] {
+        var out: [Item] = []
+        var pending: [CloudStep] = []
+        var byId: [String: Int] = [:]
+        for m in messages {
             let role = m["role"] as? String ?? ""
-            guard role == "user" || role == "assistant" else { return false }
             let content = (m["content"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return !content.isEmpty
+            if role == "assistant", let calls = toolCalls(m) {
+                for c in calls {
+                    let fn = c["function"] as? [String: Any] ?? [:]
+                    let name = fn["name"] as? String ?? "工具"
+                    let args = fn["arguments"] as? String ?? ""
+                    byId[c["id"] as? String ?? UUID().uuidString] = pending.count
+                    pending.append(CloudStep(tool: name, detail: summarize(name, args), result: ""))
+                }
+            } else if role == "tool" {
+                let id = m["tool_call_id"] as? String ?? ""
+                if let i = byId[id], i < pending.count {
+                    pending[i].result = String(content.prefix(2000))
+                }
+                continue
+            }
+            guard role == "user" || role == "assistant", !content.isEmpty else { continue }
+            out.append(Item(message: m, steps: role == "assistant" ? pending : []))
+            if role == "assistant" || role == "user" { pending = []; byId = [:] }
         }
+        return out
+    }
+
+    private static func toolCalls(_ m: [String: Any]) -> [[String: Any]]? {
+        if let a = m["tool_calls"] as? [[String: Any]], !a.isEmpty { return a }
+        if let s = m["tool_calls"] as? String, let d = s.data(using: .utf8),
+           let a = try? JSONSerialization.jsonObject(with: d) as? [[String: Any]], !a.isEmpty { return a }
+        return nil
+    }
+
+    private static func summarize(_ tool: String, _ args: String) -> String {
+        guard let d = args.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return "" }
+        for k in ["command", "query", "url", "path", "content", "task", "action", "name"] {
+            if let v = o[k] as? String, !v.isEmpty { return String(v.replacingOccurrences(of: "\n", with: " ").prefix(80)) }
+        }
+        return ""
     }
 
     /// 失败横幅：状态 + 任务日志里最后一条错误的中文原因
@@ -1412,5 +1461,69 @@ enum CloudTaskFailure {
         if l.contains("model") && (l.contains("not found") || l.contains("does not exist") || l.contains("404")) { return "服务商没有这个模型，请换一个模型" }
         if l.contains("50") && (l.contains("http 5") || l.contains("bad gateway") || l.contains("service unavailable")) { return "服务商临时故障（5xx），稍后再试" }
         return String(r.prefix(160))
+    }
+}
+
+
+struct CloudStep {
+    let tool: String
+    let detail: String
+    var result: String
+
+    var label: String {
+        switch tool {
+        case "shell_execute": return "运行命令"
+        case "file_read": return "读取文件"
+        case "file_write", "file_edit": return "写文件"
+        case "browser_action": return "操作浏览器"
+        case "desktop_action": return "操作桌面"
+        case "memory_search": return "查记忆"
+        case "memory_write": return "记住"
+        case "skill_load": return "加载技能"
+        case "skill_save": return "保存技能"
+        case "delegate_task", "send_to_bot": return "交给其他 Bot"
+        case "subagent_task": return "子任务"
+        case "page_write": return "写页面"
+        case "image_generate": return "生成图片"
+        default: return tool
+        }
+    }
+}
+
+/// 一行「执行了 N 步」，点开看每一步与结果
+struct CloudStepsLine: View {
+    let steps: [CloudStep]
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { open.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "checklist").font(.caption)
+                    Text("执行了 \(steps.count) 步：" + steps.prefix(3).map(\.label).joined(separator: "、") + (steps.count > 3 ? "…" : ""))
+                        .font(.caption).lineLimit(1)
+                    Image(systemName: open ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .semibold))
+                }
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            if open {
+                ForEach(Array(steps.enumerated()), id: \.offset) { _, st in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(st.label + (st.detail.isEmpty ? "" : "：" + st.detail)).font(.caption.weight(.medium))
+                        if !st.result.isEmpty {
+                            Text(st.result).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(6)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(.secondarySystemBackground)))
+                }
+            }
+        }
+        .padding(.horizontal, 4)
     }
 }

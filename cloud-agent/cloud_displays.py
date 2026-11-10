@@ -123,7 +123,7 @@ def ws_probe(web_port, token=None, timeout=3.0):
             pass
 
 
-def diagnose(display=None, vnc_port=5901, token="main", web_port=18766, mode="auto"):
+def diagnose(display=None, vnc_port=5901, token="main", web_port=18766, mode="auto", probe=True):
     """桌面链路逐段检查：Xvfb → x11vnc（RFB 握手）→ websockify（端口与 token 目标）。返回给手机显示的中文诊断。"""
     display = display or MAIN_DISPLAY
     mode = websockify_mode() if mode == "auto" else mode
@@ -162,7 +162,7 @@ def diagnose(display=None, vnc_port=5901, token="main", web_port=18766, mode="au
         code, msg = "token_mismatch", f"屏幕 {token} 的转发目标不对或缺失，需要重启桌面"
     elif mode == "fixed" and vnc_port != 5901:
         code, msg = "proxy_old", "服务器的桌面代理是旧版（只能看主屏），请安装 / 更新桌面环境"
-    else:
+    elif probe:
         ok, why = ws_probe(web_port, token if mode == "token" else None)
         checks["stream"] = ok
         if not ok:
@@ -173,8 +173,57 @@ def diagnose(display=None, vnc_port=5901, token="main", web_port=18766, mode="au
     return checks
 
 
+def ensure_xauth(display, auth_file=None, run=subprocess.run):
+    """给 :N 在 Xauthority 文件里补一条 cookie（沿用主屏 :99 的 cookie）。
+    安装脚本只为 :99 写了 cookie：独立屏幕的 Xvfb 用同一个文件开启了访问控制，x11vnc / 浏览器却找不到 :N 的条目，
+    会被拒绝连接，x11vnc 随即退出——手机上就是「VNC 端口不通：x11vnc 没有在 59xx 端口响应」。
+    返回 True 表示可以安全地带 -auth 启动；False 表示应不带 -auth 启动（没有 xauth 工具或文件不可写）。"""
+    auth_file = auth_file or AUTH_FILE
+    xauth = shutil.which("xauth")
+    if not xauth or not os.path.exists(auth_file):
+        return False
+    try:
+        have = run([xauth, "-f", auth_file, "list", display], capture_output=True, text=True, timeout=5).stdout.strip()
+        if have:
+            return True
+        main = run([xauth, "-f", auth_file, "list", MAIN_DISPLAY], capture_output=True, text=True, timeout=5).stdout.split()
+        cookie = main[-1] if len(main) >= 3 else os.urandom(16).hex()
+        r = run([xauth, "-f", auth_file, "add", display, ".", cookie], capture_output=True, text=True, timeout=5)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def clear_stale_display(n):
+    """上一个 Agent 进程留下的 Xvfb :N（锁文件指向的进程还活着但不归现在的进程管）：结束它，避免「server already active」。"""
+    lock = f"/tmp/.X{n}-lock"
+    try:
+        with open(lock) as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return
+    try:
+        os.kill(pid, 15)
+        for _ in range(20):
+            time.sleep(0.1)
+            os.kill(pid, 0)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        return
+    for path in (lock, f"/tmp/.X11-unix/X{n}"):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def safe_token(key):
     return "bot-" + re.sub(r"[^a-z0-9_-]", "-", key.lower())[:48]
+
+
+class _Adopted(Exception):
+    """屏幕已由之前的进程启动并在工作：不用重新启动。"""
 
 
 class DisplayManager:
@@ -185,6 +234,7 @@ class DisplayManager:
         self.lock = threading.Lock()
         self.displays = {}                 # key -> {display, vnc_port, procs, last_used, token}
         self.reaper = None
+        self.last_error = None
 
     @staticmethod
     def available():
@@ -229,7 +279,8 @@ class DisplayManager:
         s = self.settings_fn()
         with self.lock:
             d = self.displays.get(key)
-            if d and all(p.poll() is None for p in d["procs"]):
+            alive = all(p.poll() is None for p in d["procs"]) if d and d["procs"] else (d is not None and port_open(d["vnc_port"], banner=b"RFB "))
+            if d and alive:
                 d["last_used"] = time.time()
                 return {k: v for k, v in d.items() if k != "procs"}
             if d:
@@ -243,13 +294,20 @@ class DisplayManager:
         port = 5900 + n
         env = os.environ.copy()
         env["DISPLAY"] = display
-        if os.path.exists(AUTH_FILE):
+        use_auth = ensure_xauth(display)
+        if use_auth:
             env["XAUTHORITY"] = AUTH_FILE
         res = s.get("resolution") or "1280x800"
         procs = []
+        # 上一个 Agent 进程起的屏幕还在正常工作：直接沿用；残缺的（只剩 Xvfb 或锁文件）先清掉再重建
+        adopt = port_open(port, banner=b"RFB ") and display_alive(display)
+        if not adopt:
+            clear_stale_display(n)
         try:
+            if adopt:
+                raise _Adopted()
             xvfb = ["Xvfb", display, "-screen", "0", f"{res}x24", "-nolisten", "tcp", "-noreset"]
-            if os.path.exists(AUTH_FILE):
+            if use_auth:
                 xvfb += ["-auth", AUTH_FILE]
             procs.append(subprocess.Popen(xvfb, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
             for _ in range(40):
@@ -259,12 +317,27 @@ class DisplayManager:
             if shutil.which("openbox"):
                 procs.append(subprocess.Popen(["openbox"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
             vnc = ["x11vnc", "-display", display, "-rfbport", str(port), "-listen", "127.0.0.1", "-nopw", "-forever", "-shared", "-quiet"]
-            if os.path.exists(AUTH_FILE):
+            if use_auth:
                 vnc += ["-auth", AUTH_FILE]
             procs.append(subprocess.Popen(vnc, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
+            # 等 x11vnc 真正开始监听；没起来就清掉、回退主屏，而不是把一个打不开的屏幕交给手机
+            for _ in range(50):
+                if port_open(port, banner=b"RFB "):
+                    break
+                if procs[-1].poll() is not None:
+                    break
+                time.sleep(0.1)
+            if not port_open(port, banner=b"RFB "):
+                raise OSError("x11vnc did not start")
+        except _Adopted:
+            pass
         except OSError:
             for p in procs:
-                p.kill()
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+            self.last_error = f"独立屏幕 {display} 启动失败（x11vnc 没有在 {port} 端口监听），已回退主屏"
             return None
         token = safe_token(key)
         try:
@@ -273,6 +346,7 @@ class DisplayManager:
                     f.write(f"{token}: 127.0.0.1:{port}\n")
         except OSError:
             pass
+        self.last_error = None
         entry = {"display": display, "vnc_port": port, "token": token, "resolution": res,
                  "started_at": time.time(), "last_used": time.time(), "procs": procs}
         with self.lock:

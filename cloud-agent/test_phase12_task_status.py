@@ -67,6 +67,37 @@ class TaskStatusTests(CloudServerTestCase):
         self.assertEqual(res["status"], "completed", res)
         self.assertEqual(calls[1]["messages"][-2].get("reasoning_content"), "先查记忆")
 
+    def test_05_shell_uses_bash(self):
+        calls = []
+        def script(d):
+            calls.append(d)
+            if len(calls) == 1:
+                return tool_call("b1", "shell_execute", {"command": "arr=(a b c); [[ ${#arr[@]} == 3 ]] && echo bash-ok"})
+            return {"role": "assistant", "content": "好了"}
+        FakeModelHandler.scripts["m-bash"] = script
+        sid = self.new_session()
+        t = self.submit(sid, "跑一下", "m-bash")[1]
+        self.assertEqual(self.wait_status(t["task_id"], ("completed", "failed"))["status"], "completed")
+        tool_msg = [m for m in calls[1]["messages"] if m.get("role") == "tool"][-1]
+        self.assertIn("bash-ok", tool_msg["content"])
+
+    def test_06_restart_after_answer_marks_completed_not_interrupted(self):
+        import time as _t
+        srv = self.srv
+        sid, sid2 = self.new_session(), self.new_session()
+        conn = srv.get_db_connection()
+        now = _t.time()
+        conn.execute("INSERT INTO tasks (task_id, session_id, status, model, created_at) VALUES ('task_r_answered', ?, 'running', 'm', ?)", (sid, now))
+        conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', '问', ?)", (sid, now))
+        conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'assistant', '答完了', ?)", (sid, now + 1))
+        conn.execute("INSERT INTO tasks (task_id, session_id, status, model, created_at) VALUES ('task_r_pending', ?, 'running', 'm', ?)", (sid2, now))
+        conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', '问', ?)", (sid2, now))
+        conn.commit()
+        conn.close()
+        srv.init_db()                      # 模拟服务重启
+        self.assertEqual(self.request("GET", "/v1/tasks/task_r_answered")[1]["status"], "completed")
+        self.assertEqual(self.request("GET", "/v1/tasks/task_r_pending")[1]["status"], "interrupted")
+
 
 if __name__ == "__main__":
     unittest.main()

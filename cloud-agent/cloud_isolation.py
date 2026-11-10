@@ -259,18 +259,31 @@ def scope_supported():
     return _scope_probe
 
 
+BASH = shutil.which("bash")
+
+
+def shell_argv(cmd):
+    """用 bash -lc 执行（模型写的命令大多是 bash 语法：[[ ]]、数组、source、{a,b} 展开…；/bin/sh 在 Debian 上是 dash 会报错）。
+    没有 bash 时退回系统 sh。返回 (argv 或字符串, shell 标志)。"""
+    bash = BASH or ("/bin/bash" if os.path.exists("/bin/bash") else None)
+    if bash:
+        return [bash, "-lc", cmd], False
+    return cmd, True
+
+
 def wrap_command(cmd, limits):
     """返回 (argv 或 shell 字符串, shell 标志, preexec_fn)。"""
     cpu, mem = limits.get("cpu_percent") or 0, limits.get("memory_mb") or 0
     if not cpu and not mem:
-        return cmd, True, None
+        argv, shell = shell_argv(cmd)
+        return argv, shell, None
     if scope_supported():
         argv = ["systemd-run", "--scope", "--quiet", "--collect"]
         if mem:
             argv += ["-p", f"MemoryMax={mem}M"]
         if cpu:
             argv += ["-p", f"CPUQuota={cpu}%"]
-        return argv + ["--", "/bin/bash", "-c", cmd], False, None
+        return argv + ["--", BASH or "/bin/bash", "-lc", cmd], False, None
 
     def preexec():
         import resource
@@ -284,7 +297,8 @@ def wrap_command(cmd, limits):
                 os.nice(10)
             except OSError:
                 pass
-    return cmd, True, preexec
+    argv, shell = shell_argv(cmd)
+    return argv, shell, preexec
 
 
 def bot_port_range(settings, index):

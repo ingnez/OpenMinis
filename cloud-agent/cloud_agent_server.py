@@ -292,7 +292,13 @@ def init_db():
     if "channel" not in {row[1] for row in cursor.execute("PRAGMA table_info(telegram_tasks)")}:
         cursor.execute("ALTER TABLE telegram_tasks ADD COLUMN channel TEXT NOT NULL DEFAULT ''")
 
-    # Server restart: mark interrupted
+    # Server restart: 进行中的任务标记为中断——但如果任务开始后已经写出了助手回答（回答完才被重启打断，
+    # 例如回答后顺手记记忆时正好更新服务器），算作完成，免得手机上出现「中断」的误报
+    cursor.execute("UPDATE tasks SET status = 'completed' WHERE status IN ('running', 'waiting_user') AND EXISTS ("
+                   "SELECT 1 FROM messages m WHERE m.session_id = tasks.session_id AND m.role = 'assistant' "
+                   "AND m.content IS NOT NULL AND TRIM(m.content) != '' AND m.timestamp >= tasks.created_at "
+                   "AND m.id = (SELECT MAX(id) FROM messages WHERE session_id = tasks.session_id AND role IN ('user', 'assistant') "
+                   "AND (content IS NOT NULL AND TRIM(content) != '')))")
     cursor.execute("UPDATE tasks SET status = 'interrupted' WHERE status IN ('running', 'queued', 'waiting_user')")
     cursor.execute("UPDATE approvals SET status = 'expired', decided_at = ? WHERE status = 'pending'", (time.time(),))
     cursor.execute("UPDATE routine_runs SET status = 'interrupted', finished_at = ? WHERE status IN ('running', 'waiting_user')", (time.time(),))
@@ -519,12 +525,22 @@ APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 AGENT_VERSION = "2.1.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
+_BRIEF_CACHE = {"at": 0.0, "value": None}
+
 def _desktop_health_brief():
+    """/health 里的桌面摘要：只做本机端口检查（不做 websocket 探测），并缓存 20 秒，保证 /health 永远秒回
+    （自检定时器和 systemd 看门狗靠它判断 Agent 是否活着，慢了会误杀 Agent、打断正在跑的任务）。"""
+    now = time.time()
+    if _BRIEF_CACHE["value"] is not None and now - _BRIEF_CACHE["at"] < 20:
+        return _BRIEF_CACHE["value"]
     if not desktop_installed():
-        return {"installed": False, "ok": False, "diagnosis": "not_installed", "message": "服务器还没有安装云电脑桌面环境"}
-    h = cloud_displays.diagnose()
-    return {"installed": True, "ok": h["ok"], "diagnosis": h["diagnosis"], "message": h["message"],
-            "xvfb": h["xvfb"], "vnc": h["vnc"], "websockify": h["websockify"], "websockify_mode": h["websockify_mode"]}
+        v = {"installed": False, "ok": False, "diagnosis": "not_installed", "message": "服务器还没有安装云电脑桌面环境"}
+    else:
+        h = cloud_displays.diagnose(probe=False)
+        v = {"installed": True, "ok": h["ok"], "diagnosis": h["diagnosis"], "message": h["message"],
+             "xvfb": h["xvfb"], "vnc": h["vnc"], "websockify": h["websockify"], "websockify_mode": h["websockify_mode"]}
+    _BRIEF_CACHE.update(at=now, value=v)
+    return v
 
 def desktop_installed():
     return all(shutil.which(b) for b in ("Xvfb", "x11vnc", "websockify"))
@@ -567,7 +583,7 @@ def start_watchdog():
         notify("READY=1")
         while True:
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=8) as r:
+                with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/livez", timeout=8) as r:
                     if r.status == 200:
                         notify("WATCHDOG=1")
             except Exception:
@@ -3667,6 +3683,10 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed_url.path
         query_params = parse_qs(parsed_url.query)
 
+        if path == "/livez":
+            self._send(200, {"status": "ok", "agent_version": AGENT_VERSION})
+            return
+
         if path == "/health":
             self._send(200, {
                 "status": "ok",
@@ -3849,6 +3869,8 @@ class Handler(BaseHTTPRequestHandler):
                 if info:
                     display, port, token, own = info["display"], info["vnc_port"], info["token"], True
             h = cloud_displays.diagnose(display, port, token)
+            if bid and not own and DISPLAYS.last_error:
+                h["display_error"] = DISPLAYS.last_error
             h.update({"display": display, "token": token, "own_display": own,
                       "token_proxy": h["websockify_mode"] == "token" if h["websockify_mode"] else cloud_displays.token_proxy_enabled(),
                       "tools": cloud_desktop.is_desktop_available()})

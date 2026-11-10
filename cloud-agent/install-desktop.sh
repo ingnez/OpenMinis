@@ -301,9 +301,9 @@ if ! port_open 18766; then
     log "websockify 18766 不通，重启 noVNC"
     systemctl restart openminis-novnc
 fi
-if ! curl -fsS --max-time 5 http://127.0.0.1:18765/health >/dev/null 2>&1; then
+if ! curl -fsS --max-time 5 http://127.0.0.1:18765/livez >/dev/null 2>&1; then
     sleep 10
-    if ! curl -fsS --max-time 5 http://127.0.0.1:18765/health >/dev/null 2>&1; then
+    if ! curl -fsS --max-time 5 http://127.0.0.1:18765/livez >/dev/null 2>&1; then
         log "Agent 无应答，重启 Agent"
         systemctl restart openminis-cloud-agent
     fi
