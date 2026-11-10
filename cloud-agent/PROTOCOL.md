@@ -437,3 +437,7 @@
 - `POST /v1/vault/import` `{csv}`：Chrome / 1Password / Bitwarden 导出的密码 CSV → `{imported, skipped}`。
 - Bot 工具（所有 Bot）：`vault_list(kind?, query?)` 只返回元数据；`vault_fill(id, target?, fields?, selectors?, address_index?)` 由服务器解密后直接填进云电脑浏览器（或 `target=desktop` 用 xdotool 在焦点处输入），登录项要求网页的主域名（eTLD+1 近似）和条目一致；`vault_totp(id)` 填当前验证码。结果只有填了哪些栏位。
 - 机密写进对话、事件、通知、发给模型之前都会过一遍替换（`[保管库已隐藏]`，覆盖 6 位以上的密码、TOTP 密钥、卡号及分组写法）。`admin_api` 不能访问 `/v1/vault`。
+
+## 11. 灵魂设定（服务器 2.8.0+）
+- 每个 Bot 的 `soul`：`{style?, language?, persona?, forbidden?}`（风格 / 语气 ≤500、回复语言 ≤40、人格提示词 ≤8000、禁止事项 ≤2000）。`PUT /v1/bots/<id>` `{soul: {...}}` 整体替换，`{soul: null}` 或 `{}` 清除；`GET /v1/bots` 每个 Bot 带 `soul`。和其他设置一样进设置历史版本、导出包，主 Bot 的 `update_bot(soul=…)` 可改别的 Bot 并可撤销。
+- 每次调用模型都把它放在系统提示最前面（Bot 指令之前）；设置了回复语言时系统提示结尾再强调一次。/reset 之后、子任务（subagent_task 指定这个 Bot）、群聊都一样。

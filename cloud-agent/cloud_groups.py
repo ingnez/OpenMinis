@@ -14,6 +14,8 @@ import re
 import threading
 import time
 import uuid
+
+import cloud_bots
 from collections import deque
 
 SCHEMA = [
@@ -283,6 +285,7 @@ def build_prompt(bot, persona_text, group, history, members, me_reason):
     others = "、".join(f"{m.get('name')}（{m['persona_id']}）" for m in members if m["persona_id"] != bot["persona_id"]) or "无"
     sys_text = (persona_text or f"你是「{bot.get('name')}」。") + REPLY_RULES.format(
         others=others, task_rule=TASK_RULE if me_reason == "mention" else "")
+    sys_text += cloud_bots.language_tail(bot)      # 灵魂设定的回复语言
     names = {m["persona_id"]: m.get("name") or m["persona_id"] for m in members}
     lines = []
     for h in history:

@@ -22,9 +22,10 @@ EXTRA_COLUMNS = {
     "is_primary": "INTEGER NOT NULL DEFAULT 0",
     "reasoning_effort": "TEXT",   # off / low / medium / high / xhigh；NULL = 跟随客户端
     "fast_mode": "INTEGER NOT NULL DEFAULT 0",   # 快速模式：低思考强度、短回答
+    "soul": "TEXT",        # JSON：灵魂设定 {style, language, persona, forbidden}
 }
 
-COLS = "persona_id, name, instructions, emoji, created_at, updated_at, description, model, credential, skills, plugins, is_primary, reasoning_effort, fast_mode"
+COLS = "persona_id, name, instructions, emoji, created_at, updated_at, description, model, credential, skills, plugins, is_primary, reasoning_effort, fast_mode, soul"
 EFFORTS = ("off", "low", "medium", "high", "xhigh")
 
 
@@ -33,7 +34,7 @@ class BotError(ValueError):
 
 
 VERSIONS_KEEP = 20
-SNAPSHOT_KEYS = ("name", "instructions", "emoji", "description", "model", "credential", "skills", "plugins", "reasoning_effort", "fast_mode")
+SNAPSHOT_KEYS = ("name", "instructions", "emoji", "description", "model", "credential", "skills", "plugins", "reasoning_effort", "fast_mode", "soul")
 
 
 def ensure_schema(conn):
@@ -60,7 +61,61 @@ def _row(r):
             "created_at": r[4], "updated_at": r[5], "description": r[6] or "", "model": r[7],
             "credential": r[8], "skills": lst(r[9]), "plugins": lst(r[10]) or [], "is_primary": bool(r[11]),
             "reasoning_effort": r[12] if len(r) > 12 else None,
-            "fast_mode": bool(r[13]) if len(r) > 13 else False}
+            "fast_mode": bool(r[13]) if len(r) > 13 else False,
+            "soul": _soul_load(r[14]) if len(r) > 14 else None}
+
+
+SOUL_FIELDS = {"style": 500, "language": 40, "persona": 8000, "forbidden": 2000}
+
+
+def _soul_load(v):
+    try:
+        d = json.loads(v) if v else None
+    except ValueError:
+        return None
+    if not isinstance(d, dict):
+        return None
+    return {k: d[k] for k in SOUL_FIELDS if isinstance(d.get(k), str) and d[k].strip()} or None
+
+
+def validate_soul(v):
+    """灵魂设定：风格 / 语气、回复语言、人格提示词、禁止事项；全空 = 清除。"""
+    if v in (None, "", {}):
+        return None
+    if not isinstance(v, dict) or any(k not in SOUL_FIELDS for k in v):
+        raise BotError("soul must be an object with style / language / persona / forbidden")
+    out = {}
+    for k, limit in SOUL_FIELDS.items():
+        x = v.get(k)
+        if x is None:
+            continue
+        if not isinstance(x, str) or len(x) > limit:
+            raise BotError(f"soul.{k} must be a string (max {limit})")
+        if x.strip():
+            out[k] = x.strip()
+    return out or None
+
+
+def soul_section(bot):
+    """放在系统提示最前面（Bot 指令之前）的灵魂设定；每次调用模型都带上（含 /reset 之后、子任务、群聊）。"""
+    soul = (bot or {}).get("soul") or {}
+    if not soul:
+        return ""
+    lines = [f"[灵魂设定：{bot.get('name') or ''}]（优先于下面的一般指令；安全规则仍然优先）"]
+    if soul.get("style"):
+        lines.append("风格 / 语气：" + soul["style"])
+    if soul.get("persona"):
+        lines.append("人格：\n" + soul["persona"])
+    if soul.get("forbidden"):
+        lines.append("禁止事项（一律不做）：" + soul["forbidden"])
+    if soul.get("language"):
+        lines.append(f"回复语言：始终用「{soul['language']}」回复，除非用户在这一条消息里明确要求换语言。")
+    return "\n".join(lines) + "\n\n"
+
+
+def language_tail(bot):
+    lang = ((bot or {}).get("soul") or {}).get("language")
+    return f"\n\n[回复语言] 用「{lang}」回复（灵魂设定要求），除非用户明确要求换语言。" if lang else ""
 
 
 def get(conn, bot_id):
@@ -140,6 +195,9 @@ def validate(body, existing=None, credential_exists=None):
         if not isinstance(body["fast_mode"], bool):
             raise BotError("fast_mode must be a boolean")
         out["fast_mode"] = 1 if body["fast_mode"] else 0
+    if "soul" in body:
+        soul = validate_soul(body["soul"])
+        out["soul"] = json.dumps(soul, ensure_ascii=False) if soul else None
     if "is_primary" in body:
         if not isinstance(body["is_primary"], bool):
             raise BotError("is_primary must be a boolean")
@@ -184,7 +242,8 @@ def _changes(existing, fields):
            "description": existing.get("description") or None, "model": existing.get("model"), "credential": existing.get("credential"),
            "skills": None if existing.get("skills") is None else json.dumps(existing["skills"], ensure_ascii=False),
            "plugins": json.dumps(existing.get("plugins") or [], ensure_ascii=False),
-           "reasoning_effort": existing.get("reasoning_effort"), "fast_mode": 1 if existing.get("fast_mode") else 0}
+           "reasoning_effort": existing.get("reasoning_effort"), "fast_mode": 1 if existing.get("fast_mode") else 0,
+           "soul": json.dumps(existing["soul"], ensure_ascii=False) if existing.get("soul") else None}
     return any(k in cur and cur[k] != v for k, v in fields.items())
 
 
@@ -230,7 +289,7 @@ def prompt(bot, others):
     head = f"[人格：{bot['name']}] 本会话由用户创建的 Bot“{bot['name']}”负责，记忆与其他 Bot 隔离（共享记忆仍可见）。"
     if bot.get("description"):
         head += f"\n简介：{bot['description']}"
-    text = head + "\n" + bot["instructions"] + "\n\n"
+    text = soul_section(bot) + head + "\n" + bot["instructions"] + "\n\n"
     if bot.get("is_primary"):
         text += ("[主 Bot] [管理员] 你是用户的主 Bot，拥有最高权限：用户让你新建、修改、删除、恢复 Bot，或调整别的 Bot 的记忆、技能、例行任务、"
                  "设置、插件、代理、云电脑时，直接用 create_bot / update_bot / delete_bot / restore_bot / set_primary_bot / list_bots / admin_api 去做，"
@@ -246,7 +305,7 @@ def export_bundle(conn, bot_id, routines, memory_entries):
     bot = get(conn, bot_id)
     if not bot:
         return None
-    clean = {k: bot[k] for k in ("name", "emoji", "description", "instructions", "model", "skills", "plugins", "reasoning_effort", "fast_mode")}
+    clean = {k: bot[k] for k in ("name", "emoji", "description", "instructions", "model", "skills", "plugins", "reasoning_effort", "fast_mode", "soul")}
     return {
         "format": EXPORT_FORMAT,
         "bot_id": bot_id,

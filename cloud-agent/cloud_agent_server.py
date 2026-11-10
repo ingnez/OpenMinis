@@ -555,7 +555,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.7.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.8.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -3193,7 +3193,10 @@ _BOT_FIELDS = {
     "reasoning_effort": {"type": "string", "enum": ["off", "low", "medium", "high", "xhigh"]},
     "fast_mode": {"type": "boolean"},
     "skills": {"type": "array", "items": {"type": "string"}, "description": "技能白名单；不填 = 全部技能"},
-    "plugins": {"type": "array", "items": {"type": "string"}, "description": "授权的插件 id"}}
+    "plugins": {"type": "array", "items": {"type": "string"}, "description": "授权的插件 id"},
+    "soul": {"type": "object", "description": "灵魂设定（整体替换；传 {} 清除）：style 风格/语气、language 回复语言、persona 人格提示词、forbidden 禁止事项",
+             "properties": {"style": {"type": "string"}, "language": {"type": "string"}, "persona": {"type": "string"},
+                            "forbidden": {"type": "string"}}}}
 
 TOOL_DEFINITIONS.extend([
     {"type": "function", "function": {
@@ -3496,6 +3499,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         system_text += snapshot_pointer(session_id)
     if _bot_fast(session_id):
         system_text += FAST_MODE_NOTE
+    system_text += cloud_bots.language_tail(get_persona(session_persona_id(session_id)))   # 灵魂设定的回复语言：结尾再强调一次
     dynamic_note = mention_note(session_id, initial_content)
     if on_duty():
         # 放在本轮末尾而不是系统提示里：系统提示不变，前缀缓存照样命中

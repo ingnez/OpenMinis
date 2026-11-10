@@ -15,7 +15,7 @@ import cloud_bots
 
 TRASH_KEEP_DAYS = 30
 SETTING_KEYS = ("name", "instructions", "emoji", "description", "model", "credential", "skills", "plugins",
-                "reasoning_effort", "fast_mode")
+                "reasoning_effort", "fast_mode", "soul")
 
 
 class AdminError(ValueError):
