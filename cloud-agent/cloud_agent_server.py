@@ -630,7 +630,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.30.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.30.1"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -6714,7 +6714,6 @@ class Handler(BaseHTTPRequestHandler):
             if data is None:
                 self._send(404, {"error": "Frame not found"})
                 return
-            import base64
             self._send(200, {"mime": mime, "image_b64": base64.b64encode(data).decode("ascii")})
             return
 

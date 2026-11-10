@@ -597,3 +597,7 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - `GET /v1/replays` → `{"replays": [{"task_id", "frames", "started_at", "ended_at"}]}`
 - `GET /v1/tasks/<id>/replay` → `{"task_id", "frames": [{"i", "t", "steps": ["打开 example.com", "输入了 3 个字"]}]}`
 - `GET /v1/tasks/<id>/replay/<i>` → `{"mime": "image/png", "image_b64": "…"}`；没有这一帧时 404
+
+## 2.30.1
+
+- 修复：`GET /v1/tasks/<id>/replay/<i>` 里多余的局部 `import base64` 让整个 `do_GET` 把 `base64` 当成局部变量，`GET /v1/bots/<id>/avatar` 因此 500。接口形状不变。
