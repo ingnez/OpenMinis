@@ -63,6 +63,8 @@ final class CloudBotHomeModel: ObservableObject {
     @Published var showSharePicker = false
     /// 值班模式到什么时候（服务器 resources.duty_until）；nil = 没在值班
     @Published private(set) var dutyUntil: Date?
+    /// 「今日」：最近 24 小时例行任务和主动消息的结果（服务器 /v1/feed）
+    @Published private(set) var feed: [CloudFeedItem] = []
 
     func setDuty(hours: Double?) async {
         let until: Double
@@ -170,6 +172,11 @@ final class CloudBotHomeModel: ObservableObject {
             if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/resources"),
                let until = (r["settings"] as? [String: Any])?["duty_until"] as? Double {
                 dutyUntil = until > Date().timeIntervalSince1970 ? Date(timeIntervalSince1970: until) : nil
+            }
+            // 旧服务器没有 /v1/feed：保持空
+            if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/feed"),
+               let items = r["items"] as? [[String: Any]] {
+                feed = items.compactMap(CloudFeedItem.init)
             }
         } catch let error as URLError where CloudConnection.tunnelDropped(error) {
             bannerText = nil
@@ -293,6 +300,9 @@ struct CloudBotHomeScreen: View {
                         }
                         if let primary = model.primary, search.isEmpty {
                             hero(primary)
+                        }
+                        if search.isEmpty && !model.feed.isEmpty {
+                            CloudTodayFeed(items: model.feed, bots: model.bots)
                         }
                         LazyVStack(spacing: 0) {
                             ForEach(groupsMatching) { g in
@@ -663,6 +673,84 @@ struct CloudBotChatView: View {
             history = (try? await CloudBotService.sessions(botId)) ?? []
         } catch {
             errorText = error.localizedDescription
+        }
+    }
+}
+
+struct CloudFeedItem: Identifiable, Equatable {
+    let id: String
+    let sessionId: String
+    let title: String
+    let botId: String
+    let proactive: Bool
+    let text: String
+    let at: Date
+
+    init?(_ d: [String: Any]) {
+        guard let id = d["run_id"] as? String, let text = d["text"] as? String, !text.isEmpty else { return nil }
+        self.id = id
+        sessionId = d["session_id"] as? String ?? ""
+        title = d["title"] as? String ?? ""
+        botId = d["bot_id"] as? String ?? ""
+        proactive = d["proactive"] as? Bool ?? false
+        self.text = text
+        at = Date(timeIntervalSince1970: d["at"] as? Double ?? 0)
+    }
+}
+
+/// 首页「今日」卡片：最近 24 小时 Bot 主动找你和例行任务的结果，默认显示 3 条
+struct CloudTodayFeed: View {
+    let items: [CloudFeedItem]
+    let bots: [CloudBot]
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("今日").font(.headline)
+                Spacer()
+                if items.count > 3 {
+                    Button(expanded ? "收起" : "全部 \(items.count) 条") { withAnimation { expanded.toggle() } }.font(.caption)
+                }
+            }
+            ForEach(expanded ? items : Array(items.prefix(3))) { item in
+                row(item)
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.secondarySystemBackground)))
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
+
+    @ViewBuilder private func row(_ item: CloudFeedItem) -> some View {
+        let bot = bots.first { $0.id == item.botId }
+        let content = HStack(alignment: .top, spacing: 10) {
+            if let bot {
+                CloudBotAvatarView(spec: CloudBotAvatarSpec.of(bot), size: 26)
+            } else {
+                Image(systemName: "clock.arrow.circlepath").frame(width: 26, height: 26).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(item.proactive ? "\(bot?.name ?? "Bot") 找你" : item.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Spacer()
+                    Text(item.at, style: .time).font(.caption2).foregroundStyle(.secondary)
+                }
+                Text(CloudMessageText.display(item.text).text).font(.callout).foregroundStyle(.secondary).lineLimit(3)
+            }
+        }
+        .contentShape(Rectangle())
+        if item.sessionId.isEmpty {
+            content
+        } else {
+            NavigationLink {
+                CloudSessionView(sessionId: item.sessionId, sessionTitle: item.proactive ? (bot?.name ?? item.title) : item.title,
+                                 model: UserDefaults.standard.string(forKey: "OpenMinisCloud_manualModel") ?? "",
+                                 selectedInstanceId: UserDefaults.standard.string(forKey: "OpenMinisCloud_selectedInstanceId") ?? "",
+                                 botHasOwnModel: bot?.hasOwnModel ?? false, theme: bot.map { CloudBotChatTheme(bot: $0) })
+            } label: { content }
+            .buttonStyle(.plain)
         }
     }
 }

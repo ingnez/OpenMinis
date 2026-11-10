@@ -90,5 +90,28 @@ class DutyModeTests(CloudServerTestCase):
         self.assertNotIn("值班模式", FakeModelHandler.requests[-1]["messages"][-1]["content"])
 
 
+
+class FeedTests(CloudServerTestCase):
+    def test_01_feed_lists_recent_non_quiet_results(self):
+        import time, uuid
+        conn = self.srv.get_db_connection()
+        try:
+            now = time.time()
+            for rid, name in (("rtn_feed00000001", "主动消息 · 总管"), ("rtn_feed00000002", "每日简报")):
+                conn.execute("INSERT INTO routines (routine_id, name, prompt, schedule, credential, model, enabled, run_count, notify, created_at, updated_at) "
+                             "VALUES (?, ?, 'p', '{}', 'c', 'm', 1, 0, 1, ?, ?)", (rid, name, now, now))
+            rows = [("rtn_feed00000001", "明早 8 点交班，记得带记录", now - 60), ("rtn_feed00000001", "[SKIP]", now - 30),
+                    ("rtn_feed00000002", "今日要闻三条", now - 10), ("rtn_feed00000002", "很久以前", now - 3 * 86400)]
+            for rid, res, at in rows:
+                conn.execute("INSERT INTO routine_runs (run_id, routine_id, task_id, session_id, trigger, status, result, error, started_at, finished_at) "
+                             "VALUES (?, ?, NULL, 'sess_x', 'schedule', 'completed', ?, NULL, ?, ?)", ("run_" + uuid.uuid4().hex[:12], rid, res, at, at))
+            conn.commit()
+        finally:
+            conn.close()
+        items = self.request("GET", "/v1/feed")[1]["items"]
+        self.assertEqual([i["text"] for i in items], ["今日要闻三条", "明早 8 点交班，记得带记录"])
+        self.assertTrue(items[1]["proactive"])
+
+
 if __name__ == "__main__":
     unittest.main()

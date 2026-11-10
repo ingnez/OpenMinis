@@ -3298,6 +3298,27 @@ def is_quiet_result(text):
     t = (text or "").strip()
     return any(t.startswith(m) or t.endswith(m) for m in PROACTIVE_SKIP_MARKERS)
 
+def daily_feed(hours=24, limit=20):
+    """「今日」：最近 hours 小时例行任务 / 主动消息的结果（Bot 说 [SKIP] 的不算），新的在前。"""
+    since = time.time() - hours * 3600
+    conn = get_db_connection()
+    try:
+        rows = conn.execute("SELECT r.run_id, r.session_id, r.result, r.finished_at, t.name, t.persona_id FROM routine_runs r "
+                            "JOIN routines t ON t.routine_id = r.routine_id WHERE r.status = 'completed' AND r.finished_at >= ? "
+                            "ORDER BY r.finished_at DESC LIMIT ?", (since, limit * 3)).fetchall()
+    finally:
+        conn.close()
+    items = []
+    for run_id, sid, result, at, name, bot in rows:
+        if not result or is_quiet_result(result):
+            continue
+        items.append({"run_id": run_id, "session_id": sid, "title": name, "bot_id": bot or "",
+                      "proactive": (name or "").startswith("主动消息"), "text": result.strip()[:600], "at": at})
+        if len(items) >= limit:
+            break
+    return items
+
+
 def on_routine_finished(routine, run):
     """例行任务结束时推送，异常不影响调度。"""
     if not routine.get("notify", True) or run.get("status") == "skipped" or _bot_muted(persona_id=routine.get("persona_id") or ""):
@@ -4076,6 +4097,10 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
             self._send(200, {"available": cloud_desktop.is_desktop_available(), "busy": running > 0, "running_tasks": running,
                              "token_proxy": cloud_displays.token_proxy_enabled(), "displays": DISPLAYS.list()})
+            return
+
+        if path == "/v1/feed":
+            self._send(200, {"items": daily_feed()})
             return
 
         if path == "/v1/resources":
