@@ -90,6 +90,56 @@ enum CloudLinkCause: Equatable {
     }
 }
 
+/// 连接状态（守护内部的真实状态，也是界面显示的状态）
+enum CloudLinkState: Equatable {
+    case idle            // 没有配置云电脑
+    case connecting
+    case online
+    case retrying(Int)
+    case offline(CloudLinkCause)
+}
+
+/// 「一直在线」的显示规则：连上过一次之后，回到前台、切网络、隧道断了重建都在后台静默进行，
+/// 界面继续显示在线和缓存内容；静默重连连续失败 3 次、且距第一次失败已过约 20 秒，才把问题显示出来。
+/// 需要用户动手的问题（密码、指纹、Token、未配置）立即显示。没连上过（第一次连接）照常显示连接中。
+struct CloudLinkDisplay: Equatable {
+    var surfaceAfterFailures = 3
+    var surfaceAfterSeconds: Double = 20
+    private(set) var everOnline = false
+    private(set) var failures = 0
+    private(set) var firstFailureAt: Date?
+
+    mutating func online() { everOnline = true; failures = 0; firstFailureAt = nil }
+    mutating func failed(at now: Date) {
+        failures += 1
+        if firstFailureAt == nil { firstFailureAt = now }
+    }
+    mutating func unconfigured() { self = CloudLinkDisplay(surfaceAfterFailures: surfaceAfterFailures, surfaceAfterSeconds: surfaceAfterSeconds) }
+
+    /// 静默期还剩多少秒（到点后要重新算一次显示）；不在静默期返回 nil
+    func silentRemaining(now: Date) -> Double? {
+        guard everOnline, let f = firstFailureAt else { return nil }
+        let left = surfaceAfterSeconds - now.timeIntervalSince(f)
+        return left > 0 ? left : nil
+    }
+
+    func troubleVisible(now: Date) -> Bool {
+        guard everOnline else { return true }
+        guard let f = firstFailureAt else { return false }
+        return failures >= surfaceAfterFailures && now.timeIntervalSince(f) >= surfaceAfterSeconds
+    }
+
+    /// 真实状态 → 界面上显示的状态
+    func shown(_ actual: CloudLinkState, now: Date) -> CloudLinkState {
+        switch actual {
+        case .idle, .online: return actual
+        case .connecting, .retrying: return troubleVisible(now: now) ? actual : .online
+        case .offline(let cause):
+            return !cause.retriable || troubleVisible(now: now) ? actual : .online
+        }
+    }
+}
+
 /// 什么事件触发什么动作
 enum CloudLinkEvent: Equatable {
     case launch, foreground, background, networkChanged(available: Bool), heartbeatFailed, requestFailed, pageOpened, timer

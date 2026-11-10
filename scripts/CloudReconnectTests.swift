@@ -49,6 +49,32 @@ struct CloudReconnectTests {
         check(D.action(for: .background, configured: true, connected: true, networkAvailable: true, inBackground: true) == .pause, "进后台暂停心跳")
         check(D.action(for: .pageOpened, configured: true, connected: false, networkAvailable: true, inBackground: false) == .reconnect, "打开云端页面时连接")
 
+        // 「一直在线」：后台回来隧道还活着 → 全程显示在线；隧道死了 → 静默重连，3 次且 20 秒后才显示
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        var disp = CloudLinkDisplay()
+        check(disp.shown(.connecting, now: t0) == .connecting, "第一次连接照常显示连接中")
+        disp.online()
+        var flicker: [CloudLinkState] = []
+        // 回到前台：探测成功，状态只经过 online
+        for a in [CloudLinkState.online, .online] { flicker.append(disp.shown(a, now: t0)) }
+        check(flicker.allSatisfy { $0 == .online }, "隧道活着：回到前台零闪烁")
+        // 隧道死了：重连过程不显示
+        check(disp.shown(.connecting, now: t0) == .online, "静默重连时仍显示在线")
+        disp.failed(at: t0)
+        check(disp.shown(.retrying(1), now: t0.addingTimeInterval(1)) == .online, "第 1 次失败静默")
+        disp.failed(at: t0.addingTimeInterval(1)); disp.failed(at: t0.addingTimeInterval(3))
+        check(disp.shown(.retrying(3), now: t0.addingTimeInterval(3)) == .online, "3 次失败但不到 20 秒仍静默")
+        check(abs((disp.silentRemaining(now: t0.addingTimeInterval(3)) ?? 0) - 17) < 0.01, "静默期剩余时间用于到点重算")
+        check(disp.shown(.offline(.timeout), now: t0.addingTimeInterval(21)) == .offline(.timeout), "3 次且超过 20 秒才显示问题")
+        check(disp.shown(.offline(.authFailed), now: t0) == .offline(.authFailed), "需要动手的问题立即显示")
+        disp.online()
+        check(disp.shown(.retrying(1), now: t0.addingTimeInterval(60)) == .online && disp.failures == 0, "重连成功后清零、继续显示在线")
+        var two = CloudLinkDisplay(); two.online()
+        two.failed(at: t0); two.failed(at: t0.addingTimeInterval(30))
+        check(two.shown(.retrying(2), now: t0.addingTimeInterval(30)) == .online, "只失败 2 次即使超过 20 秒也静默")
+        two.unconfigured()
+        check(two.shown(.connecting, now: t0) == .connecting, "改了配置后重新按第一次连接显示")
+
         check(CloudVersion.isOlder("2.0.0", than: "2.1.0") && !CloudVersion.isOlder("2.10.0", than: "2.9.1") && !CloudVersion.isOlder("2.1", than: "2.1.0"), "版本比较")
 
         let log = CloudLogRedactor.redact("Authorization: Bearer abc.def-123 key sk-ABCDEFGHIJKLMN host 203.0.113.42 password=hunter2 \"token\": \"xyz\"")

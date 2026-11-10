@@ -15,15 +15,17 @@ final class CloudLinkSupervisor: ObservableObject {
     nonisolated static let refreshTaskId = "com.openminis.app.cloud-refresh"
     nonisolated static let barkFallbackKey = "OpenMinisCloud_barkFallback"   // "auto" / "on" / "off"
 
-    enum State: Equatable {
-        case idle            // 没有配置云电脑
-        case connecting
-        case online
-        case retrying(Int)
-        case offline(CloudLinkCause)
-    }
+    typealias State = CloudLinkState
 
+    /// 界面显示的状态：连上过之后，静默重连期间仍显示在线（规则见 CloudLinkDisplay）
     @Published private(set) var state: State = .idle
+    /// 守护内部的真实状态
+    private(set) var actualState: State = .idle
+    private var display = CloudLinkDisplay()
+    private var resurfaceTask: Task<Void, Never>?
+    private var probing = false
+    private var backgroundAt: Date?
+    private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
     @Published private(set) var networkAvailable = true
     @Published private(set) var serverOutdated = false
     @Published private(set) var desktopProblem: String?
@@ -54,6 +56,10 @@ final class CloudLinkSupervisor: ObservableObject {
         started = true
         let nc = NotificationCenter.default
         observers.append(nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.handle(.foreground) }
+        })
+        // 解锁 / 切回 App 时 willEnterForeground 比 didBecomeActive 早几百毫秒：提前开始探测
+        observers.append(nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.handle(.foreground) }
         })
         observers.append(nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
@@ -88,24 +94,41 @@ final class CloudLinkSupervisor: ObservableObject {
 
     func handle(_ event: CloudLinkEvent) {
         if event == .background {
+            // 不断开隧道：向系统要一段后台时间，让 SSH 隧道和通知长轮询多活一会儿（通常约 30 秒）
             inBackground = true
-            conn.markStale()        // 挂起后隧道多半已死：回来后的第一次请求先探测
+            backgroundAt = Date()
+            beginBackgroundTime()
             heartbeatTask?.cancel()
             postPresence(foreground: false)
             startBackgroundPresence()
             Self.scheduleRefresh()
             return
         }
-        if event == .foreground { inBackground = false }
-        guard configured else { state = .idle; return }
+        if event == .foreground {
+            inBackground = false
+            endBackgroundTime()
+            // 离开超过 25 秒多半被挂起过：下一次请求先探测；时间短就直接用原来的隧道
+            if let at = backgroundAt, Date().timeIntervalSince(at) > 25 { conn.markStale() }
+            backgroundAt = nil
+        }
+        guard configured else { set(.idle); return }
         switch CloudLinkDecider.action(for: event, configured: configured, connected: conn.isConnected,
                                        networkAvailable: networkAvailable, inBackground: inBackground) {
         case .none: break
         case .pause:
-            if !networkAvailable { state = .offline(.noNetwork) }
+            if !networkAvailable { set(.offline(.noNetwork)) }
         case .probe:
+            // 界面保持上次的在线状态和缓存内容，后台 1.5 秒探测；死了才静默重连
+            guard !probing else { return }
+            probing = true
+            let t0 = Date()
             Task {
-                if await conn.probeAlive() { self.markOnline() } else { self.runLoop(force: true) }
+                let alive = await conn.probeAlive(timeout: 1.5)
+                self.probing = false
+                if event == .foreground {
+                    CloudClientMetrics.record(mode: "link", kind: "foreground_probe", ms: Date().timeIntervalSince(t0) * 1000)
+                }
+                if alive { self.markOnline() } else { self.runLoop(force: true) }
             }
         case .reconnect:
             runLoop(force: event != .launch && event != .pageOpened)
@@ -125,21 +148,24 @@ final class CloudLinkSupervisor: ObservableObject {
     private func reconnectLoop(force: Bool) async {
         var forceNext = force
         while !Task.isCancelled {
-            guard configured else { state = .idle; return }
-            guard networkAvailable else { state = .offline(.noNetwork); return }
-            state = policy.failures == 0 ? .connecting : (policy.shouldSurface ? state : .retrying(policy.failures))
+            guard configured else { set(.idle); return }
+            guard networkAvailable else { set(.offline(.noNetwork)); return }
+            set(policy.failures == 0 ? .connecting : (policy.shouldSurface ? actualState : .retrying(policy.failures)))
             do {
                 if forceNext { try await conn.reconnect() } else { try await conn.ensureConnected() }
                 markOnline()
+                // 重连好了：首页悄悄刷新一次（列表、未读、运行状态）
+                Task { await CloudBotHomeModel.shared.refresh() }
                 return
             } catch {
                 let cause = CloudLinkCause.classify(error.localizedDescription)
                 policy.recordFailure()
+                display.failed(at: Date())
                 if !cause.retriable {
-                    state = .offline(cause)
+                    set(.offline(cause))
                     return
                 }
-                if policy.shouldSurface { state = .offline(cause) } else { state = .retrying(policy.failures) }
+                if policy.shouldSurface { set(.offline(cause)) } else { set(.retrying(policy.failures)) }
                 if inBackground { return }
                 forceNext = true
                 let delay = policy.nextDelay(jitter: Double.random(in: 0...1))
@@ -148,9 +174,43 @@ final class CloudLinkSupervisor: ObservableObject {
         }
     }
 
+    /// 记下真实状态，按 CloudLinkDisplay 算出界面显示的状态；静默期到点后再算一次
+    private func set(_ s: State) {
+        actualState = s
+        switch s {
+        case .online: display.online()
+        case .idle: display.unconfigured()
+        default: break
+        }
+        let shown = display.shown(s, now: Date())
+        if state != shown { state = shown }
+        resurfaceTask?.cancel()
+        if shown != s, let left = display.silentRemaining(now: Date()) {
+            resurfaceTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64((left + 0.1) * 1_000_000_000))
+                guard let self, !Task.isCancelled else { return }
+                let again = self.display.shown(self.actualState, now: Date())
+                if self.state != again { self.state = again }
+            }
+        }
+    }
+
+    private func beginBackgroundTime() {
+        guard backgroundTaskId == .invalid else { return }
+        backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "cloud-link") { [weak self] in
+            Task { @MainActor in self?.endBackgroundTime() }
+        }
+    }
+
+    private func endBackgroundTime() {
+        guard backgroundTaskId != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTaskId)
+        backgroundTaskId = .invalid
+    }
+
     private func markOnline() {
         policy.recordSuccess()
-        state = .online
+        set(.online)
         evaluateHealth()
         postPresence(foreground: !inBackground)
         startHeartbeat()
@@ -216,9 +276,9 @@ final class CloudLinkSupervisor: ObservableObject {
         case .openSettings, .confirmHostKey: openSettings()
         case .installAgent:
             Task {
-                state = .connecting
+                set(.connecting)
                 do { try await conn.installAgent(withDesktop: true); userRetry() }
-                catch { state = .offline(CloudLinkCause.classify(error.localizedDescription)) }
+                catch { set(.offline(CloudLinkCause.classify(error.localizedDescription))) }
             }
         }
     }

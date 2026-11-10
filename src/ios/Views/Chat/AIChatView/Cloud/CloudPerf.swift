@@ -84,6 +84,8 @@ struct CloudPerfView: View {
                 clientRow("本地云电脑 · 整个任务", mode: "local", kind: "total")
                 clientRow("Minis Bot · 整个任务", mode: "bot", kind: "total")
                 clientRow("隧道重连耗时", mode: "link", kind: "reconnect")
+                clientRow("回到前台 · 探测隧道", mode: "link", kind: "foreground_probe")
+                clientRow("复用 SSH 主连接", mode: "link", kind: "reuse")
                 Button("清空本机实测", role: .destructive) { CloudClientMetrics.clear(); clientTick += 1 }
             } header: { Text("本机实测（中位数 · 样本数）") } footer: {
                 Text("在这台手机上实际测得：从点发送到第一段文字出现、到任务结束，以及隧道断开后重建的耗时。两种模式用同一条事件管线，口径相同。")
