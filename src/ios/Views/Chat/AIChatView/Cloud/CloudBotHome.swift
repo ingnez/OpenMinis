@@ -154,11 +154,23 @@ final class CloudBotHomeModel: ObservableObject {
             .sorted {
                 if $0.pinned != $1.pinned { return $0.pinned }
                 if $0.pinned && $0.pinnedAt != $1.pinnedAt { return $0.pinnedAt > $1.pinnedAt }
-                return $0.lastAt != $1.lastAt ? $0.lastAt > $1.lastAt : $0.name < $1.name
+                // 正在回复的排到最上面（当作「现在」）
+                let l = CloudTypingRules.sortTime(lastAt: $0.lastAt, working: $0.activity != nil)
+                let r = CloudTypingRules.sortTime(lastAt: $1.lastAt, working: $1.activity != nil)
+                return l != r ? l > r : $0.name < $1.name
             }
     }
 
     var hiddenBots: [CloudBot] { bots.filter { $0.hidden } }
+
+    /// 正在回复的 Bot（首页加快刷新、做完时轻震）
+    var typingIds: Set<String> { Set(bots.filter { $0.activity != nil }.map(\.id)) }
+
+    /// 有 Bot 在回复时的轻量刷新：只拉 Bot 列表（阶段、预览、计数），不动群聊、分组和资源
+    func refreshBots() async {
+        guard CloudConnection.shared.isConnected, let list = try? await CloudBotService.list() else { return }
+        bots = list
+    }
 
     /// 顶部一排大头像：主 Bot + 置顶的 Bot（隐藏的不算）
     var topRow: [CloudBot] {
@@ -416,9 +428,14 @@ struct CloudBotHomeRow: View {
 
     var body: some View {
         let status = CloudBotStatus.of(bot)
+        let spec = CloudBotAvatarSpec.of(bot)
         HStack(spacing: 14) {
             Group {
-                if status == .working {
+                if bot.activity != nil, !CloudBotLock.shared.isLocked(bot.id) {
+                    // 正在回复：头像换成 Bot 颜色的三个点
+                    CloudTypingDots(color: spec.fill, size: 46)
+                        .transition(.cloudTypingMorph(reduceMotion: reduceMotion))
+                } else if status == .working {
                     CloudBotLivelyAvatar(spec: CloudBotAvatarSpec.of(bot), size: 46)
                 } else {
                     // 列表里的头像也跟着手指看，并按状态换表情
@@ -426,6 +443,7 @@ struct CloudBotHomeRow: View {
                 }
             }
             .frame(width: 46, height: 50)
+            .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.45, dampingFraction: 0.75), value: bot.activity?.kind)
             .overlay(alignment: .bottomTrailing) { CloudPresenceBadge(presence: presence, size: 13) }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(bot.name)，\(presence.accessibilityText)")
@@ -434,10 +452,11 @@ struct CloudBotHomeRow: View {
                     Text(bot.name).font(.system(size: 17, weight: .semibold)).lineLimit(1)
                     CloudPresenceFlags(presence: presence)
                     Spacer(minLength: 8)
-                    Text(CloudBotHome.timeText(max(bot.lastAt, showsThread ? bot.threadAt : 0))).font(.footnote).foregroundStyle(.tertiary)
+                    Text(CloudBotHome.timeText(CloudTypingRules.sortTime(lastAt: max(bot.lastAt, showsThread ? bot.threadAt : 0), working: bot.activity != nil)))
+                        .font(.footnote).foregroundStyle(.tertiary)
                 }
                 HStack(spacing: 8) {
-                    if status.busy { CloudBotStatusChip(status: status) }
+                    if status.busy && typing == nil { CloudBotStatusChip(status: status) }
                     if bot.runningWorkers > 0 {
                         Label("\(bot.runningWorkers)", systemImage: "gearshape.2.fill")
                             .font(.caption2.weight(.semibold)).foregroundStyle(.green)
@@ -449,7 +468,12 @@ struct CloudBotHomeRow: View {
                             .font(.caption).foregroundStyle(bot.threadPriority ? Color.red : Color.secondary)
                             .accessibilityHidden(true)
                     }
-                    Text(previewText).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    if let typing {
+                        Text(typing.subtitle).font(.subheadline).foregroundStyle(.green).lineLimit(1)
+                            .transition(.opacity)
+                    } else {
+                        Text(previewText).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    }
                     Spacer(minLength: 0)
                     CloudUnreadMark(presence: presence)
                 }
@@ -458,6 +482,11 @@ struct CloudBotHomeRow: View {
         .padding(.vertical, 10)
         .contentShape(Rectangle())
     }
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// 上锁的 Bot 不显示在干什么（预览可能带内容）
+    private var typing: CloudTypingPhase? { CloudBotLock.shared.isLocked(bot.id) ? nil : bot.activity }
 
     private var threadChoice: (text: String, isThread: Bool) {
         CloudBotThreadRules.homePreview(chat: bot.lastPreview, chatAt: bot.lastAt > 0 ? Date(timeIntervalSince1970: bot.lastAt) : nil,
@@ -710,9 +739,19 @@ struct CloudBotHomeScreen: View {
             CloudTouchTracker.shared.install()
             if let target = model.pendingOpen { model.pendingOpen = nil; path = [target]; splitSelection = target }
             // 进入多 Bot 模式即后台连接并定期刷新（列表的运行 / 待审批 / 未读状态）
+            // 有 Bot 在回复时 3 秒拉一次 Bot 列表（阶段跟得上），每 15 秒完整刷新一次
+            var sinceFull: UInt64 = 0
             while !Task.isCancelled {
-                await model.refresh()
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                let before = model.typingIds
+                if sinceFull == 0 { await model.refresh() } else { await model.refreshBots() }
+                // 首页看着的时候，有 Bot 刚回复完：轻震一下
+                if path.isEmpty, UIApplication.shared.applicationState == .active,
+                   !CloudTypingRules.justFinished(before: before, after: model.typingIds).isEmpty {
+                    CloudHaptics.success()
+                }
+                let step = CloudTypingRules.pollSeconds(anyWorking: !model.typingIds.isEmpty)
+                try? await Task.sleep(nanoseconds: step * 1_000_000_000)
+                sinceFull = sinceFull + step >= 15 ? 0 : sinceFull + step
             }
         }
     }

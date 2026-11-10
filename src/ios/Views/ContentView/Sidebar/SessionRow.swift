@@ -221,8 +221,11 @@ struct SessionRow: View, Equatable {
 
     var body: some View {
         HStack(spacing: 8) {
-            // Provider icon with optional spinning/suspended ring
-            providerIcon
+            // Provider icon with optional spinning/suspended ring. While the
+            // loop is running the icon morphs into three typing dots in the
+            // row's color (Grok Bot style home list).
+            rowIcon
+                .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.45, dampingFraction: 0.75), value: typingPhase?.kind)
                 .frame(width: 44, height: 44)
                 .background(iconBackgroundColor.opacity(isHighlighted ? 0.35 : 0.18))
                 .clipShape(Circle())
@@ -230,7 +233,7 @@ struct SessionRow: View, Equatable {
                     if isSuspended {
                         SuspendedRing(color: .yellow)
                             .frame(width: 42, height: 42)
-                    } else if isActive {
+                    } else if isActive && typingPhase == nil {
                         SpinningRing(color: iconBackgroundColor)
                             .frame(width: 42, height: 42)
                     }
@@ -291,6 +294,12 @@ struct SessionRow: View, Equatable {
                         color: Color(UIColor.secondaryLabel)
                     )
                     .lineLimit(2)
+                } else if let typingPhase {
+                    Text(typingPhase.subtitle)
+                        .font(.system(size: fontSettings.scaledApp(14)))
+                        .foregroundStyle(Color.green)
+                        .lineLimit(1)
+                        .transition(.opacity)
                 } else {
                     highlightedText(
                         session.lastMessage ?? "No messages yet",
@@ -430,6 +439,28 @@ struct SessionRow: View, Equatable {
 
     private var categoryIcon: (systemName: String, color: Color) {
         sessionCategoryIcon(for: session.category)
+    }
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// What this conversation's running loop is doing right now, from the
+    /// tracker's live tool info ("text" = streaming, "thinking", or a tool
+    /// name). Nil when idle, suspended or locked (the subtitle would leak).
+    private var typingPhase: CloudTypingPhase? {
+        guard isActive, !isSuspended, !isVisuallyLocked else { return nil }
+        return CloudTypingPhase.local(toolName: activityTracker.sessionToolInfo[session.id]?.toolName ?? "",
+                                      delegating: activityTracker.delegatingSessions.contains(session.id))
+    }
+
+    @ViewBuilder
+    private var rowIcon: some View {
+        if typingPhase != nil {
+            CloudTypingDots(color: iconBackgroundColor, size: 44)
+                .transition(.cloudTypingMorph(reduceMotion: reduceMotion))
+        } else {
+            providerIcon
+                .transition(.cloudTypingMorph(reduceMotion: reduceMotion))
+        }
     }
 
     @ViewBuilder

@@ -59,6 +59,8 @@ struct CloudBot: Identifiable, Hashable {
     var sectionId: String?
     /// 灵魂设定：style / language / persona / forbidden（服务器每次调用模型都放在系统提示最前面）
     var soul: [String: String] = [:]
+    /// 此刻在干什么（服务器 2.33.0+ 的 activity：正在思考 / 用工具 / 回复 / 委派）；没在跑为 nil
+    var activity: CloudTypingPhase?
 
     init(id: String, name: String, emoji: String, summary: String, instructions: String, isPrimary: Bool = false) {
         self.id = id
@@ -113,6 +115,7 @@ struct CloudBot: Identifiable, Hashable {
         queuedTasks = d["queued_tasks"] as? Int ?? 0
         runningWorkers = d["running_workers"] as? Int ?? 0
         waitingApprovals = d["waiting_approvals"] as? Int ?? 0
+        activity = CloudTypingPhase(json: d["activity"])
         unreadCount = d["unread_count"] as? Int ?? 0
         if let tp = d["thread_preview"] as? [String: Any] {
             threadPreview = tp["text"] as? String

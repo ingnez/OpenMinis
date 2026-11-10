@@ -56,6 +56,15 @@ struct CloudBotTopAvatar: View {
             VStack(spacing: 8) {
                 CloudBotAliveAvatar(spec: CloudBotAvatarSpec.of(bot), size: size, interactive: false)
                     .allowsHitTesting(false)
+                    // 正在回复：外面一圈 Bot 颜色的光环（多个 Bot 同时在干活一眼看得出）
+                    .overlay {
+                        if typing != nil {
+                            CloudWorkingRing(color: CloudBotAvatarSpec.of(bot).fill)
+                                .padding(-6)
+                                .transition(.opacity)
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.3), value: typing != nil)
                     .overlay(alignment: .bottomTrailing) { badge }
                     // 状态圆点：主 Bot 的星标在右下，状态点放到左下，两个都看得见
                     .overlay(alignment: bot.isPrimary ? .bottomLeading : .bottomTrailing) {
@@ -68,13 +77,19 @@ struct CloudBotTopAvatar: View {
                 }
                 .frame(maxWidth: size + 40)
                 let status = CloudBotStatus.of(bot)
-                if status.busy { CloudBotStatusChip(status: status) }
+                if let typing {
+                    Text(typing.shortLabel).font(.caption2.weight(.semibold)).foregroundStyle(.green)
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(Capsule().fill(Color.green.opacity(0.14)))
+                } else if status.busy { CloudBotStatusChip(status: status) }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("打开 \(bot.name)，\(presence.accessibilityText)")
     }
+
+    private var typing: CloudTypingPhase? { CloudBotLock.shared.isLocked(bot.id) ? nil : bot.activity }
 
     @ViewBuilder
     private var badge: some View {
