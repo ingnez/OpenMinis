@@ -86,6 +86,7 @@ struct CloudPerfView: View {
                 clientRow("Minis Bot · 首字", mode: "bot", kind: "first_text")
                 clientRow("本地云电脑 · 整个任务", mode: "local", kind: "total")
                 clientRow("Minis Bot · 整个任务", mode: "bot", kind: "total")
+                clientRow("冷启动到首页出现", mode: "app", kind: "cold_start")
                 clientRow("隧道重连耗时", mode: "link", kind: "reconnect")
                 clientRow("回到前台 · 探测隧道", mode: "link", kind: "foreground_probe")
                 clientRow("复用 SSH 主连接", mode: "link", kind: "reuse")

@@ -734,6 +734,7 @@ struct CloudBotHomeScreen: View {
         .overlay { CloudMiniDesktopOverlay() }
         .modifier(CloudNightModeModifier(dutyUntil: model.dutyUntil))
         .onReceive(NotificationCenter.default.publisher(for: .cloudFocusFilterChanged)) { _ in model.objectWillChange.send() }
+        .onAppear { CloudColdStart.markHomeVisible(hasContent: !model.bots.isEmpty) }
         .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
         .sheet(isPresented: $showWorkbench) { CloudWorkbenchSheet() }
         .sheet(isPresented: $showHub) {
