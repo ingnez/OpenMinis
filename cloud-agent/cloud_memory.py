@@ -135,6 +135,26 @@ def _row(r):
 COLS = "id, category, content, source, origin, entry_time, session_id, created_at, persona"
 
 
+_user_tz = None
+
+
+def set_timezone(name):
+    """设置用户时区（IANA 名称，如 Asia/Shanghai）；entry_time 按此时区记录，与手机日志一致。None 表示服务器本地时间。"""
+    global _user_tz
+    if not name:
+        _user_tz = None
+        return
+    from zoneinfo import ZoneInfo
+    _user_tz = ZoneInfo(name)  # 无效名称抛 ZoneInfoNotFoundError（ValueError 子类之外，调用方统一捕获）
+
+
+def format_time(ts):
+    import datetime
+    if _user_tz is not None:
+        return datetime.datetime.fromtimestamp(ts, _user_tz).strftime("%Y-%m-%d %H:%M:%S")
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
+
 def write(conn, content, category=None, source="cloud", session_id=None, entry_time=None, origin=None, commit=True, persona=""):
     """写入一条；同分类同内容已存在时返回已有 id。返回 (entry dict, created)。"""
     if not isinstance(content, str) or not content.strip():
@@ -144,7 +164,7 @@ def write(conn, content, category=None, source="cloud", session_id=None, entry_t
     category = normalize_category(category)
     now = time.time()
     if entry_time is None:
-        entry_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+        entry_time = format_time(now)
     persona = persona or ""
     h = content_hash(category, content, persona)
     c = conn.cursor()

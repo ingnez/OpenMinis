@@ -257,11 +257,20 @@ def init_db():
     cloud_skills.ensure_schema(conn)
     cloud_bots.ensure_schema(conn)
     cloud_plugins.ensure_schema(conn)
+    conn.execute("CREATE TABLE IF NOT EXISTS app_settings (name TEXT PRIMARY KEY, value TEXT)")
+    try:
+        row = conn.execute("SELECT value FROM app_settings WHERE name = 'timezone'").fetchone()
+        cloud_memory.set_timezone(row[0] if row else None)
+    except Exception as e:
+        print(f"timezone setting ignored: {e}")
     cloud_notify.ensure_schema(conn)
     cloud_pages.ensure_schema(conn)
     cursor.execute("CREATE TABLE IF NOT EXISTS telegram_chats (chat_id INTEGER PRIMARY KEY, session_id TEXT, updated_at REAL)")
     cursor.execute("CREATE TABLE IF NOT EXISTS telegram_tasks (task_id TEXT PRIMARY KEY, chat_id INTEGER, created_at REAL)")
     cursor.execute("CREATE TABLE IF NOT EXISTS telegram_state (key TEXT PRIMARY KEY, value TEXT)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS telegram_bot_chats (channel TEXT NOT NULL, chat_id INTEGER NOT NULL, session_id TEXT, updated_at REAL, PRIMARY KEY (channel, chat_id))")
+    if "channel" not in {row[1] for row in cursor.execute("PRAGMA table_info(telegram_tasks)")}:
+        cursor.execute("ALTER TABLE telegram_tasks ADD COLUMN channel TEXT NOT NULL DEFAULT ''")
 
     # Server restart: mark interrupted
     cursor.execute("UPDATE tasks SET status = 'interrupted' WHERE status IN ('running', 'queued', 'waiting_user')")
@@ -793,6 +802,7 @@ def bot_detail(bot):
         out["session_count"] = conn.execute("SELECT COUNT(*) FROM sessions WHERE persona_id = ?", (pid,)).fetchone()[0]
         out["routine_count"] = conn.execute("SELECT COUNT(*) FROM routines WHERE persona_id = ?", (pid,)).fetchone()[0]
         out["memory_count"] = conn.execute("SELECT COUNT(*) FROM memory_entries WHERE persona = ?", (pid,)).fetchone()[0]
+        out["telegram"] = conn.execute("SELECT 1 FROM secure_settings WHERE name = ?", (telegram_setting_name(pid),)).fetchone() is not None
         return out
     finally:
         conn.close()
@@ -1015,7 +1025,11 @@ def tool_send_message(task_id, session_id, args):
     if not isinstance(text, str) or not text.strip():
         return {"error": "text must be a non-empty string"}
     if channel == "telegram":
-        cfg = telegram_config()
+        tg_channel = telegram_channel_for_task(task_id)
+        if tg_channel is None:
+            bot = session_bot(session_id)
+            tg_channel = bot["persona_id"] if bot and telegram_config(bot["persona_id"]) else ""
+        cfg = telegram_config(tg_channel)
         if not cfg:
             return {"error": "Telegram 渠道未配置"}
         chat_id = args.get("chat_id")
@@ -1864,17 +1878,44 @@ TELEGRAM_DEFAULT_INSTRUCTIONS = (
 TELEGRAM_HELP = ("OpenMinis 云电脑已连接。直接发消息即可让云端 Agent 干活。\n"
                  "/new 开始新会话\n/stop 停止当前任务\n/status 查看当前任务状态")
 _telegram_stop = threading.Event()
-_telegram_thread = None
-_telegram_status = {"running": False, "last_poll_at": None, "last_error": None, "handled": 0}
+_telegram_threads = {}   # channel（"" = 共享渠道，否则为 bot_id）-> Thread
+_telegram_statuses = {}  # channel -> 状态
 _telegram_warned_chats = set()
 
-def telegram_config():
+def _tg_status(channel):
+    return _telegram_statuses.setdefault(channel, {"running": False, "last_poll_at": None, "last_error": None, "handled": 0})
+
+_telegram_status = _tg_status("")
+
+def telegram_setting_name(channel=""):
+    return cloud_telegram.SETTING_NAME + (":" + channel if channel else "")
+
+def telegram_config(channel=""):
     conn = get_db_connection()
     try:
-        return cloud_notify.load_setting(conn, cloud_telegram.SETTING_NAME)
+        cfg = cloud_notify.load_setting(conn, telegram_setting_name(channel))
     except Exception as e:
-        _telegram_status["last_error"] = "config: " + type(e).__name__
+        _tg_status(channel)["last_error"] = "config: " + type(e).__name__
         return None
+    finally:
+        conn.close()
+    if cfg is not None:
+        cfg["_channel"] = channel
+    return cfg
+
+def telegram_bot_channels():
+    conn = get_db_connection()
+    try:
+        rows = conn.execute("SELECT name FROM secure_settings WHERE name LIKE ?", (cloud_telegram.SETTING_NAME + ":%",)).fetchall()
+    finally:
+        conn.close()
+    return [r[0].split(":", 1)[1] for r in rows]
+
+def telegram_channel_for_task(task_id):
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT channel FROM telegram_tasks WHERE task_id = ?", (task_id,)).fetchone()
+        return (row[0] or "") if row else None
     finally:
         conn.close()
 
@@ -1890,18 +1931,27 @@ def _telegram_state(key, value=None):
         conn.close()
 
 def telegram_session_for(cfg, chat_id, title_hint, new=False):
+    channel = cfg.get("_channel") or ""
     conn = get_db_connection()
     try:
         c = conn.cursor()
-        row = c.execute("SELECT session_id FROM telegram_chats WHERE chat_id = ?", (chat_id,)).fetchone()
+        if channel:
+            row = c.execute("SELECT session_id FROM telegram_bot_chats WHERE channel = ? AND chat_id = ?", (channel, chat_id)).fetchone()
+        else:
+            row = c.execute("SELECT session_id FROM telegram_chats WHERE chat_id = ?", (chat_id,)).fetchone()
         if row and not new:
             return row[0]
         sid = "sess_" + uuid.uuid4().hex[:12]
         now = time.time()
+        persona = channel or cfg.get("persona_id") or primary_bot_id()
         c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, NULL, ?, ?, ?, ?)",
-                  (sid, ("Telegram：" + title_hint)[:80], cfg.get("instructions") or TELEGRAM_DEFAULT_INSTRUCTIONS, now, cfg.get("persona_id") or primary_bot_id()))
-        c.execute("INSERT INTO telegram_chats (chat_id, session_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at",
-                  (chat_id, sid, now))
+                  (sid, ("Telegram：" + title_hint)[:80], cfg.get("instructions") or TELEGRAM_DEFAULT_INSTRUCTIONS, now, persona))
+        if channel:
+            c.execute("INSERT INTO telegram_bot_chats (channel, chat_id, session_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(channel, chat_id) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at",
+                      (channel, chat_id, sid, now))
+        else:
+            c.execute("INSERT INTO telegram_chats (chat_id, session_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at",
+                      (chat_id, sid, now))
         conn.commit()
         return sid
     finally:
@@ -1928,7 +1978,7 @@ def _telegram_safe_send(cfg, chat_id, text, reply_markup=None):
         cloud_telegram.send_text(cfg, chat_id, text, reply_markup)
         return True
     except cloud_telegram.TelegramAPIError as e:
-        _telegram_status["last_error"] = str(e)
+        _tg_status(cfg.get("_channel") or "")["last_error"] = str(e)
         return False
 
 def telegram_start_task(cfg, chat_id, sid, text):
@@ -1945,7 +1995,7 @@ def telegram_start_task(cfg, chat_id, sid, text):
         c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (sid, text, now))
         c.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
                   (tid, sid, cfg["model"], now))
-        c.execute("INSERT INTO telegram_tasks (task_id, chat_id, created_at) VALUES (?, ?, ?)", (tid, chat_id, now))
+        c.execute("INSERT INTO telegram_tasks (task_id, chat_id, created_at, channel) VALUES (?, ?, ?, ?)", (tid, chat_id, now, cfg.get("_channel") or ""))
         conn.commit()
     finally:
         conn.close()
@@ -1991,8 +2041,8 @@ def telegram_handle_message(cfg, msg):
     if not isinstance(chat_id, int):
         return
     if chat_id not in cfg.get("allowed_chat_ids", []):
-        if chat_id not in _telegram_warned_chats:
-            _telegram_warned_chats.add(chat_id)
+        if (cfg.get("_channel") or "", chat_id) not in _telegram_warned_chats:
+            _telegram_warned_chats.add((cfg.get("_channel") or "", chat_id))
             _telegram_safe_send(cfg, chat_id, f"这个会话尚未授权。chat id：{chat_id}\n请在 OpenMinis 云电脑设置 → Telegram 中把它加入允许列表。")
         return
     text = (msg.get("text") or msg.get("caption") or "").strip()
@@ -2037,7 +2087,7 @@ def telegram_handle_callback(cfg, cq):
             row = conn.execute("SELECT task_id FROM approvals WHERE approval_id = ?", (aid,)).fetchone()
         finally:
             conn.close()
-        if row and telegram_chat_for_task(row[0]) == chat_id:
+        if row and telegram_chat_for_task(row[0]) == chat_id and telegram_channel_for_task(row[0]) == (cfg.get("_channel") or ""):
             code, body = resolve_approval(row[0], aid, "approved" if yn == "y" else "denied", "via Telegram")
             answer = ("已批准" if yn == "y" else "已拒绝") if code == 200 else "该审批已处理或已过期"
     try:
@@ -2051,7 +2101,7 @@ def telegram_notify_approval(task_id, approval):
     chat_id = telegram_chat_for_task(task_id)
     if chat_id is None:
         return False
-    cfg = telegram_config()
+    cfg = telegram_config(telegram_channel_for_task(task_id) or "")
     if not cfg:
         return False
     args = json.dumps(approval.get("arguments"), ensure_ascii=False)
@@ -2061,58 +2111,129 @@ def telegram_notify_approval(task_id, approval):
     return _telegram_safe_send(cfg, chat_id, text, markup)
 
 def telegram_poll_once(cfg):
-    offset = int(_telegram_state("offset") or 0)
+    channel = cfg.get("_channel") or ""
+    key = "offset" + (":" + channel if channel else "")
+    offset = int(_telegram_state(key) or 0)
     updates = cloud_telegram.call(cfg, "getUpdates", {"offset": offset, "timeout": TELEGRAM_POLL_TIMEOUT,
                                                       "allowed_updates": ["message", "callback_query"]},
                                   timeout=TELEGRAM_POLL_TIMEOUT + 15)
-    _telegram_status["last_poll_at"] = time.time()
+    st = _tg_status(channel)
+    st["last_poll_at"] = time.time()
     for u in updates or []:
         uid = u.get("update_id")
         if isinstance(uid, int):
-            _telegram_state("offset", uid + 1)
+            _telegram_state(key, uid + 1)
         try:
             if "message" in u:
                 telegram_handle_message(cfg, u["message"])
             elif "callback_query" in u:
                 telegram_handle_callback(cfg, u["callback_query"])
-            _telegram_status["handled"] += 1
+            st["handled"] += 1
         except Exception as e:
-            _telegram_status["last_error"] = "handler: " + type(e).__name__
+            st["last_error"] = "handler: " + type(e).__name__
     return len(updates or [])
 
-def _telegram_main():
-    _telegram_status["running"] = True
+def _telegram_main(channel=""):
+    st = _tg_status(channel)
+    st["running"] = True
     try:
         while not _telegram_stop.is_set():
-            cfg = telegram_config()
+            cfg = telegram_config(channel)
             if not cfg or not cfg.get("enabled", True):
+                if channel:
+                    return  # Bot 专属渠道已删除：结束线程
                 _telegram_stop.wait(5)
                 continue
             try:
                 telegram_poll_once(cfg)
-                _telegram_status["last_error"] = None
+                st["last_error"] = None
             except cloud_telegram.TelegramAPIError as e:
-                _telegram_status["last_error"] = str(e)
+                st["last_error"] = str(e)
                 _telegram_stop.wait(5)
             except Exception as e:
-                _telegram_status["last_error"] = type(e).__name__
+                st["last_error"] = type(e).__name__
                 _telegram_stop.wait(5)
     finally:
-        _telegram_status["running"] = False
+        st["running"] = False
 
-def start_telegram():
-    global _telegram_thread
-    if _telegram_thread and _telegram_thread.is_alive():
-        return
+def telegram_running(channel=""):
+    t = _telegram_threads.get(channel)
+    return bool(t and t.is_alive())
+
+def start_telegram(channel=None):
+    """channel 为 None 时启动共享渠道与全部 Bot 专属渠道。"""
+    channels = [""] + telegram_bot_channels() if channel is None else [channel]
     _telegram_stop.clear()
-    _telegram_thread = threading.Thread(target=_telegram_main, name="telegram-poller", daemon=True)
-    _telegram_thread.start()
+    for ch in channels:
+        if telegram_running(ch):
+            continue
+        t = threading.Thread(target=_telegram_main, args=(ch,), name="telegram-poller" + (":" + ch if ch else ""), daemon=True)
+        _telegram_threads[ch] = t
+        t.start()
 
 def stop_telegram():
     _telegram_stop.set()
-    t = _telegram_thread
-    if t:
+    for t in list(_telegram_threads.values()):
         t.join(timeout=TELEGRAM_POLL_TIMEOUT + 20)
+
+def telegram_save(channel, req_json):
+    """保存共享或 Bot 专属 Telegram 配置，返回 (状态码, 响应体)。"""
+    body = req_json.get("config", req_json)
+    existing = telegram_config(channel)
+    if isinstance(body, dict) and existing and not body.get("bot_token"):
+        body = dict(body, bot_token=existing["bot_token"])  # 只改允许列表等字段时沿用已存 Token
+    try:
+        cfg = cloud_telegram.validate(body, lambda n: bool(CREDENTIAL_NAME_RE.match(n)) and any(c["name"] == n for c in list_credentials()))
+        if channel:
+            cfg["persona_id"] = channel
+        else:
+            try:
+                cfg["persona_id"] = validate_persona_ref(body.get("persona_id"))
+            except ValueError as e:
+                raise cloud_telegram.TelegramConfigError(str(e))
+        for other in [""] + telegram_bot_channels():
+            if other == channel:
+                continue
+            oc = telegram_config(other)
+            if oc and oc.get("bot_token") == cfg["bot_token"]:
+                raise cloud_telegram.TelegramConfigError("这个 Bot Token 已被另一个渠道使用（同一 Token 不能同时长轮询）")
+        me = cloud_telegram.call(cfg, "getMe", timeout=15)
+        cfg["bot_username"] = (me or {}).get("username")
+    except cloud_telegram.TelegramConfigError as e:
+        return 400, {"error": str(e)}
+    except cloud_telegram.TelegramAPIError as e:
+        return 502, {"error": "Telegram 校验失败：" + str(e)}
+    conn = get_db_connection()
+    try:
+        cloud_notify.save_setting(conn, telegram_setting_name(channel), cfg)
+    except cloud_secrets.SecretStoreUnavailable as e:
+        return 503, {"error": f"Encrypted store unavailable: {e}"}
+    finally:
+        conn.close()
+    _telegram_warned_chats.clear()
+    start_telegram(channel)
+    return 200, {"configured": True, "config": cloud_telegram.masked(cfg)}
+
+def telegram_delete(channel):
+    conn = get_db_connection()
+    try:
+        existed = cloud_notify.delete_setting(conn, telegram_setting_name(channel))
+        if channel:
+            conn.execute("DELETE FROM telegram_state WHERE key = ?", ("offset:" + channel,))
+            conn.execute("DELETE FROM telegram_bot_chats WHERE channel = ?", (channel,))
+        else:
+            conn.execute("DELETE FROM telegram_state WHERE key = 'offset'")
+        conn.commit()
+    finally:
+        conn.close()
+    return {"configured": False, "deleted": existed}
+
+def telegram_view(channel):
+    cfg = telegram_config(channel)
+    if cfg:
+        cfg = {k: v for k, v in cfg.items() if k != "_channel"}
+    return {"configured": cfg is not None, "config": cloud_telegram.masked(cfg), "channel": channel or "shared",
+            "status": dict(_tg_status(channel), running=telegram_running(channel))}
 
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, data):
@@ -2206,6 +2327,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"personas": list_personas()})
             return
 
+        if path == "/v1/settings":
+            conn = get_db_connection()
+            try:
+                rows = dict(conn.execute("SELECT name, value FROM app_settings").fetchall())
+            finally:
+                conn.close()
+            self._send(200, {"timezone": rows.get("timezone"), "server_time": time.time(),
+                             "server_local_time": time.strftime("%Y-%m-%d %H:%M:%S")})
+            return
+
         if path == "/v1/plugins":
             installed = PLUGINS.list()
             ids = {p["plugin_id"] for p in installed}
@@ -2241,6 +2372,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"bots": [bot_detail(b) for b in list_personas()], "primary": primary_bot_id()})
             return
 
+        if path.startswith("/v1/bots/") and path.endswith("/telegram"):
+            bid = path[len("/v1/bots/"):-len("/telegram")]
+            if not get_persona(bid):
+                self._send(404, {"error": "Bot not found"})
+                return
+            self._send(200, telegram_view(bid))
+            return
+
         if path.startswith("/v1/bots/") and path.endswith("/export"):
             bid = path[len("/v1/bots/"):-len("/export")]
             if not get_persona(bid):
@@ -2273,10 +2412,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/telegram":
-            cfg = telegram_config()
-            self._send(200, {"configured": cfg is not None, "config": cloud_telegram.masked(cfg),
-                             "status": dict(_telegram_status, running=bool(_telegram_thread and _telegram_thread.is_alive()))})
+            self._send(200, telegram_view(""))
             return
+
 
         if path == "/v1/pages":
             conn = get_db_connection()
@@ -2570,6 +2708,37 @@ class Handler(BaseHTTPRequestHandler):
         if req_json is None:
             return
 
+        if path == "/v1/settings":
+            tz = req_json.get("timezone")
+            if tz is not None and (not isinstance(tz, str) or not re.match(r"^[A-Za-z0-9_+\-]+(/[A-Za-z0-9_+\-]+){0,2}$", tz)):
+                self._send(400, {"error": "timezone must be an IANA name such as Asia/Shanghai"})
+                return
+            try:
+                cloud_memory.set_timezone(tz)
+            except Exception as e:
+                self._send(400, {"error": f"unknown timezone: {tz}"})
+                return
+            conn = get_db_connection()
+            try:
+                if tz:
+                    conn.execute("INSERT INTO app_settings (name, value) VALUES ('timezone', ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value", (tz,))
+                else:
+                    conn.execute("DELETE FROM app_settings WHERE name = 'timezone'")
+                conn.commit()
+            finally:
+                conn.close()
+            self._send(200, {"timezone": tz})
+            return
+
+        if path.startswith("/v1/bots/") and path.endswith("/telegram"):
+            bid = path[len("/v1/bots/"):-len("/telegram")]
+            if not get_persona(bid):
+                self._send(404, {"error": "Bot not found"})
+                return
+            code, body = telegram_save(bid, req_json)
+            self._send(code, body)
+            return
+
         if path.startswith("/v1/plugins/"):
             try:
                 p = PLUGINS.update(path[len("/v1/plugins/"):], req_json)
@@ -2651,35 +2820,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/telegram":
-            body = req_json.get("config", req_json)
-            existing = telegram_config()
-            if isinstance(body, dict) and existing and not body.get("bot_token"):
-                body = dict(body, bot_token=existing["bot_token"])  # 只改允许列表等字段时沿用已存 Token
-            try:
-                cfg = cloud_telegram.validate(body, lambda n: bool(CREDENTIAL_NAME_RE.match(n)) and any(c["name"] == n for c in list_credentials()))
-                try:
-                    cfg["persona_id"] = validate_persona_ref(body.get("persona_id"))
-                except ValueError as e:
-                    raise cloud_telegram.TelegramConfigError(str(e))
-                me = cloud_telegram.call(cfg, "getMe", timeout=15)
-                cfg["bot_username"] = (me or {}).get("username")
-            except cloud_telegram.TelegramConfigError as e:
-                self._send(400, {"error": str(e)})
-                return
-            except cloud_telegram.TelegramAPIError as e:
-                self._send(502, {"error": "Telegram 校验失败：" + str(e)})
-                return
-            conn = get_db_connection()
-            try:
-                cloud_notify.save_setting(conn, cloud_telegram.SETTING_NAME, cfg)
-            except cloud_secrets.SecretStoreUnavailable as e:
-                self._send(503, {"error": f"Encrypted store unavailable: {e}"})
-                return
-            finally:
-                conn.close()
-            _telegram_warned_chats.clear()
-            start_telegram()
-            self._send(200, {"configured": True, "config": cloud_telegram.masked(cfg)})
+            code, body = telegram_save("", req_json)
+            self._send(code, body)
             return
 
         if path == "/v1/notify":
@@ -2726,6 +2868,9 @@ class Handler(BaseHTTPRequestHandler):
         query_params = parse_qs(urlparse(self.path).query)
         if not self._authorized():
             return
+        if path.startswith("/v1/bots/") and path.endswith("/telegram"):
+            self._send(200, telegram_delete(path[len("/v1/bots/"):-len("/telegram")]))
+            return
         if path.startswith("/v1/bots/"):
             path = "/v1/personas/" + path[len("/v1/bots/"):]
         if path.startswith("/v1/plugins/"):
@@ -2755,6 +2900,8 @@ class Handler(BaseHTTPRequestHandler):
                 purged = 0
                 if deleted:
                     conn.execute("UPDATE routines SET persona_id = NULL WHERE persona_id = ?", (pid,))
+                    cloud_notify.delete_setting(conn, telegram_setting_name(pid))
+                    conn.execute("DELETE FROM telegram_bot_chats WHERE channel = ?", (pid,))
                     if (query_params.get("purge_memory") or ["0"])[0] == "1":
                         purged = conn.execute("DELETE FROM memory_entries WHERE persona = ?", (pid,)).rowcount
                 conn.commit()
@@ -2767,14 +2914,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/telegram":
-            conn = get_db_connection()
-            try:
-                existed = cloud_notify.delete_setting(conn, cloud_telegram.SETTING_NAME)
-                conn.execute("DELETE FROM telegram_state")
-                conn.commit()
-            finally:
-                conn.close()
-            self._send(200, {"configured": False, "deleted": existed})
+            self._send(200, telegram_delete(""))
             return
 
         if path.startswith("/v1/pages/"):
@@ -2947,8 +3087,10 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 sid = "sess_" + uuid.uuid4().hex[:12]
                 created_at = time.time()
-                c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at) VALUES (?, ?, ?, ?, ?)",
-                          (sid, local_session_id, title, instructions, created_at))
+                # 手机导入的会话归属指定 Bot，未指定时归主 Bot（没有主 Bot 则为默认）
+                import_persona = req_json.get("persona_id") if isinstance(req_json.get("persona_id"), str) and get_persona(req_json.get("persona_id")) else primary_bot_id()
+                c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, ?, ?, ?, ?, ?)",
+                          (sid, local_session_id, title, instructions, created_at, import_persona))
                 
                 # Insert history messages if any
                 if isinstance(history, list):

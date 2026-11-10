@@ -367,3 +367,9 @@
 - 状态：`ready` / `needs_auth`（缺少必填密钥或远端 401/403）/ `missing_dependency`（缺少 uvx、npx 等）/ `error` / `disabled`。
 - 授权：Bot 的 `plugins` 列表决定可用插件；不属于任何 Bot 的会话使用 `default_grant` 为真的插件。模型看到的工具名为 `mcp__<插件>__<工具>`；不可用的插件会写进系统提示词，让模型提示用户去授权。调用时遇到 401/403 产生 `auth_required` 任务事件。清单的 `confirm_pattern` 命中的工具（例如 GitHub 写操作）每次都先走审批（`rule_id: plugin_confirm`）。
 - `POST /v1/plugins/import-phone {servers:[{id, url, headers} | {id, command, args, env}]}`：复用手机 MCP 配置，请求头与环境变量全部作为加密密钥保存，插件 id 为 `phone-<名称>`。
+
+## 7. 扩展接口（Grok Bot 对齐 Phase 4）
+
+- `GET/PUT/DELETE /v1/bots/{id}/telegram`：给单个 Bot 绑定独立的 Telegram Bot Token（字段同 `/v1/telegram`，`persona_id` 强制为该 Bot）。Token 用 AES-256-GCM 加密存于 `secure_settings`（名称 `telegram:<bot_id>`），GET 只返回掩码。同一 Token 不能同时用于两个渠道（400）。每个渠道独立长轮询、独立会话（`telegram_bot_chats`）。删除 Bot 时一并删除其渠道。共享渠道 `/v1/telegram` 未指定 `persona_id` 时由主 Bot 接待。`GET /v1/bots/{id}` 返回 `telegram: bool`。
+- `GET/PUT /v1/settings`：`{"timezone": "Asia/Shanghai"}`（IANA 名称，`null` 清除）。记忆 `entry_time` 按该时区记录，与手机日志格式一致；手机连接后自动上报 `TimeZone.current`。
+- `POST /v1/sessions/import` 新增可选 `persona_id`；省略时会话归主 Bot。
