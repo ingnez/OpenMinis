@@ -75,7 +75,8 @@ class DutyModeTests(CloudServerTestCase):
             self.assertNotIn("值班模式", req["messages"][0]["content"])
             sent = []
             orig = self.srv.user_notify
-            self.srv.user_notify = lambda *a, **k: sent.append(a)
+            # 只看例行任务的通知：上面那条对话任务的「已完成」推送是后台线程发的，偶尔会晚到这里（CI 上出现过）
+            self.srv.user_notify = lambda *a, **k: sent.append(a) if len(a) < 2 or a[1] != "task_completed" else None
             try:
                 self.srv.on_routine_finished({"name": "主动消息 · 总管", "notify": True}, {"status": "completed", "result": "明天有考试"})
                 self.assertEqual(sent, [])
