@@ -196,7 +196,7 @@ def thumbnail(display, width=480, max_age=2.5):
     返回 (bytes, mime)；截不了屏返回 (None, 原因)。同一屏幕 max_age 秒内复用上一张，避免多台手机一起轮询时反复截屏。"""
     now = time.time()
     with _THUMB_LOCK:
-        hit = _THUMB_CACHE.get(display)
+        hit = _THUMB_CACHE.get((display, width))
         if hit and now - hit[0] < max_age:
             return hit[1], hit[2]
     env = os.environ.copy()
@@ -237,5 +237,25 @@ def thumbnail(display, width=480, max_age=2.5):
                 with open(png, "rb") as f:
                     data = f.read()
     with _THUMB_LOCK:
-        _THUMB_CACHE[display] = (time.time(), data, mime)
+        _THUMB_CACHE[(display, width)] = (time.time(), data, mime)
     return data, mime
+
+
+CLIPBOARD_MAX = 10000
+
+
+def read_clipboard(display):
+    """读远端剪贴板文字（手机「取回剪贴板」）。返回 (文字, 错误)。"""
+    if not shutil.which("xclip"):
+        return None, "云电脑没有安装 xclip"
+    env = os.environ.copy()
+    env["DISPLAY"] = display
+    if "XAUTHORITY" not in env and os.path.exists("/var/lib/openminis-cloud-agent/.Xauthority"):
+        env["XAUTHORITY"] = "/var/lib/openminis-cloud-agent/.Xauthority"
+    try:
+        r = subprocess.run(["xclip", "-o", "-selection", "clipboard"], env=env, capture_output=True, timeout=5)
+    except Exception as e:
+        return None, f"读取剪贴板失败：{type(e).__name__}"
+    if r.returncode != 0:
+        return "", None  # 剪贴板为空时 xclip 返回非 0
+    return r.stdout.decode("utf-8", "replace")[:CLIPBOARD_MAX], None

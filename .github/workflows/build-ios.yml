@@ -263,6 +263,12 @@ jobs:
           sudo cp cloud-agent/test_browser_real.py /opt/openminis-cloud-agent/test_browser_real.py
           sudo chown root:root /opt/openminis-cloud-agent/test_browser_real.py
           sudo -u openminis env DISPLAY=:99 XAUTHORITY=/var/lib/openminis-cloud-agent/.Xauthority HOME=/var/lib/openminis-cloud-agent PLAYWRIGHT_BROWSERS_PATH=/var/lib/openminis-cloud-agent/ms-playwright OPENMINIS_REAL_BROWSER_TEST=1 /opt/openminis-cloud-agent/venv/bin/python3 /opt/openminis-cloud-agent/test_browser_real.py 2>&1 | tee cloud-browser-real.log
+      - name: 云电脑首帧实测（回环：连接、RFB 握手、首帧耗时与字节数）
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 cloud-agent/bench_desktop_connect.py --port 5901 --rounds 9 2>&1 | tee cloud-desktop-bench.log
+          python3 cloud-agent/bench_desktop_connect.py --ws 18766 --path 'websockify?token=main' --rounds 9 2>&1 | tee -a cloud-desktop-bench.log
       - name: 云电脑代理：安装脚本装好的 sing-box 真连测速与配置校验
         run: |
           set -euo pipefail
@@ -304,6 +310,7 @@ jobs:
             cloud-browser-real.log
             cloud-browser-agent.log
             cloud-proxy.log
+            cloud-desktop-bench.log
   build:
     if: ${{ !inputs.quick && !inputs.ui_tests }}
     runs-on: ${{ inputs.mac_runner || 'macos-15' }}

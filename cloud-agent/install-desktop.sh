@@ -160,7 +160,7 @@ Environment=HOME=$VAR_LIB_DIR
 Environment=XDG_CONFIG_HOME=$VAR_LIB_DIR/.config
 Environment=XDG_CACHE_HOME=$VAR_LIB_DIR/.cache
 ExecStartPre=/bin/sleep 2
-ExecStart=/bin/bash -c 'openbox & exec x11vnc -display :99 -rfbport 5901 -listen 127.0.0.1 -nopw -forever -shared -auth /var/lib/openminis-cloud-agent/.Xauthority'
+ExecStart=/bin/bash -c 'openbox & exec x11vnc -display :99 -rfbport 5901 -listen 127.0.0.1 -nopw -forever -shared -wait 5 -defer 5 -auth /var/lib/openminis-cloud-agent/.Xauthority'
 Restart=always
 RestartSec=3
 

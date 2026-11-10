@@ -69,6 +69,7 @@ import cloud_desktop
 import cloud_vision
 import cloud_handoff
 import cloud_activity
+import cloud_desktop_control
 import cloud_botstatus
 import cloud_botthreads
 import cloud_duty
@@ -631,7 +632,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.33.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.34.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1399,6 +1400,9 @@ def tool_browser_action(task_id, session_id, args):
         return {"error": f"Unsupported browser action: {args.get('action')}"}
     ws = get_session_workspace(session_id)
     key, owner, display = browser_route(session_id)
+    paused = wait_for_user_control(task_id, display)
+    if paused:
+        return paused
     return cloud_browser.execute_browser_action(key, ws, args, owner=owner, display=display)
 
 # ---------- 多 Bot 隔离：资源设置、排队、屏幕、端口、后台命令 ----------
@@ -1550,6 +1554,7 @@ def _close_browser_for_display(key):
 GATE = iso.TaskGate(resource_settings)
 LIVE_STATS = cloud_livestats.LiveStats()
 DISPLAYS = cloud_displays.DisplayManager(resource_settings, slot_index, on_stop=_close_browser_for_display)
+DESK_CONTROL = cloud_desktop_control.DesktopControl()
 BG_JOBS = iso.BackgroundJobs()
 
 _proxy_mgr = [None]
@@ -1593,11 +1598,12 @@ def tool_request_user_takeover(task_id, session_id, args):
             "note": "已请求用户在手机「电脑」页接管。现在结束本轮，用一两句话告诉用户需要做什么；"
                     "用户完成后会发来“我完成了”，届时先截图确认结果再继续。不要索要或记录密码。"}
 
-def _vault_type_desktop(session_id, values):
+def _vault_type_desktop(session_id, values, display=None):
     """在桌面当前焦点处依次输入（栏位之间按 Tab）。值经 stdin 交给 xdotool，不出现在进程参数里。"""
     if not shutil.which("xdotool"):
         return {"error": "云电脑没有安装 xdotool，无法在桌面输入"}
-    _key, _owner, display = browser_route(session_id)
+    if display is None and session_id:
+        _key, _owner, display = browser_route(session_id)
     env = os.environ.copy()
     env["DISPLAY"] = display or os.environ.get("DISPLAY", ":99")
     for i, (_name, value) in enumerate(values):
@@ -1608,6 +1614,40 @@ def _vault_type_desktop(session_id, values):
         if r.returncode != 0:
             return {"error": "桌面输入失败"}
     return {"status": "ok", "filled": [n for n, _ in values]}
+
+PHONE_VAULT_FIELDS = ("password", "username", "totp")
+
+def phone_vault_type(body, display):
+    """手机「电脑」页从保管库粘贴：服务器解密后直接在桌面焦点处输入，值不回到手机、不进对话和模型。
+    返回 (状态码, 响应)。"""
+    field = body.get("field") or "password"
+    if field not in PHONE_VAULT_FIELDS:
+        return 400, {"error": "field must be password, username or totp"}
+    conn = get_db_connection()
+    try:
+        try:
+            item, sec = cloud_vault.secret(conn, body.get("item_id"))
+        except cloud_vault.VaultError as e:
+            return 404, {"error": str(e)}
+        except (cloud_secrets.SecretStoreUnavailable, cloud_secrets.SecretDecryptError) as e:
+            return 503, {"error": "保管库无法解密：" + str(e)}
+        if item["kind"] != "login":
+            return 400, {"error": "只有登录项可以在云电脑里粘贴"}
+        if field == "totp":
+            value = cloud_vault.totp_code(sec["totp"])[0] if sec.get("totp") else None
+        elif field == "username":
+            value = item.get("username")
+        else:
+            value = sec.get("password")
+        if not value:
+            return 400, {"error": "这一项没有这个栏位"}
+        res = _vault_type_desktop(None, [(field, value)], display=display or cloud_displays.MAIN_DISPLAY)
+        value = None
+        ok = res.get("status") == "ok"
+        cloud_vault.record_use(conn, item, "phone", None, "phone_desktop_paste", "桌面", ok, None if ok else res.get("error"))
+        return (200, {"status": "ok", "item": item["title"], "field": field}) if ok else (500, {"error": res.get("error")})
+    finally:
+        conn.close()
 
 def tool_vault(task_id, session_id, name, args):
     """保管库工具：机密只在这里解密、直接填进云电脑，返回给模型的只有元数据和「填了哪些栏」。"""
@@ -1675,11 +1715,25 @@ def tool_vault(task_id, session_id, name, args):
     finally:
         conn.close()
 
+def wait_for_user_control(task_id, display):
+    """手机接管这块屏幕时先等交还；等不到返回给模型的「已暂停」结果，否则 None。"""
+    display = display or cloud_displays.MAIN_DISPLAY
+    if not DESK_CONTROL.held(display):
+        return None
+    log_event(task_id, "user_control_wait", {"display": display})
+    ok, _waited = DESK_CONTROL.wait_free(display, cancelled=lambda: is_task_cancelled(task_id))
+    if ok:
+        return None
+    return {"error": "paused_by_user", "paused": True, "note": cloud_desktop_control.PAUSED_NOTE}
+
 def tool_desktop_action(task_id, session_id, args):
     if is_task_cancelled(task_id):
         return {"error": "Cancelled"}
     ws = get_session_workspace(session_id)
     _key, _owner, display = browser_route(session_id)
+    paused = wait_for_user_control(task_id, display)
+    if paused:
+        return paused
     return cloud_desktop.execute_desktop_action(session_id, ws, args, display_override=display)
 
 def tool_memory_write(task_id, session_id, args):
@@ -6218,7 +6272,7 @@ class Handler(BaseHTTPRequestHandler):
                 h["display_error"] = DISPLAYS.last_error
             h.update({"display": display, "token": token, "own_display": own,
                       "token_proxy": h["websockify_mode"] == "token" if h["websockify_mode"] else cloud_displays.token_proxy_enabled(),
-                      "tools": cloud_desktop.is_desktop_available()})
+                      "tools": cloud_desktop.is_desktop_available(), "user_control": DESK_CONTROL.held(display)})
             self._send(200, h)
             return
 
@@ -6235,7 +6289,12 @@ class Handler(BaseHTTPRequestHandler):
                 if info:
                     display = info["display"]
                     DISPLAYS.touch(bid)
-            data, mime = cloud_desktop.thumbnail(display)
+            try:
+                width = max(120, min(int((query_params.get("width") or ["480"])[0]), 1920))
+            except ValueError:
+                self._send(400, {"error": "width must be a number"})
+                return
+            data, mime = cloud_desktop.thumbnail(display, width=width)
             if data is None:
                 self._send(503, {"error": mime})
                 return
@@ -7958,8 +8017,10 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"error": "key must be an xdotool key name such as Return or ctrl+v"})
                     return
                 args = {"action": "key", "key": key}
+            elif action in ("clipboard_get", "vault"):
+                args = None
             else:
-                self._send(400, {"error": "action must be type or key"})
+                self._send(400, {"error": "action must be type, key, clipboard_get or vault"})
                 return
             if not cloud_desktop.is_desktop_available():
                 self._send(503, {"error": "云电脑桌面未运行：请先安装 / 更新云电脑桌面环境"})
@@ -7969,8 +8030,33 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(bid, str) and DISPLAYS.info(bid):
                 display = DISPLAYS.info(bid)["display"]
                 DISPLAYS.touch(bid)
+            if action == "clipboard_get":
+                # 云电脑 → 手机：读远端剪贴板文字（xclip）
+                text, err = cloud_desktop.read_clipboard(display or cloud_displays.MAIN_DISPLAY)
+                self._send(200 if err is None else 500, {"text": text} if err is None else {"error": err})
+                return
+            if action == "vault":
+                self._send(*phone_vault_type(req_json, display))
+                return
             res = cloud_desktop.execute_desktop_action("phone", GLOBAL_WORKSPACE, args, display_override=display)
             self._send(200 if not res.get("error") else 500, res)
+            return
+
+        if path == "/v1/desktop/control":
+            # 手机「电脑」页：你来接管（Bot 的桌面 / 浏览器动作暂停）/ 交还给 Bot；接管是 45 秒租约，手机定时续
+            hold = req_json.get("hold")
+            if not isinstance(hold, bool):
+                self._send(400, {"error": "hold must be true or false"})
+                return
+            display = cloud_displays.MAIN_DISPLAY
+            bid = req_json.get("bot_id")
+            if isinstance(bid, str) and DISPLAYS.info(bid):
+                display = DISPLAYS.info(bid)["display"]
+            if hold:
+                DESK_CONTROL.hold(display)
+            else:
+                DESK_CONTROL.release(display)
+            self._send(200, {"held": DESK_CONTROL.held(display), "display": display, "lease_s": cloud_desktop_control.LEASE_S})
             return
 
         if path == "/v1/plugins/deps/install":

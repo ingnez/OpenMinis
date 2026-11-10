@@ -623,3 +623,18 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 新类型 `note`（安全备注）：机密字段 `body`；Bot 的 `vault_list` 里 `allowed` 恒为 false，`vault_fill` / `vault_totp` 拒绝；内容参与防泄漏替换。
 - 每项可选 `allowed_bots: [bot_id]`（`[]` 或 `null` = 所有 Bot）。不在名单的 Bot 调用会被拒并记一条失败使用记录；`vault_list` 的 `allowed` 按调用的 Bot 计算。
 - `GET /v1/vault`（只给 App）每项多出提示：卡片 `expiry_hint`（MM/YY）、联系信息 `address_hint`（默认地址一行）、登录 `pw_weak` / `pw_reused`（布尔）。服务端解密后只算提示，密码、卡号、CVV 原值不外传；模型看到的 `for_model` 不含这些提示。`?q=` 搜索也覆盖两个提示字段。
+
+## 云电脑接管 / 交还、剪贴板、保管库粘贴（2.34.0）
+
+- `POST /v1/desktop/control {"hold": true|false, "bot_id"?}` → `{"held", "display", "lease_s": 45}`。
+  `hold:true` = 你来接管：这块屏幕上 Bot 的 `desktop_action` / `browser_action` 先等交还（任务事件 `user_control_wait`），
+  等满 600 秒或任务被取消则返回 `{"error":"paused_by_user","paused":true,"note":…}` 让模型先结束本轮。
+  接管是租约：手机每 15 秒续一次，45 秒没续自动失效（App 被杀、断网不会把 Bot 卡死）。`hold:false` = 交还给 Bot。
+- `GET /v1/desktop/health` 多一个 `user_control`（这块屏幕现在是否被手机接管）。
+- `POST /v1/desktop/input`：
+  - `{"action":"clipboard_get"}` → `{"text"}`：读云电脑剪贴板（xclip），手机「取回剪贴板」。
+  - `{"action":"vault","item_id","field":"password|username|totp"}`：服务器解密登录项后直接在桌面焦点处输入；
+    响应只有 `{"status","item","field"}`，值不回到手机、不进对话和模型，使用记录 actor=`phone`、action=`phone_desktop_paste`。
+  - 中文等非 ASCII 的 `type` 照旧走 xclip + ctrl+v（输入法组字由手机端处理，只发已上屏的文字）。
+- `GET /v1/desktop/thumbnail?width=120..1920`（默认 480）：全尺寸截图用 `width=1920`；缓存按 (屏幕, 宽度) 分开。
+- x11vnc 加 `-wait 5 -defer 5`：`bench_desktop_connect.py` 在回环上实测首帧 27→16 ms（中位数），无客户端时不多耗 CPU。

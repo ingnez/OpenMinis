@@ -316,7 +316,8 @@ class DisplayManager:
                 time.sleep(0.1)
             if shutil.which("openbox"):
                 procs.append(subprocess.Popen(["openbox"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
-            vnc = ["x11vnc", "-display", display, "-rfbport", str(port), "-listen", "127.0.0.1", "-nopw", "-forever", "-shared", "-quiet"]
+            vnc = ["x11vnc", "-display", display, "-rfbport", str(port), "-listen", "127.0.0.1", "-nopw", "-forever", "-shared", "-quiet",
+                   "-wait", "5", "-defer", "5"]  # 实测首帧 27→16 ms（bench_desktop_connect.py），空闲不多耗 CPU
             if use_auth:
                 vnc += ["-auth", AUTH_FILE]
             procs.append(subprocess.Popen(vnc, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
