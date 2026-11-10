@@ -58,7 +58,24 @@ struct CloudBotsWidgetView: View {
 
     var body: some View {
         let bots = entry.bots.isEmpty ? [CloudBotsEntry.Bot(id: "", name: "主 Bot", emoji: "🤖")] : entry.bots
-        if family == .systemSmall {
+        if family == .accessoryCircular {
+            ZStack {
+                AccessoryWidgetBackground()
+                Text(bots[0].emoji.isEmpty ? String(bots[0].name.prefix(1)) : bots[0].emoji).font(.title2)
+            }
+            .widgetURL(url(bots[0]))
+            .accessibilityLabel("打开 \(bots[0].name)")
+        } else if family == .accessoryRectangular {
+            VStack(alignment: .leading, spacing: 1) {
+                Text((bots[0].emoji.isEmpty ? "" : bots[0].emoji + " ") + bots[0].name).font(.headline).lineLimit(1)
+                Text(entry.bots.isEmpty ? "打开 App 一次即可同步" : "点一下开始对话").font(.caption).lineLimit(1)
+                if bots.count > 1 { Text(bots.dropFirst().prefix(3).map(\.name).joined(separator: " · ")).font(.caption2).lineLimit(1) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .widgetURL(url(bots[0]))
+        } else if family == .accessoryInline {
+            Text((bots[0].emoji.isEmpty ? "🤖" : bots[0].emoji) + " " + bots[0].name).widgetURL(url(bots[0]))
+        } else if family == .systemSmall {
             VStack(alignment: .leading, spacing: 8) {
                 badge(bots[0], size: 44)
                 Spacer(minLength: 0)
@@ -108,7 +125,7 @@ struct CloudBotsWidget: Widget {
         }
         .configurationDisplayName("云端 Bot")
         .description("一键打开你的云端 Bot 对话。")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryRectangular, .accessoryInline])
     }
 }
 
@@ -159,6 +176,29 @@ struct CloudTodayWidgetView: View {
 
     var body: some View {
         let limit = family == .systemLarge ? 5 : 2
+        if family == .accessoryRectangular || family == .accessoryInline {
+            lockScreen
+        } else {
+            homeScreen(limit: limit)
+        }
+    }
+
+    /// 锁屏：只显示最新一条（标题 + 两行内容）。手机锁着也能看到，所以写入端已经去掉上锁 Bot 的内容（见 CloudBotHomeModel.publishFeedToWidget）
+    @ViewBuilder private var lockScreen: some View {
+        let item = entry.items.first
+        if family == .accessoryInline {
+            Text(item.map { "✨ " + $0.title } ?? "✨ 今日暂无新消息")
+        } else {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item?.title ?? "今日").font(.headline).lineLimit(1)
+                Text(item?.text ?? (entry.synced ? "最近 24 小时没有新结果" : "打开 App 一次即可同步")).font(.caption).lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .widgetURL(URL(string: "minis://bot/" + (item?.botId ?? ""))!)
+        }
+    }
+
+    private func homeScreen(limit: Int) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("今日").font(.headline)
@@ -200,6 +240,6 @@ struct CloudTodayWidget: Widget {
         }
         .configurationDisplayName("云端 Bot · 今日")
         .description("最近的例行任务结果和 Bot 主动找你的消息。")
-        .supportedFamilies([.systemMedium, .systemLarge])
+        .supportedFamilies([.systemMedium, .systemLarge, .accessoryRectangular, .accessoryInline])
     }
 }
