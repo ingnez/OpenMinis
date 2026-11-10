@@ -48,6 +48,7 @@ if SERVER_DIR not in sys.path:
 
 import re
 import cloud_browser
+import cloud_delegation as deleg
 import cloud_desktop
 import cloud_secrets
 import cloud_policy
@@ -260,6 +261,7 @@ def init_db():
     """)
 
     # 结构化记忆（FTS5 trigram，不可用时退化为 LIKE）
+    cursor.execute(deleg.SCHEMA)
     conn.commit()
     cloud_memory.ensure_schema(conn)
     cloud_skills.ensure_schema(conn)
@@ -309,13 +311,16 @@ def set_task_cancelled(task_id):
             active_tasks[task_id] = {"process": None, "cancelled": True, "pid": None}
 
 def is_task_cancelled(task_id):
+    """子代理、被委托的 Bot 任务随上游任务一起取消（沿 parent 链向上最多 12 层）。"""
     with active_tasks_lock:
-        entry = active_tasks.get(task_id, {})
-        if entry.get("cancelled", False):
-            return True
-        parent = entry.get("parent")
-        # 子代理随父任务一起取消
-        return bool(parent) and active_tasks.get(parent, {}).get("cancelled", False)
+        seen = 0
+        while task_id and seen < 12:
+            entry = active_tasks.get(task_id, {})
+            if entry.get("cancelled", False):
+                return True
+            task_id = entry.get("parent")
+            seen += 1
+        return False
 
 SHARED_WORKSPACE = os.path.join(GLOBAL_WORKSPACE, "shared")
 ACTIVE_SLOTS = {}   # session_id -> 同一 Bot 的并发槽（>0 时用独立子工作区 / 屏幕）
@@ -1234,7 +1239,8 @@ def mention_note(session_id, content):
     ids = cloud_bots.mentions(content, bots)
     if not ids:
         return ""
-    return "\n[@提及] 用户在消息中 @ 了：" + "、".join(ids) + "。请用 subagent_task 并传 persona 把相应部分交给这些 Bot，再把它们的答复整合给用户。"
+    return ("\n[@提及] 用户在消息中 @ 了：" + "、".join(ids) + "。请用 delegate_task(bot_id=…) 把相应部分交给这些 Bot"
+            "（它们在自己的工作区用自己的模型完成），再把它们的结果整合给用户；只想快速问一句可用 subagent_task 并传 persona。")
 
 def session_bot(session_id):
     return get_persona(session_persona_id(session_id))
@@ -1257,7 +1263,9 @@ def server_tool_notes(session_id):
         others = []
     personas_note = ""
     if others:
-        personas_note = "\n[其他人格] 需要其他人格的专长或它们的私有记忆时，用 subagent_task 并传 persona 询问：" + "；".join(
+        personas_note += ("\n[Bot 协作] 需要别的 Bot 动手做事时用 delegate_task（在对方工作区执行，结果交回给你），只是通知用 send_to_bot；"
+                          "收到以「【来自 …】」开头的消息说明是别的 Bot 交给你的，完成后最后一条回复写清结果。list_bots 查看所有 Bot。")
+        personas_note += "\n[其他人格] 需要其他人格的专长或它们的私有记忆时，用 subagent_task 并传 persona 询问：" + "；".join(
             f"{p['persona_id']}（{p['name']}）" for p in others[:20])
     return SERVER_TOOL_NOTES + personas_note + isolation_note(session_id) + skills_index
 
@@ -1351,6 +1359,236 @@ def tool_subagent_task(task_id, session_id, args, model, provider_config, depth)
     out = {"status": status, "subagent_task_id": tid, "subagent_session_id": sid, "persona": target_persona, "result": result[:20000]}
     if status != "completed":
         out["error"] = f"子代理结束状态：{status}"
+    return out
+
+# ---------------- Bot 之间的消息与委托 ----------------
+TASK_HOP = {}            # task_id -> 委托层数（用户直接发起的是 0）
+TASK_PRIORITY = {}       # task_id -> "high" 时排到普通任务前面
+DELEG_LIMITER = deleg.PairLimiter()
+DELEG_THREADS = {}       # delegation_id -> worker 线程
+DELEG_WAIT_DEFAULT = 600
+DELEG_WAITING = set()    # 请求方正在同步等待结果的委托：worker 结束时不另行回报
+DELEG_LOCK = threading.Lock()
+
+def _bot_label(bot):
+    return (bot or {}).get("name") or "主助手"
+
+def tool_list_bots(task_id, session_id, args):
+    own = session_persona_id(session_id)
+    conn = get_db_connection()
+    try:
+        busy = {r[0] for r in conn.execute(
+            "SELECT s.persona_id FROM tasks t JOIN sessions s ON s.session_id = t.session_id WHERE t.status IN ('running', 'waiting_user')")}
+    finally:
+        conn.close()
+    bots = []
+    for b in list_personas():
+        if b["persona_id"] == own:
+            continue
+        bots.append({"bot_id": b["persona_id"], "name": b["name"], "description": (b.get("description") or "")[:200],
+                     "model": b.get("model") or "", "busy": b["persona_id"] in busy})
+    return {"bots": bots, "you": own or ""}
+
+def _delegation_row(did):
+    conn = get_db_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        r = conn.execute("SELECT * FROM bot_delegations WHERE delegation_id = ?", (did,)).fetchone()
+        return dict(r) if r else None
+    finally:
+        conn.close()
+
+def list_delegations(session_id=None, limit=50):
+    conn = get_db_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        if session_id:
+            rows = conn.execute("SELECT * FROM bot_delegations WHERE from_session = ? OR to_session = ? ORDER BY created_at DESC LIMIT ?",
+                                (session_id, session_id, limit)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM bot_delegations ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+def _post_when_idle(session_id, text, timeout=1800):
+    """等会话空闲后把一条 assistant 消息写进去（不在别的任务的工具调用中间插消息）。"""
+    deadline = time.time() + timeout
+    while True:
+        conn = get_db_connection()
+        try:
+            busy = conn.execute("SELECT 1 FROM tasks WHERE session_id = ? AND status IN ('running', 'waiting_user')", (session_id,)).fetchone()
+            if not busy or time.time() > deadline:
+                conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'assistant', ?, ?)",
+                             (session_id, text, time.time()))
+                conn.commit()
+                return True
+        finally:
+            conn.close()
+        time.sleep(1.0)
+
+def start_delegation(task_id, session_id, kind, target_id, body, priority="normal", report_back=True,
+                     model=None, provider_config=None, waiting=False):
+    """创建并启动一次 Bot 间消息 / 委托；返回 (delegation_id, worker 线程) 或抛 deleg.LimitError / ValueError。"""
+    own = session_persona_id(session_id)
+    if not isinstance(target_id, str) or not target_id:
+        raise ValueError("bot_id 必须是字符串")
+    if target_id == own:
+        raise ValueError("不能委托给自己；需要分身处理请用 subagent_task")
+    target = get_persona(target_id)
+    if not target:
+        raise ValueError(f"没有这个 Bot：{target_id}")
+    if not isinstance(body, str) or not body.strip():
+        raise ValueError("内容不能为空")
+    if priority not in ("normal", "high"):
+        raise ValueError("priority 只能是 normal 或 high")
+    rs = resource_settings()
+    hop = TASK_HOP.get(task_id, 0) + 1
+    deleg.check_hop(hop, rs.get("delegation_max_hops", 3))
+    DELEG_LIMITER.check_and_add(own or "", target_id, rs.get("delegation_pair_per_10min", 10))
+    src = session_bot(session_id)
+    did = "dlg_" + uuid.uuid4().hex[:12]
+    content = deleg.incoming_text(_bot_label(src), kind, body[:20000], did, report_back)
+    if target.get("model") and target.get("credential"):
+        run_model = target["model"]
+        provider, p_status, p_err = resolve_provider({"protocol": "chat", "credential": target["credential"]})
+        if p_err:
+            raise ValueError(f"{target['name']} 的模型凭据不可用：{p_err}")
+    else:
+        run_model, provider = model, provider_config
+    if not provider:
+        raise ValueError("没有可用的模型凭据")
+    now = time.time()
+    tid = "task_" + uuid.uuid4().hex[:12]
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        sid = None
+        if kind == "message":
+            # 普通消息进目标 Bot 最近的空闲会话，没有就新开
+            r = c.execute("SELECT s.session_id FROM sessions s WHERE s.persona_id = ? AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.session_id = s.session_id "
+                          "AND t.status IN ('running', 'waiting_user')) AND s.title NOT LIKE '例行任务：%' ORDER BY s.created_at DESC LIMIT 1", (target_id,)).fetchone()
+            sid = r[0] if r else None
+        if not sid:
+            sid = "sess_" + uuid.uuid4().hex[:12]
+            title = f"来自 {_bot_label(src)}：" + body.strip().splitlines()[0][:40]
+            c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, NULL, ?, '', ?, ?)",
+                      (sid, title, now, target_id))
+        c.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
+                  (tid, sid, run_model, now))
+        c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (sid, content, now))
+        root = (c.execute("SELECT root_id FROM bot_delegations WHERE to_task = ?", (task_id,)).fetchone() or [did])[0]
+        c.execute("INSERT INTO bot_delegations (delegation_id, kind, from_bot, to_bot, from_session, from_task, to_session, to_task, content, priority, "
+                  "report_back, hop, root_id, status, result, reported, created_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'running', NULL, 0, ?, NULL)",
+                  (did, kind, own or "", target_id, session_id, task_id, sid, tid, body[:20000], priority, 1 if report_back else 0, hop, root, now))
+        conn.commit()
+    finally:
+        conn.close()
+    with active_tasks_lock:
+        active_tasks[tid] = {"process": None, "cancelled": False, "pid": None, "parent": task_id}
+    TASK_HOP[tid] = hop
+    if priority == "high":
+        TASK_PRIORITY[tid] = "high"
+    log_event(task_id, "delegation_started", {"delegation_id": did, "kind": kind, "to_bot": target_id, "to_name": target["name"],
+                                              "session_id": sid, "task_id": tid, "message": f"已交给 {target['name']}"})
+    log_event(tid, "delegated_from", {"delegation_id": did, "from_bot": own or "", "from_name": _bot_label(src)})
+
+    def worker():
+        try:
+            run_agent_task(tid, sid, content, run_model, provider, "")
+        finally:
+            TASK_HOP.pop(tid, None)
+            TASK_PRIORITY.pop(tid, None)
+            conn2 = get_db_connection()
+            try:
+                status = (conn2.execute("SELECT status FROM tasks WHERE task_id = ?", (tid,)).fetchone() or ["failed"])[0]
+                last = conn2.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL AND timestamp >= ? "
+                                     "ORDER BY id DESC LIMIT 1", (sid, now)).fetchone()
+                result = ((last[0] if last else "") or "")[:20000]
+                conn2.execute("UPDATE bot_delegations SET status = ?, result = ?, finished_at = ? WHERE delegation_id = ?",
+                              (status, result, time.time(), did))
+                conn2.commit()
+            finally:
+                conn2.close()
+            log_event(task_id, "delegation_finished", {"delegation_id": did, "to_name": target["name"], "status": status})
+            DELEG_THREADS.pop(did, None)
+            with DELEG_LOCK:
+                deferred = did in DELEG_WAITING
+            if report_back and kind == "task" and not deferred:
+                _report_delegation(did)
+
+    th = threading.Thread(target=worker, daemon=True, name="bot-delegation")
+    DELEG_THREADS[did] = th
+    if waiting:
+        with DELEG_LOCK:
+            DELEG_WAITING.add(did)
+    th.start()
+    return did, th
+
+def _claim_report(did):
+    """回报只做一次：谁先把 reported 从 0 改成 1 谁负责交付结果。"""
+    conn = get_db_connection()
+    try:
+        cur = conn.execute("UPDATE bot_delegations SET reported = 1 WHERE delegation_id = ? AND reported = 0", (did,))
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
+
+def _report_delegation(did):
+    """结果交回请求方：请求方还在等（wait）时由工具直接返回；否则写进请求方会话并推送。只回报一次。"""
+    if not _claim_report(did):
+        return
+    row = _delegation_row(did)
+    target = get_persona(row["to_bot"]) or {}
+    text = deleg.result_text(_bot_label(target), row["status"], row["result"])
+    _post_when_idle(row["from_session"], text)
+    cfg = current_notify_config()
+    if cfg and not _bot_muted(row["from_session"]):
+        cloud_notify.notify_async(cfg, "task_completed", f"{_bot_label(target)} 完成了委托"[:120], (row["result"] or "")[:600])
+
+def tool_send_to_bot(task_id, session_id, args, model, provider_config):
+    try:
+        did, _ = start_delegation(task_id, session_id, "message", args.get("bot_id"), args.get("message"),
+                                  args.get("priority") or "normal", report_back=False, model=model, provider_config=provider_config)
+    except (deleg.LimitError, ValueError) as e:
+        return {"error": str(e)}
+    return {"status": "sent", "delegation_id": did, "note": "对方会在自己的对话里处理；需要结果请用 delegate_task"}
+
+def tool_delegate_task(task_id, session_id, args, model, provider_config):
+    report_back = args.get("report_back", True) is not False
+    wait = args.get("wait", True) is not False
+    try:
+        wait_s = int(args.get("wait_seconds") or DELEG_WAIT_DEFAULT)
+    except (TypeError, ValueError):
+        wait_s = DELEG_WAIT_DEFAULT
+    wait_s = max(5, min(wait_s, 1800))
+    try:
+        did, th = start_delegation(task_id, session_id, "task", args.get("bot_id"), args.get("task"),
+                                   args.get("priority") or "normal", report_back=report_back, model=model,
+                                   provider_config=provider_config, waiting=wait)
+    except (deleg.LimitError, ValueError) as e:
+        return {"error": str(e)}
+    if not wait:
+        return {"status": "running", "delegation_id": did, "note": "完成后结果会自动发回这个对话" if report_back else "已交出，不回报"}
+    GATE.park(task_id)
+    try:
+        deadline = time.time() + wait_s
+        while th.is_alive() and time.time() < deadline and not is_task_cancelled(task_id):
+            th.join(timeout=0.5)
+    finally:
+        GATE.unpark(task_id)
+        with DELEG_LOCK:
+            DELEG_WAITING.discard(did)
+    row = _delegation_row(did)
+    if row["status"] == "running":
+        return {"status": "running", "delegation_id": did,
+                "note": f"等了 {wait_s} 秒还没完成，" + ("结果会自动发回这个对话" if report_back else "对方会继续做完")}
+    if not _claim_report(did):
+        return {"status": row["status"], "delegation_id": did, "note": "结果已经发到这个对话里"}
+    out = {"status": row["status"], "delegation_id": did, "bot": row["to_bot"], "result": row["result"] or ""}
+    if row["status"] != "completed":
+        out["error"] = f"对方任务结束状态：{row['status']}"
     return out
 
 # 对外发消息：先以草稿形式挂起审批，用户确认后才发送（不受自定义策略影响）
@@ -1668,9 +1906,37 @@ TOOL_DEFINITIONS.append({
     }
 })
 
+TOOL_DEFINITIONS.extend([
+    {"type": "function", "function": {
+        "name": "list_bots",
+        "description": "List the user's other Bots (id, name, description, model, whether busy) so you can message or delegate to them.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "send_to_bot",
+        "description": "Send a one-way message to another Bot. It handles it in its own conversation (marked as from you); nothing comes back. Use delegate_task when you need a result.",
+        "parameters": {"type": "object", "properties": {
+            "bot_id": {"type": "string"},
+            "message": {"type": "string"},
+            "priority": {"type": "string", "enum": ["normal", "high"]}},
+            "required": ["bot_id", "message"]}}},
+    {"type": "function", "function": {
+        "name": "delegate_task",
+        "description": "Hand a self-contained task to another Bot. It runs in that Bot's own workspace, model and memory. By default waits for the result (up to wait_seconds) and returns it; if it takes longer, the result is posted back into this conversation when done.",
+        "parameters": {"type": "object", "properties": {
+            "bot_id": {"type": "string"},
+            "task": {"type": "string", "description": "Complete instructions; the other Bot cannot see this conversation."},
+            "report_back": {"type": "boolean", "description": "Send the result back to you (default true)."},
+            "wait": {"type": "boolean", "description": "Block until done (default true). false = continue now, result arrives later."},
+            "wait_seconds": {"type": "integer", "description": "Max seconds to wait (5-1800, default 600)."},
+            "priority": {"type": "string", "enum": ["normal", "high"]}},
+            "required": ["bot_id", "task"]}}},
+])
+
+DELEGATION_TOOLS = {"send_to_bot", "delegate_task"}
+
 def tools_for_depth(depth):
     if depth >= 1:
-        return [t for t in TOOL_DEFINITIONS if t["function"]["name"] != "subagent_task"]
+        return [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in DELEGATION_TOOLS | {"subagent_task"}]
     return TOOL_DEFINITIONS
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1730,8 +1996,17 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
     def queued(pos):
         log_event(task_id, "queued", {"position": pos, "message": f"排队中（第 {pos} 位）"})
 
-    slot = GATE.acquire(task_id, lane, bot_id, cancelled=lambda: is_task_cancelled(task_id), on_queued=queued)
+    slot = GATE.acquire(task_id, lane, bot_id, cancelled=lambda: is_task_cancelled(task_id), on_queued=queued,
+                        priority=TASK_PRIORITY.get(task_id, "normal"))
     if slot is None:
+        # 排队时被取消（含上游委托方取消）：把状态落到数据库
+        conn = get_db_connection()
+        try:
+            conn.execute("UPDATE tasks SET status = 'cancelled' WHERE task_id = ? AND status IN ('running', 'waiting_user')", (task_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        log_event(task_id, "cancelled", {"message": "排队时已取消"})
         return None
     timer = None
     try:
@@ -1903,6 +2178,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     elif fn_name == "skill_load": res = tool_skill_load(task_id, session_id, fn_args)
                     elif fn_name == "page_write": res = tool_page_write(task_id, session_id, fn_args)
                     elif fn_name == "subagent_task": res = tool_subagent_task(task_id, session_id, fn_args, model, provider_config, depth)
+                    elif fn_name == "list_bots": res = tool_list_bots(task_id, session_id, fn_args)
+                    elif fn_name == "send_to_bot" and depth == 0: res = tool_send_to_bot(task_id, session_id, fn_args, model, provider_config)
+                    elif fn_name == "delegate_task" and depth == 0: res = tool_delegate_task(task_id, session_id, fn_args, model, provider_config)
                     elif fn_name == "image_generate": res = tool_image_generate(task_id, session_id, fn_args, provider_config)
                     elif fn_name == "send_message": res = tool_send_message(task_id, session_id, fn_args)
                     elif fn_name in plugin_map:
@@ -2740,6 +3018,8 @@ class Handler(BaseHTTPRequestHandler):
                     "telegram": True,
                     "personas": True,
                     "bots": True,
+                    "delegation": True,
+                    "group_chat": True,
                     "plugins": True
                 },
                 "timestamp": time.time()
@@ -2885,6 +3165,15 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/v1/queue":
             self._send(200, GATE.status())
+            return
+
+        if path == "/v1/delegations":
+            sid = (query_params.get("session_id") or [None])[0]
+            items = list_delegations(sid)
+            for it in items:
+                for k in ("from_bot", "to_bot"):
+                    it[k.replace("bot", "name")] = _bot_label(get_persona(it[k])) if it[k] else "主助手"
+            self._send(200, {"delegations": items})
             return
 
         if path.startswith("/v1/bots/") and path.endswith("/export"):

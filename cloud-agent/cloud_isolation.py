@@ -37,6 +37,12 @@ DEFAULTS = {
     "mirror": "official",          # official / china / custom
     "mirror_pip": "",
     "mirror_npm": "",
+    "delegation_max_hops": 3,          # Bot 之间转交 / 委托的最大层数，0 = 不允许 Bot 之间委托
+    "delegation_pair_per_10min": 10,   # 同一对 Bot 每 10 分钟最多委托次数，0 = 不限
+    "group_max_bot_turns": 6,          # 群聊里每条用户消息最多引出几条 Bot 发言，0 = 不限
+    "group_tokens_per_min": 60000,     # 群聊每分钟 token 预算（按估算），0 = 不限
+    "group_max_concurrent": 2,         # 群聊里同时在想 / 打字的 Bot 数，0 = 不限
+    "group_activity": "normal",        # quiet 安静 / normal 正常 / lively 活跃
 }
 
 RESERVED_PORTS = (18765, 18766, 5901)
@@ -134,6 +140,12 @@ def validate(patch, current):
             s[k] = _int(v, k, 1024, 64000)
         elif k == "port_range":
             s[k] = _int(v, k, 1, 1000)
+        elif k == "delegation_max_hops":
+            s[k] = _int(v, k, 0, 10)
+        elif k == "group_activity":
+            if v not in ("quiet", "normal", "lively"):
+                raise SettingsError("group_activity 只能是 quiet、normal 或 lively")
+            s[k] = v
         else:
             s[k] = _int(v, k, 0, 100000)
     if s["mirror"] == "custom" and not (s["mirror_pip"] or s["mirror_npm"]):
@@ -289,6 +301,8 @@ class TaskGate:
         self.cond = threading.Condition()
         self.queue = []      # [(task_id, lane, bot_id, enqueued_at)]
         self.running = {}    # task_id -> (lane, slot, started_at)
+        self.high = set()    # 高优先级任务（Bot 间 priority=high 的消息）排在普通任务前
+        self.parked = {}     # 正在等待被委托 Bot 结果的任务：暂时不占名额，避免委托链互相等待卡死
 
     def _lane_limit(self, s, bot_id):
         return bot_settings(s, bot_id)["max_tasks_per_bot"]
@@ -322,10 +336,16 @@ class TaskGate:
             free -= 1
         return out
 
-    def acquire(self, task_id, lane, bot_id, cancelled=lambda: False, on_queued=None):
+    def acquire(self, task_id, lane, bot_id, cancelled=lambda: False, on_queued=None, priority="normal"):
         """阻塞到可以运行；返回 slot（同一 lane 内从 0 开始的空闲编号），取消时返回 None。"""
         with self.cond:
-            self.queue.append((task_id, lane, bot_id, time.time()))
+            entry = (task_id, lane, bot_id, time.time())
+            if priority == "high":
+                self.high.add(task_id)
+                pos = next((i for i, q in enumerate(self.queue) if q[0] not in self.high), len(self.queue))
+                self.queue.insert(pos, entry)
+            else:
+                self.queue.append(entry)
             notified = False
             try:
                 while True:
@@ -347,12 +367,26 @@ class TaskGate:
                     self.cond.wait(timeout=0.5)
             finally:
                 self.queue = [q for q in self.queue if q[0] != task_id]
+                self.high.discard(task_id)
                 self.cond.notify_all()
 
     def release(self, task_id):
         with self.cond:
             self.running.pop(task_id, None)
+            self.parked.pop(task_id, None)
             self.cond.notify_all()
+
+    def park(self, task_id):
+        """任务在等别的 Bot 时让出名额（返回后用 unpark 收回，可能短暂超出上限）。"""
+        with self.cond:
+            if task_id in self.running:
+                self.parked[task_id] = self.running.pop(task_id)
+                self.cond.notify_all()
+
+    def unpark(self, task_id):
+        with self.cond:
+            if task_id in self.parked:
+                self.running[task_id] = self.parked.pop(task_id)
 
     def poke(self):
         with self.cond:
