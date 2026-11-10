@@ -44,6 +44,7 @@ struct CloudPerfView: View {
     @State private var loaded = false
     @State private var clientTick = 0
     @State private var autoTitle = true
+    @State private var autoModel = false
     @State private var fastModel = ""
     @State private var failover: [[String: Any]] = []
 
@@ -106,12 +107,14 @@ struct CloudPerfView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .onSubmit { save(["fast_model": fastModel.trimmingCharacters(in: .whitespaces)]) }
                 }
+                Toggle("简单问题自动用小模型", isOn: $autoModel).onChange(of: autoModel) { v in save(["auto_model": v]) }
+                    .disabled(fastModel.trimmingCharacters(in: .whitespaces).isEmpty)
                 NavigationLink { CloudFailoverView(initial: failover) } label: {
                     HStack { Text("备用服务商"); Spacer(); Text(failover.isEmpty ? "未设置" : "\(failover.count) 个").foregroundStyle(.secondary) }
                 }
                 NavigationLink { CloudRelayCheckView() } label: { Label("中转站体检", systemImage: "stethoscope") }
             } header: { Text("提效") } footer: {
-                Text("小模型用于起标题，与当前对话同一服务商（如 gpt-4.1-mini、qwen-turbo、deepseek-chat）。备用服务商：主模型连续出错（5xx、限流、超时、断连）时自动依次换用。提示缓存对 Claude、Qwen 加缓存标记，GPT 系按 Bot 固定缓存键，DeepSeek / Gemini / GLM 自动命中。")
+                Text("小模型用于起标题；打开「自动用小模型」后，打招呼、一句话问答这类短问题也交给它（更快更省），它出错时本次自动回到主模型。小模型与当前对话同一服务商（如 gpt-4.1-mini、qwen-turbo、deepseek-chat）。备用服务商：主模型连续出错（5xx、限流、超时、断连）时自动依次换用。提示缓存对 Claude、Qwen 加缓存标记，GPT 系按 Bot 固定缓存键，DeepSeek / Gemini / GLM 自动命中。")
             }
             Section("最近任务") {
                 if recent.isEmpty { Text("还没有记录，发一条消息后再来看").foregroundStyle(.secondary) }
@@ -173,6 +176,7 @@ struct CloudPerfView: View {
             trimTokens = s["context_trim_tokens"] as? Int ?? 48000
             autoTitle = s["auto_title"] as? Bool ?? true
             fastModel = s["fast_model"] as? String ?? ""
+            autoModel = s["auto_model"] as? Bool ?? false
             failover = s["failover"] as? [[String: Any]] ?? []
             error = nil
             DispatchQueue.main.async { loaded = true }

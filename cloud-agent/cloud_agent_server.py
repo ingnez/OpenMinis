@@ -2101,7 +2101,7 @@ def spill_tool_output(session_id, tc_id, text):
 def finish_perf(perf, status):
     calls = perf["llm_calls"]
     total_ms = round((time.time() - perf["created_at"]) * 1000, 1)
-    rec = {"task_id": perf["task_id"], "session_id": perf["session_id"], "bot_id": perf["bot_id"], "model": perf["model"],
+    rec = {"task_id": perf["task_id"], "session_id": perf["session_id"], "bot_id": perf["bot_id"], "model": perf.get("auto_model") or perf["model"],
            "status": status, "queued_ms": perf["queued_ms"],
            "ttft_ms": calls[0]["ttft_ms"] if calls else None,
            "first_text_ms": perf["first_text_ms"] if perf["first_text_ms"] is not None else total_ms,
@@ -2802,6 +2802,13 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
 
     # 主模型连续失败（5xx / 429 / 超时 / 断连）：先原地重试一次，再按资源设置里的 failover 依次换用备用服务商
     route = {"url": chat_url, "key": api_key, "model": model, "chain": list(rs_perf.get("failover") or [])}
+    main_model = model
+    # 自动选模型：简单的短问题用同一服务商的快速模型；快速模型出错就回到主模型
+    if depth == 0 and rs_perf.get("auto_model") and rs_perf.get("fast_model") and rs_perf["fast_model"] != model \
+            and eff.is_simple_request(initial_content):
+        route["model"] = model = rs_perf["fast_model"]
+        perf["auto_model"] = model
+        log_event(task_id, "status", {"message": f"简单问题，用快速模型 {model} 回答"})
 
     def call_with_failover(send_msgs, tools):
         nonlocal model
@@ -2812,7 +2819,15 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     "model": route["model"], "messages": send_msgs, "tools": tools, "tool_choice": "auto"
                 }, effort, stream=rs_perf.get("stream", True), on_text=on_text, cache_key=perf["bot_id"] or session_id)
             except Exception as e:
-                if not eff.is_failover_error(e) or is_task_cancelled(task_id):
+                if is_task_cancelled(task_id):
+                    raise
+                if perf.get("auto_model") and route["model"] == perf["auto_model"]:
+                    # 快速模型不行（不存在 / 出错）：本任务直接换回主模型，不算失败
+                    log_event(task_id, "status", {"message": f"快速模型不可用（{sanitize_err(e)[:60]}），改用 {main_model}"})
+                    route["model"] = model = main_model
+                    perf["auto_model_fallback"] = True
+                    continue
+                if not eff.is_failover_error(e):
                     raise
                 if not retried:
                     retried = True
@@ -4129,7 +4144,7 @@ class Handler(BaseHTTPRequestHandler):
                              "median": {k: med(k) for k in ("ttft_ms", "first_text_ms", "total_ms", "queued_ms", "prompt_tokens", "completion_tokens", "cached_tokens", "tool_defs")},
                              "pool": dict(cloud_llm.POOL.stats),
                              "settings": {k: resource_settings().get(k) for k in ("stream", "lazy_tools", "parallel_tools", "prompt_cache", "context_trim_tokens",
-                                                                  "auto_title", "fast_model", "failover")}})
+                                                                  "auto_title", "auto_model", "fast_model", "failover")}})
             return
 
         if path == "/v1/usage":

@@ -198,3 +198,17 @@ def relay_check(chat, model, needle_tokens=6000):
 
     ok = all(c["ok"] is not False for c in checks)
     return {"checks": checks, "ok": ok}
+
+
+# ---------- 自动选模型 ----------
+_HEAVY = re.compile(r"(https?://|```|代码|编程|脚本|写一|写个|写篇|写份|分析|总结|搜索|搜一|查一下|查查|帮我[做办订买发打查找]|打开|网页|浏览器|文件|表格|计划|规划|方案|翻译这|论文|文献|报告|步骤|部署|安装|debug|code|script|search|browse|file|plan|analy|summar|翻译下面)", re.I)
+
+
+def is_simple_request(content):
+    """短、单句、看不出要用工具的问题，交给快速模型；拿不准就不算简单（宁可慢一点也别答坏）。"""
+    if not isinstance(content, str):
+        return False            # 带图片 / 附件
+    t = content.strip()
+    if not t or len(t) > 80 or t.count("\n") > 1 or t.startswith("["):
+        return False
+    return not _HEAVY.search(t)

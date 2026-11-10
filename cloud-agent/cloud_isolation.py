@@ -52,6 +52,7 @@ DEFAULTS = {
     "context_trim_tokens": 48000,      # 上下文估算超过这么多 token 时自动精简，0 = 不精简
     "bark_fallback": "auto",           # App 关闭时用 Bark 兜底：auto（配置了 Bark 就兜底）/ on / off
     "auto_title": True,                # 第一轮回答后给对话起一个短标题
+    "auto_model": False,               # 简单的短问题自动用 fast_model 回答（失败回到主模型）
     "fast_model": "",                  # 起标题 / 摘要用的小模型（与当前任务同一服务商），空 = 不调模型，只截取首句
     "failover": [],                    # 主模型连续失败（5xx / 超时 / 断连）时依次换用：[{"credential": 名称, "model": 模型}]，最多 3 个
 }
@@ -167,6 +168,10 @@ def validate(patch, current):
         elif k == "auto_title":
             if not isinstance(v, bool):
                 raise SettingsError("auto_title 必须是布尔值")
+            s[k] = v
+        elif k == "auto_model":
+            if not isinstance(v, bool):
+                raise SettingsError("auto_model 必须是布尔值")
             s[k] = v
         elif k == "fast_model":
             if not isinstance(v, str) or len(v) > 120 or (v and not re.match(r"^[A-Za-z0-9._:/@+-]+$", v)):
