@@ -1,3 +1,4 @@
+import CoreSpotlight
 import SwiftUI
 import ObjectiveC
 import FileProvider
@@ -251,6 +252,11 @@ struct MinisApp: App {
                         return
                     }
                     DeepLinkRouter.handle(url: url, shareCoordinator: shareCoordinator)
+                }
+                // Spotlight 里点了某个 Bot → 打开它的对话
+                .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                    let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String
+                    Task { @MainActor in CloudSpotlight.open(identifier: id) }
                 }
                 // Force a full ContentView rebuild whenever the user-selected
                 // language changes. Without this, SwiftUI keeps Text/Label

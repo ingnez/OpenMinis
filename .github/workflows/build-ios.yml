@@ -274,6 +274,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSmartField.swift scripts/CloudSmartFieldTests.swift -o /tmp/cloud-smartfield-tests
           /tmp/cloud-smartfield-tests
+      - name: Spotlight 搜 Bot 规则测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSpotlightRules.swift scripts/CloudSpotlightTests.swift -o /tmp/cloud-spotlight-tests
+          /tmp/cloud-spotlight-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -434,6 +439,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSpotlightRules.swift scripts/CloudSpotlightTests.swift -o /tmp/cloud-spotlight-tests
+          /tmp/cloud-spotlight-tests | tee cloud-spotlight-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSmartField.swift scripts/CloudSmartFieldTests.swift -o /tmp/cloud-smartfield-tests
           /tmp/cloud-smartfield-tests | tee cloud-smartfield-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudHandoffChain.swift scripts/CloudHandoffChainTests.swift -o /tmp/cloud-handoff-tests
@@ -771,6 +778,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSpotlightRules.swift scripts/CloudSpotlightTests.swift -o /tmp/cloud-spotlight-tests
+          /tmp/cloud-spotlight-tests | tee cloud-spotlight-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSmartField.swift scripts/CloudSmartFieldTests.swift -o /tmp/cloud-smartfield-tests
           /tmp/cloud-smartfield-tests | tee cloud-smartfield-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudHandoffChain.swift scripts/CloudHandoffChainTests.swift -o /tmp/cloud-handoff-tests
