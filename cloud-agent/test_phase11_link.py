@@ -130,3 +130,24 @@ class EffortFallbackTests(CloudServerTestCase):
         t = self.submit(sid, "again", "deepseek-v4-flash-0731", reasoning_effort="high")[1]
         self.wait_status(t["task_id"], ("completed",))
         self.assertEqual(len(seen), n + 1)                                # 记住了：直接不带参数
+
+
+class CancelCascadeTests(unittest.TestCase):
+    def test_cancel_marks_descendants_even_after_parent_exits(self):
+        import cloud_agent_server as srv
+        with srv.active_tasks_lock:
+            srv.active_tasks.update({"p_x": {"process": None, "cancelled": False, "parent": None},
+                                     "c_x": {"process": None, "cancelled": False, "parent": "p_x"},
+                                     "g_x": {"process": None, "cancelled": False, "parent": "c_x"},
+                                     "o_x": {"process": None, "cancelled": False, "parent": None}})
+        try:
+            srv.set_task_cancelled("p_x")
+            with srv.active_tasks_lock:
+                srv.active_tasks.pop("p_x")          # 上游任务结束后被移除，链条断开
+            self.assertTrue(srv.is_task_cancelled("c_x"))
+            self.assertTrue(srv.is_task_cancelled("g_x"))
+            self.assertFalse(srv.is_task_cancelled("o_x"))
+        finally:
+            with srv.active_tasks_lock:
+                for k in ("p_x", "c_x", "g_x", "o_x"):
+                    srv.active_tasks.pop(k, None)

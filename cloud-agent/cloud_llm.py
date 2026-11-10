@@ -57,6 +57,17 @@ class HTTPPool:
                 return
         conn.close()
 
+    def close_all(self):
+        """关闭所有空闲连接（换服务商 / 测试收尾时用）。"""
+        with self.lock:
+            conns = [c for lst in self.idle.values() for c, _ in lst]
+            self.idle.clear()
+        for c in conns:
+            try:
+                c.close()
+            except Exception:
+                pass
+
     def warm(self, url, timeout=5):
         """预先建立连接（TCP + TLS），用户打开对话 / 开始输入时调用。"""
         u = urllib.parse.urlsplit(url)

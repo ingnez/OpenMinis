@@ -125,6 +125,7 @@ class CloudServerTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls._threads_before = set(threading.enumerate())
         cls.tmp = tempfile.TemporaryDirectory()
         td = cls.tmp.name
         os.environ["OPENMINIS_MASTER_KEY_FILE"] = os.path.join(td, "conf", "master.key")
@@ -163,9 +164,41 @@ class CloudServerTestCase(unittest.TestCase):
                 s.shutdown()
             except Exception:
                 pass
+        cls._drain_background()
         for k in list(cls.extra_env.keys()) + ["OPENMINIS_MASTER_KEY_FILE"]:
             os.environ.pop(k, None)
         cls.tmp.cleanup()
+
+    @classmethod
+    def _drain_background(cls, timeout=20):
+        """取消本类留下的任务，并等后台线程（委托、子代理、群聊…）退出后再删临时目录，
+        否则它们会往已删除的数据库里写，报 unable to open database file，还会拖慢 / 干扰下一个测试类。"""
+        srv = cls.srv
+        try:
+            import cloud_llm
+            cloud_llm.POOL.close_all()
+        except Exception:
+            pass
+        lock = getattr(srv, "active_tasks_lock", None)
+        if lock is not None:
+            with lock:
+                tids = list(srv.active_tasks.keys())
+            for tid in tids:
+                try:
+                    srv.set_task_cancelled(tid)
+                except Exception:
+                    pass
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            alive = [t for t in threading.enumerate()
+                     if t not in cls._threads_before and t is not threading.current_thread() and t.is_alive()
+                     and t.name not in ("routine-scheduler", "watchdog")]
+            if not alive:
+                break
+            time.sleep(0.05)
+        if lock is not None:
+            with lock:
+                srv.active_tasks.clear()
 
     def request(self, method, path, data=None, token=None):
         token = self.token if token is None else token

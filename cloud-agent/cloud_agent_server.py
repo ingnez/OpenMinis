@@ -304,21 +304,37 @@ init_db()
 active_tasks = {}
 active_tasks_lock = threading.Lock()
 
+def _kill_task_process(entry):
+    proc = entry.get("process")
+    if proc and proc.poll() is None:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
 def set_task_cancelled(task_id):
+    """取消任务，并立即把它的子代理 / 被委托任务（沿 parent 链）一起标记取消、杀掉正在跑的命令。
+    不能只靠子任务回头查 parent：上游任务一结束就会从 active_tasks 里移除，链条就断了。"""
     with active_tasks_lock:
         if task_id in active_tasks:
             active_tasks[task_id]["cancelled"] = True
-            proc = active_tasks[task_id].get("process")
-            if proc and proc.poll() is None:
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
+            _kill_task_process(active_tasks[task_id])
         else:
             active_tasks[task_id] = {"process": None, "cancelled": True, "pid": None}
+        for tid, entry in list(active_tasks.items()):
+            if tid == task_id or entry.get("cancelled"):
+                continue
+            cur, seen = entry.get("parent"), 0
+            while cur and seen < 12:
+                if cur == task_id:
+                    entry["cancelled"] = True
+                    _kill_task_process(entry)
+                    break
+                cur = active_tasks.get(cur, {}).get("parent")
+                seen += 1
 
 def is_task_cancelled(task_id):
     """子代理、被委托的 Bot 任务随上游任务一起取消（沿 parent 链向上最多 12 层）。"""
