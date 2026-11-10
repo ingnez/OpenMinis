@@ -624,6 +624,12 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 每项可选 `allowed_bots: [bot_id]`（`[]` 或 `null` = 所有 Bot）。不在名单的 Bot 调用会被拒并记一条失败使用记录；`vault_list` 的 `allowed` 按调用的 Bot 计算。
 - `GET /v1/vault`（只给 App）每项多出提示：卡片 `expiry_hint`（MM/YY）、联系信息 `address_hint`（默认地址一行）、登录 `pw_weak` / `pw_reused`（布尔）。服务端解密后只算提示，密码、卡号、CVV 原值不外传；模型看到的 `for_model` 不含这些提示。`?q=` 搜索也覆盖两个提示字段。
 
+## 交班卡（2.36.0）
+
+- `GET /v1/shift-card?hours=12`（1–48）→ `{"hours","since","generated_at","totals":{"sessions","running","waiting_you","unanswered"},"bots":[{"bot_id","bot_name","sessions","messages","last_at","items":[{"session_id","title","state","conclusion","last_user"}]}]}`。
+- `state`：`running`（任务在跑）/ `waiting_you`（等你回答）/ `unanswered`（最后一条是你发的、还没回）/ `done`。`conclusion` 优先取「一句话：」结论。
+- 纯查库，不调模型；无痕对话不进卡。上锁的 Bot 由 App 端隐藏。
+
 ## 一句话版本（2.35.0）
 
 - 回复风格提示要求：超过 3 行的回复第一行写 `一句话：` + 结论，空一行再写细节。

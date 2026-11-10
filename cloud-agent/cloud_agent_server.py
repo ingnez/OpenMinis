@@ -91,6 +91,7 @@ import cloud_admin
 import cloud_vault
 import cloud_workers
 import cloud_runmodel
+import cloud_shift_card
 import cloud_plugins
 import cloud_oauth
 import cloud_mcp
@@ -632,7 +633,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.35.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.36.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -6245,6 +6246,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Media not found"})
                 return
             self._send(200, {"url": url})
+            return
+
+        if path == "/v1/shift-card":
+            # 交班卡：最近 N 小时（默认 12）各 Bot 的对话、在跑 / 等你 / 没回的事（纯查库，不调模型）
+            try:
+                hours = int((query_params.get("hours") or ["12"])[0])
+            except ValueError:
+                self._send(400, {"error": "hours 必须是整数"})
+                return
+            conn = get_db_connection()
+            try:
+                card = cloud_shift_card.build(conn, hours, lambda sid: session_bot(sid), skip_session=session_incognito)
+            finally:
+                conn.close()
+            self._send(200, card)
             return
 
         if path == "/v1/notifications":

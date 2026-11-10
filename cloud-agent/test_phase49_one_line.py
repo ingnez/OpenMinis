@@ -22,7 +22,6 @@ class OneLineTests(unittest.TestCase):
         a = re.search(r'AGENT_VERSION = "([\d.]+)"', srv).group(1)
         b = re.search(r'bundledAgentVersion = "([\d.]+)"', ios).group(1)
         self.assertEqual(a, b)
-        self.assertEqual(a, "2.35.0")
 
 
 if __name__ == "__main__":
