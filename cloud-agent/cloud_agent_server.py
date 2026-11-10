@@ -580,7 +580,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.18.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.19.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -4294,6 +4294,16 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         route["model"] = model = rs_perf["fast_model"]
         perf["auto_model"] = model
         log_event(task_id, "status", {"message": f"简单问题，用快速模型 {model} 回答"})
+    elif depth == 0 and rs_perf.get("auto_model") and eff.is_hard_request(initial_content):
+        # 难题：换强模型（设了的话）并把思考深度调到 high；强模型出错同样回到主模型
+        strong = rs_perf.get("strong_model") or ""
+        if strong and strong != model:
+            route["model"] = model = strong
+            perf["auto_model"] = model
+        if effort in (None, "", "low", "medium") and not _bot_fast(session_id) and not on_duty():
+            effort = "high"
+        perf["hard"] = True
+        log_event(task_id, "status", {"message": "难题：" + (f"换用强模型 {model}，" if perf.get("auto_model") else "") + f"思考深度 {effort or '默认'}"})
     if front_session and rs_perf.get("quick_ack", True) and rs_perf.get("fast_model") and rs_perf["fast_model"] != route["model"]:
         # 先回话：主模型 1.5 秒还没出字，就用快速模型先回一句简短确认
         threading.Thread(target=_quick_ack, args=(task_id, session_id, initial_content, rs_perf["fast_model"], chat_url, api_key, perf),
@@ -5993,7 +6003,7 @@ class Handler(BaseHTTPRequestHandler):
                              "median": {k: med(k) for k in ("ttft_ms", "first_text_ms", "total_ms", "queued_ms", "prompt_tokens", "completion_tokens", "cached_tokens", "tool_defs")},
                              "pool": dict(cloud_llm.POOL.stats),
                              "settings": {k: resource_settings().get(k) for k in ("stream", "lazy_tools", "parallel_tools", "prompt_cache", "context_trim_tokens",
-                                                                  "auto_title", "auto_model", "quick_ack", "fast_model", "vision_model", "failover", "duty_until")}})
+                                                                  "auto_title", "auto_model", "quick_ack", "fast_model", "vision_model", "strong_model", "failover", "duty_until")}})
             return
 
         if path == "/v1/usage":

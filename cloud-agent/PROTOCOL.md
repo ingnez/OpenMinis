@@ -513,3 +513,8 @@
 下班时（到点，或 `PUT /v1/resources {"duty_until": 0}` 提前结束）汇总成一条 `duty_digest` 通知：「下班了：值班期间错过了什么」。
 
 `GET /v1/duty/digest` → `{"digest": {"id", "started", "ended", "count", "text", "items": [{ts, kind, title, body, suppressed}]} | null, "on_duty": bool}`，只返回最近一份。
+
+## 难题自动换强模型（2.19.0）
+
+`resources.strong_model`（与当前任务同一服务商的模型 ID，空 = 不换模型）。`auto_model` 开着时，看起来要深想的问题（推导、证明、鉴别诊断、机制、架构设计、根因排查等措辞，或很长的提问）
+换用 `strong_model`，并把思考深度从 默认 / low / medium 调到 `high`（快速模式和值班中不调）。强模型出错时本任务回到主模型。事件流里有一条 `status`：「难题：换用强模型 …，思考深度 high」。

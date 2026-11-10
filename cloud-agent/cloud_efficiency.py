@@ -204,6 +204,23 @@ def relay_check(chat, model, needle_tokens=6000):
 _HEAVY = re.compile(r"(https?://|```|代码|编程|脚本|写一|写个|写篇|写份|分析|总结|搜索|搜一|查一下|查查|帮我[做办订买发打查找]|打开|网页|浏览器|文件|表格|计划|规划|方案|翻译这|论文|文献|报告|步骤|部署|安装|debug|code|script|search|browse|file|plan|analy|summar|翻译下面)", re.I)
 
 
+_HARD = re.compile(r"(证明|推导|为什么.{0,12}(会|不|是)|鉴别诊断|机制|病理生理|权衡|利弊|比较.{0,10}(优劣|区别)|一步步|逐步|仔细想|深入|复杂|难题|"
+                   r"算法|复杂度|架构|设计一|重构|排查|根因|疑难|多因素|统计学|meta|prove|derive|step by step|trade-?off|architecture|root cause|"
+                   r"think (hard|carefully)|why does)", re.I)
+
+
+def is_hard_request(content):
+    """看起来要深想的问题：明显的推理 / 论证 / 诊断 / 设计类措辞，或者是很长的单条问题。
+    宁可漏判（照常用主模型），不要把闲聊升级成慢模型。"""
+    if not isinstance(content, str):
+        return False
+    t = content.strip()
+    if len(t) < 12 or t.startswith("["):
+        return False
+    hits = len(_HARD.findall(t))
+    return hits >= 2 or (hits >= 1 and len(t) >= 24) or (len(t) >= 600 and ("?" in t or "？" in t))
+
+
 def is_simple_request(content):
     """短、单句、看不出要用工具的问题，交给快速模型；拿不准就不算简单（宁可慢一点也别答坏）。"""
     if not isinstance(content, str):
