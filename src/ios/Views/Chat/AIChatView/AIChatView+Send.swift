@@ -129,7 +129,8 @@ extension AIChatView {
         }
         speechManager.recognizedText = ""
         lastRecognizedLength = 0
-        vm.enqueuePrompt()
+        // 发送键长按菜单里选了「排队」：这条等这一轮做完再发（不在工具间隙插进去，也不打断输出）
+        vm.enqueuePrompt(deferUntilIdle: !LocalSteerAbort.enabled)
         // [inline-voice] Enqueue consumed the text — clear the voice transcript
         // too, otherwise it lingers in the panel (the "residual after swipe-send"
         // bug). performSend already does this; the enqueue path (taken while the

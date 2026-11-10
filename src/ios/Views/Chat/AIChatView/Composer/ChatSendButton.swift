@@ -72,6 +72,8 @@ struct ChatSendButton: View {
     /// Return Key (0 = newline, 1 = send) and the composer's Return handling,
     /// so the long-press menu and Settings are one setting.
     @AppStorage("returnKeyBehavior") private var returnKeyBehavior: Int = 0
+    /// 运行中发消息：插话（默认，下一个间隙就交给模型）还是排队（等这一轮做完）。和 Bot 对话同一个设置
+    @AppStorage(LocalSteerAbort.settingKey) private var steerInterrupt: Bool = true
 
     /// [T-send-menu-stale-primary-action] Holds the CURRENT tap action.
     /// `Menu(primaryAction:)` on iOS 16-18 keeps the closure from the Menu's
@@ -258,7 +260,7 @@ struct ChatSendButton: View {
             // taps; `.contextMenu` still opens from the button on long-press.
             Button(action: primaryAction) { label() }
                 .keyboardShortcut(.return, modifiers: .command)
-                .contextMenu { returnModePicker }
+                .contextMenu { returnModePicker; steerModePicker }
                 .accessibilityAction(named: Text("Return key options", comment: "VoiceOver action on the send button that opens the Return-key mode menu")) {
                     setReturnMode(returnKeyBehavior == 1 ? 0 : 1)
                 }
@@ -275,6 +277,16 @@ struct ChatSendButton: View {
         .pickerStyle(.inline)
     }
 
+    private var steerModePicker: some View {
+        Picker(selection: $steerInterrupt) {
+            SwiftUI.Label("插话：马上交给模型", systemImage: "arrow.turn.down.right").tag(true)
+            SwiftUI.Label("排队：等这一轮做完", systemImage: "list.number").tag(false)
+        } label: {
+            Text("运行中发消息")
+        }
+        .pickerStyle(.inline)
+    }
+
     /// iOS 26+: `Menu(primaryAction:)`, rendered as Liquid Glass that morphs
     /// out of the button itself.
     @available(iOS 26, *)
@@ -283,6 +295,7 @@ struct ChatSendButton: View {
         primaryActionBox.action = primaryAction
         return Menu {
             returnModePicker
+            steerModePicker
         } label: {
             label()
         } primaryAction: { [primaryActionBox] in
