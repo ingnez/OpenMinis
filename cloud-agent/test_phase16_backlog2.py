@@ -238,5 +238,34 @@ class PrivateBotNotifyTests(CloudServerTestCase):
         self.assertEqual(added[1], ("总管回复了", "明天见"))
 
 
+
+class SharedLibraryTests(CloudServerTestCase):
+    def test_01_share_link_to_other_bots(self):
+        import time
+        for b in ("liba", "libb"):
+            self.request("PUT", f"/v1/bots/{b}", {"name": b, "instructions": "x"})
+        sid = self.request("POST", "/v1/sessions", {"title": "资料", "persona_id": "liba"})[1]["session_id"]
+        conn = self.srv.get_db_connection()
+        try:
+            conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'assistant', ?, ?)",
+                         (sid, "指南见 https://example.org/guide 和 https://example.org/other", time.time()))
+            conn.commit()
+        finally:
+            conn.close()
+        items = self.request("GET", "/v1/bots/liba/library")[1]["items"]
+        guide = next(i for i in items if i.get("url") == "https://example.org/guide")
+        self.assertEqual(self.request("GET", "/v1/bots/libb/library")[1]["items"], [])
+        self.assertEqual(self.request("POST", f"/v1/bots/liba/library/{guide['id']}/share", {"shared": True})[0], 200)
+        self.assertEqual(self.request("POST", "/v1/bots/libb/library/nope/share", {})[0], 404)
+        b_items = self.request("GET", "/v1/bots/libb/library")[1]["items"]
+        self.assertEqual([i["url"] for i in b_items], ["https://example.org/guide"])
+        self.assertEqual(b_items[0]["shared_from"], "liba")
+        self.assertTrue(next(i for i in self.request("GET", "/v1/bots/liba/library")[1]["items"] if i["id"] == guide["id"])["shared"])
+        # 在 B 里移除只影响 B
+        self.assertEqual(self.request("DELETE", f"/v1/bots/libb/library/{guide['id']}")[0], 200)
+        self.assertEqual(self.request("GET", "/v1/bots/libb/library")[1]["items"], [])
+        self.assertTrue(any(i["id"] == guide["id"] for i in self.request("GET", "/v1/bots/liba/library")[1]["items"]))
+
+
 if __name__ == "__main__":
     unittest.main()

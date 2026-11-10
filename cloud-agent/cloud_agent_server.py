@@ -656,11 +656,52 @@ def _bot_muted(session_id=None, persona_id=None):
     pid = persona_id if persona_id is not None else (session_persona_id(session_id) if session_id else None)
     return bool(pid) and pid in muted_bots()
 
-def bot_library(bot_id, limit=300):
-    """Bot 对话里出现过的图片、链接与生成的页面（资料库）。"""
+def library_shared():
+    """共享给所有 Bot 的资料库条目：[{"id", "owner"}]。"""
+    v = _settings_get("library_shared") or []
+    return [x for x in v if isinstance(x, dict) and x.get("id") and x.get("owner")]
+
+
+def library_set_shared(bot_id, item_id, shared):
+    if not any(i["id"] == item_id for i in bot_library(bot_id, limit=100000, include_shared=False)):
+        return False
+    cur = [x for x in library_shared() if not (x["id"] == item_id and x["owner"] == bot_id)]
+    if shared:
+        cur.append({"id": item_id, "owner": bot_id})
+    _settings_put("library_shared", cur[-2000:])
+    return True
+
+
+def bot_library(bot_id, limit=300, include_shared=True):
+    """Bot 对话里出现过的图片、链接与生成的页面（资料库），加上其他 Bot 共享出来的条目（标 shared_from）。"""
+    shared = library_shared()
+    own = _bot_library_own(bot_id)
+    mine = {x["id"] for x in shared if x["owner"] == bot_id}
+    for i in own:
+        if i["id"] in mine:
+            i["shared"] = True
+    if include_shared:
+        have = {i["id"] for i in own}
+        hidden = set(_settings_get(f"library_hidden:{bot_id}") or [])
+        by_owner = {}
+        for x in shared:
+            if x["owner"] != bot_id and x["id"] not in have and x["id"] not in hidden:
+                by_owner.setdefault(x["owner"], set()).add(x["id"])
+        for owner, ids in by_owner.items():
+            if not get_persona(owner):
+                continue
+            for i in _bot_library_own(owner):
+                if i["id"] in ids:
+                    i["shared_from"] = owner
+                    own.append(i)
+        own.sort(key=lambda i: i.get("at") or 0, reverse=True)
+    return own[:limit]
+
+
+def _bot_library_own(bot_id):
     conn = get_db_connection()
     try:
-        sids = [r[0] for r in conn.execute("SELECT session_id FROM sessions WHERE persona_id = ?", (bot_id,)).fetchall()]
+        sids = [r[0] for r in conn.execute("SELECT session_id FROM sessions WHERE persona_id = ? AND COALESCE(incognito, 0) = 0", (bot_id,)).fetchall()]
         if not sids:
             return []
         marks = ",".join("?" * len(sids))
@@ -710,14 +751,14 @@ def bot_library(bot_id, limit=300):
     hidden = set(_settings_get(f"library_hidden:{bot_id}") or [])
     items = [i for i in items if i["id"] not in hidden]
     items.sort(key=lambda i: i.get("at") or 0, reverse=True)
-    return items[:limit]
+    return items
 
 def library_delete(bot_id, item_id):
     """从资料库删除一项：手机上传的附件直接删文件；对话里的图片、链接和页面只从资料库隐藏（对话内容不动）。"""
     item = next((i for i in bot_library(bot_id, limit=100000) if i["id"] == item_id), None)
     if not item:
         return False
-    att = item.get("attachment_url")
+    att = item.get("attachment_url") if not item.get("shared_from") else None   # 别的 Bot 共享来的：只在这里隐藏
     if att:
         m = re.match(r"^/v1/sessions/([A-Za-z0-9_-]{1,64})/attachments/(up_[A-Za-z0-9._-]{1,128})$", att)
         if m:
@@ -5103,6 +5144,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_json = self._read_json_body()
         if req_json is None:
+            return
+        m_share = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/library/([A-Za-z0-9_-]{1,64})/share$", path)
+        if m_share:
+            on = req_json.get("shared", True)
+            if not isinstance(on, bool):
+                self._send(400, {"error": "shared must be a boolean"})
+                return
+            ok = library_set_shared(m_share.group(1), m_share.group(2), on)
+            self._send(200 if ok else 404, {"shared": on} if ok else {"error": "资料库里没有这一项"})
             return
         m_restore = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/versions/(\d{1,12})/restore$", path)
         if m_restore:

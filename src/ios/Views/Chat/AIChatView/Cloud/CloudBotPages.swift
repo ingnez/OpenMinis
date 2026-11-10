@@ -674,8 +674,8 @@ struct CloudBotLibraryView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(kind == "link" ? Self.shortURL(item["url"] as? String ?? "") : item["title"] as? String ?? "")
                         .font(.body.weight(.semibold)).lineLimit(1).truncationMode(.tail)
-                    Text(kind == "link" ? (item["title"] as? String ?? "")
-                         : (kind == "media" ? "图片" : "页面") + (at > 0 ? " · " + Self.ago(at) : ""))
+                    Text((kind == "link" ? (item["title"] as? String ?? "")
+                         : (kind == "media" ? "图片" : "页面") + (at > 0 ? " · " + Self.ago(at) : "")) + sharedNote(item))
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
@@ -690,8 +690,35 @@ struct CloudBotLibraryView: View {
             } else if item["page_id"] != nil {
                 Button { open(item) } label: { Label("打开", systemImage: "doc.richtext") }
             }
+            if item["shared_from"] == nil {
+                let shared = item["shared"] as? Bool ?? false
+                Button { setShared(item, !shared) } label: {
+                    Label(shared ? "取消共享" : "共享给所有 Bot", systemImage: shared ? "person.2.slash" : "person.2")
+                }
+            }
             Button(role: .destructive) { pendingDelete = CloudLibraryPage(id: item["id"] as? String ?? "", title: item["title"] as? String ?? "") } label: {
-                Label(item["attachment_url"] != nil ? "删除文件" : "从资料库移除", systemImage: "trash")
+                Label(item["attachment_url"] != nil && item["shared_from"] == nil ? "删除文件" : "从资料库移除", systemImage: "trash")
+            }
+        }
+    }
+
+    private func sharedNote(_ item: [String: Any]) -> String {
+        if let from = item["shared_from"] as? String {
+            return " · 来自 " + (CloudBotHomeModel.shared.bot(from)?.name ?? from)
+        }
+        return (item["shared"] as? Bool ?? false) ? " · 已共享" : ""
+    }
+
+    /// 共享后其他 Bot 的资料库里也能看到这一项（它们各自移除不影响这里）
+    private func setShared(_ item: [String: Any], _ on: Bool) {
+        guard let id = item["id"] as? String else { return }
+        Task { @MainActor in
+            do {
+                _ = try await CloudBotService.connected().request(method: "POST", path: "/v1/bots/\(bot.id)/library/\(id)/share", body: ["shared": on])
+                CloudHaptics.success()
+                await load()
+            } catch {
+                errorText = error.localizedDescription
             }
         }
     }
@@ -706,7 +733,8 @@ struct CloudBotLibraryView: View {
                 if let path = item["attachment_url"] as? String {
                     data = try await CloudConnection.shared.downloadAttachment(path: path)
                 } else if let mid = item["message_id"] as? Int, let part = item["part"] as? Int {
-                    let resp = try await CloudBotService.connected().request(method: "GET", path: "/v1/bots/\(bot.id)/library/media/\(mid)/\(part)", body: nil)
+                    let owner = item["shared_from"] as? String ?? bot.id
+                    let resp = try await CloudBotService.connected().request(method: "GET", path: "/v1/bots/\(owner)/library/media/\(mid)/\(part)", body: nil)
                     if let url = resp["url"] as? String, let comma = url.firstIndex(of: ","), url.hasPrefix("data:") {
                         data = Data(base64Encoded: String(url[url.index(after: comma)...]))
                         name = "图片-\(mid)-\(part).jpg"
@@ -763,7 +791,7 @@ struct CloudBotLibraryView: View {
             guard let mid = item["message_id"] as? Int, let part = item["part"] as? Int else { return }
             let placeholder = CloudLibraryPreview(title: "图片")
             preview = placeholder
-            let botId = bot.id
+            let botId = item["shared_from"] as? String ?? bot.id
             Task {
                 let resp = try? await CloudBotService.connected().request(method: "GET", path: "/v1/bots/\(botId)/library/media/\(mid)/\(part)", body: nil)
                 if let url = resp?["url"] as? String, let comma = url.firstIndex(of: ","), url.hasPrefix("data:"),
