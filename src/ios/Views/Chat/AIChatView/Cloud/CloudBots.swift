@@ -34,6 +34,7 @@ struct CloudBot: Identifiable, Hashable {
     var notify: Bool
     var routinesEnabled: Int
     var reasoningEffort: String
+    var fastMode: Bool
 
     init(id: String, name: String, emoji: String, summary: String, instructions: String, isPrimary: Bool = false) {
         self.id = id
@@ -59,6 +60,7 @@ struct CloudBot: Identifiable, Hashable {
         self.notify = true
         self.routinesEnabled = 0
         self.reasoningEffort = ""
+        self.fastMode = false
     }
 
     init?(_ d: [String: Any]) {
@@ -87,6 +89,7 @@ struct CloudBot: Identifiable, Hashable {
         notify = d["notify"] as? Bool ?? true
         routinesEnabled = d["routines_enabled"] as? Int ?? 0
         reasoningEffort = d["reasoning_effort"] as? String ?? ""
+        fastMode = d["fast_mode"] as? Bool ?? false
     }
 
     /// 这个 Bot 自己固定了模型与凭据：对话不依赖手机当前选择的服务商
@@ -138,7 +141,7 @@ enum CloudBotService {
 
     static func save(_ bot: CloudBot) async throws {
         var body: [String: Any] = ["name": bot.name, "instructions": bot.instructions,
-                                   "description": bot.summary, "is_primary": bot.isPrimary]
+                                   "description": bot.summary, "is_primary": bot.isPrimary, "fast_mode": bot.fastMode]
         if bot.emoji.isEmpty {
             body["emoji"] = NSNull()
         } else {

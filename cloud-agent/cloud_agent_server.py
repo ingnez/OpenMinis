@@ -3954,6 +3954,19 @@ class Handler(BaseHTTPRequestHandler):
                     msgs.append(m)
                 c.execute("SELECT task_id, status, model, created_at FROM tasks WHERE session_id = ? ORDER BY created_at DESC", (sid,))
                 tasks = [{"task_id": tr[0], "status": tr[1], "model": tr[2], "created_at": tr[3]} for tr in c.fetchall()]
+                # 每个任务的耗时（首字、总时长、token），手机长按消息时显示
+                timing_rows = c.execute("SELECT e.task_id, e.payload FROM task_events e JOIN tasks t ON t.task_id = e.task_id "
+                                        "WHERE t.session_id = ? AND e.event_type = 'timings'", (sid,)).fetchall()
+                tmap = {}
+                for tid_, pl in timing_rows:
+                    try:
+                        p = json.loads(pl)
+                        tmap[tid_] = {k: p.get(k) for k in ("first_text_ms", "ttft_ms", "total_ms", "queued_ms", "llm_calls", "prompt_tokens", "completion_tokens", "streamed")}
+                    except ValueError:
+                        pass
+                for t_ in tasks:
+                    if t_["task_id"] in tmap:
+                        t_["timings"] = tmap[t_["task_id"]]
                 conn.close()
                 self._send(200, {"session_id": s[0], "local_session_id": s[1], "title": s[2], "instructions": s[3], "created_at": s[4], "messages": msgs, "tasks": tasks})
                 return

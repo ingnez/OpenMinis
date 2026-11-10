@@ -135,6 +135,12 @@ struct CloudResourceSettingsView: View {
                 Text("推荐值只填进下面的表单，点「保存」后生效。")
             }
 
+            Section {
+                NavigationLink { CloudPerfView() } label: { Label("性能", systemImage: "speedometer") }
+            } footer: {
+                Text("首字时间、任务耗时、token 用量，以及流式输出、按需工具等提速开关。")
+            }
+
             Section("当前使用") {
                 LabeledContent("运行中任务", value: "\(usage["running_tasks"] as? Int ?? 0)")
                 LabeledContent("排队中", value: "\(usage["queued_tasks"] as? Int ?? 0)")

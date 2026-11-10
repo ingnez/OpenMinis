@@ -1,0 +1,147 @@
+import SwiftUI
+
+/// 每条回复的耗时：服务器在会话详情的 tasks[].timings 里返回（首字、总时长、token）
+enum CloudLatency {
+    static func ms(_ v: Any?) -> Double? {
+        if let d = v as? Double { return d }
+        if let i = v as? Int { return Double(i) }
+        return nil
+    }
+
+    static func format(_ ms: Double) -> String {
+        ms >= 1000 ? String(format: "%.1f 秒", ms / 1000) : "\(Int(ms)) 毫秒"
+    }
+
+    /// 找到产生这条回复的任务（创建时间不晚于消息时间的最近一个任务）
+    static func timings(for message: [String: Any], tasks: [[String: Any]]) -> [String: Any]? {
+        guard let ts = ms(message["timestamp"]) else { return nil }
+        let candidates = tasks.filter { (ms($0["created_at"]) ?? .infinity) <= ts + 0.001 }
+        let best = candidates.max { (ms($0["created_at"]) ?? 0) < (ms($1["created_at"]) ?? 0) }
+        return best?["timings"] as? [String: Any]
+    }
+
+    static func line(for message: [String: Any], tasks: [[String: Any]]) -> String? {
+        guard let t = timings(for: message, tasks: tasks) else { return nil }
+        var parts: [String] = []
+        if let f = ms(t["first_text_ms"]) { parts.append("首字 \(format(f))") }
+        if let total = ms(t["total_ms"]) { parts.append("总 \(format(total))") }
+        let tokens = Int(ms(t["prompt_tokens"]) ?? 0) + Int(ms(t["completion_tokens"]) ?? 0)
+        if tokens > 0 { parts.append("\(tokens) tokens") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+/// 设置 > 云电脑资源设置 > 性能：最近任务的耗时、连接复用情况和提速开关
+struct CloudPerfView: View {
+    @State private var data: [String: Any] = [:]
+    @State private var error: String?
+    @State private var loading = false
+    @State private var stream = true
+    @State private var lazyTools = true
+    @State private var parallelTools = true
+    @State private var promptCache = true
+    @State private var trimTokens = 48000
+    @State private var loaded = false
+
+    private var recent: [[String: Any]] { data["recent"] as? [[String: Any]] ?? [] }
+    private var median: [String: Any] { data["median"] as? [String: Any] ?? [:] }
+    private var pool: [String: Any] { data["pool"] as? [String: Any] ?? [:] }
+
+    var body: some View {
+        List {
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            Section {
+                row("首字（中位数）", median["first_text_ms"])
+                row("模型首个 token", median["ttft_ms"])
+                row("整个任务", median["total_ms"])
+                row("排队", median["queued_ms"])
+                HStack {
+                    Text("每次请求输入 token")
+                    Spacer()
+                    Text(CloudLatency.ms(median["prompt_tokens"]).map { "\(Int($0))" } ?? "—").foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text("连接复用")
+                    Spacer()
+                    Text("新建 \(pool["new"] as? Int ?? 0) · 复用 \(pool["reused"] as? Int ?? 0)").foregroundStyle(.secondary)
+                }
+            } header: { Text("最近 \(recent.count) 个任务") } footer: {
+                Text("数据来自云端服务器内存，重启服务后清空。长按聊天里的回复也能看到那一条的耗时。")
+            }
+            Section("提速开关") {
+                Toggle("流式输出（边生成边显示）", isOn: $stream).onChange(of: stream) { v in save(["stream": v]) }
+                Toggle("按需发送工具定义", isOn: $lazyTools).onChange(of: lazyTools) { v in save(["lazy_tools": v]) }
+                Toggle("只读工具并行执行", isOn: $parallelTools).onChange(of: parallelTools) { v in save(["parallel_tools": v]) }
+                Toggle("Claude 提示缓存", isOn: $promptCache).onChange(of: promptCache) { v in save(["prompt_cache": v]) }
+                Stepper(value: $trimTokens, in: 0...200000, step: 8000) {
+                    Text(trimTokens == 0 ? "长对话自动精简：关闭" : "超过约 \(trimTokens / 1000)k token 时精简")
+                }
+                .onChange(of: trimTokens) { v in save(["context_trim_tokens": v == 0 || v >= 4000 ? v : 8000]) }
+            }
+            Section("最近任务") {
+                if recent.isEmpty { Text("还没有记录，发一条消息后再来看").foregroundStyle(.secondary) }
+                ForEach(Array(recent.prefix(30).enumerated()), id: \.offset) { _, r in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(r["model"] as? String ?? "") · \(r["status"] as? String ?? "")").font(.subheadline)
+                        Text(detail(r)).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .navigationTitle("性能")
+        .refreshable { await load() }
+        .task { await load() }
+    }
+
+    private func row(_ title: String, _ v: Any?) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(CloudLatency.ms(v).map { CloudLatency.format($0) } ?? "—").foregroundStyle(.secondary)
+        }
+    }
+
+    private func detail(_ r: [String: Any]) -> String {
+        var parts: [String] = []
+        if let f = CloudLatency.ms(r["first_text_ms"]) { parts.append("首字 \(CloudLatency.format(f))") }
+        if let t = CloudLatency.ms(r["total_ms"]) { parts.append("总 \(CloudLatency.format(t))") }
+        parts.append("调用 \(r["llm_calls"] as? Int ?? 0) 次")
+        parts.append("工具定义 \(r["tool_defs"] as? Int ?? 0) 个")
+        let tok = Int(CloudLatency.ms(r["prompt_tokens"]) ?? 0) + Int(CloudLatency.ms(r["completion_tokens"]) ?? 0)
+        if tok > 0 { parts.append("\(tok) tokens") }
+        if (r["streamed"] as? Bool) == true { parts.append("流式") }
+        return parts.joined(separator: " · ")
+    }
+
+    @MainActor
+    private func load() async {
+        loading = true
+        defer { loading = false }
+        do {
+            try await CloudConnection.shared.ensureConnected()
+            data = try await CloudConnection.shared.request(method: "GET", path: "/v1/perf")
+            let s = data["settings"] as? [String: Any] ?? [:]
+            loaded = false
+            stream = s["stream"] as? Bool ?? true
+            lazyTools = s["lazy_tools"] as? Bool ?? true
+            parallelTools = s["parallel_tools"] as? Bool ?? true
+            promptCache = s["prompt_cache"] as? Bool ?? true
+            trimTokens = s["context_trim_tokens"] as? Int ?? 48000
+            error = nil
+            DispatchQueue.main.async { loaded = true }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func save(_ patch: [String: Any]) {
+        guard loaded else { return }
+        Task { @MainActor in
+            do {
+                _ = try await CloudConnection.shared.request(method: "PUT", path: "/v1/resources", body: patch)
+            } catch {
+                self.error = "保存失败：\(error.localizedDescription)"
+            }
+        }
+    }
+}

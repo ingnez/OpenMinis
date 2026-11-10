@@ -118,6 +118,8 @@ class SpeedServerTests(CloudServerTestCase):
         self.assertTrue(timings[0]["streamed"])
         self.assertLess(timings[0]["first_text_ms"], timings[0]["total_ms"])
         self.assertEqual(timings[0]["completion_tokens"], 3)
+        detail = self.request("GET", f"/v1/sessions/{sid}")[1]
+        self.assertIn("first_text_ms", detail["tasks"][0]["timings"])
         perf = self.request("GET", "/v1/perf")[1]
         self.assertTrue(any(r["task_id"] == t["task_id"] for r in perf["recent"]))
         self.assertIn("first_text_ms", perf["median"])

@@ -30,7 +30,7 @@ public final class CloudConnection: ObservableObject {
     @Published public private(set) var desktopPort: Int = 18766
     /// 安装过程中实时拉回的服务器安装日志（末尾一段）
     @Published public private(set) var installLog: String = ""
-    public var desktopURL: URL? { URL(string: "http://127.0.0.1:\(desktopPort)/vnc.html?autoconnect=1&resize=remote") }
+    public var desktopURL: URL? { URL(string: "http://127.0.0.1:\(desktopPort)/vnc.html?autoconnect=1&reconnect=1&resize=scale") }
     @Published public var name: String { didSet { persist() } }
     @Published public var host: String { didSet { if oldValue != host { changed() } } }
     @Published public var sshPort: Int { didSet { if oldValue != sshPort { changed() } } }
@@ -415,7 +415,18 @@ public final class CloudConnection: ObservableObject {
     }
     public func request(method: String, path: String, body: [String: Any]? = nil) async throws -> [String: Any] {
         guard isConnected else { throw failure("云端连接已断开，请返回设置重新连接；VPS 上已接受的任务仍会继续") }
-        return try await requestRaw(method: method, path: path, body: body)
+        do {
+            return try await requestRaw(method: method, path: path, body: body)
+        } catch let error as URLError where Self.tunnelDropped(error) && canAutoConnect {
+            // SSH 隧道断了（切网络、后台被挂起）：自动重连一次再重试，用户不用回设置页
+            isConnected = false
+            try await ensureConnected()
+            return try await requestRaw(method: method, path: path, body: body)
+        }
+    }
+
+    private static func tunnelDropped(_ e: URLError) -> Bool {
+        [.cannotConnectToHost, .networkConnectionLost, .cannotFindHost].contains(e.code)
     }
     /// 下载会话工作区里的附件（资料库预览、分享）；只允许 /v1/sessions/<id>/attachments/<文件名>
     public func downloadAttachment(path: String) async throws -> Data {
@@ -434,10 +445,11 @@ public final class CloudConnection: ObservableObject {
         let components = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         let route = String(components[0])
         let queryAllowed = components.count == 1
-            || (route.hasPrefix("/v1/tasks/") && route.hasSuffix("/events") && String(components[1]).range(of: #"^after=[0-9]{1,18}(&wait=[0-9]{1,2})?$"#, options: .regularExpression) != nil)
+            || (route.hasPrefix("/v1/tasks/") && route.hasSuffix("/events") && String(components[1]).range(of: #"^after=[0-9]{1,18}(&wait=[0-9]{1,2})?(&live_after=-?[0-9]{1,18})?$"#, options: .regularExpression) != nil)
             || (route.range(of: #"^/v1/groups/grp_[a-f0-9]{10}/messages$"#, options: .regularExpression) != nil
                 && String(components[1]).range(of: #"^after=[0-9]{1,18}(&wait=[0-9]{1,2})?$"#, options: .regularExpression) != nil)
             || (route == "/v1/search" && String(components[1]).range(of: #"^q=[A-Za-z0-9%._~-]{1,900}$"#, options: .regularExpression) != nil)
+            || (route == "/v1/desktop/health" && String(components[1]).range(of: #"^bot_id=[a-z0-9_-]{1,32}$"#, options: .regularExpression) != nil)
             || (route == "/v1/usage" && String(components[1]).range(of: #"^days=[0-9]{1,2}$"#, options: .regularExpression) != nil)
             || (route == "/v1/delegations" && String(components[1]).range(of: #"^session_id=[A-Za-z0-9_-]{1,64}$"#, options: .regularExpression) != nil)
             || (route == "/v1/backup" && String(components[1]).range(of: #"^messages=[01]$"#, options: .regularExpression) != nil)

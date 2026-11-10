@@ -620,6 +620,12 @@ struct CloudSessionView: View {
     @StateObject private var dictation = CloudDictation()
     @State private var dictationBase = ""
     @State private var showModelPicker = false
+    /// 模型正在生成的文字（服务器流式推送，长轮询拿到）
+    @State private var liveText = ""
+    @State private var liveSeq = -1
+    @State private var eventCursor = 0
+    @State private var isStreaming = false
+    @State private var lastWarm = Date.distantPast
 
     private let timer = Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()
 
@@ -655,11 +661,25 @@ struct CloudSessionView: View {
                         ForEach(Array(messages.enumerated()), id: \.offset) { _, msg in
                             let role = msg["role"] as? String ?? "user"
                             let content = msg["content"] as? String ?? ""
-                            if let theme {
-                                CloudThemedBubble(role: role, content: content, accent: theme.accent)
-                            } else {
-                                CloudMessageBubble(role: role, content: content)
+                            Group {
+                                if let theme {
+                                    CloudThemedBubble(role: role, content: content, accent: theme.accent)
+                                } else {
+                                    CloudMessageBubble(role: role, content: content)
+                                }
                             }
+                            .contextMenu {
+                                Button { UIPasteboard.general.string = content } label: { Label("复制", systemImage: "doc.on.doc") }
+                                if role == "assistant", let line = CloudLatency.line(for: msg, tasks: tasks) {
+                                    Text(line)
+                                }
+                            }
+                        }
+                        if theme == nil && !liveText.isEmpty {
+                            CloudMessageBubble(role: "assistant", content: liveText)
+                        }
+                        if theme == nil && isSubmitting {
+                            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("正在发送，云端准备中…").font(.caption).foregroundStyle(.secondary) }
                         }
 
                         if let theme {
@@ -812,7 +832,11 @@ struct CloudSessionView: View {
         }
         .onAppear {
             loadSessionDetail()
+            warmUp()
             if CloudComputerHandoff.consume(sessionId) { sendFinished() }
+        }
+        .onChange(of: inputPrompt.isEmpty) { empty in
+            if !empty { warmUp() }
         }
         .onReceive(NotificationCenter.default.publisher(for: CloudComputerHandoff.finished)) { note in
             guard note.userInfo?["session_id"] as? String == sessionId else { return }
@@ -820,7 +844,7 @@ struct CloudSessionView: View {
             sendFinished()
         }
         .onReceive(timer) { _ in
-            if activeTaskStatus == "running" || activeTaskStatus == "waiting_user", let tid = activeTaskId, !isPolling {
+            if activeTaskStatus == "running" || activeTaskStatus == "waiting_user", let tid = activeTaskId, !isPolling, !isStreaming {
                 pollTaskStatus(taskId: tid)
             }
         }
@@ -836,6 +860,7 @@ struct CloudSessionView: View {
                     self.messages = res["messages"] as? [[String: Any]] ?? []
                     self.tasks = res["tasks"] as? [[String: Any]] ?? []
                     self.isLoading = false
+                    if !self.isStreaming { self.liveText = "" }
                     if let latestTask = self.tasks.first,
                        let tid = latestTask["task_id"] as? String,
                        let status = latestTask["status"] as? String {
@@ -898,6 +923,9 @@ struct CloudSessionView: View {
                 .padding(12)
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color.orange.opacity(0.1)))
             }
+        }
+        if !liveText.isEmpty {
+            CloudThemedBubble(role: "assistant", content: liveText, accent: theme.accent)
         }
         if activeTaskStatus == "running" || activeTaskStatus == "waiting_user" || isSubmitting {
             CloudBotWorkingRow(spec: theme.spec, events: taskEvents, status: activeTaskStatus)
@@ -1109,6 +1137,9 @@ struct CloudSessionView: View {
                         self.activeTaskId = tid
                         self.activeTaskStatus = "running"
                         self.taskEvents = []
+                        self.eventCursor = 0
+                        self.liveText = ""
+                        self.liveSeq = -1
                         self.messages.append(["role": "user", "content": content, "timestamp": Date().timeIntervalSince1970])
                     }
                     pollTaskStatus(taskId: tid)
@@ -1140,8 +1171,12 @@ struct CloudSessionView: View {
                     }
                     if let events = res["events"] as? [[String: Any]] {
                         self.taskEvents = events
+                        self.eventCursor = events.compactMap { $0["id"] as? Int }.max() ?? 0
                     }
                     self.errorMessage = nil
+                    if ["running", "waiting_user", "queued"].contains(self.activeTaskStatus) {
+                        self.streamEvents(taskId: taskId)
+                    }
                     if self.activeTaskStatus != "running" && self.activeTaskStatus != "waiting_user" {
                         if ["failed", "interrupted", "limit_reached"].contains(self.activeTaskStatus) {
                             self.errorMessage = "云端任务状态：\(self.activeTaskStatus)。请查看任务日志；修复原因后可发送新任务继续。"
@@ -1153,6 +1188,66 @@ struct CloudSessionView: View {
                 await MainActor.run {
                     self.isPolling = false
                     self.errorMessage = "轮询任务状态失败: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// 打开对话或开始输入时让服务器预热到模型服务商的连接（最多一分钟一次，失败无影响）
+    private func warmUp() {
+        guard Date().timeIntervalSince(lastWarm) > 60, connection.isConnected else { return }
+        lastWarm = Date()
+        let sid = sessionId
+        Task { _ = try? await connection.request(method: "POST", path: "/v1/sessions/\(sid)/warm", body: [:]) }
+    }
+
+    /// 长轮询任务事件：服务器有新事件或新生成的文字时立刻返回，边生成边显示；旧版服务器不支持 wait 时退化为每秒轮询
+    private func streamEvents(taskId: String) {
+        guard !isStreaming else { return }
+        isStreaming = true
+        Task {
+            var failures = 0
+            while true {
+                let (current, status, cursor, seq) = await MainActor.run { (self.activeTaskId, self.activeTaskStatus, self.eventCursor, self.liveSeq) }
+                guard current == taskId, ["running", "waiting_user", "queued"].contains(status) else { break }
+                let started = Date()
+                do {
+                    let res = try await connection.request(method: "GET", path: "/v1/tasks/\(taskId)/events?after=\(cursor)&wait=15&live_after=\(seq)")
+                    failures = 0
+                    let events = res["events"] as? [[String: Any]] ?? []
+                    let live = res["live"] as? [String: Any]
+                    await MainActor.run {
+                        guard self.activeTaskId == taskId else { return }
+                        let fresh = events.filter { ($0["id"] as? Int ?? 0) > self.eventCursor }
+                        if !fresh.isEmpty {
+                            self.taskEvents.append(contentsOf: fresh)
+                            // 模型开始调用工具：这一轮的文字已经结束
+                            if fresh.contains(where: { $0["type"] as? String == "tool_call" }) { self.liveText = "" }
+                        }
+                        if let c = res["last_cursor"] as? Int { self.eventCursor = max(self.eventCursor, c) }
+                        if let live, let t = live["text"] as? String, let s = live["seq"] as? Int {
+                            self.liveText = t
+                            self.liveSeq = s
+                        }
+                        if let s = res["status"] as? String { self.activeTaskStatus = s }
+                    }
+                    if events.isEmpty && live == nil && Date().timeIntervalSince(started) < 0.5 {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    }
+                } catch {
+                    failures += 1
+                    if failures >= 3 { break }
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
+            }
+            await MainActor.run {
+                self.isStreaming = false
+                guard self.activeTaskId == taskId else { return }
+                if !["running", "waiting_user", "queued"].contains(self.activeTaskStatus) {
+                    if ["failed", "interrupted", "limit_reached"].contains(self.activeTaskStatus) {
+                        self.errorMessage = "云端任务状态：\(self.activeTaskStatus)。请查看任务日志；修复原因后可发送新任务继续。"
+                    }
+                    self.loadSessionDetail()
                 }
             }
         }
