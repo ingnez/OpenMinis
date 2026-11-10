@@ -32,7 +32,14 @@ class BotError(ValueError):
     pass
 
 
+VERSIONS_KEEP = 20
+SNAPSHOT_KEYS = ("name", "instructions", "emoji", "description", "model", "credential", "skills", "plugins", "reasoning_effort", "fast_mode")
+
+
 def ensure_schema(conn):
+    conn.execute("CREATE TABLE IF NOT EXISTS bot_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, bot_id TEXT NOT NULL, "
+                 "snapshot TEXT NOT NULL, created_at REAL NOT NULL)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_versions ON bot_versions(bot_id, id)")
     cols = {r[1] for r in conn.execute("PRAGMA table_info(personas)").fetchall()}
     for name, decl in EXTRA_COLUMNS.items():
         if name not in cols:
@@ -153,6 +160,8 @@ def upsert(conn, bot_id, body, credential_exists=None):
     if fields.get("is_primary"):
         conn.execute("UPDATE personas SET is_primary = 0 WHERE persona_id != ?", (bot_id,))
     if existing:
+        if fields and _changes(existing, fields):
+            save_version(conn, existing, now)
         if fields:
             sets = ", ".join(f"{k} = ?" for k in fields)
             conn.execute(f"UPDATE personas SET {sets}, updated_at = ? WHERE persona_id = ?", (*fields.values(), now, bot_id))
@@ -163,6 +172,52 @@ def upsert(conn, bot_id, body, credential_exists=None):
                      (bot_id, now, now, *fields.values()))
     conn.commit()
     return get(conn, bot_id), existing is None
+
+
+def _snapshot(bot):
+    return {k: bot.get(k) for k in SNAPSHOT_KEYS}
+
+
+def _changes(existing, fields):
+    """只有设置真的变了才存版本（只改主 Bot 标记不算）。"""
+    cur = {"name": existing.get("name"), "instructions": existing.get("instructions"), "emoji": existing.get("emoji"),
+           "description": existing.get("description") or None, "model": existing.get("model"), "credential": existing.get("credential"),
+           "skills": None if existing.get("skills") is None else json.dumps(existing["skills"], ensure_ascii=False),
+           "plugins": json.dumps(existing.get("plugins") or [], ensure_ascii=False),
+           "reasoning_effort": existing.get("reasoning_effort"), "fast_mode": 1 if existing.get("fast_mode") else 0}
+    return any(k in cur and cur[k] != v for k, v in fields.items())
+
+
+def save_version(conn, bot, now=None):
+    c = conn.execute("INSERT INTO bot_versions (bot_id, snapshot, created_at) VALUES (?, ?, ?)",
+                     (bot["bot_id"], json.dumps(_snapshot(bot), ensure_ascii=False), now or time.time()))
+    conn.execute("DELETE FROM bot_versions WHERE bot_id = ? AND id NOT IN (SELECT id FROM bot_versions WHERE bot_id = ? ORDER BY id DESC LIMIT ?)",
+                 (bot["bot_id"], bot["bot_id"], VERSIONS_KEEP))
+    return c.lastrowid
+
+
+def versions(conn, bot_id):
+    rows = conn.execute("SELECT id, snapshot, created_at FROM bot_versions WHERE bot_id = ? ORDER BY id DESC", (bot_id,)).fetchall()
+    out = []
+    for vid, snap, at in rows:
+        d = json.loads(snap)
+        out.append({"id": vid, "created_at": at, "name": d.get("name"), "emoji": d.get("emoji"),
+                    "instructions_preview": " ".join(str(d.get("instructions") or "").split())[:120], "snapshot": d})
+    return out
+
+
+def restore_version(conn, bot_id, version_id, credential_exists=None):
+    """恢复到某个版本（当前设置会先存成一个新版本，所以恢复也能再撤回）。"""
+    row = conn.execute("SELECT snapshot FROM bot_versions WHERE id = ? AND bot_id = ?", (version_id, bot_id)).fetchone()
+    if not row:
+        raise BotError("没有这个版本")
+    snap = json.loads(row[0])
+    body = {k: v for k, v in snap.items() if k in SNAPSHOT_KEYS}
+    body["fast_mode"] = bool(body.get("fast_mode"))
+    if body.get("credential") and credential_exists and not credential_exists(body["credential"]):
+        # 当时用的凭据已删掉：恢复成跟随 App 的模型
+        body["credential"], body["model"] = None, None
+    return upsert(conn, bot_id, body, credential_exists)[0]
 
 
 def skill_allowed(bot, skill_name):

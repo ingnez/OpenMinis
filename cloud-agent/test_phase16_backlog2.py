@@ -172,5 +172,24 @@ class AuditTests(CloudServerTestCase):
             conn.close()
 
 
+
+class BotVersionTests(CloudServerTestCase):
+    def test_01_edit_creates_version_and_restore(self):
+        self.assertIn(self.request("PUT", "/v1/bots/verbot", {"name": "版本", "instructions": "v1 指令"})[0], (200, 201))
+        self.request("PUT", "/v1/bots/verbot", {"instructions": "v1 指令"})   # 没变：不存版本
+        self.assertEqual(self.request("GET", "/v1/bots/verbot/versions")[1]["versions"], [])
+        self.request("PUT", "/v1/bots/verbot", {"instructions": "v2 指令", "fast_mode": True})
+        versions = self.request("GET", "/v1/bots/verbot/versions")[1]["versions"]
+        self.assertEqual(len(versions), 1)
+        self.assertEqual(versions[0]["snapshot"]["instructions"], "v1 指令")
+        code, bot = self.request("POST", f"/v1/bots/verbot/versions/{versions[0]['id']}/restore", {})
+        self.assertEqual(code, 200)
+        self.assertEqual(bot["instructions"], "v1 指令")
+        self.assertFalse(bot["fast_mode"])
+        # 恢复前的设置也存成了版本
+        self.assertEqual(self.request("GET", "/v1/bots/verbot/versions")[1]["versions"][0]["snapshot"]["instructions"], "v2 指令")
+        self.assertEqual(self.request("POST", "/v1/bots/verbot/versions/999999/restore", {})[0], 400)
+
+
 if __name__ == "__main__":
     unittest.main()

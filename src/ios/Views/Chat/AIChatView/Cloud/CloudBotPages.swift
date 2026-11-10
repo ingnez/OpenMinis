@@ -367,6 +367,7 @@ struct CloudBotDetailView: View {
                 }
                 NavigationLink { CloudDelegationsView(sessionId: bot.latestSessionId) } label: { Text("委托记录") }
                 NavigationLink { CloudAuditView(botId: bot.id) } label: { Text("操作记录") }
+                NavigationLink { CloudBotVersionsView(botId: bot.id, onRestored: { await refresh() }) } label: { Text("设置历史版本") }
                 NavigationLink {
                     CloudComputerView(botId: bot.id, sessionId: bot.latestSessionId, reason: nil)
                 } label: {

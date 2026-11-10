@@ -4286,6 +4286,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"delegations": items})
             return
 
+        m_ver = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/versions$", path)
+        if m_ver:
+            conn = get_db_connection()
+            try:
+                if not cloud_bots.get(conn, m_ver.group(1)):
+                    self._send(404, {"error": "Bot not found"})
+                    return
+                self._send(200, {"versions": cloud_bots.versions(conn, m_ver.group(1))})
+            finally:
+                conn.close()
+            return
+
         if path.startswith("/v1/bots/") and path.endswith("/export"):
             bid = path[len("/v1/bots/"):-len("/export")]
             if not get_persona(bid):
@@ -5041,6 +5053,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_json = self._read_json_body()
         if req_json is None:
+            return
+        m_restore = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/versions/(\d{1,12})/restore$", path)
+        if m_restore:
+            conn = get_db_connection()
+            try:
+                bot = cloud_bots.restore_version(conn, m_restore.group(1), int(m_restore.group(2)), credential_exists)
+            except cloud_bots.BotError as e:
+                self._send(400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            self._send(200, bot)
             return
         m_undo = re.match(r"^/v1/audit/(\d{1,12})/undo$", path)
         if m_undo:
