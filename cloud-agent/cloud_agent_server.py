@@ -1105,9 +1105,9 @@ def live_get(task_id):
 def _file_tail(f, size=1500):
     try:
         end = os.fstat(f.fileno()).st_size
-        with open(f"/proc/self/fd/{f.fileno()}", "rb") as g:   # 另开一个句柄读，不动子进程写入位置
-            g.seek(max(0, end - size))
-            return g.read().decode("utf-8", "replace")
+        start = max(0, end - size)
+        # pread 按位置读，不动文件指针；/proc/self/fd 只有 Linux 有，macOS 上实时输出会一直是空的
+        return os.pread(f.fileno(), end - start, start).decode("utf-8", "replace")
     except OSError:
         return ""
 
