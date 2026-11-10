@@ -608,6 +608,12 @@ struct CloudSessionView: View {
     @State private var isLoading = false
     @State private var isSubmitting = false
     @State private var watchedTasks: Set<String> = []
+    /// 与本地模式同一个消息模型：服务器历史转换后的回合、正在进行任务的那条助手消息
+    @State private var turns: [CloudHistoryAdapter.Turn] = []
+    @State private var liveMessage = ChatMessage(role: .assistant, content: "")
+    /// 连续几次取不到进度时的一行温和提示（不是红色横幅），恢复后自动清除
+    @State private var streamNotice: String?
+    @State private var sendStartedAt: Date?
     @State private var isPolling = false
     @State private var loadedTaskId: String? = nil
     @State private var errorMessage: String? = nil
@@ -673,25 +679,23 @@ struct CloudSessionView: View {
                         let shownItems = CloudTaskFailure.display(messages)
                         if let theme {
                             Color.clear.frame(height: 1).id("chat-top")
-                            ForEach(Array(shownItems.enumerated()), id: \.offset) { idx, item in
-                                let msg = item.message
-                                let role = msg["role"] as? String ?? "user"
-                                let content = msg["content"] as? String ?? ""
-                                if role == "user" {
-                                    CloudProseUser(content: content, accent: theme.accent)
+                            ForEach(Array(turns.enumerated()), id: \.offset) { idx, turn in
+                                let msg = turn.message
+                                if msg.role == .user {
+                                    CloudProseUser(content: msg.content, accent: theme.accent)
                                         .contextMenu {
-                                            Button { UIPasteboard.general.string = content } label: { Label("复制", systemImage: "doc.on.doc") }
+                                            Button { UIPasteboard.general.string = CloudMessageText.display(msg.content).text } label: { Label("复制", systemImage: "doc.on.doc") }
                                         }
                                 } else {
-                                    let prevAssistant = idx > 0 && (shownItems[idx - 1].message["role"] as? String) == "assistant"
-                                    CloudProseAssistant(spec: theme.spec, name: theme.name, content: content, accent: theme.accent,
-                                                        steps: item.steps, showHeader: !prevAssistant)
+                                    let prevAssistant = idx > 0 && turns[idx - 1].message.role == .assistant
+                                    CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
+                                                           showHeader: !prevAssistant)
                                     HStack(spacing: 12) {
-                                        Button { UIPasteboard.general.string = content; CloudHaptics.success() } label: {
+                                        Button { UIPasteboard.general.string = msg.content; CloudHaptics.success() } label: {
                                             Image(systemName: "doc.on.doc").font(.caption2)
                                         }
                                         .accessibilityLabel("复制回复")
-                                        if let line = CloudLatency.line(for: msg, tasks: tasks) {
+                                        if let line = CloudLatency.line(for: turn.raw, tasks: tasks) {
                                             Text(line).font(.caption2)
                                         }
                                     }
@@ -936,6 +940,7 @@ struct CloudSessionView: View {
                 let res = try await quietly("/v1/sessions/\(sessionId)")
                 await MainActor.run {
                     self.messages = res["messages"] as? [[String: Any]] ?? []
+                    self.turns = CloudHistoryAdapter.turns(from: self.messages)
                     self.tasks = res["tasks"] as? [[String: Any]] ?? []
                     self.isLoading = false
                     if !self.isStreaming { self.liveText = "" }
@@ -1004,24 +1009,24 @@ struct CloudSessionView: View {
             }
         }
         let running = activeTaskStatus == "running" || activeTaskStatus == "waiting_user" || isSubmitting
-        if running && (!taskEvents.isEmpty || !liveText.isEmpty) {
+        if running && (!liveMessage.blocks.isEmpty || !liveText.isEmpty) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     CloudBotAvatarView(spec: theme.spec, size: 22)
                     Text(theme.name).font(.subheadline.bold())
                 }
-                CloudLiveNarrative(events: taskEvents)
-                if !liveText.isEmpty {
-                    SelectableMarkdownView(markdown: CloudMessageText.display(liveText).text)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                // 与本地模式同一条管线：事件 → liveMessage 的消息块，正在生成的文字接在后面
+                CloudAssistantTurnView(message: liveMessage, spec: theme.spec, name: theme.name, accent: theme.accent,
+                                       showHeader: false, liveText: liveText)
             }
         } else if !liveText.isEmpty {
             CloudProseAssistant(spec: theme.spec, name: theme.name, content: liveText, accent: theme.accent)
         }
         if running {
             CloudBotWorkingRow(spec: theme.spec, events: taskEvents, status: activeTaskStatus)
+        }
+        if let streamNotice {
+            Label(streamNotice, systemImage: "arrow.triangle.2.circlepath").font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -1271,6 +1276,7 @@ struct CloudSessionView: View {
     private func submit(content: String, body: [String: Any]) {
         isSubmitting = true
         errorMessage = nil
+        sendStartedAt = Date()   // 性能页「首字」实测起点，与本地模式同口径
 
         Task {
             do {
@@ -1283,11 +1289,14 @@ struct CloudSessionView: View {
                         self.activeTaskId = tid
                         self.activeTaskStatus = "running"
                         self.watchedTasks.insert(tid)
+                        self.liveMessage = ChatMessage(role: .assistant, content: "")
                         self.taskEvents = []
                         self.eventCursor = 0
                         self.liveText = ""
                         self.liveSeq = -1
-                        self.messages.append(["role": "user", "content": content, "timestamp": Date().timeIntervalSince1970])
+                        let row: [String: Any] = ["role": "user", "content": content, "timestamp": Date().timeIntervalSince1970]
+                        self.messages.append(row)
+                        self.turns.append(CloudHistoryAdapter.Turn(message: ChatMessage(role: .user, content: content), raw: row))
                     }
                     pollTaskStatus(taskId: tid)
                 } else {
@@ -1319,6 +1328,11 @@ struct CloudSessionView: View {
                     if let events = res["events"] as? [[String: Any]] {
                         self.taskEvents = events
                         self.eventCursor = events.compactMap { $0["id"] as? Int }.max() ?? 0
+                        let rebuilt = ChatMessage(role: .assistant, content: "")
+                        for ev in events {
+                            CloudEventApplier.apply(rebuilt, type: ev["type"] as? String ?? "", payload: ev["payload"] as? [String: Any] ?? [:])
+                        }
+                        self.liveMessage = rebuilt
                     }
                     self.errorMessage = nil
                     if ["running", "waiting_user", "queued"].contains(self.activeTaskStatus) {
@@ -1353,57 +1367,44 @@ struct CloudSessionView: View {
     }
 
     /// 长轮询任务事件：服务器有新事件或新生成的文字时立刻返回，边生成边显示；旧版服务器不支持 wait 时退化为每秒轮询
+    /// 与本地模式共用 CloudTaskPump：长轮询 + 正在生成的文字；出错静默退避重试，不退出、不拆隧道
     private func streamEvents(taskId: String) {
         guard !isStreaming else { return }
         isStreaming = true
-        Task {
-            var failures = 0
-            while true {
-                let (current, status, cursor, seq) = await MainActor.run { (self.activeTaskId, self.activeTaskStatus, self.eventCursor, self.liveSeq) }
-                guard current == taskId, ["running", "waiting_user", "queued"].contains(status) else { break }
-                let started = Date()
-                do {
-                    let res = try await connection.request(method: "GET", path: "/v1/tasks/\(taskId)/events?after=\(cursor)&wait=15&live_after=\(seq)")
-                    failures = 0
-                    let events = res["events"] as? [[String: Any]] ?? []
-                    let live = res["live"] as? [String: Any]
-                    await MainActor.run {
-                        guard self.activeTaskId == taskId else { return }
-                        let fresh = events.filter { ($0["id"] as? Int ?? 0) > self.eventCursor }
-                        if !fresh.isEmpty {
-                            self.taskEvents.append(contentsOf: fresh)
-                            // 模型开始调用工具：这一轮的文字已经结束
-                            if fresh.contains(where: { $0["type"] as? String == "tool_call" }) { self.liveText = "" }
+        let started = sendStartedAt
+        sendStartedAt = nil
+        Task { @MainActor in
+            let final = await CloudTaskPump.run(
+                taskId: taskId,
+                after: eventCursor,
+                options: .init(mode: "bot", wait: 15, live: true, startedAt: started),
+                liveSeq: { self.liveSeq },
+                shouldStop: { self.activeTaskId != taskId },
+                onBatch: { batch in
+                    guard self.activeTaskId == taskId else { return }
+                    if !batch.events.isEmpty {
+                        self.taskEvents.append(contentsOf: batch.events)
+                        for ev in batch.events {
+                            CloudEventApplier.apply(self.liveMessage, type: ev["type"] as? String ?? "", payload: ev["payload"] as? [String: Any] ?? [:])
                         }
-                        if let c = res["last_cursor"] as? Int { self.eventCursor = max(self.eventCursor, c) }
-                        if let live, let t = live["text"] as? String, let s = live["seq"] as? Int {
-                            self.liveText = t
-                            self.liveSeq = s
-                        }
-                        if let s = res["status"] as? String { self.activeTaskStatus = s }
+                        // 一段话写进了事件或模型开始调用工具：正在生成的那段文字已经结束
+                        if batch.events.contains(where: { ["tool_call", "thought"].contains($0["type"] as? String ?? "") }) { self.liveText = "" }
+                        self.eventCursor = max(self.eventCursor, batch.events.compactMap { ($0["id"] as? Int) ?? ($0["monotonic_id"] as? Int) }.max() ?? 0)
                     }
-                    if events.isEmpty && live == nil && Date().timeIntervalSince(started) < 0.5 {
-                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    if let live = batch.live, let t = live["text"] as? String, let s = live["seq"] as? Int {
+                        self.liveText = t
+                        self.liveSeq = s
                     }
-                } catch {
-                    failures += 1
-                    if failures >= 3 { break }
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                }
+                    if let s = batch.rawStatus { self.activeTaskStatus = s }
+                },
+                onTrouble: { text in self.streamNotice = text })
+            self.isStreaming = false
+            self.streamNotice = nil
+            guard self.activeTaskId == taskId, let final else { return }
+            if self.watchedTasks.contains(taskId), [.failed, .interrupted, .limitReached].contains(final) {
+                self.errorMessage = CloudTaskFailure.text(status: final.rawValue, events: self.taskEvents)
             }
-            await MainActor.run {
-                self.isStreaming = false
-                guard self.activeTaskId == taskId else { return }
-                if !["running", "waiting_user", "queued"].contains(self.activeTaskStatus) {
-                    if self.watchedTasks.contains(taskId), ["failed", "interrupted", "limit_reached"].contains(self.activeTaskStatus) {
-                        self.errorMessage = CloudTaskFailure.text(status: self.activeTaskStatus, events: self.taskEvents)
-                    }
-                    self.loadSessionDetail()
-                } else {
-                    // 长轮询因网络中断退出但任务还在跑：稍后静默接上
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.pollTaskStatus(taskId: taskId) }
-                }
-            }
+            self.loadSessionDetail()
         }
     }
 

@@ -41,13 +41,20 @@ enum CloudDesktopCheck {
     static func run(botId: String?, autoRepair: Bool = true) async -> CloudDesktopCheckResult {
         let conn = CloudConnection.shared
         do {
-            try await conn.ensureConnected()
+            try await CloudQuiet.retry { try await conn.ensureConnected() }
         } catch {
             return .problem(.init(kind: .sshFailed, message: error.localizedDescription))
         }
         var health: [String: Any]?
         let query = botId.map { "?bot_id=\($0)" } ?? ""
-        health = try? await conn.request(method: "GET", path: "/v1/desktop/health" + query)
+        // 一次超时不能当成「服务器太旧」：静默重试；只有服务器明确回 404 才走旧版兼容
+        do {
+            health = try await CloudQuiet.retry { try await conn.request(method: "GET", path: "/v1/desktop/health" + query) }
+        } catch let e as URLError where CloudConnection.tunnelDropped(e) {
+            return .problem(.init(kind: .tunnelDown, message: "到 VPS 的隧道暂时不通，已在自动重连"))
+        } catch {
+            health = nil
+        }
         guard var h = health else {
             return await legacy(botId: botId)
         }

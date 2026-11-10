@@ -21,6 +21,7 @@ extension AIChatViewModel {
     /// Strictly forbids local fallback to avoid duplicate execution.
     @MainActor
     func runCloudAgentLoop(targetAssistantMessage: ChatMessage) async throws {
+        let sentAt = Date()   // 性能页「首字」实测从这里起算，与多 Bot 模式同口径（点发送 → 第一段文字）
         guard let sid = sessionId else {
             throw NSError(domain: "CloudChatBridge", code: 1, userInfo: [NSLocalizedDescriptionKey: "缺少本地 session_id"])
         }
@@ -147,6 +148,7 @@ extension AIChatViewModel {
                     localSessionId: sid,
                     remoteTaskId: taskId,
                     targetMessage: targetAssistantMessage,
+                    startedAt: sentAt,
                     isRetired: { [weak self] in
                         self?.isRetiredByReset ?? true
                     },

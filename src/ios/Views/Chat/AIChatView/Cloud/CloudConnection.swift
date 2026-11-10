@@ -143,7 +143,10 @@ public final class CloudConnection: ObservableObject {
     /// 强制拆掉旧隧道重新建立；并发调用共享同一次
     public func reconnect() async throws {
         isConnected = false
+        let t0 = Date()
         try await connect()
+        // 性能页实测：拆掉旧隧道到新隧道可用的耗时（两种模式共用同一条隧道）
+        CloudClientMetrics.record(mode: "link", kind: "reconnect", ms: Date().timeIntervalSince(t0) * 1000)
     }
     private func failure(_ text: String) -> NSError {
         NSError(domain: "OpenMinisCloud", code: 1, userInfo: [NSLocalizedDescriptionKey: text])

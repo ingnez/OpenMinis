@@ -42,6 +42,7 @@ struct CloudPerfView: View {
     @State private var promptCache = true
     @State private var trimTokens = 48000
     @State private var loaded = false
+    @State private var clientTick = 0
 
     private var recent: [[String: Any]] { data["recent"] as? [[String: Any]] ?? [] }
     private var median: [String: Any] { data["median"] as? [String: Any] ?? [:] }
@@ -68,6 +69,16 @@ struct CloudPerfView: View {
             } header: { Text("最近 \(recent.count) 个任务") } footer: {
                 Text("数据来自云端服务器内存，重启服务后清空。长按聊天里的回复也能看到那一条的耗时。")
             }
+            Section {
+                clientRow("本地云电脑 · 首字", mode: "local", kind: "first_text")
+                clientRow("多 Bot · 首字", mode: "bot", kind: "first_text")
+                clientRow("本地云电脑 · 整个任务", mode: "local", kind: "total")
+                clientRow("多 Bot · 整个任务", mode: "bot", kind: "total")
+                clientRow("隧道重连耗时", mode: "link", kind: "reconnect")
+                Button("清空本机实测", role: .destructive) { CloudClientMetrics.clear(); clientTick += 1 }
+            } header: { Text("本机实测（中位数 · 样本数）") } footer: {
+                Text("在这台手机上实际测得：从点发送到第一段文字出现、到任务结束，以及隧道断开后重建的耗时。两种模式用同一条事件管线，口径相同。")
+            }
             Section("提速开关") {
                 Toggle("流式输出（边生成边显示）", isOn: $stream).onChange(of: stream) { v in save(["stream": v]) }
                 Toggle("按需发送工具定义", isOn: $lazyTools).onChange(of: lazyTools) { v in save(["lazy_tools": v]) }
@@ -89,8 +100,17 @@ struct CloudPerfView: View {
             }
         }
         .navigationTitle("性能")
-        .refreshable { await load() }
+        .refreshable { clientTick += 1; await load() }
         .task { await load() }
+    }
+
+    private func clientRow(_ title: String, mode: String, kind: String) -> some View {
+        let m = clientTick >= 0 ? CloudClientMetrics.median(mode: mode, kind: kind) : nil
+        return HStack {
+            Text(title)
+            Spacer()
+            Text(m.map { "\(CloudLatency.format($0.ms)) · \($0.count) 次" } ?? "—").foregroundStyle(.secondary)
+        }
     }
 
     private func row(_ title: String, _ v: Any?) -> some View {

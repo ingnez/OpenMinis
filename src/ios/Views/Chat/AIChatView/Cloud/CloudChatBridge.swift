@@ -359,6 +359,7 @@ extension CloudChatBridge {
         localSessionId: String,
         remoteTaskId: String,
         targetMessage: ChatMessage,
+        startedAt: Date? = nil,
         isRetired: @escaping () -> Bool,
         onUpdate: @escaping @MainActor () -> Void,
         onCompletion: @escaping @MainActor (CloudTaskStatus) async -> Void
@@ -370,165 +371,60 @@ extension CloudChatBridge {
 
         let pollTask = Task { @MainActor [weak self] in
             guard let self = self else { return }
-            var lastCursor: Int = 0
-            var completed = false
-            var finalStatus: CloudTaskStatus = .unknown
-            var hasVisibleEvents = false
-            var pendingApprovals: [String: [String: Any]] = [:]
-            var approvalOrder: [String] = []
-
-            while !Task.isCancelled && !isRetired() && !completed {
-                do {
-                    guard self.hostIdentityScope() + "_" + localSessionId == scopedKey else { break }
-                    if !CloudConnection.shared.isConnected {
-                        try await CloudConnection.shared.connect()
-                    }
-                    let path = "/v1/tasks/\(remoteTaskId)/events?after=\(lastCursor)"
-                    let resp = try await CloudConnection.shared.request(method: "GET", path: path, body: nil)
-                    guard !Task.isCancelled && !isRetired() else { break }
+            // 与多 Bot 对话共用同一个事件循环（CloudTaskPump）和事件→消息块转换（CloudEventApplier）
+            final class Replay {
+                var hasVisibleEvents = false
+                var pendingApprovals: [String: [String: Any]] = [:]
+                var approvalOrder: [String] = []
+            }
+            let state = Replay()
+            let final = await CloudTaskPump.run(
+                taskId: remoteTaskId,
+                options: .init(mode: "local", startedAt: startedAt),
+                shouldStop: { [weak self] in
+                    guard let self else { return true }
+                    return isRetired() || self.hostIdentityScope() + "_" + localSessionId != scopedKey
+                },
+                onBatch: { [weak self] batch in
+                    guard let self else { return }
                     targetMessage.error = nil
-                    if let statusStr = resp["status"] as? String, let status = CloudTaskStatus(rawValue: statusStr) {
-                        finalStatus = status
-                        if status.isTerminal {
-                            completed = true
+                    for ev in batch.events {
+                        guard let etype = ev["type"] as? String else { continue }
+                        let payload = ev["payload"] as? [String: Any] ?? [:]
+                        if !state.hasVisibleEvents && CloudEventApplier.visibleTypes.contains(etype) {
+                            targetMessage.blocks.removeAll()
+                            state.hasVisibleEvents = true
                         }
+                        if etype == "approval_required", let aid = payload["approval_id"] as? String {
+                            if state.pendingApprovals[aid] == nil { state.approvalOrder.append(aid) }
+                            state.pendingApprovals[aid] = payload
+                        } else if etype == "approval_resolved", let aid = payload["approval_id"] as? String {
+                            state.pendingApprovals.removeValue(forKey: aid)
+                            state.approvalOrder.removeAll { $0 == aid }
+                            self.approvalHandler?(.resolved(approvalId: aid, decision: payload["decision"] as? String ?? "denied"),
+                                                  remoteTaskId, localSessionId, targetMessage, onUpdate)
+                        }
+                        CloudEventApplier.apply(targetMessage, type: etype, payload: payload)
                     }
-
-                    if let events = resp["events"] as? [[String: Any]] {
-                        for ev in events {
-                            guard let eventID = (ev["monotonic_id"] as? Int) ?? (ev["id"] as? Int), eventID > lastCursor else { continue }
-                            lastCursor = eventID
-                            guard let etype = ev["type"] as? String else { continue }
-                            let payload = ev["payload"] as? [String: Any] ?? [:]
-                            if !hasVisibleEvents && ["thought", "text", "content", "tool_call", "tool_result", "final", "error", "approval_required"].contains(etype) {
-                                targetMessage.blocks.removeAll()
-                                hasVisibleEvents = true
-                            }
-                            if etype == "approval_required", let aid = payload["approval_id"] as? String {
-                                if pendingApprovals[aid] == nil { approvalOrder.append(aid) }
-                                pendingApprovals[aid] = payload
-                            } else if etype == "approval_resolved", let aid = payload["approval_id"] as? String {
-                                pendingApprovals.removeValue(forKey: aid)
-                                approvalOrder.removeAll { $0 == aid }
-                                self.approvalHandler?(.resolved(approvalId: aid, decision: payload["decision"] as? String ?? "denied"),
-                                                      remoteTaskId, localSessionId, targetMessage, onUpdate)
-                            }
-                            self.applyEventToMessage(targetMessage, type: etype, payload: payload)
-                        }
-                        if !events.isEmpty {
-                            onUpdate()
-                        }
-                    }
+                    if !batch.events.isEmpty { onUpdate() }
                     // 只为整批重放后仍未结束的审批挂卡，避免把已处理的旧审批再弹一次
-                    if finalStatus == .waitingUser {
-                        for aid in approvalOrder {
-                            if let payload = pendingApprovals[aid] {
+                    if batch.status == .waitingUser {
+                        for aid in state.approvalOrder {
+                            if let payload = state.pendingApprovals[aid] {
                                 self.approvalHandler?(.pending(payload), remoteTaskId, localSessionId, targetMessage, onUpdate)
                             }
                         }
                     }
-                } catch {
-                    guard !Task.isCancelled && !isRetired() else { break }
-                    targetMessage.error = "云端任务继续执行，正在恢复连接：\(error.localizedDescription)"
+                },
+                onTrouble: { text in
+                    // 持续失败才提示，恢复后自动清除；不再断开共用的隧道
+                    targetMessage.error = text
                     onUpdate()
-                    CloudConnection.shared.disconnect()
-                    self.logger.warning("Polling error for remote task \(remoteTaskId): \(error.localizedDescription)")
-                }
-
-                if completed {
-                    break
-                }
-
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-
-            if completed {
-                await onCompletion(finalStatus)
-            } else {
-                // 结束本地等待不等于取消远端任务；唤醒原调用方释放continuation。
-                await onCompletion(.unknown)
-            }
+                })
+            // 结束本地等待不等于取消远端任务；未到终态时以 unknown 唤醒原调用方释放 continuation
+            await onCompletion(final ?? .unknown)
         }
 
         activePollTasks[scopedKey] = pollTask
-    }
-
-    private func applyEventToMessage(_ message: ChatMessage, type: String, payload: [String: Any]) {
-        switch type {
-        case "thought", "text", "content":
-            if let content = payload["content"] as? String, !content.isEmpty {
-                if let last = message.blocks.last, case .text = last.kind {
-                    last.content += content
-                } else {
-                    let block = AssistantBlock(kind: .text, content: content)
-                    message.blocks.append(block)
-                }
-            }
-        case "tool_call":
-            let callId = payload["id"] as? String ?? UUID().uuidString
-            let toolName = payload["tool"] as? String ?? "tool"
-            let args = payload["arguments"] as? [String: Any] ?? [:]
-            let kind: AssistantBlockKind
-            switch toolName {
-            case "shell_execute":
-                let cmd = args["command"] as? String ?? ""
-                kind = .shellTool(command: cmd)
-            case "file_read":
-                let path = args["path"] as? String ?? ""
-                kind = .fileReadTool(path: path)
-            case "file_write":
-                let path = args["path"] as? String ?? ""
-                kind = .fileWriteTool(path: path)
-            case "file_edit":
-                let path = args["path"] as? String ?? ""
-                kind = .fileEditTool(path: path)
-            case "browser_action", "desktop_action":
-                kind = .browserTool(action: args["action"] as? String ?? toolName)
-            default:
-                kind = .shellTool(command: toolName)
-            }
-
-            if !message.blocks.contains(where: { $0.toolUseId == callId }) {
-                let block = AssistantBlock(kind: kind, content: "", toolStatus: .running, toolUseId: callId)
-                if let data = try? JSONSerialization.data(withJSONObject: args), let str = String(data: data, encoding: .utf8) {
-                    block.toolInputArgs = str
-                }
-                message.blocks.append(block)
-            }
-        case "tool_result":
-            let callId = payload["id"] as? String ?? ""
-            let result = payload["result"]
-            let isErr = (payload["is_error"] as? Bool) ?? ((result as? [String: Any])?["error"] != nil)
-            let resultStr: String
-            if let resDict = result as? [String: Any], let data = try? JSONSerialization.data(withJSONObject: resDict), let str = String(data: data, encoding: .utf8) {
-                resultStr = str
-            } else if let resStr = result as? String {
-                resultStr = resStr
-            } else {
-                resultStr = "Done"
-            }
-
-            if let block = message.blocks.first(where: { $0.toolUseId == callId }) {
-                block.content = resultStr
-                block.toolStatus = isErr ? .failed(message: resultStr) : .success
-            }
-        case "error":
-            if let err = payload["error"] as? String {
-                message.error = err
-            }
-        case "final":
-            if let content = payload["content"] as? String, !content.isEmpty {
-                if let last = message.blocks.last, case .text = last.kind {
-                    if !last.content.contains(content) {
-                        last.content += content
-                    }
-                } else {
-                    let block = AssistantBlock(kind: .text, content: content)
-                    message.blocks.append(block)
-                }
-            }
-        default:
-            break
-        }
     }
 }

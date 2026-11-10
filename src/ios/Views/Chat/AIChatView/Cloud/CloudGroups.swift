@@ -287,14 +287,14 @@ final class CloudGroupChatModel: ObservableObject {
 
     func load() async {
         do {
-            let (g, msgs) = try await CloudGroupService.get(groupId)
+            let (g, msgs) = try await CloudQuiet.retry { try await CloudGroupService.get(self.groupId) }
             group = g
             messages = msgs
             typing = g.typing
             lastId = msgs.last?.id ?? 0
             errorText = nil
         } catch {
-            errorText = "读取群聊失败：\(error.localizedDescription)"
+            if messages.isEmpty { errorText = "暂时读不到群聊，正在自动重试…" }
         }
     }
 
@@ -309,6 +309,7 @@ final class CloudGroupChatModel: ObservableObject {
                     lastId = messages.last?.id ?? lastId
                 }
                 if typing != self.typing { self.typing = typing }
+                if errorText != nil, !sending { errorText = nil; if group == nil { await load() } }
             } catch {
                 if Task.isCancelled { return }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)

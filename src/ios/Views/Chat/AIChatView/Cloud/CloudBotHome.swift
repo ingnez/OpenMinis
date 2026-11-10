@@ -108,7 +108,7 @@ final class CloudBotHomeModel: ObservableObject {
         connecting = false
         link.handle(.pageOpened)
         do {
-            bots = try await CloudBotService.list()
+            bots = try await CloudQuiet.retry { try await CloudBotService.list() }
             bannerText = nil
             // 旧版服务器没有群聊接口：忽略错误
             groups = (try? await CloudGroupService.list()) ?? groups
@@ -536,7 +536,7 @@ struct CloudBotChatView: View {
     private func prepare() async {
         errorText = nil
         do {
-            try await CloudConnection.shared.ensureConnected()
+            try await CloudQuiet.retry { try await CloudConnection.shared.ensureConnected() }
             if model.bot(botId) == nil { await model.refresh() }
             guard let bot = model.bot(botId) else {
                 errorText = "找不到这个 Bot，可能已被删除"
@@ -547,7 +547,7 @@ struct CloudBotChatView: View {
                 if let latest = bot.latestSessionId {
                     sessionId = latest
                 } else {
-                    sessionId = try await CloudBotService.newSession(bot)
+                    sessionId = try await CloudQuiet.retry(2) { try await CloudBotService.newSession(bot) }
                 }
             }
             model.markSeen(botId)

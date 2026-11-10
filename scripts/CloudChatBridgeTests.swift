@@ -61,6 +61,23 @@ struct LLMModel { let id: String; let displayName: String }
   bridge.setActiveTaskId(nil,for:sid)
   _=try await bridge.importAndExecute(localSessionId:sid,title:nil,promptContent:"下一条",model:"alias",apiKey:"test",baseURL:"http://localhost/v1",history:[],workspaceFiles:[])
   precondition(CloudConnection.shared.nonceRequests.last != CloudConnection.shared.nonceRequests.first,"新消息必须使用新nonce")
+  // 多 Bot 对话：服务器历史 → 与本地相同的消息块；tool 消息与空 tool_call 不单独成条
+  let history: [[String: Any]] = [
+   ["role": "user", "content": "你可以做什么事"],
+   ["role": "assistant", "content": "", "tool_calls": [["id": "c1", "function": ["name": "memory_search", "arguments": "{\"query\":\"x\"}"]]]],
+   ["role": "tool", "tool_call_id": "c1", "content": "{\"count\": 0, \"results\": []}"],
+   ["role": "assistant", "content": "", "tool_calls": [["id": "c2", "function": ["name": "shell_execute", "arguments": "{\"command\":\"ls\"}"]]]],
+   ["role": "assistant", "content": "我可以帮你做很多事。"],
+   ["role": "user", "content": "好"],
+  ]
+  let turns = CloudHistoryAdapter.turns(from: history)
+  precondition(turns.count == 3, "一问一答 + 追问应为 3 条，实际 \(turns.count)")
+  let reply = turns[1].message
+  precondition(reply.blocks.count == 3, "两个工具块 + 一段正文")
+  precondition(reply.blocks[0].toolStatus == .success && reply.blocks[0].content.contains("count"), "工具结果挂到工具块")
+  precondition(reply.blocks[1].toolStatus == .success, "历史里没结果的工具不能一直转圈")
+  precondition(reply.blocks[2].kind == .text && reply.blocks[2].content == "我可以帮你做很多事。")
+  precondition(CloudEventApplier.toolName(reply.blocks[1]) == "shell_execute" && CloudEventApplier.toolName(reply.blocks[0]) == "memory_search")
   print("普通聊天桥接回归通过：服务器隔离、重试幂等、事件恢复去重、工具失败、先落盘后清标记、新提示独立nonce")
  }
 }
