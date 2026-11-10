@@ -75,6 +75,7 @@ import cloud_notify
 import cloud_pages
 import cloud_telegram
 import cloud_bots
+import cloud_admin
 import cloud_plugins
 import cloud_oauth
 import cloud_mcp
@@ -112,6 +113,7 @@ def validate_and_load_token():
         sys.exit(1)
 
 SERVER_TOKEN = None
+ADMIN_BASE = None   # 主 Bot 的 admin_api 回调本机 API 用；run_server 里设好
 
 os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
 os.makedirs(GLOBAL_WORKSPACE, exist_ok=True)
@@ -261,11 +263,27 @@ def init_db():
     )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_routine_runs ON routine_runs(routine_id, started_at)")
+    msg_cols = {row[1] for row in cursor.execute("PRAGMA table_info(messages)")}
+    if "meta" not in msg_cols:
+        # 每条消息的附加信息（JSON）：思考过程、工具耗时、插话标记
+        cursor.execute("ALTER TABLE messages ADD COLUMN meta TEXT")
     routine_cols = {row[1] for row in cursor.execute("PRAGMA table_info(routines)")}
     if "persona_id" not in routine_cols:
         cursor.execute("ALTER TABLE routines ADD COLUMN persona_id TEXT")
     if "reasoning_effort" not in routine_cols:
         cursor.execute("ALTER TABLE routines ADD COLUMN reasoning_effort TEXT")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS snapshots (
+        snapshot_id TEXT PRIMARY KEY,
+        persona_id TEXT,
+        session_id TEXT,
+        title TEXT,
+        summary TEXT,
+        source TEXT,
+        created_at REAL
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_persona ON snapshots(persona_id, created_at)")
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS personas (
         persona_id TEXT PRIMARY KEY,
@@ -285,6 +303,7 @@ def init_db():
     cloud_memory.ensure_schema(conn)
     cloud_skills.ensure_schema(conn)
     cloud_bots.ensure_schema(conn)
+    cloud_admin.ensure_schema(conn)
     cloud_plugins.ensure_schema(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS app_settings (name TEXT PRIMARY KEY, value TEXT)")
     try:
@@ -533,7 +552,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.5.2"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.6.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -611,16 +630,20 @@ def user_notify(cfg, event, title, body, session_id=None, bot_id=None):
             title, body = "OpenMinis", "有一条新消息（已上锁的 Bot）"
     except Exception as e:
         print(f"notify privacy check failed: {type(e).__name__}", flush=True)
+    # 先决定走哪条路：App 进程还活着 → 只进 App 通知流（App 用系统本地通知显示）；
+    # App 不在了 → 按设置走 Bark / ntfy / Telegram，并在通知流里标记已推送，App 回来后不再弹一次
+    external = False
+    if cfg:
+        pref = resource_settings().get("bark_fallback", "auto")
+        fallback = None if pref == "auto" else pref == "on"
+        external = APP_FEED is None or APP_FEED.should_bark(True, fallback)
     try:
         if APP_FEED is not None:
-            APP_FEED.add(event, title, body, session_id=session_id, bot_id=bot_id or (session_persona_id(session_id) if session_id else None))
+            APP_FEED.add(event, title, body, session_id=session_id, external=external,
+                         bot_id=bot_id or (session_persona_id(session_id) if session_id else None))
     except Exception as e:
         print(f"app feed add failed: {type(e).__name__}", flush=True)
-    if not cfg:
-        return False
-    pref = resource_settings().get("bark_fallback", "auto")
-    fallback = None if pref == "auto" else pref == "on"
-    if APP_FEED is not None and not APP_FEED.should_bark(True, fallback):
+    if not external:
         return False
     return cloud_notify.notify_async(cfg, event, title, body)
 
@@ -992,11 +1015,82 @@ def normalize_tool_call_ids(tool_calls, seen):
         seen.add(tid)
     return tool_calls
 
-def live_update(task_id, text):
+def live_update(task_id, text=None, **fields):
+    """正在生成的内容（只在内存）：text = 回答文字，reasoning = 思考过程，tool = 正在运行的工具 {id, name, output}。"""
     with EVENT_COND:
         LIVE_SEQ[0] += 1
-        LIVE[task_id] = {"text": text, "seq": LIVE_SEQ[0]}
+        cur = dict(LIVE.get(task_id) or {"text": ""})
+        if text is not None:
+            cur["text"] = text
+        cur.update(fields)
+        cur["seq"] = LIVE_SEQ[0]
+        LIVE[task_id] = cur
         EVENT_COND.notify_all()
+
+def live_has_content(live):
+    return bool(live and (live.get("text") or live.get("reasoning") or live.get("tool")))
+
+# ---- 插话：任务进行中用户发来的新消息，不排队，下一步就交给模型
+INBOX = {}            # task_id -> {"closed": bool, "items": [{content, nonce}], "nonces": set}
+INBOX_LOCK = threading.Lock()
+
+def inbox_push(task_id, content, nonce):
+    """返回 (状态码, 结果)。同一个 nonce 只收一次。任务已经收尾（不再看新消息）时返回 409，手机改为发新消息。"""
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT status, session_id FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return 404, {"error": "Task not found"}
+    with INBOX_LOCK:
+        box = INBOX.get(task_id)
+        if box and nonce and nonce in box["nonces"]:
+            return 200, {"task_id": task_id, "accepted": True, "duplicate": True}
+        if row[0] not in ("running", "waiting_user", "queued") or (box and box["closed"]):
+            return 409, {"error": "任务已经结束，请作为新消息发送", "status": row[0]}
+        box = INBOX.setdefault(task_id, {"closed": False, "items": [], "nonces": set()})
+        box["items"].append({"content": content, "nonce": nonce})
+        if nonce:
+            box["nonces"].add(nonce)
+    log_event(task_id, "user_message", {"content": content, "nonce": nonce, "state": "pending"})
+    return 202, {"task_id": task_id, "accepted": True}
+
+def inbox_take(task_id):
+    with INBOX_LOCK:
+        box = INBOX.get(task_id)
+        if not box or not box["items"]:
+            return []
+        items, box["items"] = box["items"], []
+        return items
+
+def inbox_pending(task_id):
+    with INBOX_LOCK:
+        box = INBOX.get(task_id)
+        return bool(box and box["items"])
+
+def inbox_close(task_id):
+    """任务准备结束：还有没交给模型的插话就返回 True（继续跑），否则关门（之后的插话返回 409）。"""
+    with INBOX_LOCK:
+        box = INBOX.setdefault(task_id, {"closed": False, "items": [], "nonces": set()})
+        if box["items"]:
+            return True
+        box["closed"] = True
+        return False
+
+def inbox_drop(task_id):
+    with INBOX_LOCK:
+        INBOX.pop(task_id, None)
+
+def insert_message(session_id, role, content, tool_calls=None, tool_call_id=None, meta=None):
+    conn = get_db_connection()
+    try:
+        conn.execute("INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (session_id, role, content, json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None, tool_call_id,
+                      time.time(), json.dumps(meta, ensure_ascii=False) if meta else None))
+        conn.commit()
+    finally:
+        conn.close()
 
 def live_clear(task_id):
     with EVENT_COND:
@@ -1007,6 +1101,27 @@ def live_get(task_id):
     with EVENT_COND:
         v = LIVE.get(task_id)
         return dict(v) if v else None
+
+def _file_tail(f, size=1500):
+    try:
+        end = os.fstat(f.fileno()).st_size
+        with open(f"/proc/self/fd/{f.fileno()}", "rb") as g:   # 另开一个句柄读，不动子进程写入位置
+            g.seek(max(0, end - size))
+            return g.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+def live_tool_output(task_id, out_f, err_f):
+    """命令运行中：把输出尾部放进实时状态，手机上的小终端窗口跟着滚动。"""
+    live = live_get(task_id) or {}
+    tool = live.get("tool")
+    if not tool:
+        return
+    text = (_file_tail(out_f) + _file_tail(err_f, 500)).strip()
+    lines = text.splitlines()[-12:]
+    out = "\n".join(lines)
+    if out != tool.get("output"):
+        live_update(task_id, tool=dict(tool, output=out))
 
 def tool_shell_execute(task_id, session_id, args):
     if is_task_cancelled(task_id):
@@ -1042,7 +1157,11 @@ def tool_shell_execute(task_id, session_id, args):
                     active_tasks[task_id]["process"] = proc
                     active_tasks[task_id]["pid"] = proc.pid
             start_t = time.time()
+            last_peek = 0.0
             while proc.poll() is None:
+                if time.time() - last_peek > 0.5:
+                    last_peek = time.time()
+                    live_tool_output(task_id, out_f, err_f)
                 if is_task_cancelled(task_id):
                     try:
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -1362,6 +1481,168 @@ def tool_memory_write(task_id, session_id, args):
         audit(session_id, "memory_write", entry["id"], "记住：" + " ".join(str(entry.get("content", "")).split())[:80],
               {"kind": "memory", "id": entry["id"]})
     return {"saved": created, "duplicate": not created, "id": entry["id"], "category": entry["category"], "entry_time": entry["entry_time"]}
+
+# ---------------- /reset：对话快照 ----------------
+SNAPSHOT_PROMPT = (
+    "把下面这段对话写成一份简洁的快照，供以后接着做时查阅。用对话的语言，Markdown，最多 400 字，分这几节（没有的节省略）：\n"
+    "## 目标\n## 已做的决定\n## 当前进度\n## 待办\n## 关键信息（文件路径、ID、命令、地址、账号名等，原样保留；不要写密码和密钥）\n"
+    "第一行单独写一个 15 字以内的标题，格式：标题：xxx")
+
+def _context_rows(conn, session_id):
+    """上一次 /reset 之后的消息（模型看到的上下文）。"""
+    last = conn.execute("SELECT MAX(id) FROM messages WHERE session_id = ? AND role = 'context_reset'", (session_id,)).fetchone()[0] or 0
+    return conn.execute("SELECT role, content, tool_calls FROM messages WHERE session_id = ? AND id > ? AND role IN ('user','assistant','tool') "
+                        "ORDER BY id ASC", (session_id, last)).fetchall()
+
+def snapshot_transcript(rows, limit=24000):
+    parts = []
+    for role, content, tcs in rows:
+        text = content if isinstance(content, str) else ""
+        if text.startswith("[") and role == "user":
+            try:
+                text = " ".join(p.get("text", "") for p in json.loads(text) if isinstance(p, dict))
+            except ValueError:
+                pass
+        if role == "tool":
+            parts.append("工具结果：" + text[:300])
+            continue
+        if tcs:
+            try:
+                names = [((tc.get("function") or {}).get("name") or "") + " " + ((tc.get("function") or {}).get("arguments") or "")[:200]
+                         for tc in json.loads(tcs)]
+                text = (text or "") + "\n[调用工具] " + "；".join(names)
+            except ValueError:
+                pass
+        if text:
+            parts.append(("用户：" if role == "user" else "助手：") + text[:3000])
+    out = "\n".join(parts)
+    return out if len(out) <= limit else out[:limit // 3] + "\n…（中间省略）…\n" + out[-limit * 2 // 3:]
+
+def heuristic_snapshot(rows):
+    """模型调不通时的兜底：如实列出最近几条用户消息和最后一段回答，不编内容。"""
+    users = [c for r, c, _ in rows if r == "user" and isinstance(c, str) and c and not c.startswith("[")][-5:]
+    answer = next((c for r, c, _ in reversed(rows) if r == "assistant" and c), "")
+    title = eff.heuristic_title(users[0]) if users else "对话快照"
+    body = "## 最近的要求\n" + "\n".join("- " + u[:200] for u in users) + ("\n## 最后的回答（节选）\n" + answer[:600] if answer else "")
+    return title or "对话快照", body
+
+def make_snapshot(session_id, provider_config, model):
+    conn = get_db_connection()
+    try:
+        rows = _context_rows(conn, session_id)
+    finally:
+        conn.close()
+    if not any(r == "user" for r, _c, _t in rows):
+        return None
+    transcript = snapshot_transcript(rows)
+    title, summary, source = None, None, "model"
+    use_model = resource_settings().get("fast_model") or model
+    if provider_config and provider_config.get("api_key") and use_model:
+        try:
+            url = f"{provider_config.get('base_url', 'https://api.openai.com/v1').rstrip('/')}/chat/completions"
+            resp, _t = cloud_llm.chat_completion(url, {"Content-Type": "application/json", "Authorization": f"Bearer {provider_config['api_key']}"},
+                                                 {"model": use_model, "messages": [{"role": "system", "content": SNAPSHOT_PROMPT},
+                                                                                   {"role": "user", "content": transcript}],
+                                                  "max_tokens": 900, "temperature": 0.2}, stream=False, timeout=60)
+            text = (((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+            if text:
+                first, _, rest = text.partition("\n")
+                if first.strip().startswith(("标题：", "标题:", "Title:")):
+                    title = first.split("：", 1)[-1].split(":", 1)[-1].strip().strip("#* ")[:40]
+                    summary = rest.strip()
+                else:
+                    summary = text
+        except Exception as e:
+            print(f"snapshot via model failed: {type(e).__name__}", flush=True)
+    if not summary:
+        title, summary = heuristic_snapshot(rows)
+        source = "heuristic"
+    title = title or eff.heuristic_title(next((c for r, c, _ in rows if r == "user" and isinstance(c, str)), "")) or "对话快照"
+    snap = {"snapshot_id": "snap_" + uuid.uuid4().hex[:12], "persona_id": session_persona_id(session_id) or "",
+            "session_id": session_id, "title": title, "summary": summary[:20000], "source": source, "created_at": time.time()}
+    conn = get_db_connection()
+    try:
+        conn.execute("INSERT INTO snapshots (snapshot_id, persona_id, session_id, title, summary, source, created_at) VALUES (?,?,?,?,?,?,?)",
+                     tuple(snap[k] for k in ("snapshot_id", "persona_id", "session_id", "title", "summary", "source", "created_at")))
+        conn.commit()
+    finally:
+        conn.close()
+    return snap
+
+def list_snapshots(persona_id, query=None, limit=20):
+    conn = get_db_connection()
+    try:
+        rows = conn.execute("SELECT snapshot_id, title, summary, source, created_at, session_id FROM snapshots WHERE persona_id = ? "
+                            "ORDER BY created_at DESC LIMIT 200", (persona_id or "",)).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        if query and not all(k.lower() in (r[1] + "\n" + r[2]).lower() for k in query.split()):
+            continue
+        out.append({"snapshot_id": r[0], "title": r[1], "summary": r[2], "source": r[3], "created_at": r[4], "session_id": r[5]})
+        if len(out) >= limit:
+            break
+    return out
+
+def get_snapshot(snapshot_id):
+    conn = get_db_connection()
+    try:
+        r = conn.execute("SELECT snapshot_id, persona_id, title, summary, source, created_at, session_id FROM snapshots WHERE snapshot_id = ?",
+                         (snapshot_id,)).fetchone()
+    finally:
+        conn.close()
+    if not r:
+        return None
+    return {"snapshot_id": r[0], "persona_id": r[1], "title": r[2], "summary": r[3], "source": r[4], "created_at": r[5], "session_id": r[6]}
+
+def tool_recall_snapshot(session_id, args):
+    pid = session_persona_id(session_id) or ""
+    sid = (args or {}).get("snapshot_id")
+    if sid:
+        snap = get_snapshot(str(sid))
+        if not snap or snap["persona_id"] != pid:
+            return {"error": "没有这个快照"}
+        return {"snapshot_id": snap["snapshot_id"], "title": snap["title"], "created_at": snap["created_at"], "summary": snap["summary"]}
+    items = list_snapshots(pid, (args or {}).get("query"), limit=10)
+    return {"snapshots": [{"snapshot_id": i["snapshot_id"], "title": i["title"], "created_at": i["created_at"]} for i in items],
+            "note": "用 snapshot_id 读取完整内容" if items else "还没有快照"}
+
+def snapshot_pointer(session_id):
+    """重置过的对话：系统提示里只放一句指向最近快照的话（不放全文，省 token）。"""
+    conn = get_db_connection()
+    try:
+        r = conn.execute("SELECT meta FROM messages WHERE session_id = ? AND role = 'context_reset' ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
+    finally:
+        conn.close()
+    if not r:
+        return ""
+    try:
+        snap = get_snapshot((json.loads(r[0] or "{}")).get("snapshot_id") or "")
+    except ValueError:
+        snap = None
+    if not snap:
+        return "\n\n[这个对话刚用 /reset 清空了上下文。]"
+    return (f"\n\n[这个对话刚用 /reset 清空了上下文。之前的进度存成了快照《{snap['title']}》（{snap['snapshot_id']}）。"
+            "用户提到之前的事情时，调用 recall_snapshot 读取，不要凭印象回答。]")
+
+def reset_session(session_id, provider_config, model):
+    """/reset：先存快照，再清空上下文（插入一条分隔标记，之后只加载标记之后的消息）。运行中的任务会被停止。"""
+    conn = get_db_connection()
+    try:
+        running = [r[0] for r in conn.execute("SELECT task_id FROM tasks WHERE session_id = ? AND status IN ('running','waiting_user')",
+                                              (session_id,)).fetchall()]
+        for tid in running:
+            set_task_cancelled(tid)
+            conn.execute("UPDATE tasks SET status = 'cancelled' WHERE task_id = ? AND status IN ('running','waiting_user')", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
+    snap = make_snapshot(session_id, provider_config, model)
+    note = "已保存对话快照并重置上下文" if snap else "已重置上下文"
+    insert_message(session_id, "context_reset", note,
+                   meta={"snapshot_id": snap["snapshot_id"], "title": snap["title"]} if snap else {})
+    return {"session_id": session_id, "note": note, "snapshot": snap, "cancelled_tasks": running}
 
 def tool_memory_search(task_id, session_id, args):
     if is_task_cancelled(task_id):
@@ -1908,7 +2189,104 @@ def tool_list_bots(task_id, session_id, args):
             continue
         bots.append({"bot_id": b["persona_id"], "name": b["name"], "description": (b.get("description") or "")[:200],
                      "model": b.get("model") or "", "busy": b["persona_id"] in busy})
-    return {"bots": bots, "you": own or ""}
+    out = {"bots": bots, "you": own or ""}
+    if is_admin_session(session_id):
+        conn = get_db_connection()
+        try:
+            out["trash"] = cloud_admin.trash(conn)
+        finally:
+            conn.close()
+    return out
+
+ADMIN_API_BLOCKED = re.compile(r"^/v1/(credentials|notify|backup|auth|token)(/|$)")
+
+def _admin_api(method, path, body):
+    """主 Bot 调本机 API（和 App 用的同一套）。密钥类接口不开放：模型不该经手原始密钥。"""
+    method = (method or "GET").upper()
+    if method not in ("GET", "POST", "PUT", "DELETE") or not isinstance(path, str) or not path.startswith("/v1/") or ".." in path:
+        return {"error": "path 必须是 /v1/ 开头的接口，method 为 GET/POST/PUT/DELETE"}
+    if ADMIN_API_BLOCKED.match(path.split("?")[0]):
+        return {"error": "密钥、推送、备份类接口不能由 Bot 调用，请让用户在 App 设置里操作"}
+    if method == "DELETE" and path.split("?")[0].rstrip("/") in (f"/v1/bots/{primary_bot_id()}", f"/v1/personas/{primary_bot_id()}"):
+        return {"error": "主 Bot 不能删除自己"}
+    if method == "DELETE" and re.match(r"^/v1/(bots|personas)/[^/]+$", path.split("?")[0]):
+        return {"error": "删除 Bot 请用 delete_bot（进回收站，可恢复）"}
+    base = ADMIN_BASE or f"http://127.0.0.1:{PORT}"
+    data = json.dumps(body if isinstance(body, dict) else {}).encode() if method in ("POST", "PUT") else None
+    req = urllib.request.Request(base + path, data=data, method=method,
+                                 headers={"Authorization": f"Bearer {SERVER_TOKEN}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            status, raw = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        status, raw = e.code, e.read()
+    except Exception as e:
+        return {"error": f"调用失败：{type(e).__name__}"}
+    try:
+        payload = json.loads(raw.decode("utf-8", "replace") or "{}")
+    except ValueError:
+        payload = {"text": raw.decode("utf-8", "replace")[:4000]}
+    return {"status": status, "result": payload}
+
+def tool_admin(task_id, session_id, name, args):
+    """主 Bot 的管理工具。每次改动记审计日志并带撤销信息；改完推一条 bots_changed，App 首页马上刷新。"""
+    actor = session_persona_id(session_id)
+    if name == "admin_api":
+        res = _admin_api(args.get("method"), args.get("path"), args.get("body"))
+        if (args.get("method") or "GET").upper() != "GET":
+            audit(session_id, "admin_api", f"{(args.get('method') or '').upper()} {args.get('path')}", f"状态 {res.get('status')}")
+            if str(args.get("path") or "").startswith(("/v1/bots", "/v1/personas")):
+                bots_changed()
+        return res
+    conn = get_db_connection()
+    try:
+        if name == "create_bot":
+            body = dict(args)
+            if body.get("model") and not body.get("credential"):
+                own = session_bot(session_id) or {}
+                if own.get("credential"):
+                    body["credential"] = own["credential"]
+            bot = cloud_admin.create(conn, body, credential_exists)
+            undo, summary, target = {"kind": "bot", "op": "create", "bot_id": bot["bot_id"]}, f"新建 Bot「{bot['name']}」", bot["bot_id"]
+            out = {"created": True, "bot": bot_detail(bot)}
+        elif name == "update_bot":
+            bid = args.get("bot_id")
+            bot, before = cloud_admin.update(conn, bid, {k: v for k, v in args.items() if k != "bot_id"}, credential_exists)
+            undo, summary, target = {"kind": "bot", "op": "update", "bot_id": bid, "before": before}, f"修改 Bot「{bot['name']}」", bid
+            out = {"updated": True, "bot": bot_detail(bot)}
+        elif name == "delete_bot":
+            bid = args.get("bot_id")
+            if bid == actor:
+                raise cloud_admin.AdminError("主 Bot 不能删除自己")
+            bot = cloud_admin.delete(conn, bid, actor)
+            undo, summary, target = {"kind": "bot", "op": "delete", "bot_id": bid}, f"删除 Bot「{bot['name']}」（在回收站，可恢复）", bid
+            out = {"deleted": True, "in_trash": True, "bot_id": bid}
+        elif name == "restore_bot":
+            bot = cloud_admin.restore(conn, args.get("bot_id"), credential_exists)
+            undo, summary, target = {"kind": "bot", "op": "create", "bot_id": bot["bot_id"]}, f"从回收站恢复 Bot「{bot['name']}」", bot["bot_id"]
+            out = {"restored": True, "bot": bot_detail(bot)}
+        elif name == "set_primary_bot":
+            bid = args.get("bot_id")
+            prev = cloud_admin.set_primary(conn, bid)
+            undo, summary, target = {"kind": "bot", "op": "set_primary", "bot_id": bid, "previous": prev}, f"把 {bid} 设为主 Bot", bid
+            out = {"primary": bid, "previous": prev}
+        else:
+            return {"error": "未知的管理工具"}
+    except (cloud_admin.AdminError, cloud_bots.BotError) as e:
+        return {"error": str(e)}
+    finally:
+        conn.close()
+    audit(session_id, name, target, summary, undo)
+    bots_changed()
+    return out
+
+def bots_changed():
+    """App 首页靠通知流里的 bots_changed 马上刷新 Bot 列表（不弹系统通知）。"""
+    try:
+        if APP_FEED is not None:
+            APP_FEED.add("bots_changed", "", "", external=True)
+    except Exception as e:
+        print(f"bots_changed feed failed: {type(e).__name__}", flush=True)
 
 def _delegation_row(did):
     conn = get_db_connection()
@@ -2222,7 +2600,7 @@ def _err_text(e):
     except Exception:
         return ""
 
-def call_chat(url, headers, body, effort, stream=True, on_text=None, cache_key=None):
+def call_chat(url, headers, body, effort, stream=True, on_text=None, cache_key=None, on_reasoning=None, should_abort=None):
     """主循环的模型调用：复用连接、流式；服务商不支持流式 / 思考参数 / 缓存标记时各降级一次并记住。返回 (resp, timing)。"""
     model = body.get("model")
     use_stream = bool(stream) and (url, model) not in _STREAM_UNSUPPORTED
@@ -2231,7 +2609,8 @@ def call_chat(url, headers, body, effort, stream=True, on_text=None, cache_key=N
         payload = apply_reasoning(body, model, effort, url)
         cached = _with_prompt_cache(payload, url, cache_key=cache_key, stream=use_stream) if use_cache else payload
         try:
-            return cloud_llm.chat_completion(url, headers, cached, stream=use_stream, on_text=on_text)
+            return cloud_llm.chat_completion(url, headers, cached, stream=use_stream, on_text=on_text,
+                                             on_reasoning=on_reasoning, should_abort=should_abort)
         except urllib.error.HTTPError as e:
             if e.code not in (400, 422):
                 raise
@@ -2717,7 +3096,47 @@ TOOL_DEFINITIONS.append({
     }
 })
 
+_BOT_FIELDS = {
+    "name": {"type": "string", "description": "显示名称"},
+    "description": {"type": "string", "description": "一句话简介"},
+    "instructions": {"type": "string", "description": "系统提示词：这个 Bot 是谁、怎么做事"},
+    "emoji": {"type": "string", "description": "头像 emoji"},
+    "model": {"type": "string", "description": "模型名；留空跟随 App。需要凭据，不填则沿用你自己的凭据"},
+    "credential": {"type": "string", "description": "已存的凭据名（不是密钥本身）"},
+    "reasoning_effort": {"type": "string", "enum": ["off", "low", "medium", "high", "xhigh"]},
+    "fast_mode": {"type": "boolean"},
+    "skills": {"type": "array", "items": {"type": "string"}, "description": "技能白名单；不填 = 全部技能"},
+    "plugins": {"type": "array", "items": {"type": "string"}, "description": "授权的插件 id"}}
+
 TOOL_DEFINITIONS.extend([
+    {"type": "function", "function": {
+        "name": "create_bot",
+        "description": "Primary Bot only. Create a new Bot right away (shows up on the user's home screen immediately). Approval mode, browser isolation and other per-Bot resource settings: follow up with admin_api PUT /v1/resources.",
+        "parameters": {"type": "object", "properties": dict(_BOT_FIELDS, bot_id={"type": "string", "description": "可选，小写字母数字和 - _"}),
+                       "required": ["name"]}}},
+    {"type": "function", "function": {
+        "name": "update_bot",
+        "description": "Primary Bot only. Change another Bot's (or your own) settings. Only the fields you pass change; the old settings stay undoable in the audit log.",
+        "parameters": {"type": "object", "properties": dict(_BOT_FIELDS, bot_id={"type": "string"}), "required": ["bot_id"]}}},
+    {"type": "function", "function": {
+        "name": "delete_bot",
+        "description": "Primary Bot only. Move a Bot to the trash (memory and chats kept, its routines paused); restore_bot brings it back. You cannot delete yourself.",
+        "parameters": {"type": "object", "properties": {"bot_id": {"type": "string"}}, "required": ["bot_id"]}}},
+    {"type": "function", "function": {
+        "name": "restore_bot",
+        "description": "Primary Bot only. Restore a Bot from the trash (list_bots shows the trash).",
+        "parameters": {"type": "object", "properties": {"bot_id": {"type": "string"}}, "required": ["bot_id"]}}},
+    {"type": "function", "function": {
+        "name": "set_primary_bot",
+        "description": "Primary Bot only. Make another Bot the primary Bot (it then gets these admin tools and you lose them).",
+        "parameters": {"type": "object", "properties": {"bot_id": {"type": "string"}}, "required": ["bot_id"]}}},
+    {"type": "function", "function": {
+        "name": "admin_api",
+        "description": "Primary Bot only. Call this cloud server's own HTTP API, the same one the app uses (see PROTOCOL): e.g. GET /v1/bots, GET/PUT /v1/resources (per-Bot approval & isolation), /v1/memory, /v1/skills, /v1/routines, /v1/plugins (install/remove), /v1/proxy, /v1/desktop/*, /v1/audit. Secret endpoints (credentials, push config, backup) are not available.",
+        "parameters": {"type": "object", "properties": {
+            "method": {"type": "string", "enum": ["GET", "POST", "PUT", "DELETE"]},
+            "path": {"type": "string", "description": "以 /v1/ 开头，可带查询参数"},
+            "body": {"type": "object"}}, "required": ["method", "path"]}}},
     {"type": "function", "function": {
         "name": "list_bots",
         "description": "List the user's other Bots (id, name, description, model, whether busy) so you can message or delegate to them.",
@@ -2754,11 +3173,34 @@ TOOL_DEFINITIONS.append({"type": "function", "function": {
         "required": ["name", "description", "content"]}}})
 
 DELEGATION_TOOLS = {"send_to_bot", "delegate_task"}
+ADMIN_TOOLS = {"create_bot", "update_bot", "delete_bot", "restore_bot", "set_primary_bot", "admin_api"}
 
-def tools_for_depth(depth):
+TOOL_DEFINITIONS.append({"type": "function", "function": {
+    "name": "recall_snapshot",
+    "description": "Read a conversation snapshot saved by /reset (goals, decisions, state, todos, key facts of an earlier conversation with this bot). Without snapshot_id: list recent snapshot titles. Call it when the user refers to earlier work.",
+    "parameters": {"type": "object", "properties": {
+        "snapshot_id": {"type": "string", "description": "Snapshot id from the list (optional)."},
+        "query": {"type": "string", "description": "Keywords to filter titles / content (optional)."}}}}})
+
+TOOL_TITLE_PARAM = {"type": "string", "description": "A concise 4-12 word summary of what this call does, shown to the user (same language as the user, e.g. '读取服务器连接信息'). Not passed to the tool."}
+for _t in TOOL_DEFINITIONS:
+    _props = _t["function"].setdefault("parameters", {"type": "object"}).setdefault("properties", {})
+    _props.setdefault("tool_title", TOOL_TITLE_PARAM)
+
+def tools_for_depth(depth, admin=False):
+    """admin：主 Bot 的顶层任务才拿到管理工具（执行时会再查一次角色）。"""
     if depth >= 1:
-        return [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in DELEGATION_TOOLS | {"subagent_task"}]
-    return TOOL_DEFINITIONS
+        return [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in DELEGATION_TOOLS | {"subagent_task"} | ADMIN_TOOLS]
+    if admin:
+        return TOOL_DEFINITIONS
+    return [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in ADMIN_TOOLS]
+
+def is_admin_session(session_id, depth=0):
+    """服务器侧的角色检查：只有主 Bot 的会话、且不是子任务，才能用管理工具。"""
+    if depth:
+        return False
+    bot = session_bot(session_id) if session_id else None
+    return bool(bot and bot.get("is_primary"))
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -2919,13 +3361,17 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         return
 
     # Retrieve all session messages for LLM context
-    c.execute("SELECT role, content, tool_calls, tool_call_id FROM messages WHERE session_id = ? ORDER BY id ASC", (session_id,))
+    last_reset = c.execute("SELECT MAX(id) FROM messages WHERE session_id = ? AND role = 'context_reset'", (session_id,)).fetchone()[0] or 0
+    c.execute("SELECT role, content, tool_calls, tool_call_id FROM messages WHERE session_id = ? AND id > ? "
+              "AND role != 'context_reset' ORDER BY id ASC", (session_id, last_reset))
     rows = c.fetchall()
     conn.close()
 
     plugin_defs, plugin_map, plugin_note = plugin_tools_for_session(session_id, depth)
     # 系统提示保持稳定（不放随消息变化的内容），服务商的前缀缓存才能命中；@提及提示放到本轮请求的末尾
     system_text = persona_prompt(session_id) + (instructions or "") + server_tool_notes(session_id) + plugin_note
+    if last_reset:
+        system_text += snapshot_pointer(session_id)
     if _bot_fast(session_id):
         system_text += FAST_MODE_NOTE
     dynamic_note = mention_note(session_id, initial_content)
@@ -2979,6 +3425,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             perf["first_text_ms"] = round((time.time() - perf["created_at"]) * 1000, 1)
         live_update(task_id, text)
 
+    def on_reasoning(text):
+        live_update(task_id, reasoning=text)
+
     # 主模型连续失败（5xx / 429 / 超时 / 断连）：先原地重试一次，再按资源设置里的 failover 依次换用备用服务商
     route = {"url": chat_url, "key": api_key, "model": model, "chain": list(rs_perf.get("failover") or [])}
     main_model = model
@@ -2996,7 +3445,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             try:
                 return call_chat(route["url"], {"Content-Type": "application/json", "Authorization": f"Bearer {route['key']}"}, {
                     "model": route["model"], "messages": send_msgs, "tools": tools, "tool_choice": "auto"
-                }, effort, stream=rs_perf.get("stream", True), on_text=on_text, cache_key=perf["bot_id"] or session_id)
+                }, effort, stream=rs_perf.get("stream", True), on_text=on_text, cache_key=perf["bot_id"] or session_id,
+                   on_reasoning=on_reasoning, should_abort=lambda: inbox_pending(task_id) or is_task_cancelled(task_id))
+            except cloud_llm.Aborted:
+                raise
             except Exception as e:
                 if is_task_cancelled(task_id):
                     raise
@@ -3026,10 +3478,18 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 retried = False
 
     try:
+        def take_injected():
+            for item in inbox_take(task_id):
+                # 插话：作为一条用户消息放进上下文和历史（位置就是模型看到它的地方）
+                messages.append({"role": "user", "content": item["content"]})
+                insert_message(session_id, "user", item["content"], meta={"injected": True, "nonce": item["nonce"]})
+                log_event(task_id, "user_message_applied", {"nonce": item["nonce"]})
+
         for _ in range(MAX_TURNS):
             if is_task_cancelled(task_id):
                 final_status = "cancelled"
                 break
+            take_injected()
             try:
                 send_msgs, trim_note = cloud_llm.trim_messages(messages, rs_perf.get("context_trim_tokens", 0))
                 if trim_note and not perf["trimmed"]:
@@ -3037,11 +3497,20 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     log_event(task_id, "status", {"message": "对话较长，已自动精简较早的内容"})
                 if dynamic_note:
                     send_msgs = _append_note(send_msgs, dynamic_note)
-                tools, _omitted = cloud_llm.select_tools(tools_for_depth(depth) + plugin_defs, send_msgs, extra_tools,
+                tools, _omitted = cloud_llm.select_tools(tools_for_depth(depth, is_admin_session(session_id, depth)) + plugin_defs, send_msgs, extra_tools,
                                                           always_all=not rs_perf.get("lazy_tools", True))
                 perf["tool_defs"] = max(perf["tool_defs"], len(tools))
-                live_update(task_id, "")
-                resp, timing = call_with_failover(send_msgs, tools)
+                live_update(task_id, "", reasoning="", tool=None)
+                try:
+                    resp, timing = call_with_failover(send_msgs, tools)
+                except cloud_llm.Aborted:
+                    # 用户插话：丢掉这次还没说完的回复，带上新消息重新问
+                    live_clear(task_id)
+                    if is_task_cancelled(task_id):
+                        final_status = "cancelled"
+                        break
+                    log_event(task_id, "status", {"message": "收到你的新消息，按新要求继续"})
+                    continue
                 # 这一轮的文字马上会作为 thought 事件写入：清掉流式草稿，免得手机把同一段话再画一遍
                 live_clear(task_id)
                 perf["llm_calls"].append(timing)
@@ -3070,10 +3539,17 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             msg = choices[0].get("message", {})
             content = msg.get("content")
             tool_calls = normalize_tool_call_ids(msg.get("tool_calls"), seen_tool_ids)
+            reasoning_text = msg.get("reasoning_content") or (msg.get("reasoning") if isinstance(msg.get("reasoning"), str) else None)
+            if reasoning_text:
+                # 思考过程：先于这一轮的文字和工具写入，手机按顺序画「深度思考」气泡
+                log_event(task_id, "reasoning", {"content": reasoning_text[:200000], "chars": len(reasoning_text)})
+            row_meta = {"reasoning": reasoning_text[:200000]} if reasoning_text else None
 
             if not content and not tool_calls:
-                if answered:
+                if answered and not inbox_close(task_id):
                     break               # 工具做完后模型没再说话：前面的回答就是最终回答
+                if answered:
+                    continue            # 有插话：接着回答新消息
                 log_event(task_id, "error", {"error": "模型返回了空回复（没有文字也没有工具调用）"})
                 final_status = "failed"
                 break
@@ -3083,11 +3559,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             if content and not tool_calls:
                 log_event(task_id, "thought", {"content": content})
                 messages.append({"role": "assistant", "content": content})
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)", (session_id, "assistant", content, time.time()))
-                conn.commit()
-                conn.close()
+                insert_message(session_id, "assistant", content, meta=row_meta)
 
             if tool_calls:
                 ast_msg = {"role": "assistant"}
@@ -3101,12 +3573,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     ast_msg["reasoning_content"] = msg["reasoning_content"]
                 messages.append(ast_msg)
 
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute("INSERT INTO messages (session_id, role, content, tool_calls, timestamp) VALUES (?, ?, ?, ?, ?)", 
-                          (session_id, "assistant", content, json.dumps(tool_calls, ensure_ascii=False), time.time()))
-                conn.commit()
-                conn.close()
+                insert_message(session_id, "assistant", content, tool_calls=tool_calls, meta=row_meta)
 
                 def exec_tool(tc):
                     if is_task_cancelled(task_id):
@@ -3120,6 +3587,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     log_event(task_id, "tool_call", {"id": tc_id, "tool": fn_name, "arguments": fn_args})
                     if is_task_cancelled(task_id):
                         return None
+                    if isinstance(fn_args, dict) and fn_name not in plugin_map:
+                        fn_args = {k: v for k, v in fn_args.items() if k != "tool_title"}   # 只给人看的标题，不传给工具
+                    started_at = time.time()
+                    live_update(task_id, tool={"id": tc_id, "name": fn_name, "output": ""})
 
                     policy = current_approval_policy()
                     hit = cloud_policy.evaluate(fn_name, fn_args, policy)
@@ -3152,12 +3623,16 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     elif fn_name == "background_jobs": res = tool_background_jobs(task_id, session_id, fn_args)
                     elif fn_name == "memory_write": res = tool_memory_write(task_id, session_id, fn_args)
                     elif fn_name == "memory_search": res = tool_memory_search(task_id, session_id, fn_args)
+                    elif fn_name == "recall_snapshot": res = tool_recall_snapshot(session_id, fn_args)
                     elif fn_name == "skill_load": res = tool_skill_load(task_id, session_id, fn_args)
                     elif fn_name == "page_write": res = tool_page_write(task_id, session_id, fn_args)
                     elif fn_name == "subagent_task": res = tool_subagent_task(task_id, session_id, fn_args, model, provider_config, depth)
                     elif fn_name == "list_bots": res = tool_list_bots(task_id, session_id, fn_args)
+                    elif fn_name in ADMIN_TOOLS:
+                        res = tool_admin(task_id, session_id, fn_name, fn_args) if is_admin_session(session_id, depth) \
+                            else {"error": "只有主 Bot 能管理 Bot 和系统设置；请让用户在主 Bot 里操作"}
                     elif fn_name == "request_tools":
-                        known = {d["function"]["name"] for d in tools_for_depth(depth)}
+                        known = {d["function"]["name"] for d in tools_for_depth(depth, is_admin_session(session_id, depth))}
                         want = [n for n in (fn_args.get("names") or []) if n in known]
                         res = {"enabled": want, "note": "下一步可以使用这些工具"} if want else {"error": "没有这些工具", "available": sorted(known)}
                     elif fn_name == "skill_save": res = tool_skill_save(task_id, session_id, fn_args)
@@ -3170,12 +3645,13 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                         if isinstance(res, dict) and res.get("error") == "needs_auth":
                             log_event(task_id, "auth_required", {"plugin": res.get("plugin"), "message": res.get("message")})
                     else: res = {"error": f"Unknown tool {fn_name}"}
-                    return (tc_id, fn_name, res)
+                    return (tc_id, fn_name, res, int((time.time() - started_at) * 1000))
 
-                def post_tool(tc_id, fn_name, res):
+                def post_tool(tc_id, fn_name, res, duration_ms=None):
                     if fn_name == "request_tools" and isinstance(res, dict) and res.get("enabled"):
                         extra_tools.update(res["enabled"])
-                    log_event(task_id, "tool_result", {"id": tc_id, "tool": fn_name, "result": res})
+                    live_update(task_id, tool=None)
+                    log_event(task_id, "tool_result", {"id": tc_id, "tool": fn_name, "result": res, "duration_ms": duration_ms})
                     
                     # Tool result formatting: If screenshot produced, include attachment path and format
                     tool_content_str = spill_tool_output(session_id, tc_id, json.dumps(res, ensure_ascii=False))
@@ -3201,12 +3677,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                                 }
                                 messages.append(vision_user_msg)
 
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("INSERT INTO messages (session_id, role, content, tool_call_id, timestamp) VALUES (?, ?, ?, ?, ?)",
-                              (session_id, "tool", tool_content_str, tc_id, time.time()))
-                    conn.commit()
-                    conn.close()
+                    insert_message(session_id, "tool", tool_content_str, tool_call_id=tc_id,
+                                   meta={"duration_ms": duration_ms} if duration_ms is not None else None)
 
                 parallel = (len(tool_calls) > 1 and resource_settings().get("parallel_tools", True)
                             and all(((tc.get("function") or {}).get("name")) in PARALLEL_SAFE_TOOLS for tc in tool_calls))
@@ -3231,6 +3703,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
 
                 if final_status == "cancelled":
                     break
+            elif inbox_close(task_id):
+                continue                # 回答完了但用户刚插了话：接着处理新消息
             else:
                 break
         else:
@@ -3255,6 +3729,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         c.execute("UPDATE tasks SET status = ? WHERE task_id = ? AND status IN ('running', 'waiting_user')", (final_status, task_id))
         conn.commit()
         conn.close()
+        inbox_drop(task_id)     # 状态改完再拆：之后的插话按「任务已结束」返回 409
         with active_tasks_lock:
             active_tasks.pop(task_id, None)
         try:
@@ -4407,6 +4882,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"items": daily_feed()})
             return
 
+        m_snap = re.match(r"^/v1/snapshots/(snap_[a-f0-9]{12})$", path)
+        if m_snap:
+            snap = get_snapshot(m_snap.group(1))
+            self._send(200 if snap else 404, snap or {"error": "没有这个快照"})
+            return
+        m_snaps = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31}|_default)/snapshots$", path)
+        if m_snaps:
+            pid = "" if m_snaps.group(1) == "_default" else m_snaps.group(1)
+            q = (parse_qs(urlparse(self.path).query).get("q") or [None])[0]
+            self._send(200, {"snapshots": list_snapshots(pid, q, limit=50)})
+            return
         if path == "/v1/proxy":
             try:
                 self._send(200, proxy_mgr().status())
@@ -4693,10 +5179,18 @@ class Handler(BaseHTTPRequestHandler):
                     conn.close()
                     self._send(404, {"error": "Session not found"})
                     return
-                c.execute("SELECT role, content, tool_calls, tool_call_id, timestamp FROM messages WHERE session_id = ? ORDER BY id ASC", (sid,))
+                c.execute("SELECT role, content, tool_calls, tool_call_id, timestamp, meta FROM messages WHERE session_id = ? ORDER BY id ASC", (sid,))
                 msgs = []
                 for mr in c.fetchall():
                     m = {"role": mr[0], "content": mr[1], "timestamp": mr[4]}
+                    if mr[5]:
+                        try:
+                            meta = json.loads(mr[5])
+                            for k in ("reasoning", "duration_ms", "injected", "snapshot_id", "title"):
+                                if k in meta:
+                                    m[k] = meta[k]
+                        except ValueError:
+                            pass
                     if mr[2]:
                         try: m["tool_calls"] = json.loads(mr[2])
                         except: pass
@@ -4796,7 +5290,7 @@ class Handler(BaseHTTPRequestHandler):
                 rows_ev = c.fetchall()
                 conn.close()
                 live = live_get(tid)
-                fresh_live = live is not None and live["seq"] > live_after and live["text"]
+                fresh_live = live_has_content(live) and live["seq"] > live_after
                 remaining = deadline - time.time()
                 if rows_ev or fresh_live or t[2] not in ("queued", "running") or remaining <= 0:
                     break
@@ -4820,7 +5314,7 @@ class Handler(BaseHTTPRequestHandler):
                 "events": events
             }
             # 只发比手机已有的更新的草稿；旧草稿反复下发会和已写入的文字叠在一起
-            if live and live["text"] and live["seq"] > live_after:
+            if live_has_content(live) and live["seq"] > live_after:
                 out["live"] = live
             self._send(200, out)
             return
@@ -5441,7 +5935,10 @@ class Handler(BaseHTTPRequestHandler):
                         cloud_memory.delete(c2, mid)
                     finally:
                         c2.close()
-                ok, msg = cloud_audit.undo(conn, int(m_undo.group(1)), _del_memory)
+                ok, msg = cloud_audit.undo(conn, int(m_undo.group(1)), _del_memory,
+                                           other=lambda info: cloud_admin.undo(conn, info, credential_exists))
+                if ok:
+                    bots_changed()
             except OSError as e:
                 ok, msg = False, f"撤销失败：{type(e).__name__}"
             finally:
@@ -6091,6 +6588,45 @@ class Handler(BaseHTTPRequestHandler):
             self._send(code, body)
             return
 
+        m_inject = re.match(r"^/v1/tasks/([A-Za-z0-9_-]{1,64})/messages$", path)
+        if m_inject:
+            # 插话：任务进行中追加一条用户消息，下一步就交给模型（同一个 nonce 只收一次）
+            content = req_json.get("content")
+            nonce = req_json.get("nonce")
+            if not isinstance(content, str) or not content.strip() or len(content) > 100000:
+                self._send(400, {"error": "content must be a non-empty string"})
+                return
+            if nonce is not None and (not isinstance(nonce, str) or len(nonce) > 80):
+                self._send(400, {"error": "nonce must be a short string"})
+                return
+            code, body = inbox_push(m_inject.group(1), content.strip(), nonce)
+            self._send(code, body)
+            return
+
+        m_reset = re.match(r"^/v1/sessions/(sess_[a-f0-9]{12})/reset$", path)
+        if m_reset:
+            sid = m_reset.group(1)
+            conn = get_db_connection()
+            try:
+                exists = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (sid,)).fetchone()
+            finally:
+                conn.close()
+            if not exists:
+                self._send(404, {"error": "Session not found"})
+                return
+            model = req_json.get("model")
+            provider_req = req_json.get("provider") or {}
+            bot = session_bot(sid)
+            if bot and bot.get("model") and bot.get("credential"):
+                model, provider_req = bot["model"], {"protocol": "chat", "credential": bot["credential"]}
+            provider = None
+            if provider_req:
+                provider, _st, p_err = resolve_provider(provider_req)
+                if p_err:
+                    provider = None     # 没有可用的模型：快照退回如实摘录，不影响重置
+            self._send(200, reset_session(sid, provider, model))
+            return
+
         if path.startswith("/v1/tasks/") and path.endswith("/cancel"):
             parts = path.split("/")
             tid = parts[3] if len(parts) >= 4 else ""
@@ -6137,6 +6673,8 @@ def run_server():
     global SERVER_TOKEN
     if not SERVER_TOKEN:
         SERVER_TOKEN = validate_and_load_token()
+    global ADMIN_BASE
+    ADMIN_BASE = f"http://127.0.0.1:{PORT}"
     server = ThreadingHTTPServer((HOST, PORT), Handler)
 
     def start_background():

@@ -1,0 +1,157 @@
+# -*- coding: utf-8 -*-
+"""主 Bot 的管理工具：新建 / 修改 / 删除（进回收站）/ 恢复 / 设为主 Bot。
+
+只有主 Bot（personas.is_primary = 1）的顶层任务能用，服务器在出工具清单和执行时各查一次。
+每次改动都写进审计日志，并附带撤销信息（kind = "bot"）：新建可撤销成删除、修改可撤销回旧设置、
+删除可撤销成恢复。删除不清记忆、不删会话：整行和例行任务的归属先放进 bot_trash，恢复时原样放回。
+"""
+
+import json
+import re
+import time
+import uuid
+
+import cloud_bots
+
+TRASH_KEEP_DAYS = 30
+SETTING_KEYS = ("name", "instructions", "emoji", "description", "model", "credential", "skills", "plugins",
+                "reasoning_effort", "fast_mode")
+
+
+class AdminError(ValueError):
+    pass
+
+
+def ensure_schema(conn):
+    conn.execute("CREATE TABLE IF NOT EXISTS bot_trash (bot_id TEXT PRIMARY KEY, bot TEXT NOT NULL, routines TEXT, "
+                 "deleted_by TEXT, deleted_at REAL NOT NULL)")
+    conn.commit()
+
+
+def _slug(name):
+    s = re.sub(r"[^a-z0-9_-]+", "-", (name or "").lower()).strip("-_")[:24]
+    return s if s and cloud_bots.BOT_ID_RE.match(s) else ""
+
+
+def new_bot_id(conn, name):
+    base = _slug(name) or "bot"
+    for i in range(50):
+        cand = base if i == 0 and base != "bot" else f"{base[:24]}-{uuid.uuid4().hex[:4]}"
+        if not cloud_bots.get(conn, cand) and not conn.execute("SELECT 1 FROM bot_trash WHERE bot_id = ?", (cand,)).fetchone():
+            return cand
+    raise AdminError("没法生成新的 Bot id")
+
+
+def settings_body(bot):
+    body = {k: bot.get(k) for k in SETTING_KEYS}
+    body["fast_mode"] = bool(body.get("fast_mode"))
+    body["description"] = body.get("description") or None
+    return body
+
+
+def create(conn, args, credential_exists=None):
+    body = {k: args[k] for k in SETTING_KEYS if k in args}
+    if not body.get("instructions"):
+        body["instructions"] = args.get("system_prompt") or f"你是「{args.get('name') or 'Bot'}」。" + (args.get("description") or "")
+    bot_id = args.get("bot_id") or new_bot_id(conn, args.get("name"))
+    if cloud_bots.get(conn, bot_id):
+        raise AdminError(f"已经有 id 为 {bot_id} 的 Bot")
+    try:
+        bot, _ = cloud_bots.upsert(conn, bot_id, body, credential_exists)
+    except cloud_bots.BotError as e:
+        raise AdminError(str(e))
+    return bot
+
+
+def update(conn, bot_id, args, credential_exists=None):
+    cur = cloud_bots.get(conn, bot_id)
+    if not cur:
+        raise AdminError("没有这个 Bot")
+    before = settings_body(cur)
+    body = {k: args[k] for k in SETTING_KEYS if k in args}
+    if "system_prompt" in args and "instructions" not in body:
+        body["instructions"] = args["system_prompt"]
+    if not body:
+        raise AdminError("没有要改的设置")
+    try:
+        bot, _ = cloud_bots.upsert(conn, bot_id, body, credential_exists)
+    except cloud_bots.BotError as e:
+        raise AdminError(str(e))
+    return bot, before
+
+
+def delete(conn, bot_id, actor_id=None):
+    """放进回收站。主 Bot 不能删（先把别的 Bot 设为主 Bot）。"""
+    cur = cloud_bots.get(conn, bot_id)
+    if not cur:
+        raise AdminError("没有这个 Bot")
+    if cur.get("is_primary") or bot_id == actor_id:
+        raise AdminError("主 Bot 不能删除自己；要删请先把别的 Bot 设为主 Bot")
+    routines = [r[0] for r in conn.execute("SELECT routine_id FROM routines WHERE persona_id = ? AND enabled = 1", (bot_id,))]
+    conn.execute("INSERT OR REPLACE INTO bot_trash (bot_id, bot, routines, deleted_by, deleted_at) VALUES (?, ?, ?, ?, ?)",
+                 (bot_id, json.dumps(cur, ensure_ascii=False), json.dumps(routines), actor_id, time.time()))
+    conn.execute("UPDATE routines SET enabled = 0 WHERE persona_id = ?", (bot_id,))
+    conn.execute("DELETE FROM personas WHERE persona_id = ?", (bot_id,))
+    conn.commit()
+    return cur
+
+
+def trash(conn):
+    cutoff = time.time() - TRASH_KEEP_DAYS * 86400
+    conn.execute("DELETE FROM bot_trash WHERE deleted_at < ?", (cutoff,))
+    conn.commit()
+    out = []
+    for bid, bot, at in conn.execute("SELECT bot_id, bot, deleted_at FROM bot_trash ORDER BY deleted_at DESC"):
+        b = json.loads(bot)
+        out.append({"bot_id": bid, "name": b.get("name"), "emoji": b.get("emoji"), "deleted_at": at})
+    return out
+
+
+def restore(conn, bot_id, credential_exists=None):
+    r = conn.execute("SELECT bot, routines FROM bot_trash WHERE bot_id = ?", (bot_id,)).fetchone()
+    if not r:
+        raise AdminError("回收站里没有这个 Bot")
+    if cloud_bots.get(conn, bot_id):
+        raise AdminError("已经有同 id 的 Bot")
+    bot = json.loads(r[0])
+    body = settings_body(bot)
+    if body.get("credential") and credential_exists and not credential_exists(body["credential"]):
+        body["credential"], body["model"] = None, None
+    try:
+        restored, _ = cloud_bots.upsert(conn, bot_id, body, credential_exists)
+    except cloud_bots.BotError as e:
+        raise AdminError(str(e))
+    for rid in json.loads(r[1] or "[]"):
+        conn.execute("UPDATE routines SET enabled = 1 WHERE routine_id = ? AND persona_id = ?", (rid, bot_id))
+    conn.execute("DELETE FROM bot_trash WHERE bot_id = ?", (bot_id,))
+    conn.commit()
+    return restored
+
+
+def set_primary(conn, bot_id):
+    if not cloud_bots.get(conn, bot_id):
+        raise AdminError("没有这个 Bot")
+    prev = cloud_bots.primary(conn)
+    cloud_bots.upsert(conn, bot_id, {"is_primary": True})
+    return prev["bot_id"] if prev else None
+
+
+def undo(conn, info, credential_exists=None):
+    """审计日志里 kind = "bot" 的撤销。返回 (ok, 说明)。"""
+    op, bid = info.get("op"), info.get("bot_id")
+    try:
+        if op == "create":
+            delete(conn, bid)
+            return True, "已把新建的 Bot 移进回收站"
+        if op == "update":
+            cloud_bots.upsert(conn, bid, info.get("before") or {}, credential_exists)
+            return True, "已恢复修改前的设置"
+        if op == "delete":
+            restore(conn, bid, credential_exists)
+            return True, "已从回收站恢复"
+        if op == "set_primary" and info.get("previous"):
+            set_primary(conn, info["previous"])
+            return True, "已改回原来的主 Bot"
+    except (AdminError, cloud_bots.BotError) as e:
+        return False, str(e)
+    return False, "这条操作不能撤销"

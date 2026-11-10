@@ -231,9 +231,14 @@ def prompt(bot, others):
     if bot.get("description"):
         head += f"\n简介：{bot['description']}"
     text = head + "\n" + bot["instructions"] + "\n\n"
-    if bot.get("is_primary") and others:
-        text += ("[主 Bot] 你是用户的主 Bot，负责分派：请求明显属于下列某个 Bot 的专长时，用 subagent_task 并传 persona 把任务转交给它，再整合答复；"
-                 "否则自己完成。可用 Bot：" + "；".join(f"{b['persona_id']}（{b['name']}{'：' + b['description'] if b.get('description') else ''}）" for b in others[:20]) + "\n\n")
+    if bot.get("is_primary"):
+        text += ("[主 Bot] [管理员] 你是用户的主 Bot，拥有最高权限：用户让你新建、修改、删除、恢复 Bot，或调整别的 Bot 的记忆、技能、例行任务、"
+                 "设置、插件、代理、云电脑时，直接用 create_bot / update_bot / delete_bot / restore_bot / set_primary_bot / list_bots / admin_api 去做，"
+                 "不要让用户自己去设置里点。删除只是进回收站，改动都记在操作记录里可撤销。")
+        if others:
+            text += ("请求明显属于下列某个 Bot 的专长时，用 subagent_task 并传 persona 把任务转交给它，再整合答复；否则自己完成。可用 Bot："
+                     + "；".join(f"{b['persona_id']}（{b['name']}{'：' + b['description'] if b.get('description') else ''}）" for b in others[:20]))
+        text += "\n\n"
     return text
 
 

@@ -139,7 +139,19 @@ def _http_error(url, resp, data):
     return urllib.error.HTTPError(url, resp.status, resp.reason, resp.headers, io.BytesIO(data))
 
 
-def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120, pool=POOL):
+class Aborted(Exception):
+    """调用方要求中止正在接收的回复（例如用户插话）。"""
+
+
+def _reasoning_of(d):
+    # DeepSeek / Qwen / Kimi 用 reasoning_content，OpenRouter 等用 reasoning
+    v = d.get("reasoning_content")
+    if not v and isinstance(d.get("reasoning"), str):
+        v = d["reasoning"]
+    return v or None
+
+
+def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120, pool=POOL, on_reasoning=None, should_abort=None):
     """返回 (response_dict, timing)。timing: ttft_ms（首个内容块）、total_ms、streamed。"""
     t0 = time.perf_counter()
     if _proxied(url):
@@ -163,7 +175,13 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
             ok = True
             out = json.loads(data.decode("utf-8"))
             ms = (time.perf_counter() - t0) * 1000
-            text = (((out.get("choices") or [{}])[0].get("message") or {}).get("content")) if isinstance(out, dict) else None
+            m0 = ((out.get("choices") or [{}])[0].get("message") or {}) if isinstance(out, dict) else {}
+            text = m0.get("content")
+            r0 = _reasoning_of(m0)
+            if r0:
+                m0["reasoning_content"] = r0
+                if on_reasoning:
+                    on_reasoning(r0)
             if text and on_text:
                 on_text(text)
             return out, {"ttft_ms": round(ms, 1), "total_ms": round(ms, 1), "streamed": False}
@@ -172,7 +190,10 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
         reasoning = []
         ttft = None
         last_emit = 0.0
+        last_r_emit = 0.0
         while True:
+            if should_abort and should_abort():
+                raise Aborted()
             line = resp.readline()
             if not line:
                 break
@@ -192,7 +213,8 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
                 served_model = chunk["model"]
             for ch in chunk.get("choices") or []:
                 d = ch.get("delta") or {}
-                if ttft is None and (d.get("content") or d.get("tool_calls") or d.get("reasoning_content")):
+                rdelta = _reasoning_of(d)
+                if ttft is None and (d.get("content") or d.get("tool_calls") or rdelta):
                     ttft = (time.perf_counter() - t0) * 1000
                 if d.get("content"):
                     content.append(d["content"])
@@ -200,8 +222,12 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
                     if on_text and now - last_emit > 0.08:
                         last_emit = now
                         on_text("".join(content))
-                if d.get("reasoning_content"):
-                    reasoning.append(d["reasoning_content"])
+                if rdelta:
+                    reasoning.append(rdelta)
+                    now = time.perf_counter()
+                    if on_reasoning and now - last_r_emit > 0.15:
+                        last_r_emit = now
+                        on_reasoning("".join(reasoning))
                 for tc in d.get("tool_calls") or []:
                     slot = tool_calls.setdefault(tc.get("index", 0), {"id": None, "type": "function", "function": {"name": "", "arguments": ""}})
                     if tc.get("id"):
@@ -219,6 +245,8 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
         except (http.client.HTTPException, OSError):
             ok = False
         text = "".join(content)
+        if on_reasoning and reasoning:
+            on_reasoning("".join(reasoning))
         if on_text and text:
             on_text(text)
         msg = {"role": role, "content": text or None}
@@ -243,6 +271,13 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
 CORE_TOOLS = {"shell_execute", "file_read", "file_write", "file_edit", "memory_write", "memory_search", "skill_load",
               "subagent_task", "background_jobs"}
 TOOL_TRIGGERS = {
+    "create_bot": r"bot|机器人|助手|新建|创建|建一个|加一个",
+    "update_bot": r"bot|机器人|助手|改|设置|提示词|模型|头像",
+    "delete_bot": r"bot|机器人|助手|删",
+    "restore_bot": r"bot|机器人|助手|恢复|回收站|撤销",
+    "set_primary_bot": r"主 ?bot|主机器人|主助手",
+    "admin_api": r"bot|机器人|插件|代理|记忆|技能|例行|定时|设置|权限|审批|隔离|云电脑|桌面|管理|日志|plugin|proxy|memory|skill|routine",
+    "recall_snapshot": r"快照|snapshot|之前|上次|刚才|前面|重置|reset|继续|接着",
     "browser_action": r"网页|网站|浏览|链接|http|www\.|url|登录|搜索|查一下|search|web|打开|下单|购买|价格|新闻|天气",
     "desktop_action": r"桌面|屏幕|desktop|screen|点击|窗口|截图|gui",
     "request_user_takeover": r"登录|验证码|captcha|login|扫码|二维码|帮我登",

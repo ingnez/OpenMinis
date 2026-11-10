@@ -18,11 +18,15 @@ CREATE TABLE IF NOT EXISTS app_notifications (
 );
 """
 KEEP = 500
-PRESENCE_TTL = 120          # 秒：App 这么久内报到过就算在线
+PRESENCE_TTL = 90           # 秒：App 进程这么久内报到过就算还活着（前台或后台都每 25 秒报到一次）
 
 
 def ensure_schema(conn):
     conn.executescript(SCHEMA)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(app_notifications)")}
+    if "external" not in cols:
+        # 1 = 已经通过 Bark / ntfy / Telegram 推送过：App 之后取到时只放进列表，不再弹系统通知（不重复）
+        conn.execute("ALTER TABLE app_notifications ADD COLUMN external INTEGER NOT NULL DEFAULT 0")
     conn.commit()
 
 
@@ -53,11 +57,11 @@ class Feed:
         return bark_configured if bark_fallback is None else bool(bark_fallback)
 
     # ---------- 通知流 ----------
-    def add(self, kind, title, body, session_id=None, bot_id=None):
+    def add(self, kind, title, body, session_id=None, bot_id=None, external=False):
         conn = self.db_fn()
         try:
-            cur = conn.execute("INSERT INTO app_notifications (kind, title, body, session_id, bot_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                               (kind, (title or "")[:120], (body or "")[:600], session_id, bot_id, time.time()))
+            cur = conn.execute("INSERT INTO app_notifications (kind, title, body, session_id, bot_id, created_at, external) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                               (kind, (title or "")[:120], (body or "")[:600], session_id, bot_id, time.time(), 1 if external else 0))
             nid = cur.lastrowid
             conn.execute("DELETE FROM app_notifications WHERE id <= ?", (nid - KEEP,))
             conn.commit()
@@ -70,12 +74,13 @@ class Feed:
     def after(self, after_id, limit=50):
         conn = self.db_fn()
         try:
-            rows = conn.execute("SELECT id, kind, title, body, session_id, bot_id, created_at FROM app_notifications WHERE id > ? ORDER BY id ASC LIMIT ?",
+            rows = conn.execute("SELECT id, kind, title, body, session_id, bot_id, created_at, external FROM app_notifications WHERE id > ? ORDER BY id ASC LIMIT ?",
                                 (after_id, limit)).fetchall()
             last = conn.execute("SELECT COALESCE(MAX(id), 0) FROM app_notifications").fetchone()[0]
         finally:
             conn.close()
-        items = [{"id": r[0], "kind": r[1], "title": r[2], "body": r[3], "session_id": r[4], "bot_id": r[5], "created_at": r[6]} for r in rows]
+        items = [{"id": r[0], "kind": r[1], "title": r[2], "body": r[3], "session_id": r[4], "bot_id": r[5], "created_at": r[6],
+                  "external": bool(r[7])} for r in rows]
         return items, last
 
     def wait_after(self, after_id, wait_s):

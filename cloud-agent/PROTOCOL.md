@@ -394,3 +394,29 @@
 - `DELETE /v1/proxy/nodes/<id>`、`DELETE /v1/proxy/subscriptions/<id>`
 
 代理在运行时，Bot 的命令环境带 `HTTP(S)_PROXY / ALL_PROXY / NO_PROXY / npm_config_*_proxy` 和 `GIT_CONFIG_*`（git 的 http.proxy），新打开的浏览器带 `--proxy-server`，服务器自己的工具下载（uv / node）也经代理；代理没在运行时都不设置。`rules` 模式只有开发常用域名走节点，其他直连。
+
+## 9. 思考过程、插话、/reset 快照、主 Bot 管理、通知路由（服务器 2.6.0+）
+
+### 9.1 思考过程与工具步骤
+- 新事件 `reasoning` `{content, chars}`：模型这一步的思考过程，出现在同一步的 `thought` / `tool_call` 之前。会话历史里助手消息带 `reasoning` 字段；下一轮请求不会把它发回给模型。
+- 实时字段 `live.reasoning`：正在生成的思考过程；`live.tool` `{id, name, output}`：正在运行的工具与最后 12 行输出（Shell 每 0.5 秒刷新）。
+- 每个内置工具都多了可选参数 `tool_title`（一句话标题，给 App 胶囊用，不传给工具本身）；`tool_result` 事件和历史里的工具消息带 `duration_ms`。
+
+### 9.2 插话（发送免插队）
+- `POST /v1/tasks/<task_id>/messages` `{content, nonce}`：给正在运行的任务插一条消息。`202` 已收下；同一 nonce 再发返回 `200 {duplicate: true}`；任务不在运行或已收尾返回 `409`（App 改用普通发送）；任务不存在 `404`。
+- 收下时记 `user_message` 事件（state = pending）；模型真正看到时记 `user_message_applied` `{content, nonce}`。正在生成的那次模型请求会被打断，带上新消息重来；工具运行中插话则排在工具结果之后。
+
+### 9.3 /reset 快照
+- `POST /v1/sessions/<session_id>/reset` `{model?, provider?}`：先写一份对话快照（目标、决定、现状、待办、关键事实），优先用快速小模型，其次 Bot / 请求里的模型，都没有就用规则摘要；再清空模型上下文。会停止这个会话里正在运行的任务。
+- 历史里插入一条 `role = "context_reset"` 的消息，带 `snapshot_id` 和 `title`；之后的上下文只从这条之后开始，系统提示里只放最新快照的标题和 `recall_snapshot` 工具的提示。
+- `GET /v1/snapshots/<snapshot_id>` 返回完整快照；`GET /v1/bots/<bot_id|_default>/snapshots?q=` 列出某个 Bot 的快照。
+
+### 9.4 主 Bot 管理工具
+- 只有主 Bot（`is_primary`）的顶层任务能拿到并执行 `create_bot` / `update_bot` / `delete_bot` / `restore_bot` / `set_primary_bot` / `admin_api`；其他 Bot 和子任务调用会得到错误。
+- `delete_bot` 把 Bot 放进回收站（保留记忆和会话，暂停它的例行任务，30 天后清理）；主 Bot 不能删除自己。`list_bots` 对主 Bot 额外返回 `trash`。
+- `admin_api` 调本机 API（和 App 同一套）；`/v1/credentials`、`/v1/notify`、`/v1/backup`、`/v1/auth`、`/v1/token` 不开放，删除 Bot 必须走 `delete_bot`。
+- 每次改动都写进 `/v1/audit`，带撤销信息（`POST /v1/audit/<id>/undo`）：新建可撤销成进回收站，修改可撤销回原设置，删除可撤销成恢复。改动后通知流里推一条 `kind = "bots_changed"`（`external: true`），App 首页马上刷新。
+
+### 9.5 通知路由
+- App 进程活着（前台或后台）时每 25 秒 `POST /v1/presence`；服务器 90 秒内收到过就认为 App 在，任务完成等通知只进 App 通知流（`GET /v1/notifications`），由 App 用系统本地通知显示，不发 Bark / ntfy / Telegram 推送。
+- 超过 90 秒没报到（App 被挂起或杀掉）才按设置走外部推送；这条通知在通知流里带 `external: true`，App 之后取到也不再弹一次。

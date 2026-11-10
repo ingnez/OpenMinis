@@ -65,7 +65,7 @@ def list_entries(conn, bot_id=None, limit=100):
     return [_row(r) for r in rows]
 
 
-def undo(conn, entry_id, delete_memory):
+def undo(conn, entry_id, delete_memory, other=None):
     """撤销一条记录。返回 (ok, 说明)。文件撤销前会核对路径没被换成链接。"""
     r = conn.execute("SELECT undo, undone FROM audit_log WHERE id = ?", (entry_id,)).fetchone()
     if not r:
@@ -87,6 +87,10 @@ def undo(conn, entry_id, delete_memory):
             os.remove(path)
     elif info.get("kind") == "memory":
         delete_memory(info["id"])
+    elif other is not None and info.get("kind") == "bot":
+        ok, msg = other(info)
+        if not ok:
+            return False, msg
     else:
         return False, "这条操作不能撤销"
     conn.execute("UPDATE audit_log SET undone = 1 WHERE id = ?", (entry_id,))
