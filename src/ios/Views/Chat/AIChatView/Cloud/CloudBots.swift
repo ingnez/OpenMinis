@@ -25,6 +25,14 @@ struct CloudBot: Identifiable, Hashable {
     var sessionCount: Int
     var routineCount: Int
     var memoryCount: Int
+    var latestSessionId: String?
+    var lastPreview: String
+    var lastRole: String
+    var lastAt: Double
+    var runningTasks: Int
+    var waitingApprovals: Int
+    var notify: Bool
+    var routinesEnabled: Int
 
     init(id: String, name: String, emoji: String, summary: String, instructions: String, isPrimary: Bool = false) {
         self.id = id
@@ -41,6 +49,14 @@ struct CloudBot: Identifiable, Hashable {
         self.sessionCount = 0
         self.routineCount = 0
         self.memoryCount = 0
+        self.latestSessionId = nil
+        self.lastPreview = ""
+        self.lastRole = ""
+        self.lastAt = 0
+        self.runningTasks = 0
+        self.waitingApprovals = 0
+        self.notify = true
+        self.routinesEnabled = 0
     }
 
     init?(_ d: [String: Any]) {
@@ -59,9 +75,21 @@ struct CloudBot: Identifiable, Hashable {
         sessionCount = d["session_count"] as? Int ?? 0
         routineCount = d["routine_count"] as? Int ?? 0
         memoryCount = d["memory_count"] as? Int ?? 0
+        latestSessionId = d["latest_session_id"] as? String
+        let last = d["last_message"] as? [String: Any]
+        lastPreview = last?["preview"] as? String ?? ""
+        lastRole = last?["role"] as? String ?? ""
+        lastAt = (last?["at"] as? NSNumber)?.doubleValue ?? 0
+        runningTasks = d["running_tasks"] as? Int ?? 0
+        waitingApprovals = d["waiting_approvals"] as? Int ?? 0
+        notify = d["notify"] as? Bool ?? true
+        routinesEnabled = d["routines_enabled"] as? Int ?? 0
     }
 
-    var avatar: String { emoji.isEmpty ? "🤖" : emoji }
+    /// 这个 Bot 自己固定了模型与凭据：对话不依赖手机当前选择的服务商
+    var hasOwnModel: Bool { !model.isEmpty && !credential.isEmpty }
+
+    var avatar: String { (emoji.isEmpty || emoji.hasPrefix("av:")) ? "🤖" : emoji }
     var label: String { "\(avatar) \(name)" }
 }
 
@@ -372,7 +400,8 @@ struct CloudBotEditor: View {
     }
 }
 
-struct CloudBotDetailView: View {
+/// 高级设置（对话列表、插件、技能、模型、记忆、导出）：从 Bot 资料页的 … 菜单进入
+struct CloudBotAdvancedView: View {
     let onChanged: @MainActor () async -> Void
     @State private var bot: CloudBot
     @State private var sessions: [[String: Any]] = []
@@ -506,7 +535,7 @@ struct CloudBotDetailView: View {
 
             if let errorText { Section { Text(errorText).font(.footnote).foregroundStyle(.red) } }
         }
-        .navigationTitle(bot.name)
+        .navigationTitle("高级设置")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) { Button("编辑") { showEditor = true } }
         }

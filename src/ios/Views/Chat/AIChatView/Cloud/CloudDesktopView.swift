@@ -76,7 +76,7 @@ struct CloudDesktopView: View {
     }
 }
 
-final class DesktopNavigationCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+class DesktopNavigationCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
     var lastReloadToken: UUID?
     /// 允许的本机端口（隧道端口可能不是 18766）
     var allowedPort: Int = 18766

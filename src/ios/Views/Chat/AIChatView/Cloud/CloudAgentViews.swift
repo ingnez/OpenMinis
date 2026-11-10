@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import VisionKit
 import Combine
 
 // MARK: - 1. Settings & Connection View
@@ -574,12 +575,22 @@ struct CloudSessionView: View {
     let sessionTitle: String
     let model: String
     let selectedInstanceId: String
+    /// 会话所属 Bot 已固定模型与凭据时为 true：发送时不要求手机选择服务商
+    let botHasOwnModel: Bool
+    /// 输入 @ 时可选的 Bot（把任务交给另一个 Bot）
+    let mentionBots: [CloudBot]
+    /// 多 Bot 模式：用 Bot 的头像颜色做气泡与按钮主题，显示动态头像进度、附件与语音入口
+    let theme: CloudBotChatTheme?
 
-    init(sessionId: String, sessionTitle: String, model: String, selectedInstanceId: String) {
+    init(sessionId: String, sessionTitle: String, model: String, selectedInstanceId: String,
+         botHasOwnModel: Bool = false, mentionBots: [CloudBot] = [], theme: CloudBotChatTheme? = nil) {
+        self.theme = theme
         self.sessionId = sessionId
         self.sessionTitle = sessionTitle
         self.model = model
         self.selectedInstanceId = selectedInstanceId
+        self.botHasOwnModel = botHasOwnModel
+        self.mentionBots = mentionBots
     }
 
     @ObservedObject private var connection = CloudConnection.shared
@@ -594,8 +605,23 @@ struct CloudSessionView: View {
     @State private var isPolling = false
     @State private var loadedTaskId: String? = nil
     @State private var errorMessage: String? = nil
+    @State private var showComputer = false
+    @State private var attachments: [CloudPendingAttachment] = []
+    @State private var showPhotos = false
+    @State private var showCamera = false
+    @State private var showScanner = false
+    @State private var showFiles = false
+    @State private var showVoiceCall = false
+    @StateObject private var dictation = CloudDictation()
+    @State private var dictationBase = ""
 
     private let timer = Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()
+
+    /// 最近一次任务里 Bot 请求用户接管云电脑的原因（登录、验证码等）
+    private var takeoverReason: String? {
+        let last = taskEvents.last { $0["type"] as? String == "takeover_request" }
+        return (last?["payload"] as? [String: Any])?["reason"] as? String
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -623,10 +649,18 @@ struct CloudSessionView: View {
                         ForEach(Array(messages.enumerated()), id: \.offset) { _, msg in
                             let role = msg["role"] as? String ?? "user"
                             let content = msg["content"] as? String ?? ""
-                            CloudMessageBubble(role: role, content: content)
+                            if let theme {
+                                CloudThemedBubble(role: role, content: content, accent: theme.accent)
+                            } else {
+                                CloudMessageBubble(role: role, content: content)
+                            }
                         }
 
-                        if !taskEvents.isEmpty {
+                        if let theme {
+                            themedTaskArea(theme)
+                        }
+
+                        if theme == nil && !taskEvents.isEmpty {
                             Divider()
                             Text("当前/最新任务实时日志").font(.caption).bold().foregroundColor(.secondary)
                             let resolvedApprovals = Set(taskEvents.compactMap { ev -> String? in
@@ -637,6 +671,9 @@ struct CloudSessionView: View {
                                 let type = ev["type"] as? String ?? "event"
                                 let payload = ev["payload"] as? [String: Any] ?? [:]
                                 CloudTaskEventRow(type: type, payload: payload)
+                                if type == "takeover_request" {
+                                    CloudTakeoverCard(reason: payload["reason"] as? String ?? "") { showComputer = true }
+                                }
                                 if type == "approval_required", activeTaskStatus == "waiting_user",
                                    let aid = payload["approval_id"] as? String, !resolvedApprovals.contains(aid) {
                                     HStack {
@@ -657,7 +694,7 @@ struct CloudSessionView: View {
             Divider()
 
             // Active Task Status Bar if running
-            if activeTaskStatus == "running" || activeTaskStatus == "waiting_user" {
+            if theme == nil && (activeTaskStatus == "running" || activeTaskStatus == "waiting_user") {
                 HStack {
                     ProgressView()
                         .padding(.trailing, 4)
@@ -677,9 +714,30 @@ struct CloudSessionView: View {
                 .background(Color.blue.opacity(0.1))
             }
 
+            if !mentionCandidates.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(mentionCandidates) { bot in
+                            Button { insertMention(bot) } label: {
+                                Text(bot.label).font(.subheadline)
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.top, 6)
+                }
+            }
+
             // Input Composer Bar
+            if let theme {
+                themedComposer(theme)
+            } else {
             HStack(spacing: 8) {
-                TextField("给云端 Agent 发送任务...", text: $inputPrompt)
+                TextField(mentionBots.isEmpty ? "给云端 Agent 发送任务..." : "发消息，输入 @ 可交给其他 Bot（键盘麦克风可语音输入）", text: $inputPrompt, axis: .vertical)
+                    .lineLimit(1...6)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
                     .disabled(activeTaskStatus == "running" || isSubmitting)
 
@@ -698,11 +756,46 @@ struct CloudSessionView: View {
             }
             .padding()
             .background(Color(.systemBackground))
+            }
+        }
+        .tint(theme?.accent)
+        .sheet(isPresented: $showPhotos) { CloudPhotoPicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
+        .fullScreenCover(isPresented: $showCamera) { CloudCameraPicker { attachments.append($0) }.ignoresSafeArea() }
+        .fullScreenCover(isPresented: $showScanner) { CloudDocumentScanner { attachments.append($0) }.ignoresSafeArea() }
+        .sheet(isPresented: $showFiles) { CloudFilePicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
+        .fullScreenCover(isPresented: $showVoiceCall) {
+            if let theme {
+                CloudBotVoiceCallView(theme: theme, isWorking: activeTaskStatus == "running" || activeTaskStatus == "waiting_user" || isSubmitting,
+                                      progress: CloudBotProgress.summarize(taskEvents, status: activeTaskStatus).0) { text in
+                    inputPrompt = text
+                    sendTask()
+                }
+            }
+        }
+        .onChange(of: messages.count) { _, _ in
+            // 语音对话中：Bot 回复后按它的语音设置朗读
+            guard showVoiceCall, let theme, let last = messages.last, last["role"] as? String == "assistant",
+                  let text = last["content"] as? String, !text.isEmpty else { return }
+            CloudBotSpeaker.speak(CloudMessageText.display(text).text, botId: theme.botId)
+        }
+        .onChange(of: dictation.transcript) { _, text in
+            guard dictation.isRecording else { return }
+            inputPrompt = dictationBase.isEmpty ? text : dictationBase + " " + text
         }
         .navigationTitle(sessionTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(isPresented: $showComputer) {
+            CloudComputerView(botId: mentionBots.isEmpty ? nil : CloudBotHomeModel.shared.botId(forSession: sessionId),
+                              sessionId: sessionId, reason: takeoverReason)
+        }
         .onAppear {
             loadSessionDetail()
+            if CloudComputerHandoff.consume(sessionId) { sendFinished() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: CloudComputerHandoff.finished)) { note in
+            guard note.userInfo?["session_id"] as? String == sessionId else { return }
+            _ = CloudComputerHandoff.consume(sessionId)
+            sendFinished()
         }
         .onReceive(timer) { _ in
             if activeTaskStatus == "running" || activeTaskStatus == "waiting_user", let tid = activeTaskId, !isPolling {
@@ -715,6 +808,7 @@ struct CloudSessionView: View {
         isLoading = true
         Task {
             do {
+                try await connection.ensureConnected()
                 let res = try await connection.request(method: "GET", path: "/v1/sessions/\(sessionId)")
                 await MainActor.run {
                     self.messages = res["messages"] as? [[String: Any]] ?? []
@@ -742,9 +836,190 @@ struct CloudSessionView: View {
         }
     }
 
+    /// 输入框最后一个词以 @ 开头时，列出名称或 ID 匹配的 Bot。
+    private var mentionCandidates: [CloudBot] {
+        guard !mentionBots.isEmpty, let last = inputPrompt.split(separator: " ", omittingEmptySubsequences: false).last,
+              last.hasPrefix("@") || last.hasPrefix("＠") else { return [] }
+        let q = String(last.dropFirst()).lowercased()
+        return mentionBots.filter { q.isEmpty || $0.name.lowercased().hasPrefix(q) || $0.id.hasPrefix(q) }
+    }
+
+    private func insertMention(_ bot: CloudBot) {
+        var parts = inputPrompt.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+        if !parts.isEmpty { parts.removeLast() }
+        parts.append("@\(bot.name) ")
+        inputPrompt = parts.joined(separator: " ")
+    }
+
+    @ViewBuilder
+    private func themedTaskArea(_ theme: CloudBotChatTheme) -> some View {
+        let resolved = Set(taskEvents.compactMap { ev -> String? in
+            guard ev["type"] as? String == "approval_resolved" else { return nil }
+            return (ev["payload"] as? [String: Any])?["approval_id"] as? String
+        })
+        ForEach(Array(taskEvents.enumerated()), id: \.offset) { _, ev in
+            let type = ev["type"] as? String ?? ""
+            let payload = ev["payload"] as? [String: Any] ?? [:]
+            if type == "takeover_request" {
+                CloudTakeoverCard(reason: payload["reason"] as? String ?? "") { showComputer = true }
+            } else if type == "approval_required", activeTaskStatus == "waiting_user",
+                      let aid = payload["approval_id"] as? String, !resolved.contains(aid) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("需要你批准", systemImage: "hand.raised.fill").font(.subheadline.bold()).foregroundStyle(.orange)
+                    Text(payload["reason"] as? String ?? (payload["tool"] as? String ?? "")).font(.callout)
+                    HStack {
+                        Button("拒绝") { decide(approvalId: aid, approve: false) }.buttonStyle(.bordered).tint(.red)
+                        Button("批准") { decide(approvalId: aid, approve: true) }.buttonStyle(.borderedProminent).tint(theme.accent)
+                    }
+                    .controlSize(.small)
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color.orange.opacity(0.1)))
+            }
+        }
+        if activeTaskStatus == "running" || activeTaskStatus == "waiting_user" || isSubmitting {
+            CloudBotWorkingRow(spec: theme.spec, events: taskEvents, status: activeTaskStatus)
+        }
+    }
+
+    @ViewBuilder
+    private func themedComposer(_ theme: CloudBotChatTheme) -> some View {
+        let working = activeTaskStatus == "running" || activeTaskStatus == "waiting_user"
+        VStack(spacing: 6) {
+            if !attachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(attachments) { a in
+                            HStack(spacing: 6) {
+                                if let thumb = a.thumbnail {
+                                    Image(uiImage: thumb).resizable().scaledToFill().frame(width: 28, height: 28).clipShape(RoundedRectangle(cornerRadius: 6))
+                                } else {
+                                    Image(systemName: "doc").frame(width: 28, height: 28)
+                                }
+                                Text(a.filename).font(.caption).lineLimit(1).frame(maxWidth: 120)
+                                Button { attachments.removeAll { $0.id == a.id } } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                                    .accessibilityLabel("移除 \(a.filename)")
+                            }
+                            .padding(6)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(Color(.systemGray6)))
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                }
+            }
+            if let err = dictation.errorText { Text(err).font(.caption).foregroundStyle(.red) }
+            HStack(alignment: .bottom, spacing: 8) {
+                Menu {
+                    Button { showPhotos = true } label: { Label("照片或视频", systemImage: "photo.on.rectangle") }
+                    Button { showCamera = true } label: { Label("拍照", systemImage: "camera") }
+                    if VNDocumentCameraViewController.isSupported {
+                        Button { showScanner = true } label: { Label("扫描文档", systemImage: "doc.viewfinder") }
+                    }
+                    Button { showFiles = true } label: { Label("选择文件", systemImage: "folder") }
+                } label: {
+                    Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).foregroundStyle(.primary)
+                        .frame(width: 40, height: 40).background(Circle().fill(Color(.systemGray6)))
+                }
+                .accessibilityLabel("添加附件")
+                HStack(alignment: .bottom, spacing: 4) {
+                    TextField(mentionBots.isEmpty ? "发消息" : "发消息，输入 @ 交给其他 Bot", text: $inputPrompt, axis: .vertical)
+                        .lineLimit(1...6)
+                        .padding(.vertical, 10).padding(.leading, 14)
+                        .disabled(isSubmitting)
+                    if !hasDraft && !working {
+                        Button { toggleDictation() } label: {
+                            Image(systemName: dictation.isRecording ? "stop.circle.fill" : "mic").font(.system(size: 18))
+                                .foregroundStyle(dictation.isRecording ? Color.red : Color.secondary)
+                                .frame(width: 36, height: 40)
+                        }
+                        .accessibilityLabel(dictation.isRecording ? "停止听写" : "听写")
+                    }
+                }
+                .background(Capsule().fill(Color(.systemGray6)))
+                Button {
+                    if working { cancelActiveTask() } else if hasDraft { if dictation.isRecording { dictation.stop() }; sendTask() } else { showVoiceCall = true }
+                } label: {
+                    Group {
+                        if isSubmitting {
+                            ProgressView().tint(.white)
+                        } else {
+                            Image(systemName: working ? "stop.fill" : (hasDraft ? "arrow.up" : "waveform"))
+                                .font(.system(size: 17, weight: .bold))
+                        }
+                    }
+                    .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
+                    .background(Circle().fill(theme.accent))
+                }
+                .disabled(isSubmitting)
+                .accessibilityLabel(working ? "停止" : (hasDraft ? "发送" : "和 \(theme.name) 语音对话"))
+            }
+            .padding(.horizontal, 12)
+        }
+        .padding(.vertical, 8)
+        .background(Color(.systemBackground))
+    }
+
+    private var hasDraft: Bool {
+        !inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
+    }
+
+    private func toggleDictation() {
+        if dictation.isRecording {
+            dictation.stop()
+        } else {
+            dictationBase = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            dictation.start(language: theme.map { CloudBotVoiceSettings.load($0.botId).language } ?? "")
+        }
+    }
+
+    /// 有附件时先上传（文件存到工作区，图片同时作为图片消息发给模型），再提交任务
+    private func submitPrepared(content: String, body: [String: Any]) {
+        guard !attachments.isEmpty else {
+            submit(content: content, body: body)
+            return
+        }
+        let items = attachments
+        isSubmitting = true
+        Task {
+            do {
+                let lines = try await CloudAttachmentKit.upload(items, sessionId: sessionId)
+                let text = (content.isEmpty ? "请查看附件。" : content) + "\n\n" + lines.joined(separator: "\n")
+                var newBody = body
+                newBody["content"] = text
+                let images = items.filter { $0.isImage && $0.data.count < 1_400_000 }.prefix(4)
+                if !images.isEmpty {
+                    var parts: [[String: Any]] = [["type": "text", "text": text]]
+                    for img in images {
+                        parts.append(["type": "image_url", "image_url": ["url": "data:image/jpeg;base64," + img.data.base64EncodedString()]])
+                    }
+                    newBody["message_parts"] = parts
+                }
+                attachments.removeAll()
+                isSubmitting = false
+                submit(content: text, body: newBody)
+            } catch {
+                isSubmitting = false
+                errorMessage = "附件上传失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// 用户在「电脑」页点了「我完成了」：把控制权交回 Bot
+    private func sendFinished() {
+        guard activeTaskStatus != "running", !isSubmitting else { return }
+        inputPrompt = "我完成了：已在云电脑上完成手动操作（登录 / 验证码等），请截图确认后继续。"
+        sendTask()
+    }
+
     private func sendTask() {
         let content = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty, !isSubmitting else { return }
+        guard !content.isEmpty || !attachments.isEmpty, !isSubmitting else { return }
+        if botHasOwnModel {
+            // Bot 已固定模型与加密保存的凭据：由服务器选择，不需要手机上的 Key
+            submitPrepared(content: content, body: ["content": content, "model": model.isEmpty ? "bot" : model, "provider": [String: Any]()])
+            return
+        }
 
         guard !selectedInstanceId.isEmpty,
               let inst = ProviderConfigStore.shared.instance(for: selectedInstanceId),
@@ -774,11 +1049,16 @@ struct CloudSessionView: View {
             "instructions": "你是运行在用户指定 VPS 上的 OpenMinis 云端 Agent。使用中文回答，调用工具完成任务并根据真实输出核验结果。Shell 与文件操作均发生在 VPS 工作区，不具有手机照片、日历等本机工具。不要声称未执行的操作已经完成。"
         ]
 
+        submitPrepared(content: content, body: body)
+    }
+
+    private func submit(content: String, body: [String: Any]) {
         isSubmitting = true
         errorMessage = nil
 
         Task {
             do {
+                try await connection.ensureConnected()
                 let res = try await connection.request(method: "POST", path: "/v1/sessions/\(sessionId)/messages", body: body)
                 if let tid = res["task_id"] as? String {
                     await MainActor.run {

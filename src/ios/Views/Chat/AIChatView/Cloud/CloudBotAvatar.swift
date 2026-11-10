@@ -1,0 +1,279 @@
+//
+//  CloudBotAvatar.swift
+//  Minis - Bot 头像：13 种形状 × 12 种颜色，带白色“眼睛”；保存在 Bot 的 emoji 字段（"av:s<形状>c<颜色>"）。
+//
+
+import SwiftUI
+
+struct CloudBotAvatarSpec: Hashable {
+    var shape: Int
+    var color: Int
+
+    static let shapeCount = 13
+    static let colors: [Color] = [
+        .black,
+        Color(red: 0.55, green: 0.38, blue: 0.24),  // 棕
+        Color(red: 0.93, green: 0.26, blue: 0.27),  // 红
+        Color(red: 0.95, green: 0.45, blue: 0.16),  // 橙
+        Color(red: 0.96, green: 0.63, blue: 0.20),  // 琥珀
+        Color(red: 0.36, green: 0.78, blue: 0.45),  // 绿
+        Color(red: 0.33, green: 0.73, blue: 0.65),  // 青
+        Color(red: 0.24, green: 0.52, blue: 0.96),  // 蓝
+        Color(red: 0.55, green: 0.36, blue: 0.96),  // 紫
+        Color(red: 0.92, green: 0.29, blue: 0.60),  // 粉
+        Color(red: 0.39, green: 0.40, blue: 0.95),  // 靛
+        Color(red: 0.47, green: 0.47, blue: 0.49),  // 灰
+    ]
+
+    var encoded: String { "av:s\(shape)c\(color)" }
+    var fill: Color { Self.colors[min(max(color, 0), Self.colors.count - 1)] }
+
+    static func parse(_ text: String) -> CloudBotAvatarSpec? {
+        guard text.hasPrefix("av:s"), let cIdx = text.firstIndex(of: "c") else { return nil }
+        let s = Int(text[text.index(text.startIndex, offsetBy: 4)..<cIdx])
+        let c = Int(text[text.index(after: cIdx)...])
+        guard let s, let c, (0..<shapeCount).contains(s), (0..<colors.count).contains(c) else { return nil }
+        return CloudBotAvatarSpec(shape: s, color: c)
+    }
+
+    /// 没有保存头像时按 Bot ID 生成稳定的默认值；主 Bot 默认黑色圆形
+    static func `default`(for id: String, primary: Bool) -> CloudBotAvatarSpec {
+        if primary { return CloudBotAvatarSpec(shape: 0, color: 0) }
+        var h: UInt32 = 5381
+        for b in id.utf8 { h = (h &* 33) &+ UInt32(b) }
+        return CloudBotAvatarSpec(shape: Int(h % 13), color: 1 + Int((h / 13) % 11))
+    }
+
+    static func of(_ bot: CloudBot) -> CloudBotAvatarSpec {
+        parse(bot.emoji) ?? .default(for: bot.id, primary: bot.isPrimary)
+    }
+}
+
+/// 13 种头像形状（单位方框内绘制后缩放）
+struct CloudBotShape: Shape {
+    let kind: Int
+
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height)
+        let o = CGPoint(x: rect.midX - s / 2, y: rect.midY - s / 2)
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: o.x + x * s, y: o.y + y * s) }
+        func circles(_ list: [(CGFloat, CGFloat, CGFloat)]) -> Path {
+            var p = Path()
+            for (x, y, r) in list { p.addEllipse(in: CGRect(x: o.x + (x - r) * s, y: o.y + (y - r) * s, width: 2 * r * s, height: 2 * r * s)) }
+            return p
+        }
+        func rounded(_ points: [CGPoint], radius: CGFloat) -> Path {
+            var p = Path()
+            let n = points.count
+            let mid = { (a: CGPoint, b: CGPoint) in CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2) }
+            p.move(to: mid(points[n - 1], points[0]))
+            for i in 0..<n {
+                p.addArc(tangent1End: points[i], tangent2End: points[(i + 1) % n], radius: radius * s)
+            }
+            p.closeSubpath()
+            return p
+        }
+        func polygon(_ count: Int, rotation: Double, radius: CGFloat = 0.48) -> [CGPoint] {
+            (0..<count).map { i in
+                let a = rotation + Double(i) * 2 * .pi / Double(count)
+                return pt(0.5 + radius * CGFloat(cos(a)), 0.5 + radius * CGFloat(sin(a)))
+            }
+        }
+        func star(_ points: Int, inner: CGFloat, rotation: Double) -> Path {
+            var verts: [CGPoint] = []
+            for i in 0..<(points * 2) {
+                let r: CGFloat = i % 2 == 0 ? 0.5 : inner
+                let a = rotation + Double(i) * .pi / Double(points)
+                verts.append(pt(0.5 + r * CGFloat(cos(a)), 0.5 + r * CGFloat(sin(a))))
+            }
+            return rounded(verts, radius: 0.06)
+        }
+        switch kind {
+        case 1:  // 四叶草
+            return circles([(0.32, 0.36, 0.24), (0.68, 0.36, 0.24), (0.36, 0.66, 0.24), (0.66, 0.66, 0.24), (0.5, 0.5, 0.2)])
+        case 2:  // 倾斜圆角方
+            let r = s * 0.2
+            let box = CGRect(x: o.x + s * 0.14, y: o.y + s * 0.14, width: s * 0.72, height: s * 0.72)
+            return RoundedRectangle(cornerRadius: r, style: .continuous).path(in: box)
+                .applying(CGAffineTransform(translationX: -rect.midX, y: -rect.midY)
+                    .concatenating(CGAffineTransform(rotationAngle: .pi / 9))
+                    .concatenating(CGAffineTransform(translationX: rect.midX, y: rect.midY)))
+        case 3:  // 四角星
+            return star(4, inner: 0.24, rotation: -.pi / 2)
+        case 4:  // 蓬松云
+            return circles([(0.5, 0.3, 0.22), (0.28, 0.45, 0.22), (0.72, 0.45, 0.22), (0.38, 0.7, 0.22), (0.64, 0.7, 0.22), (0.5, 0.5, 0.22)])
+        case 5:  // 豆子
+            var p = Path()
+            p.addEllipse(in: CGRect(x: o.x + s * 0.08, y: o.y + s * 0.2, width: s * 0.84, height: s * 0.6))
+            return p.applying(CGAffineTransform(translationX: -rect.midX, y: -rect.midY).concatenating(CGAffineTransform(rotationAngle: -.pi / 10)).concatenating(CGAffineTransform(translationX: rect.midX, y: rect.midY)))
+        case 6:  // 花
+            var list: [(CGFloat, CGFloat, CGFloat)] = [(0.5, 0.5, 0.26)]
+            for i in 0..<6 {
+                let a = Double(i) * .pi / 3
+                list.append((0.5 + 0.24 * CGFloat(cos(a)), 0.5 + 0.24 * CGFloat(sin(a)), 0.17))
+            }
+            return circles(list)
+        case 7:  // 水滴
+            var p = Path()
+            p.move(to: pt(0.5, 0.04))
+            p.addCurve(to: pt(0.9, 0.62), control1: pt(0.62, 0.22), control2: pt(0.9, 0.38))
+            p.addArc(center: pt(0.5, 0.62), radius: 0.4 * s, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
+            p.addCurve(to: pt(0.5, 0.04), control1: pt(0.1, 0.38), control2: pt(0.38, 0.22))
+            p.closeSubpath()
+            return p
+        case 8:  // 胶囊
+            return Capsule().path(in: CGRect(x: o.x + s * 0.04, y: o.y + s * 0.22, width: s * 0.92, height: s * 0.56))
+        case 9:  // 三角
+            return rounded([pt(0.12, 0.12), pt(0.95, 0.5), pt(0.12, 0.88)], radius: 0.14)
+        case 10: // 六边形宝石
+            return rounded(polygon(6, rotation: .pi / 6), radius: 0.12)
+        case 11: // 八角星
+            return star(8, inner: 0.34, rotation: 0)
+        case 12: // 五边形
+            return rounded(polygon(5, rotation: -.pi / 2), radius: 0.12)
+        default: // 圆
+            return Circle().path(in: CGRect(x: o.x, y: o.y, width: s, height: s))
+        }
+    }
+}
+
+struct CloudBotAvatarView: View {
+    let spec: CloudBotAvatarSpec
+    var size: CGFloat = 46
+    /// 眼睛看向的方向（-1...1），工作动画用
+    var gaze: CGSize = .zero
+    /// 眼睛睁开程度（1 = 睁开，0.1 = 眨眼）
+    var eyeOpen: CGFloat = 1
+
+    var body: some View {
+        ZStack {
+            CloudBotShape(kind: spec.shape).fill(spec.fill)
+            HStack(spacing: size * 0.13) {
+                Capsule().fill(Color.white).frame(width: size * 0.1, height: size * 0.22 * max(eyeOpen, 0.12))
+                Capsule().fill(Color.white).frame(width: size * 0.1, height: size * 0.22 * max(eyeOpen, 0.12))
+            }
+            .rotationEffect(.degrees(-14))
+            .offset(x: size * (0.06 + 0.08 * gaze.width), y: size * (-0.08 + 0.07 * gaze.height))
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+/// 形状网格 + 颜色点；创建页与编辑页共用
+struct CloudBotAvatarPicker: View {
+    @Binding var spec: CloudBotAvatarSpec
+
+    var body: some View {
+        VStack(spacing: 22) {
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(52), spacing: 10), count: 5), spacing: 12) {
+                ForEach(0..<CloudBotAvatarSpec.shapeCount, id: \.self) { k in
+                    Button { spec.shape = k } label: {
+                        CloudBotAvatarView(spec: CloudBotAvatarSpec(shape: k, color: spec.color), size: 38)
+                            .frame(width: 50, height: 50)
+                            .overlay(Circle().stroke(Color.gray.opacity(spec.shape == k ? 0.45 : 0), lineWidth: 2))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("形状 \(k + 1)")
+                }
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(44), spacing: 14), count: 6), spacing: 14) {
+                ForEach(0..<CloudBotAvatarSpec.colors.count, id: \.self) { c in
+                    Button { spec.color = c } label: {
+                        Circle().fill(CloudBotAvatarSpec.colors[c]).frame(width: 28, height: 28)
+                            .padding(5)
+                            .overlay(Circle().stroke(Color.gray.opacity(spec.color == c ? 0.5 : 0), lineWidth: 2))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("颜色 \(c + 1)")
+                }
+            }
+        }
+    }
+}
+
+/// 「+」创建新 Bot：名称 + 形状 + 颜色，一步完成；模板为次要入口
+struct CloudBotCreateSheet: View {
+    let onCreated: @MainActor (String) async -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var spec = CloudBotAvatarSpec(shape: 4, color: 6)
+    @State private var saving = false
+    @State private var errorText: String?
+    @State private var showTemplates = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 26) {
+                    CloudBotAvatarView(spec: spec, size: 150).padding(.top, 12)
+                    TextField("为 Bot 取个名字", text: $name)
+                        .multilineTextAlignment(.center)
+                        .font(.system(size: 20, weight: .semibold))
+                        .padding(.vertical, 14)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Color(.systemBackground)))
+                        .padding(.horizontal, 20)
+                    CloudBotAvatarPicker(spec: $spec)
+                    if let errorText { Text(errorText).font(.footnote).foregroundStyle(.red) }
+                    Button("从模板创建…") { showTemplates = true }
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                .padding(.bottom, 100)
+            }
+            .background(Color(.systemGroupedBackground))
+            .safeAreaInset(edge: .bottom) {
+                Button { create() } label: {
+                    Text(saving ? "创建中…" : "创建").font(.headline).frame(maxWidth: .infinity).frame(height: 50)
+                        .foregroundStyle(.white)
+                        .background(Capsule().fill(trimmed.isEmpty ? Color.gray : Color.black))
+                }
+                .disabled(trimmed.isEmpty || saving)
+                .padding(.horizontal, 24).padding(.bottom, 8)
+            }
+            .navigationTitle("创建新 Bot")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { dismiss() } label: { Image(systemName: "xmark") }.accessibilityLabel("关闭")
+                }
+            }
+            .sheet(isPresented: $showTemplates) {
+                NavigationStack { CloudBotEditor(existing: nil, onSaved: { await onCreated("") }) }
+            }
+        }
+    }
+
+    private var trimmed: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// 英文名转成 ID；中文等名称用随机后缀
+    static func makeId(_ name: String) -> String {
+        let ascii = name.lowercased().map { c -> Character in
+            (c.isASCII && (c.isLetter || c.isNumber)) ? c : "-"
+        }
+        var slug = String(ascii).split(separator: "-").joined(separator: "-")
+        if slug.isEmpty || !(slug.first?.isLetter ?? false || slug.first?.isNumber ?? false) {
+            slug = "bot"
+        }
+        let suffix = String(UUID().uuidString.lowercased().prefix(6))
+        let id = String(slug.prefix(24)) + "-" + suffix
+        return String(id.prefix(32))
+    }
+
+    private func create() {
+        saving = true
+        errorText = nil
+        var bot = CloudBot(id: Self.makeId(trimmed), name: trimmed, emoji: spec.encoded, summary: "",
+                           instructions: "你是「\(trimmed)」，用户的私人助手。用中文简洁回答，先给结论；需要时调用工具并核验真实结果，不要声称未执行的操作已完成。")
+        bot.isPrimary = false
+        Task {
+            do {
+                try await CloudConnection.shared.ensureConnected()
+                try await CloudBotService.save(bot)
+                await onCreated(bot.id)
+                dismiss()
+            } catch {
+                errorText = error.localizedDescription
+            }
+            saving = false
+        }
+    }
+}

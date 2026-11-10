@@ -371,6 +371,8 @@ struct ContentView: View {
     @AppStorage("launchScreen") private var launchScreen: Int = 0
     /// FAB position preference: false = right (default), true = left.
     @AppStorage("fabOnLeft") var fabOnLeft = false
+    /// 首页模式："local" 本地会话列表 / "bots" 多 Bot 模式（CloudBotHome.swift）
+    @AppStorage(CloudBotHome.modeKey) var homeMode: String = "local"
     /// Mirror of `SyncV2Bootstrap.isEnabled` so SwiftUI re-evaluates
     /// the iCloud-gated menu entries (per-session Force Sync / Force
     /// Pull and the multi-select Force Sync) the moment the user
@@ -565,7 +567,10 @@ struct ContentView: View {
         GeometryReader { geo in
             let wide = isIPad && geo.size.width >= compactThreshold
             Group {
-                if wide {
+                if homeMode == "bots" {
+                    CloudBotHomeScreen(onOpenSettings: { activeToolSheet = .settings },
+                                       onSwitchToLocal: { homeMode = "local" })
+                } else if wide {
                     splitLayout
                 } else {
                     stackLayout

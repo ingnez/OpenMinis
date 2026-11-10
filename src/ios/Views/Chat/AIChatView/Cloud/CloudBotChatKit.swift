@@ -1,0 +1,531 @@
+//
+//  CloudBotChatKit.swift
+//  Minis - 多 Bot 模式对话页组件：Bot 主题色气泡、工作中的动态头像与进度、
+//  「+」附件（照片 / 拍照 / 扫描文档 / 文件）、听写与语音对话。
+//
+
+import SwiftUI
+import UIKit
+import PhotosUI
+import VisionKit
+import Speech
+import AVFoundation
+import UniformTypeIdentifiers
+
+struct CloudBotChatTheme {
+    let botId: String
+    let name: String
+    let spec: CloudBotAvatarSpec
+    var accent: Color { spec.fill }
+}
+
+// MARK: - 消息气泡
+
+enum CloudMessageText {
+    /// 消息内容可能是 message_parts 的 JSON：取出文字，图片显示为占位
+    static func display(_ content: String) -> (text: String, images: Int) {
+        guard content.hasPrefix("["), let data = content.data(using: .utf8),
+              let parts = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return (content, 0) }
+        let text = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: "\n")
+        let images = parts.filter { $0["type"] as? String == "image_url" }.count
+        return (text, images)
+    }
+}
+
+struct CloudThemedBubble: View {
+    let role: String
+    let content: String
+    let accent: Color
+
+    var body: some View {
+        let shown = CloudMessageText.display(content)
+        HStack {
+            if role == "user" { Spacer(minLength: 48) }
+            VStack(alignment: role == "user" ? .trailing : .leading, spacing: 4) {
+                if shown.images > 0 {
+                    Label(shown.images == 1 ? "图片" : "\(shown.images) 张图片", systemImage: "photo")
+                        .font(.caption).foregroundStyle(role == "user" ? Color.white.opacity(0.9) : Color.secondary)
+                }
+                if !shown.text.isEmpty {
+                    Text(shown.text).textSelection(.enabled)
+                }
+            }
+            .font(.body)
+            .foregroundStyle(role == "user" ? Color.white : Color.primary)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(role == "user" ? accent : Color(.systemGray6)))
+            if role != "user" { Spacer(minLength: 24) }
+        }
+    }
+}
+
+// MARK: - 工作进度
+
+enum CloudBotProgress {
+    static func label(forTool tool: String) -> String {
+        switch tool {
+        case "browser_action": return "正在浏览网页…"
+        case "shell_execute": return "正在运行命令…"
+        case "file_read": return "正在读取文件…"
+        case "file_write", "file_edit": return "正在写文件…"
+        case "desktop_action": return "正在操作云电脑…"
+        case "memory_search": return "正在回忆…"
+        case "memory_write": return "正在记下来…"
+        case "skill_load": return "正在加载技能…"
+        case "page_write": return "正在写页面…"
+        case "subagent_task": return "正在分派子任务…"
+        case "image_generate": return "正在生成图片…"
+        case "send_message": return "正在准备消息…"
+        case "request_user_takeover": return "需要你帮忙…"
+        default:
+            if tool.contains("search") { return "正在搜索…" }
+            return "正在调用 \(tool)…"
+        }
+    }
+
+    /// (当前状态, 已完成步数, 步骤列表)
+    static func summarize(_ events: [[String: Any]], status: String) -> (String, Int, [String]) {
+        var steps: [String] = []
+        var done = 0
+        var current = "正在思考…"
+        for e in events {
+            let type = e["type"] as? String ?? ""
+            let payload = e["payload"] as? [String: Any] ?? [:]
+            switch type {
+            case "tool_call":
+                let tool = payload["tool"] as? String ?? ""
+                current = label(forTool: tool)
+                steps.append(current.replacingOccurrences(of: "…", with: ""))
+            case "tool_result":
+                done += 1
+                current = "正在思考…"
+            case "approval_required":
+                current = "等你批准"
+            case "thought":
+                current = "正在思考…"
+            default:
+                break
+            }
+        }
+        if status == "waiting_user" { current = "等你批准" }
+        return (current, done, steps)
+    }
+}
+
+/// 工作中的 Bot 头像：上下轻跳、挤压、微微歪头，随机眨眼和东张西望（尊重“减弱动态效果”）
+struct CloudBotLivelyAvatar: View {
+    let spec: CloudBotAvatarSpec
+    var size: CGFloat = 34
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var gaze: CGSize = .zero
+    @State private var eyeOpen: CGFloat = 1
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate
+            let bob = reduceMotion ? 0 : sin(t * 3.2)
+            CloudBotAvatarView(spec: spec, size: size, gaze: gaze, eyeOpen: eyeOpen)
+                .scaleEffect(x: 1 + 0.04 * bob, y: 1 - 0.05 * bob, anchor: .bottom)
+                .rotationEffect(.degrees(reduceMotion ? 0 : 5 * sin(t * 1.3)))
+                .offset(y: reduceMotion ? 0 : -3 * abs(sin(t * 3.2)))
+        }
+        .frame(width: size, height: size + 4)
+        .task(id: reduceMotion) { await animateEyes() }
+        .accessibilityHidden(true)
+    }
+
+    private func animateEyes() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: UInt64.random(in: 900_000_000...2_600_000_000))
+            if Task.isCancelled { return }
+            if Bool.random() || reduceMotion {
+                withAnimation(.easeInOut(duration: 0.08)) { eyeOpen = 0.1 }
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                withAnimation(.easeInOut(duration: 0.1)) { eyeOpen = 1 }
+            }
+            if !reduceMotion {
+                let looks = [CGSize(width: -1, height: 0), CGSize(width: 1, height: 0), CGSize(width: 0, height: -1),
+                             CGSize(width: 0.6, height: -0.6), .zero, .zero]
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) { gaze = looks.randomElement() ?? .zero }
+            }
+        }
+    }
+}
+
+struct CloudBotWorkingRow: View {
+    let spec: CloudBotAvatarSpec
+    let events: [[String: Any]]
+    let status: String
+    @State private var expanded = false
+
+    var body: some View {
+        let s = CloudBotProgress.summarize(events, status: status)
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack(alignment: .bottom, spacing: 8) {
+                    CloudBotLivelyAvatar(spec: spec)
+                    Text(s.0 + (s.1 > 0 ? " · 已完成 \(s.1) 步" : ""))
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .contentTransition(.opacity)
+                        .animation(.easeInOut, value: s.0)
+                    if !s.2.isEmpty {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Bot 正在工作：\(s.0)，已完成 \(s.1) 步")
+            if expanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(s.2.enumerated()), id: \.offset) { i, step in
+                        Label(step, systemImage: i < s.1 ? "checkmark.circle.fill" : "circle.dotted")
+                            .font(.caption).foregroundStyle(i < s.1 ? Color.secondary : Color.primary)
+                    }
+                }
+                .padding(.leading, 42)
+            }
+        }
+    }
+}
+
+// MARK: - 附件
+
+struct CloudPendingAttachment: Identifiable {
+    let id = UUID()
+    let filename: String
+    let data: Data
+    let isImage: Bool
+    var thumbnail: UIImage?
+}
+
+enum CloudAttachmentKit {
+    /// 图片压成 ≤1600px 的 JPEG，控制上传体积
+    static func image(_ image: UIImage, name: String) -> CloudPendingAttachment? {
+        let maxSide: CGFloat = 1600
+        let scale = min(1, maxSide / max(image.size.width, image.size.height))
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let resized = UIGraphicsImageRenderer(size: size).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+        guard let data = resized.jpegData(compressionQuality: 0.8) else { return nil }
+        return CloudPendingAttachment(filename: name, data: data, isImage: true, thumbnail: resized)
+    }
+
+    /// 扫描的多页文档合成一个 PDF
+    static func pdf(from scan: VNDocumentCameraScan) -> CloudPendingAttachment? {
+        guard scan.pageCount > 0 else { return nil }
+        let first = scan.imageOfPage(at: 0)
+        let bounds = CGRect(origin: .zero, size: first.size)
+        let data = UIGraphicsPDFRenderer(bounds: bounds).pdfData { ctx in
+            for i in 0..<scan.pageCount {
+                let page = scan.imageOfPage(at: i)
+                ctx.beginPage(withBounds: CGRect(origin: .zero, size: page.size), pageInfo: [:])
+                page.draw(in: CGRect(origin: .zero, size: page.size))
+            }
+        }
+        let stamp = Date().formatted(.dateTime.year().month(.twoDigits).day(.twoDigits).hour().minute())
+        let name = (scan.title.isEmpty ? "扫描文档" : scan.title) + " " + stamp + ".pdf"
+        return CloudPendingAttachment(filename: name.replacingOccurrences(of: "/", with: "-"), data: data, isImage: false, thumbnail: first)
+    }
+
+    /// 上传非图片附件（以及图片的原件，便于在资料库里找到），返回给 Agent 的说明行
+    static func upload(_ items: [CloudPendingAttachment], sessionId: String) async throws -> [String] {
+        var lines: [String] = []
+        for item in items {
+            let resp = try await CloudConnection.shared.request(method: "POST", path: "/v1/sessions/\(sessionId)/upload",
+                                                                body: ["filename": item.filename, "data_base64": item.data.base64EncodedString()])
+            let path = resp["file_path"] as? String ?? item.filename
+            lines.append("[附件] \(item.filename) → 工作区 \(path)")
+        }
+        return lines
+    }
+}
+
+struct CloudPhotoPicker: UIViewControllerRepresentable {
+    let onPicked: ([CloudPendingAttachment]) -> Void
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration()
+        config.selectionLimit = 6
+        config.filter = .any(of: [.images, .videos])
+        let vc = PHPickerViewController(configuration: config)
+        vc.delegate = context.coordinator
+        return vc
+    }
+
+    func updateUIViewController(_ vc: PHPickerViewController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(onPicked: onPicked) }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let onPicked: ([CloudPendingAttachment]) -> Void
+        init(onPicked: @escaping ([CloudPendingAttachment]) -> Void) { self.onPicked = onPicked }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            picker.dismiss(animated: true)
+            let group = DispatchGroup()
+            let box = Box()
+            for (i, r) in results.enumerated() {
+                let provider = r.itemProvider
+                group.enter()
+                if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
+                    provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _ in
+                        if let url, let data = try? Data(contentsOf: url), data.count < 24_000_000 {
+                            box.add(CloudPendingAttachment(filename: "视频\(i + 1).\(url.pathExtension.isEmpty ? "mov" : url.pathExtension)", data: data, isImage: false))
+                        }
+                        group.leave()
+                    }
+                } else if provider.canLoadObject(ofClass: UIImage.self) {
+                    provider.loadObject(ofClass: UIImage.self) { obj, _ in
+                        if let img = obj as? UIImage, let a = CloudAttachmentKit.image(img, name: "照片\(i + 1).jpg") {
+                            box.add(a)
+                        }
+                        group.leave()
+                    }
+                } else {
+                    group.leave()
+                }
+            }
+            group.notify(queue: .main) { self.onPicked(box.items) }
+        }
+
+        private final class Box: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var items: [CloudPendingAttachment] = []
+            func add(_ item: CloudPendingAttachment) { lock.lock(); items.append(item); lock.unlock() }
+        }
+    }
+}
+
+struct CloudCameraPicker: UIViewControllerRepresentable {
+    let onPicked: (CloudPendingAttachment) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let vc = UIImagePickerController()
+        vc.sourceType = UIImagePickerController.isSourceTypeAvailable(.camera) ? .camera : .photoLibrary
+        vc.delegate = context.coordinator
+        return vc
+    }
+
+    func updateUIViewController(_ vc: UIImagePickerController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: CloudCameraPicker
+        init(parent: CloudCameraPicker) { self.parent = parent }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            if let img = info[.originalImage] as? UIImage, let a = CloudAttachmentKit.image(img, name: "拍照.jpg") { parent.onPicked(a) }
+            parent.dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { parent.dismiss() }
+    }
+}
+
+/// 系统文档扫描器（自动快门、闪光灯、滤镜），结果合成多页 PDF
+struct CloudDocumentScanner: UIViewControllerRepresentable {
+    let onScanned: (CloudPendingAttachment) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> VNDocumentCameraViewController {
+        let vc = VNDocumentCameraViewController()
+        vc.delegate = context.coordinator
+        return vc
+    }
+
+    func updateUIViewController(_ vc: VNDocumentCameraViewController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
+        let parent: CloudDocumentScanner
+        init(parent: CloudDocumentScanner) { self.parent = parent }
+
+        func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFinishWith scan: VNDocumentCameraScan) {
+            if let pdf = CloudAttachmentKit.pdf(from: scan) { parent.onScanned(pdf) }
+            parent.dismiss()
+        }
+
+        func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) { parent.dismiss() }
+        func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFailWithError error: Error) { parent.dismiss() }
+    }
+}
+
+struct CloudFilePicker: UIViewControllerRepresentable {
+    let onPicked: ([CloudPendingAttachment]) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let vc = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+        vc.allowsMultipleSelection = true
+        vc.delegate = context.coordinator
+        return vc
+    }
+
+    func updateUIViewController(_ vc: UIDocumentPickerViewController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(onPicked: onPicked) }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPicked: ([CloudPendingAttachment]) -> Void
+        init(onPicked: @escaping ([CloudPendingAttachment]) -> Void) { self.onPicked = onPicked }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            let items = urls.compactMap { url -> CloudPendingAttachment? in
+                guard let data = try? Data(contentsOf: url), data.count < 24_000_000 else { return nil }
+                return CloudPendingAttachment(filename: url.lastPathComponent, data: data, isImage: false)
+            }
+            onPicked(items)
+        }
+    }
+}
+
+// MARK: - 听写
+
+@MainActor
+final class CloudDictation: ObservableObject {
+    @Published var isRecording = false
+    @Published var transcript = ""
+    @Published var errorText: String?
+    /// 最近一次识别到新文字的时间（语音对话用来判断说完了）
+    @Published var lastHeard = Date()
+
+    private let engine = AVAudioEngine()
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+
+    func start(language: String = "") {
+        guard !isRecording else { return }
+        errorText = nil
+        transcript = ""
+        SFSpeechRecognizer.requestAuthorization { status in
+            Task { @MainActor in
+                guard status == .authorized else {
+                    self.errorText = "请在 设置 → 隐私 中允许语音识别"
+                    return
+                }
+                AVAudioApplication.requestRecordPermission { ok in
+                    Task { @MainActor in
+                        if ok { self.begin(language: language) } else { self.errorText = "请在 设置 → 隐私 中允许麦克风" }
+                    }
+                }
+            }
+        }
+    }
+
+    private func begin(language: String) {
+        let locale = Locale(identifier: language.isEmpty ? (Locale.preferredLanguages.first ?? "zh-CN") : language)
+        guard let recognizer = SFSpeechRecognizer(locale: locale) ?? SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")),
+              recognizer.isAvailable else {
+            errorText = "语音识别暂不可用"
+            return
+        }
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            let req = SFSpeechAudioBufferRecognitionRequest()
+            req.shouldReportPartialResults = true
+            request = req
+            let input = engine.inputNode
+            input.removeTap(onBus: 0)
+            input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in req.append(buffer) }
+            engine.prepare()
+            try engine.start()
+            isRecording = true
+            lastHeard = Date()
+            task = recognizer.recognitionTask(with: req) { result, error in
+                Task { @MainActor in
+                    if let result {
+                        let text = result.bestTranscription.formattedString
+                        if text != self.transcript { self.transcript = text; self.lastHeard = Date() }
+                    }
+                    if error != nil || (result?.isFinal ?? false) { self.stop() }
+                }
+            }
+        } catch {
+            errorText = "无法开始录音：\(error.localizedDescription)"
+            stop()
+        }
+    }
+
+    func stop() {
+        if engine.isRunning { engine.stop() }
+        engine.inputNode.removeTap(onBus: 0)
+        request?.endAudio()
+        task?.cancel()
+        request = nil
+        task = nil
+        isRecording = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+}
+
+// MARK: - 语音对话
+
+/// 和这个 Bot 语音对话：听你说完（停顿 1.5 秒）就发送，Bot 回复后按它的语音设置朗读，再继续听
+struct CloudBotVoiceCallView: View {
+    let theme: CloudBotChatTheme
+    let isWorking: Bool
+    let progress: String
+    let onUtterance: (String) -> Void
+    @StateObject private var dictation = CloudDictation()
+    @Environment(\.dismiss) private var dismiss
+    private let tick = Timer.publish(every: 0.3, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        VStack(spacing: 28) {
+            Spacer()
+            CloudBotLivelyAvatar(spec: theme.spec, size: 150)
+            Text(theme.name).font(.title2.bold())
+            Text(statusText).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 32)
+            if !dictation.transcript.isEmpty {
+                Text(dictation.transcript).font(.body).multilineTextAlignment(.center).padding(.horizontal, 32).lineLimit(4)
+            }
+            if let err = dictation.errorText { Text(err).font(.footnote).foregroundStyle(.red) }
+            Spacer()
+            HStack(spacing: 40) {
+                Button {
+                    if dictation.isRecording { dictation.stop() } else { CloudBotSpeaker.stop(); dictation.start(language: CloudBotVoiceSettings.load(theme.botId).language) }
+                } label: {
+                    Image(systemName: dictation.isRecording ? "mic.fill" : "mic.slash.fill").font(.title2).foregroundStyle(.primary)
+                        .frame(width: 64, height: 64).background(Circle().fill(Color(.systemGray5)))
+                }
+                .accessibilityLabel(dictation.isRecording ? "暂停收听" : "继续收听")
+                Button {
+                    dictation.stop(); CloudBotSpeaker.stop(); dismiss()
+                } label: {
+                    Image(systemName: "xmark").font(.title2.bold()).foregroundStyle(.white)
+                        .frame(width: 64, height: 64).background(Circle().fill(Color.red))
+                }
+                .accessibilityLabel("结束语音对话")
+            }
+            .padding(.bottom, 30)
+        }
+        .onAppear { dictation.start(language: CloudBotVoiceSettings.load(theme.botId).language) }
+        .onDisappear { dictation.stop() }
+        .onReceive(tick) { _ in
+            let text = dictation.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            if dictation.isRecording, !text.isEmpty, Date().timeIntervalSince(dictation.lastHeard) > 1.5, !isWorking {
+                dictation.stop()
+                onUtterance(text)
+                dictation.transcript = ""
+            }
+        }
+        .onChange(of: isWorking) { _, working in
+            // Bot 说完（任务结束后朗读）再继续听；朗读由对话页负责
+            if !working {
+                Task {
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    while CloudBotSpeaker.isSpeaking { try? await Task.sleep(nanoseconds: 300_000_000) }
+                    if !dictation.isRecording { dictation.start(language: CloudBotVoiceSettings.load(theme.botId).language) }
+                }
+            }
+        }
+    }
+
+    private var statusText: String {
+        if isWorking { return progress }
+        if dictation.isRecording { return "正在听…说完停顿一下就会发送" }
+        return "已暂停，点麦克风继续"
+    }
+}

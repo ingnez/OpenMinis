@@ -64,6 +64,20 @@ public final class CloudConnection: ObservableObject {
         d.set(sshPort, forKey: "OpenMinisCloud_sshPort"); d.set(username, forKey: "OpenMinisCloud_username")
     }
     private func changed() { disconnect(); persist() }
+    private var connectTask: Task<Void, Error>?
+    /// 已保存连接信息时可后台自动连接（无需再点「保存并测试连接」）
+    public var canAutoConnect: Bool {
+        !host.isEmpty && !(getPassword() ?? "").isEmpty && !(getToken() ?? "").isEmpty
+    }
+    /// 已连接直接返回；正在连接则等待同一次连接，避免多处同时调用 connect() 互相断开。
+    public func ensureConnected() async throws {
+        if isConnected { return }
+        if let task = connectTask { return try await task.value }
+        let task = Task { @MainActor in try await self.connect() }
+        connectTask = task
+        defer { connectTask = nil }
+        try await task.value
+    }
     private func failure(_ text: String) -> NSError {
         NSError(domain: "OpenMinisCloud", code: 1, userInfo: [NSLocalizedDescriptionKey: text])
     }
@@ -371,6 +385,18 @@ public final class CloudConnection: ObservableObject {
         }
         _ = try? await shell(ssh("\(sudo); $S rm -rf \(dir)"), timeout: 30)
     }
+    /// 「电脑」页 … 菜单：通过 SSH 重启云电脑桌面（显示器、VNC、noVNC 三个服务）
+    public func restartDesktop() async throws {
+        let password = try await passwordFile()
+        let remote = "if [ \"$(id -u)\" = 0 ]; then S=''; else S='sudo -n'; fi; $S systemctl restart openminis-display openminis-vnc openminis-novnc && echo restarted"
+        do {
+            _ = try await checked("sshpass -f \(quote(password)) ssh \(options()) -n \(destination) \(quote(remote))", timeout: 60)
+            await cleanup(password)
+        } catch {
+            await cleanup(password)
+            throw error
+        }
+    }
     public func checkDesktopReachable() async -> Bool {
         guard isConnected else { return false }
         guard let url = URL(string: "http://127.0.0.1:\(desktopPort)/vnc.html") else { return false }
@@ -391,6 +417,19 @@ public final class CloudConnection: ObservableObject {
         guard isConnected else { throw failure("云端连接已断开，请返回设置重新连接；VPS 上已接受的任务仍会继续") }
         return try await requestRaw(method: method, path: path, body: body)
     }
+    /// 下载会话工作区里的附件（资料库预览、分享）；只允许 /v1/sessions/<id>/attachments/<文件名>
+    public func downloadAttachment(path: String) async throws -> Data {
+        guard isConnected else { throw failure("云端连接已断开") }
+        guard path.range(of: #"^/v1/sessions/[A-Za-z0-9_-]{1,64}/attachments/[A-Za-z0-9._-]{1,128}$"#, options: .regularExpression) != nil,
+              !path.contains(".."), let url = URL(string: "http://127.0.0.1:\(apiPort)" + path) else { throw failure("附件路径无效") }
+        guard let token = getToken(), !token.isEmpty else { throw failure("缺少服务 Token") }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        let (data, response) = try await http.data(for: req)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw failure("附件下载失败") }
+        return data
+    }
+
     private func requestRaw(method: String, path: String, body: [String: Any]?) async throws -> [String: Any] {
         let components = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         let route = String(components[0])
