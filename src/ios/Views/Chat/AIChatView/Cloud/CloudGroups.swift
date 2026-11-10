@@ -5,6 +5,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct CloudGroup: Identifiable, Equatable {
     let id: String
@@ -343,6 +344,8 @@ struct CloudGroupChatView: View {
     @State private var input = ""
     @State private var showSettings = false
     @FocusState private var focused: Bool
+    /// 群里的语音消息：说完自动转成文字发出（带 🎤 标记），Bot 的回复可以长按朗读
+    @StateObject private var voice = CloudDictation()
 
     init(groupId: String) {
         self.groupId = groupId
@@ -481,6 +484,10 @@ struct CloudGroupChatView: View {
                 Text(m.content).textSelection(.enabled)
                     .padding(.horizontal, 12).padding(.vertical, 9)
                     .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.systemGray6)))
+                    .contextMenu {
+                        Button { CloudBotSpeaker.speak(m.content, botId: m.sender) } label: { Label("朗读", systemImage: "speaker.wave.2") }
+                        Button { UIPasteboard.general.string = m.content } label: { Label("复制", systemImage: "doc.on.doc") }
+                    }
                 reactionChips(m.id)
             }
             Spacer(minLength: 32)
@@ -581,7 +588,29 @@ struct CloudGroupChatView: View {
                     .padding(.horizontal, 14)
                 }
             }
+            if voice.isRecording {
+                HStack(spacing: 10) {
+                    Image(systemName: "waveform").foregroundStyle(.red)
+                    Text(voice.transcript.isEmpty ? "正在听…" : voice.transcript).font(.subheadline).lineLimit(2)
+                    Spacer()
+                    Button("取消") { voice.stop(); voice.transcript = "" }.font(.subheadline)
+                    Button("发送") { finishVoice() }.font(.subheadline.weight(.semibold))
+                        .disabled(voice.transcript.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color.red.opacity(0.08)))
+                .padding(.horizontal, 12)
+            }
+            if let err = voice.errorText { Text(err).font(.caption).foregroundStyle(.red) }
             HStack(alignment: .bottom, spacing: 8) {
+                Button {
+                    if voice.isRecording { finishVoice() } else { CloudBotSpeaker.stop(); voice.start() }
+                } label: {
+                    Image(systemName: voice.isRecording ? "stop.circle.fill" : "mic")
+                        .font(.system(size: 18)).foregroundStyle(voice.isRecording ? Color.red : Color.secondary)
+                        .frame(width: 34, height: 38)
+                }
+                .accessibilityLabel(voice.isRecording ? "说完了，发送" : "语音消息")
                 TextField("发消息，@ 某个 Bot 让它回答或去做事", text: $input, axis: .vertical)
                     .lineLimit(1...6)
                     .focused($focused)
@@ -604,6 +633,16 @@ struct CloudGroupChatView: View {
         }
         .padding(.top, 6)
         .background(.bar)
+        .onDisappear { voice.stop() }
+    }
+
+    private func finishVoice() {
+        let text = voice.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        voice.stop()
+        voice.transcript = ""
+        guard !text.isEmpty else { return }
+        CloudHaptics.success()
+        Task { await model.send("🎤 " + text) }
     }
 }
 
