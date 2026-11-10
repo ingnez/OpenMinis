@@ -566,7 +566,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.16.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.17.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -6170,7 +6170,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 conn = get_db_connection()
                 c = conn.cursor()
-                c.execute("SELECT session_id, local_session_id, title, instructions, created_at FROM sessions WHERE session_id = ?", (sid,))
+                c.execute("SELECT session_id, local_session_id, title, instructions, created_at, COALESCE(incognito, 0) FROM sessions WHERE session_id = ?", (sid,))
                 s = c.fetchone()
                 if not s:
                     conn.close()
@@ -6214,7 +6214,8 @@ class Handler(BaseHTTPRequestHandler):
                     if t_["task_id"] in tmap:
                         t_["timings"] = tmap[t_["task_id"]]
                 conn.close()
-                self._send(200, {"session_id": s[0], "local_session_id": s[1], "title": s[2], "instructions": s[3], "created_at": s[4], "messages": msgs, "tasks": tasks})
+                self._send(200, {"session_id": s[0], "local_session_id": s[1], "title": s[2], "instructions": s[3], "created_at": s[4], "messages": msgs, "tasks": tasks,
+                                 "incognito": bool(s[5])})
                 return
 
         if path == "/v1/routines":

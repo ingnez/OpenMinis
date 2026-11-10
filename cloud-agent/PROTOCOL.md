@@ -502,3 +502,7 @@
 - `GET /v1/sessions/<sid>/bot-threads`：用户对话里的折叠行 `{peer, peer_name, count, label:"N 条消息，与 X", delegations}`。
 - `GET /v1/bots` 每个 Bot 可能带 `thread_preview {text:"➤ 已发消息给 X：…" / "← 来自 X：…", at, peer, outgoing, priority}`（最近的动静是 Bot 间消息时）。
 - `GET /v1/search` 结果多了 `type: "bot_thread"`（`bots`, `sender`, `message_id`）。
+
+## 对话详情带无痕标记（2.17.0）
+
+`GET /v1/sessions/<sid>` 多了 `incognito`（布尔）。App 打开对话时先画手机缓存、再静默替换；无痕对话不写缓存。

@@ -284,6 +284,30 @@ class E2EScenarios(CloudServerTestCase):
         again = [m for m in self.request("GET", f"/v1/sessions/{sid}")[1]["messages"] if m.get("id") == bot_msg["id"]][0]
         self.assertEqual(again["reactions"], [{"actor": "user", "emoji": "🎉"}], "同步到服务器，重新打开还在")
 
+    def test_14_open_chat_latency(self):
+        """打开对话：服务端取最近消息的耗时（mock，本机）。手机端读缓存的耗时在 CloudChatCacheTests 里测。"""
+        sid = self.new_session()
+        conn = self.srv.get_db_connection()
+        now = time.time()
+        for i in range(120):
+            conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                         (sid, "user" if i % 2 == 0 else "assistant", f"第 {i} 条消息，" + "内容" * 40, now + i * 0.01))
+        conn.commit()
+        conn.close()
+        times = []
+        for _ in range(5):
+            t0 = time.time()
+            code, detail = self.request("GET", f"/v1/sessions/{sid}")
+            times.append((time.time() - t0) * 1000)
+            self.assertEqual(code, 200)
+        self.assertEqual(len(detail["messages"]), 120)
+        self.assertIs(detail["incognito"], False)
+        times.sort()
+        LATENCY.append({"scenario": "打开对话·冷（服务端取 120 条）", "first_text_ms": None, "ttft_ms": None,
+                        "total_ms": round(times[len(times) // 2], 1), "client_total_ms": round(times[-1], 1), "source": "mock"})
+        inc = self.request("POST", "/v1/sessions", {"title": "x", "incognito": True})[1]["session_id"]
+        self.assertIs(self.request("GET", f"/v1/sessions/{inc}")[1]["incognito"], True, "无痕对话手机不缓存")
+
 
 if __name__ == "__main__":
     unittest.main()
