@@ -90,6 +90,7 @@ class TelegramTests(CloudServerTestCase):
         # 校验：无凭据、坏 Token
         self.assertEqual(self.request("PUT", "/v1/telegram", {"bot_token": TOKEN, "credential": "nope", "model": "m", "api_base": self.tg_base})[0], 400)
         self.assertEqual(self.request("PUT", "/v1/telegram", {"bot_token": "bad", "credential": "tg", "model": "m", "api_base": self.tg_base})[0], 400)
+        self.assertEqual(self.request("PUT", "/v1/telegram", {"bot_token": TOKEN, "credential": "tg", "model": "m", "api_base": self.tg_base, "persona_id": "ghost"})[0], 400)
         status, res = self.request("PUT", "/v1/telegram", {"bot_token": TOKEN, "credential": "tg", "model": "m-tg",
                                                           "allowed_chat_ids": [OWNER], "api_base": self.tg_base})
         self.assertEqual(status, 200, res)

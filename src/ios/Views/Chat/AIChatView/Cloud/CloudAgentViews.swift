@@ -243,6 +243,12 @@ struct CloudAgentSettingsView: View {
                             .foregroundColor(.accentColor)
                     }
 
+                    NavigationLink(destination: CloudPersonasView()) {
+                        Label("云端人格", systemImage: "person.2.crop.square.stack")
+                            .font(.headline)
+                            .foregroundColor(.accentColor)
+                    }
+
                     NavigationLink(destination: CloudMemoryTimelineView()) {
                         Label("记忆时间线", systemImage: "brain.head.profile")
                             .font(.headline)

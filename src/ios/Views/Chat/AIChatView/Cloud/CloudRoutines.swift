@@ -13,7 +13,7 @@ enum CloudRoutineService {
     /// {"kind":"interval","seconds":3600} 或 {"kind":"once","at":<unix 秒>}。
     /// 需要先在 VPS 加密保存所选服务商 Key（CloudCredentialSync）。
     @discardableResult
-    static func create(name: String, prompt: String, schedule: [String: Any], maxRuns: Int? = nil) async throws -> [String: Any] {
+    static func create(name: String, prompt: String, schedule: [String: Any], maxRuns: Int? = nil, personaId: String? = nil) async throws -> [String: Any] {
         let defaults = UserDefaults.standard
         let instanceId = defaults.string(forKey: "OpenMinisCloud_selectedInstanceId") ?? ""
         let model = defaults.string(forKey: "OpenMinisCloud_manualModel") ?? ""
@@ -32,6 +32,7 @@ enum CloudRoutineService {
             "schedule": schedule,
         ]
         if let maxRuns { body["max_runs"] = maxRuns }
+        if let personaId, !personaId.isEmpty { body["persona_id"] = personaId }
         return try await CloudConnection.shared.request(method: "POST", path: "/v1/routines", body: body)
     }
 
@@ -273,6 +274,8 @@ struct CloudRoutineEditor: View {
     @State private var onceAt = Date().addingTimeInterval(3600)
     @State private var saving = false
     @State private var errorText: String?
+    @State private var personas: [CloudPersona] = []
+    @State private var personaId = ""
 
     var body: some View {
         Form {
@@ -305,6 +308,14 @@ struct CloudRoutineEditor: View {
                 TextField("名称", text: $name)
                 TextField("提示词（每次运行发送给云端 Agent）", text: $prompt, axis: .vertical)
                     .lineLimit(3...10)
+                if !personas.isEmpty {
+                    Picker("人格", selection: $personaId) {
+                        Text("默认").tag("")
+                        ForEach(personas) { p in
+                            Text(p.label).tag(p.id)
+                        }
+                    }
+                }
             }
             Section {
                 Picker("类型", selection: $kind) {
@@ -333,6 +344,7 @@ struct CloudRoutineEditor: View {
             if let errorText { Section { Text(errorText).foregroundStyle(.red).font(.footnote) } }
         }
         .navigationTitle("新建例行任务")
+        .task { personas = (try? await CloudPersonaService.list()) ?? [] }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
             ToolbarItem(placement: .confirmationAction) {
@@ -353,7 +365,7 @@ struct CloudRoutineEditor: View {
         saving = true
         Task {
             do {
-                try await CloudRoutineService.create(name: name, prompt: prompt, schedule: schedule)
+                try await CloudRoutineService.create(name: name, prompt: prompt, schedule: schedule, personaId: personaId)
                 await onSaved()
                 dismiss()
             } catch {

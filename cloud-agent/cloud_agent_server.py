@@ -20,6 +20,7 @@ OpenMinis Cloud Computer & Agent Service (cloud_agent_server.py) v2.0
 - Push: Bark / ntfy notifications on task completion, approvals and routine runs (config stored encrypted)
 - Pages library (page_write), cloud sub agents (subagent_task) and image generation (image_generate)
 - Telegram channel: Bot API long polling, per-chat sessions, inline approve/deny buttons
+- Personas: several bots with their own instructions and memory scope, usable from chat, routines and Telegram
 """
 
 import os
@@ -148,7 +149,7 @@ def init_db():
 
     # 兼容build9/10已有数据库；CREATE IF NOT EXISTS不会为旧表添加列。
     migrations = {
-        'sessions': {'local_session_id': 'TEXT', 'instructions': 'TEXT'},
+        'sessions': {'local_session_id': 'TEXT', 'instructions': 'TEXT', 'persona_id': 'TEXT'},
         'messages': {'tool_calls': 'TEXT', 'tool_call_id': 'TEXT'},
         'tasks': {'client_nonce': 'TEXT'},
     }
@@ -234,6 +235,18 @@ def init_db():
     )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_routine_runs ON routine_runs(routine_id, started_at)")
+    if "persona_id" not in {row[1] for row in cursor.execute("PRAGMA table_info(routines)")}:
+        cursor.execute("ALTER TABLE routines ADD COLUMN persona_id TEXT")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS personas (
+        persona_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        instructions TEXT NOT NULL,
+        emoji TEXT,
+        created_at REAL,
+        updated_at REAL
+    )
+    """)
 
     # 结构化记忆（FTS5 trigram，不可用时退化为 LIKE）
     conn.commit()
@@ -686,7 +699,8 @@ def tool_memory_write(task_id, session_id, args):
         return {"error": "Cancelled"}
     conn = get_db_connection()
     try:
-        entry, created = cloud_memory.write(conn, args.get("content"), args.get("category"), source="cloud", session_id=session_id)
+        entry, created = cloud_memory.write(conn, args.get("content"), args.get("category"), source="cloud", session_id=session_id,
+                                            persona=session_persona_id(session_id) or "")
     except ValueError as e:
         return {"error": str(e)}
     finally:
@@ -698,7 +712,8 @@ def tool_memory_search(task_id, session_id, args):
         return {"error": "Cancelled"}
     conn = get_db_connection()
     try:
-        results = cloud_memory.search(conn, args.get("query", ""), args.get("category") or None, args.get("limit", 10))
+        results = cloud_memory.search(conn, args.get("query", ""), args.get("category") or None, args.get("limit", 10),
+                                      persona=session_persona_id(session_id) or "")
     except (ValueError, TypeError) as e:
         return {"error": str(e)}
     finally:
@@ -723,6 +738,48 @@ SERVER_TOOL_NOTES = (
     "\n[生成图片] 用户要图片时调用 image_generate，图片保存在工作区 attachments/。"
     "\n[发消息] send_message 可经 Telegram 或推送给用户发消息；每次都会先作为草稿请用户确认，被拒绝时不要重试同一内容。"
 )
+
+PERSONA_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+
+def session_persona_id(session_id):
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT persona_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+        return row[0] if row and row[0] else None
+    finally:
+        conn.close()
+
+def get_persona(persona_id):
+    if not persona_id:
+        return None
+    conn = get_db_connection()
+    try:
+        r = conn.execute("SELECT persona_id, name, instructions, emoji, created_at, updated_at FROM personas WHERE persona_id = ?", (persona_id,)).fetchone()
+    finally:
+        conn.close()
+    return {"persona_id": r[0], "name": r[1], "instructions": r[2], "emoji": r[3], "created_at": r[4], "updated_at": r[5]} if r else None
+
+def list_personas():
+    conn = get_db_connection()
+    try:
+        rows = conn.execute("SELECT persona_id FROM personas ORDER BY created_at ASC").fetchall()
+    finally:
+        conn.close()
+    return [get_persona(r[0]) for r in rows]
+
+def validate_persona_ref(value):
+    """None / '' 表示默认人格；其余必须是已存在的 persona_id。"""
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or not PERSONA_ID_RE.match(value) or not get_persona(value):
+        raise ValueError("persona_id does not exist")
+    return value
+
+def persona_prompt(session_id):
+    p = get_persona(session_persona_id(session_id))
+    if not p:
+        return ""
+    return f"[人格：{p['name']}] 本会话由用户创建的人格“{p['name']}”负责，记忆与其他人格隔离（共享记忆仍可见）。\n{p['instructions']}\n\n"
 
 def server_tool_notes(session_id):
     """追加到 system 消息的服务端工具说明（客户端 instructions 不了解服务端新增工具）与技能索引。"""
@@ -792,8 +849,8 @@ def tool_subagent_task(task_id, session_id, args, model, provider_config, depth)
     conn = get_db_connection()
     try:
         c = conn.cursor()
-        c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at) VALUES (?, NULL, ?, ?, ?)",
-                  (sid, "子代理：" + title, SUBAGENT_INSTRUCTIONS, now))
+        c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, NULL, ?, ?, ?, ?)",
+                  (sid, "子代理：" + title, SUBAGENT_INSTRUCTIONS, now, session_persona_id(session_id)))
         c.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
                   (tid, sid, model, now))
         c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (sid, prompt, now))
@@ -1138,7 +1195,7 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
     rows = c.fetchall()
     conn.close()
 
-    system_text = (instructions or "") + server_tool_notes(session_id)
+    system_text = persona_prompt(session_id) + (instructions or "") + server_tool_notes(session_id)
     messages = [{"role": "system", "content": system_text.lstrip()}]
     for r_role, r_content, r_tc, r_tcid in rows:
         m = {"role": r_role}
@@ -1338,7 +1395,7 @@ _scheduler_thread = None
 
 def _routine_row_to_dict(r):
     keys = ["routine_id", "name", "prompt", "schedule", "credential", "model", "instructions", "enabled",
-            "max_runs", "run_count", "next_run_at", "last_run_at", "last_status", "notify", "created_at", "updated_at"]
+            "max_runs", "run_count", "next_run_at", "last_run_at", "last_status", "notify", "created_at", "updated_at", "persona_id"]
     d = dict(zip(keys, r))
     try: d["schedule"] = json.loads(d["schedule"])
     except Exception: d["schedule"] = {}
@@ -1346,7 +1403,7 @@ def _routine_row_to_dict(r):
     d["notify"] = bool(d["notify"])
     return d
 
-ROUTINE_COLUMNS = "routine_id, name, prompt, schedule, credential, model, instructions, enabled, max_runs, run_count, next_run_at, last_run_at, last_status, notify, created_at, updated_at"
+ROUTINE_COLUMNS = "routine_id, name, prompt, schedule, credential, model, instructions, enabled, max_runs, run_count, next_run_at, last_run_at, last_status, notify, created_at, updated_at, persona_id"
 
 def validate_schedule(schedule):
     """返回规范化的 schedule dict，非法抛 ValueError。"""
@@ -1447,6 +1504,8 @@ def validate_routine_fields(req, existing=None):
             if not isinstance(req[key], bool):
                 raise ValueError(f"{key} must be a boolean")
             out[key] = req[key]
+    if "persona_id" in req:
+        out["persona_id"] = validate_persona_ref(req["persona_id"])
     if "max_runs" in req:
         v = req["max_runs"]
         if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v < 1):
@@ -1462,10 +1521,10 @@ def create_routine(fields):
     next_run = compute_next_run(schedule, now, first=True) if enabled else None
     conn = get_db_connection()
     try:
-        conn.execute("INSERT INTO routines (" + ROUTINE_COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?)",
+        conn.execute("INSERT INTO routines (" + ROUTINE_COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?, ?)",
                      (rid, fields["name"], fields["prompt"], json.dumps(schedule), fields["credential"], fields["model"],
                       fields.get("instructions"), 1 if enabled else 0, fields.get("max_runs"), next_run,
-                      1 if fields.get("notify", True) else 0, now, now))
+                      1 if fields.get("notify", True) else 0, now, now, fields.get("persona_id")))
         conn.commit()
     finally:
         conn.close()
@@ -1484,10 +1543,10 @@ def update_routine(routine_id, fields):
             merged["enabled"] = False
     conn = get_db_connection()
     try:
-        conn.execute("UPDATE routines SET name = ?, prompt = ?, schedule = ?, credential = ?, model = ?, instructions = ?, enabled = ?, max_runs = ?, next_run_at = ?, notify = ?, updated_at = ? WHERE routine_id = ?",
+        conn.execute("UPDATE routines SET name = ?, prompt = ?, schedule = ?, credential = ?, model = ?, instructions = ?, enabled = ?, max_runs = ?, next_run_at = ?, notify = ?, updated_at = ?, persona_id = ? WHERE routine_id = ?",
                      (merged["name"], merged["prompt"], json.dumps(merged["schedule"]), merged["credential"], merged["model"],
                       merged.get("instructions"), 1 if merged["enabled"] else 0, merged.get("max_runs"), merged["next_run_at"],
-                      1 if merged["notify"] else 0, now, routine_id))
+                      1 if merged["notify"] else 0, now, merged.get("persona_id"), routine_id))
         conn.commit()
     finally:
         conn.close()
@@ -1563,8 +1622,8 @@ def launch_routine_run(routine, trigger="schedule"):
     conn = get_db_connection()
     try:
         c = conn.cursor()
-        c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at) VALUES (?, NULL, ?, ?, ?)",
-                  (sid, "例行任务：" + routine["name"], instructions, now))
+        c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, NULL, ?, ?, ?, ?)",
+                  (sid, "例行任务：" + routine["name"], instructions, now, routine.get("persona_id")))
         c.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
                   (tid, sid, routine["model"], now))
         c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (sid, content, now))
@@ -1704,8 +1763,8 @@ def telegram_session_for(cfg, chat_id, title_hint, new=False):
             return row[0]
         sid = "sess_" + uuid.uuid4().hex[:12]
         now = time.time()
-        c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at) VALUES (?, NULL, ?, ?, ?)",
-                  (sid, ("Telegram：" + title_hint)[:80], cfg.get("instructions") or TELEGRAM_DEFAULT_INSTRUCTIONS, now))
+        c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, NULL, ?, ?, ?, ?)",
+                  (sid, ("Telegram：" + title_hint)[:80], cfg.get("instructions") or TELEGRAM_DEFAULT_INSTRUCTIONS, now, cfg.get("persona_id")))
         c.execute("INSERT INTO telegram_chats (chat_id, session_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at",
                   (chat_id, sid, now))
         conn.commit()
@@ -1957,7 +2016,8 @@ class Handler(BaseHTTPRequestHandler):
                     "pages": True,
                     "subagents": True,
                     "image_generate": True,
-                    "telegram": True
+                    "telegram": True,
+                    "personas": True
                 },
                 "timestamp": time.time()
             })
@@ -2003,6 +2063,18 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer ") or auth[7:].strip() != SERVER_TOKEN:
             self._send(401, {"error": "Unauthorized"})
+            return
+
+        if path == "/v1/personas":
+            self._send(200, {"personas": list_personas()})
+            return
+
+        if path.startswith("/v1/personas/"):
+            p = get_persona(path[len("/v1/personas/"):])
+            if p:
+                self._send(200, p)
+            else:
+                self._send(404, {"error": "Persona not found"})
             return
 
         if path == "/v1/telegram":
@@ -2083,8 +2155,8 @@ class Handler(BaseHTTPRequestHandler):
                 return v[0] if v else default
             conn = get_db_connection()
             try:
-                if qp("query") is not None or qp("category"):
-                    entries = cloud_memory.search(conn, qp("query", ""), qp("category"), int(qp("limit", "20")), source=qp("source"))
+                if qp("query") is not None or qp("category") or qp("persona") is not None:
+                    entries = cloud_memory.search(conn, qp("query", ""), qp("category"), int(qp("limit", "20")), source=qp("source"), persona=qp("persona"))
                 else:
                     since = qp("since")
                     entries = cloud_memory.list_entries(conn, since=float(since) if since else None, source=qp("source"), limit=int(qp("limit", "200")))
@@ -2323,6 +2395,36 @@ class Handler(BaseHTTPRequestHandler):
             self._send(201 if created else 200, {"name": name, "base_url": base_url, "key_hint": credential_hint(api_key.strip()), "stored": True})
             return
 
+        if path.startswith("/v1/personas/"):
+            pid = path[len("/v1/personas/"):]
+            name = req_json.get("name")
+            instructions = req_json.get("instructions")
+            emoji = req_json.get("emoji")
+            if not PERSONA_ID_RE.match(pid):
+                self._send(400, {"error": "persona_id must match ^[a-z0-9][a-z0-9_-]{0,31}$"})
+                return
+            if not isinstance(name, str) or not name.strip() or len(name) > 60:
+                self._send(400, {"error": "name must be a non-empty string (max 60)"})
+                return
+            if not isinstance(instructions, str) or not instructions.strip() or len(instructions) > 20000:
+                self._send(400, {"error": "instructions must be a non-empty string (max 20000)"})
+                return
+            if emoji is not None and (not isinstance(emoji, str) or len(emoji) > 8):
+                self._send(400, {"error": "emoji must be a short string"})
+                return
+            existed = get_persona(pid) is not None
+            now = time.time()
+            conn = get_db_connection()
+            try:
+                conn.execute("INSERT INTO personas (persona_id, name, instructions, emoji, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) "
+                             "ON CONFLICT(persona_id) DO UPDATE SET name = excluded.name, instructions = excluded.instructions, emoji = excluded.emoji, updated_at = excluded.updated_at",
+                             (pid, name.strip(), instructions, emoji, now, now))
+                conn.commit()
+            finally:
+                conn.close()
+            self._send(200 if existed else 201, get_persona(pid))
+            return
+
         if path == "/v1/telegram":
             body = req_json.get("config", req_json)
             existing = telegram_config()
@@ -2330,6 +2432,10 @@ class Handler(BaseHTTPRequestHandler):
                 body = dict(body, bot_token=existing["bot_token"])  # 只改允许列表等字段时沿用已存 Token
             try:
                 cfg = cloud_telegram.validate(body, lambda n: bool(CREDENTIAL_NAME_RE.match(n)) and any(c["name"] == n for c in list_credentials()))
+                try:
+                    cfg["persona_id"] = validate_persona_ref(body.get("persona_id"))
+                except ValueError as e:
+                    raise cloud_telegram.TelegramConfigError(str(e))
                 me = cloud_telegram.call(cfg, "getMe", timeout=15)
                 cfg["bot_username"] = (me or {}).get("username")
             except cloud_telegram.TelegramConfigError as e:
@@ -2392,6 +2498,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         path = self.path.split("?")[0]
+        query_params = parse_qs(urlparse(self.path).query)
         if not self._authorized():
             return
 
@@ -2404,6 +2511,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"name": name, "deleted": True})
             else:
                 self._send(404, {"error": "Credential not found"})
+            return
+
+        if path.startswith("/v1/personas/"):
+            pid = path[len("/v1/personas/"):]
+            conn = get_db_connection()
+            try:
+                cur = conn.execute("DELETE FROM personas WHERE persona_id = ?", (pid,))
+                deleted = cur.rowcount > 0
+                purged = 0
+                if deleted:
+                    conn.execute("UPDATE routines SET persona_id = NULL WHERE persona_id = ?", (pid,))
+                    if (query_params.get("purge_memory") or ["0"])[0] == "1":
+                        purged = conn.execute("DELETE FROM memory_entries WHERE persona = ?", (pid,)).rowcount
+                conn.commit()
+            finally:
+                conn.close()
+            if deleted:
+                self._send(200, {"persona_id": pid, "deleted": True, "memory_purged": purged})
+            else:
+                self._send(404, {"error": "Persona not found"})
             return
 
         if path == "/v1/telegram":
@@ -2490,14 +2617,19 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/v1/sessions":
             title = req_json.get("title", "Cloud Session")
+            try:
+                persona_id = validate_persona_ref(req_json.get("persona_id"))
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
             sid = "sess_" + uuid.uuid4().hex[:12]
             created_at = time.time()
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("INSERT INTO sessions (session_id, title, created_at) VALUES (?, ?, ?)", (sid, title, created_at))
+            c.execute("INSERT INTO sessions (session_id, title, created_at, persona_id) VALUES (?, ?, ?, ?)", (sid, title, created_at, persona_id))
             conn.commit()
             conn.close()
-            self._send(201, {"session_id": sid, "title": title, "created_at": created_at})
+            self._send(201, {"session_id": sid, "title": title, "created_at": created_at, "persona_id": persona_id})
             return
 
         if path == "/v1/sessions/import":

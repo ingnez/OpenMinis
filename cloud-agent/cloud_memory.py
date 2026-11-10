@@ -36,9 +36,10 @@ def normalize_category(category):
     return category.lower()
 
 
-def content_hash(category, content):
+def content_hash(category, content, persona=""):
     norm = "\n".join(line.rstrip() for line in content.strip().splitlines())
-    return hashlib.sha256((category + "\n" + norm).encode("utf-8")).hexdigest()
+    scope = (persona + "\n") if persona else ""  # 默认人格保持旧哈希，兼容已有数据
+    return hashlib.sha256((scope + category + "\n" + norm).encode("utf-8")).hexdigest()
 
 
 def render_entry(entry_time, category, content):
@@ -102,6 +103,9 @@ def ensure_schema(conn):
         created_at REAL NOT NULL
     )
     """)
+    cols = {row[1] for row in c.execute("PRAGMA table_info(memory_entries)")}
+    if "persona" not in cols:
+        c.execute("ALTER TABLE memory_entries ADD COLUMN persona TEXT NOT NULL DEFAULT ''")
     c.execute("CREATE INDEX IF NOT EXISTS idx_memory_origin ON memory_entries(source, origin)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_memory_created ON memory_entries(created_at)")
     try:
@@ -126,12 +130,12 @@ def fts_enabled(conn):
 
 def _row(r):
     return {"id": r[0], "category": r[1], "content": r[2], "source": r[3], "origin": r[4],
-            "entry_time": r[5], "session_id": r[6], "created_at": r[7]}
+            "entry_time": r[5], "session_id": r[6], "created_at": r[7], "persona": r[8]}
 
-COLS = "id, category, content, source, origin, entry_time, session_id, created_at"
+COLS = "id, category, content, source, origin, entry_time, session_id, created_at, persona"
 
 
-def write(conn, content, category=None, source="cloud", session_id=None, entry_time=None, origin=None, commit=True):
+def write(conn, content, category=None, source="cloud", session_id=None, entry_time=None, origin=None, commit=True, persona=""):
     """写入一条；同分类同内容已存在时返回已有 id。返回 (entry dict, created)。"""
     if not isinstance(content, str) or not content.strip():
         raise ValueError("content must be a non-empty string")
@@ -141,10 +145,11 @@ def write(conn, content, category=None, source="cloud", session_id=None, entry_t
     now = time.time()
     if entry_time is None:
         entry_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
-    h = content_hash(category, content)
+    persona = persona or ""
+    h = content_hash(category, content, persona)
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO memory_entries (category, content, source, origin, entry_time, content_hash, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-              (category, content.strip(), source, origin, entry_time, h, session_id, now))
+    c.execute("INSERT OR IGNORE INTO memory_entries (category, content, source, origin, entry_time, content_hash, session_id, created_at, persona) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              (category, content.strip(), source, origin, entry_time, h, session_id, now, persona))
     created = c.rowcount == 1
     if commit:
         conn.commit()
@@ -184,10 +189,14 @@ def _tokens(query):
     return [t for t in re.split(r"\s+", (query or "").strip()) if t][:12]
 
 
-def search(conn, query, category=None, limit=10, source=None):
-    """关键词检索：FTS5 trigram（≥3 字符的词）+ LIKE（短词），按命中词数、bm25、时间排序。"""
+def search(conn, query, category=None, limit=10, source=None, persona=None):
+    """关键词检索：FTS5 trigram（≥3 字符的词）+ LIKE（短词），按命中词数、bm25、时间排序。
+    persona 为 None 不过滤；否则只看共享记忆（persona = ''）与该人格自己的记忆。"""
     limit = max(1, min(int(limit or 10), 50))
     where, params = [], []
+    if persona is not None:
+        where.append("(e.persona = '' OR e.persona = ?)")
+        params.append(persona)
     if category:
         where.append("e.category = ?")
         params.append(normalize_category(category))
@@ -213,7 +222,7 @@ def search(conn, query, category=None, limit=10, source=None):
                                 " WHERE memory_fts MATCH ?" + base_where + " ORDER BY bm25(memory_fts) LIMIT 200",
                                 [match] + params).fetchall()
             for r in rows:
-                candidates[r[0]] = (_row(r[:8]), r[8])
+                candidates[r[0]] = (_row(r[:9]), r[9])
         except Exception:
             short_tokens = tokens
     else:

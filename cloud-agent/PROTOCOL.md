@@ -342,3 +342,9 @@
 ### 5.5 发消息草稿 (send_message)
 - **工具** `send_message {channel: "telegram" | "push", text, title?, chat_id?}`：经 §5.4 Telegram（`chat_id` 必须在允许列表，默认取发起任务的 chat，否则第一个允许的 chat）或 §4.6 推送发消息。
 - **草稿确认**: 每次调用都会以内置规则 `send_message_draft`（类别 `outbound`）挂起为 §4.2 审批，用户在 iOS 审批卡、Telegram 按钮或 REST 中看到完整草稿后批准才发送；该规则不受自定义策略或 `enabled: false` 影响。拒绝时模型收到 `{"error": "用户拒绝，未执行…", "approval": "denied"}`。
+
+### 5.6 多人格 (Personas)
+- `GET /v1/personas`、`GET /v1/personas/{id}`；`PUT /v1/personas/{id}` `{name, instructions, emoji?}`（新建 201，更新 200；id 须匹配 `^[a-z0-9][a-z0-9_-]{0,31}$`）；`DELETE /v1/personas/{id}[?purge_memory=1]`（引用它的例行任务 `persona_id` 置空；带参数时一并删除该人格的私有记忆）。
+- `POST /v1/sessions`、`POST /v1/routines`、`PUT /v1/telegram` 可带 `persona_id`（必须是已存在的人格）。子代理继承父会话人格。
+- 系统提示词以 `[人格：<name>]\n<instructions>` 开头。`memory_write` 写入该人格的私有范围；`memory_search` 只返回共享记忆（`persona = ''`）与本人格记忆。`GET /v1/memory?persona=<id>` 同样过滤；不带时返回全部（每条含 `persona` 字段）。
+- `/health` 的 capabilities 增加 `personas: true`。
