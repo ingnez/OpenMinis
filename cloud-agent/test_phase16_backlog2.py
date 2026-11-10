@@ -317,5 +317,26 @@ class DesktopStreamTests(CloudServerTestCase):
         self.assertEqual(self.request("GET", "/v1/desktop/stream")[0], 400)
 
 
+
+class IncognitoLeakTests(CloudServerTestCase):
+    def test_01_incognito_not_in_library_search_or_bot_preview(self):
+        import time
+        self.request("PUT", "/v1/bots/incbot", {"name": "无痕测试", "instructions": "x"})
+        sid = self.request("POST", "/v1/sessions", {"title": "无痕", "persona_id": "incbot", "incognito": True})[1]["session_id"]
+        conn = self.srv.get_db_connection()
+        try:
+            conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)",
+                         (sid, "私密链接 https://example.org/secret 关键字无痕暗号", time.time()))
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self.request("GET", "/v1/bots/incbot/library")[1]["items"], [])
+        results = self.request("GET", "/v1/search?q=" + __import__("urllib.parse").parse.quote("无痕暗号"))[1].get("results", [])
+        self.assertEqual(results, [])
+        bot = self.request("GET", "/v1/bots/incbot")[1]
+        self.assertNotEqual(bot.get("latest_session_id"), sid)
+        self.assertIsNone(bot.get("last_message"))
+
+
 if __name__ == "__main__":
     unittest.main()
