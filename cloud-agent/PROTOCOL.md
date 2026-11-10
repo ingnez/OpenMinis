@@ -602,6 +602,10 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 
 - 修复：`GET /v1/tasks/<id>/replay/<i>` 里多余的局部 `import base64` 让整个 `do_GET` 把 `base64` 当成局部变量，`GET /v1/bots/<id>/avatar` 因此 500。接口形状不变。
 
+## 卡片账单地址与提示（2.31.1）
+
+- 卡片的机密字段新增 `billing`（账单地址）和 `hint`（提示），和卡号、安全码一样加密存放，只在 App 里 Face ID 后 `reveal` 才返回，列表和 Bot 都看不到。
+
 ## 保管库新界面（2.31.0）
 
 - 新类型 `note`（安全备注）：机密字段 `body`；Bot 的 `vault_list` 里 `allowed` 恒为 false，`vault_fill` / `vault_totp` 拒绝；内容参与防泄漏替换。

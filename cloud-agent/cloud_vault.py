@@ -29,7 +29,7 @@ ID_RE = re.compile(r"^v_[a-f0-9]{10}$")
 MASK = "[保管库已隐藏]"
 SECRET_KEYS = {
     "login": ("password", "totp", "notes"),
-    "card": ("number", "expiry", "cvv", "notes"),
+    "card": ("number", "expiry", "cvv", "notes", "billing", "hint"),
     "contact": ("phone", "email", "addresses", "notes"),
     "note": ("body",),
 }

@@ -93,6 +93,13 @@ class VaultUITests(CloudServerTestCase):
         upd = self.request("PUT", f"/v1/vault/{it['id']}", {"allowed_bots": []})[1]["item"]
         self.assertIsNone(upd.get("allowed_bots"))
 
+    def test_04_card_billing_and_hint(self):
+        c = self._add({"kind": "card", "name": "FAKE", "number": "4111111111111111", "billing": "假账单地址 1 号", "hint": "测试卡"})
+        listing = json.dumps(self.request("GET", "/v1/vault")[1], ensure_ascii=False)
+        self.assertNotIn("假账单地址", listing)
+        sec = self.request("POST", f"/v1/vault/{c['id']}/reveal", {})[1]["secret"]
+        self.assertEqual((sec["billing"], sec["hint"]), ("假账单地址 1 号", "测试卡"))
+
     def test_weak_rule(self):
         self.assertTrue(cloud_vault.password_weak("short1A!"))
         self.assertTrue(cloud_vault.password_weak("alllowercaseletters"))
