@@ -174,6 +174,8 @@ struct CloudBotAvatarView: View {
     var gaze: CGSize = .zero
     /// 眼睛睁开程度（1 = 睁开，0.1 = 眨眼）
     var eyeOpen: CGFloat = 1
+    /// 心情：排队时眯眼专注、等你审批时睁大眼、有新回复时笑眯眯
+    var mood: CloudBotMood = .calm
 
     var body: some View {
         if spec.photo != nil {
@@ -196,13 +198,52 @@ struct CloudBotAvatarView: View {
         ZStack {
             CloudBotShape(kind: spec.shape).fill(spec.fill)
             HStack(spacing: size * 0.13) {
-                Capsule().fill(Color.white).frame(width: size * 0.1, height: size * 0.22 * max(eyeOpen, 0.12))
-                Capsule().fill(Color.white).frame(width: size * 0.1, height: size * 0.22 * max(eyeOpen, 0.12))
+                eye
+                eye
             }
-            .rotationEffect(.degrees(-14))
+            .rotationEffect(.degrees(mood == .curious ? -4 : -14))
             .offset(x: size * (0.06 + 0.08 * gaze.width), y: size * (-0.08 + 0.07 * gaze.height))
         }
         .frame(width: size, height: size)
+    }
+}
+
+extension CloudBotAvatarView {
+    @ViewBuilder fileprivate var eye: some View {
+        let open = max(eyeOpen, 0.12)
+        switch mood {
+        case .happy where eyeOpen > 0.5:
+            // 笑眼：向上弯的弧
+            CloudHappyEye().stroke(Color.white, style: StrokeStyle(lineWidth: size * 0.07, lineCap: .round))
+                .frame(width: size * 0.14, height: size * 0.09)
+        case .focused:
+            Capsule().fill(Color.white).frame(width: size * 0.11, height: size * 0.12 * open)
+        case .curious:
+            Capsule().fill(Color.white).frame(width: size * 0.12, height: size * 0.27 * open)
+        default:
+            Capsule().fill(Color.white).frame(width: size * 0.1, height: size * 0.22 * open)
+        }
+    }
+}
+
+enum CloudBotMood: Equatable {
+    case calm, focused, curious, happy
+
+    static func of(_ status: CloudBotStatus, unread: Bool) -> CloudBotMood {
+        switch status {
+        case .waiting: return .curious
+        case .queued, .working: return .focused
+        case .idle: return unread ? .happy : .calm
+        }
+    }
+}
+
+struct CloudHappyEye: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        p.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.maxY), control: CGPoint(x: rect.midX, y: rect.minY - rect.height * 0.6))
+        return p
     }
 }
 

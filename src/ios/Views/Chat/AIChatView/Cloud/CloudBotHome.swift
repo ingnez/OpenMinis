@@ -206,7 +206,8 @@ struct CloudBotHomeRow: View {
                 if status == .working {
                     CloudBotLivelyAvatar(spec: CloudBotAvatarSpec.of(bot), size: 46)
                 } else {
-                    CloudBotBlinkingIcon(spec: CloudBotAvatarSpec.of(bot), size: 46)
+                    // 列表里的头像也跟着手指看，并按状态换表情
+                    CloudBotWatchingAvatar(spec: CloudBotAvatarSpec.of(bot), size: 46, mood: CloudBotMood.of(status, unread: unread))
                 }
             }
             .frame(width: 46, height: 50)

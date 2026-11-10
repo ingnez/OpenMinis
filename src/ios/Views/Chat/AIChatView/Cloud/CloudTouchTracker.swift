@@ -115,12 +115,14 @@ struct CloudFollowTouch: ViewModifier {
 struct CloudBotWatchingAvatar: View {
     let spec: CloudBotAvatarSpec
     var size: CGFloat = 22
+    var mood: CloudBotMood = .calm
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var gaze: CGSize = .zero
     @State private var eyeOpen: CGFloat = 1
 
     var body: some View {
-        CloudBotAvatarView(spec: spec, size: size, gaze: gaze, eyeOpen: eyeOpen)
+        CloudBotAvatarView(spec: spec, size: size, gaze: gaze, eyeOpen: eyeOpen, mood: mood)
+            .animation(.spring(response: 0.35, dampingFraction: 0.7), value: mood)
             .modifier(CloudFollowTouch(gaze: $gaze, enabled: !reduceMotion))
             .task(id: reduceMotion) {
                 try? await Task.sleep(nanoseconds: UInt64.random(in: 500_000_000...4_000_000_000))
