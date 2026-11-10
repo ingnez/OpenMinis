@@ -4,9 +4,16 @@ import SwiftUI
 struct CloudReactionPill: View {
     let emoji: String
     var mine = false
+    @State private var popped = false
 
     var body: some View {
         Text(emoji).font(.system(size: 14))
+            .scaleEffect(popped ? 1 : 0.3)
+            .onAppear { withAnimation(.spring(response: 0.32, dampingFraction: 0.5)) { popped = true } }
+            .onChange(of: emoji) { _ in
+                popped = false
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.5)) { popped = true }
+            }
             .padding(.horizontal, 7).padding(.vertical, 3)
             .background(Capsule().fill(Color(.secondarySystemBackground)))
             .overlay(Capsule().stroke(Color(.systemBackground), lineWidth: 2))
@@ -61,7 +68,7 @@ struct CloudReactMenu: View {
     var body: some View {
         Menu {
             ForEach(CloudMessageExtras.quickEmojis, id: \.self) { e in
-                Button(e + (current == e ? " ✓" : "")) { onPick(current == e ? nil : e) }
+                Button(e + (current == e ? " ✓" : "")) { onPick(CloudReactionLogic.next(current: current, picked: e)) }
             }
             if current != nil { Button("取消回应", role: .destructive) { onPick(nil) } }
         } label: {
@@ -167,6 +174,29 @@ struct CloudAssistantFooter: View {
             }
             .foregroundStyle(.tertiary)
             .buttonStyle(.plain)
+        }
+    }
+}
+
+/// 长按 Bot 的回复：快速表情（再点同一个取消）、复制、回复
+struct CloudAssistantLongPress: ViewModifier {
+    let text: String
+    let extras: CloudMessageExtras
+    let onReact: (Int, String?) -> Void
+    let onReply: (CloudReplyTarget) -> Void
+
+    func body(content: Content) -> some View {
+        if let id = extras.id {
+            content.contextMenu {
+                ForEach(CloudMessageExtras.quickEmojis, id: \.self) { e in
+                    Button(e + (extras.userReaction == e ? " ✓" : "")) { onReact(id, CloudReactionLogic.next(current: extras.userReaction, picked: e)) }
+                }
+                Divider()
+                Button { UIPasteboard.general.string = text } label: { Label("复制", systemImage: "doc.on.doc") }
+                Button { onReply(CloudReplyTarget(id: id, excerpt: text)) } label: { Label("回复", systemImage: "arrowshape.turn.up.left") }
+            }
+        } else {
+            content
         }
     }
 }

@@ -603,6 +603,8 @@ struct CloudSessionView: View {
     @State private var tasks: [[String: Any]] = []
     @State private var inputPrompt: String = ""
     @State private var replyTarget: CloudReplyTarget?
+    /// 用户刚点的表情回应（服务器确认前先显示）；值为 nil 表示刚取消
+    @State private var localReactions: [Int: String?] = [:]
     @State private var pendingExtras: [String: Any] = [:]
     @State private var activeTaskId: String? = nil
     @State private var activeTaskStatus: String = "idle"
@@ -701,10 +703,13 @@ struct CloudSessionView: View {
                                                      onReply: { replyTarget = $0 })
                                 } else {
                                     let prevAssistant = idx > 0 && turns[idx - 1].message.role == .assistant
+                                    let extras = reactionExtras(CloudMessageExtras(turn.textRaw))
                                     CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
                                                            showHeader: !prevAssistant, collapsible: true)
+                                        .modifier(CloudAssistantLongPress(text: msg.content, extras: extras,
+                                                                          onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 }))
                                     CloudAssistantFooter(text: msg.content, latency: CloudLatency.line(for: turn.raw, tasks: tasks),
-                                                         extras: CloudMessageExtras(turn.textRaw), selfId: theme.botId,
+                                                         extras: extras, selfId: theme.botId,
                                                          onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 })
                                 }
                             }
@@ -1429,12 +1434,26 @@ struct CloudSessionView: View {
     }
 
     /// 用户给 Bot 的消息点表情（nil = 取消）
+    /// 先在本地显示（带弹出动画），再同步到服务器；失败就撤回本地显示
     private func reactToBot(_ messageId: Int, _ emoji: String?) {
         CloudHaptics.selection()
+        localReactions[messageId] = .some(emoji)
         Task {
-            try? await CloudRunModelService.react(sessionId: sessionId, messageId: messageId, emoji: emoji)
+            do {
+                try await CloudRunModelService.react(sessionId: sessionId, messageId: messageId, emoji: emoji)
+            } catch {
+                localReactions[messageId] = nil
+                CloudHaptics.warning()
+            }
             loadSessionDetail()
         }
+    }
+
+    private func reactionExtras(_ e: CloudMessageExtras) -> CloudMessageExtras {
+        guard let id = e.id, let local = localReactions[id] else { return e }
+        var out = e
+        out.userReaction = local
+        return out
     }
 
     private func submitPrepared(content: String, body rawBody: [String: Any]) {

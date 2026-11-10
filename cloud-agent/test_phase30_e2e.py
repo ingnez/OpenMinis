@@ -254,6 +254,36 @@ class E2EScenarios(CloudServerTestCase):
                         "total_ms": round(times[len(times) // 2], 1), "client_total_ms": round(times[-1], 1), "source": "mock"})
         self.assertLess(times[len(times) // 2], 300, "改名保存应很快")
 
+    def test_13_tapback_reactions(self):
+        def script(d):
+            msgs = d["messages"]
+            li = max(i for i, m in enumerate(msgs) if m.get("role") == "user")
+            last_user, fresh = str(msgs[li]["content"]), [m for m in msgs[li:] if m.get("role") == "tool"]
+            if fresh:
+                return say("")                      # 表情已经够了，本轮不写字
+            if len(last_user) <= 3:                 # 「好」「谢谢」这种短回应
+                return tool_call("rx", "react", {"emoji": "🙏" if "谢" in last_user else "👍"})
+            return say("这是正文回复")
+        FakeModelHandler.scripts["e-tap"] = script
+        sid = self.new_session()
+        for text, emoji in (("好", "👍"), ("谢谢", "🙏")):
+            res, final = self._run(sid, text, "e-tap")
+            self.assertTrue(any(e["type"] == "reaction" and e["payload"]["emoji"] == emoji for e in final["events"]))
+            msgs = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
+            user = [m for m in msgs if m["role"] == "user"][-1]
+            self.assertEqual(user["reactions"], [{"actor": "bot", "emoji": emoji}], "Bot 的表情挂在用户这条上")
+            texts = [m for m in msgs if m["role"] == "assistant" and (m.get("content") or "").strip() and not m.get("tool_calls")]
+            self.assertEqual(texts, [], "只回表情、不写字")
+        self._run(sid, "讲讲细节吧", "e-tap")
+        bot_msg = [m for m in self.request("GET", f"/v1/sessions/{sid}")[1]["messages"] if m["role"] == "assistant" and m.get("content") == "这是正文回复"][-1]
+        path = f"/v1/sessions/{sid}/messages/{bot_msg['id']}/reaction"
+        self.assertEqual(self.request("POST", path, {"emoji": "❤️"})[1]["reactions"], [{"actor": "user", "emoji": "❤️"}])
+        self.assertEqual(self.request("POST", path, {"emoji": "😂"})[1]["reactions"], [{"actor": "user", "emoji": "😂"}], "换成另一个")
+        self.assertEqual(self.request("POST", path, {"emoji": ""})[1]["reactions"], [], "再点同一个（App 发空）= 取消")
+        self.request("POST", path, {"emoji": "🎉"})
+        again = [m for m in self.request("GET", f"/v1/sessions/{sid}")[1]["messages"] if m.get("id") == bot_msg["id"]][0]
+        self.assertEqual(again["reactions"], [{"actor": "user", "emoji": "🎉"}], "同步到服务器，重新打开还在")
+
 
 if __name__ == "__main__":
     unittest.main()

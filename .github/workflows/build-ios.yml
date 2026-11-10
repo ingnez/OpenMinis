@@ -69,6 +69,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotEditPatch.swift scripts/CloudBotEditPatchTests.swift -o /tmp/cloud-editpatch-tests
           /tmp/cloud-editpatch-tests
+      - name: 表情回应测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReactionLogic.swift scripts/CloudReactionLogicTests.swift -o /tmp/cloud-reaction-tests
+          /tmp/cloud-reaction-tests
       - name: 首页 Bot 状态测试
         run: |
           set -o pipefail
@@ -193,6 +198,8 @@ jobs:
           /tmp/cloud-handoff-tests | tee cloud-handoff-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotPresence.swift scripts/CloudBotPresenceTests.swift -o /tmp/cloud-presence-tests
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReactionLogic.swift scripts/CloudReactionLogicTests.swift -o /tmp/cloud-reaction-tests
+          /tmp/cloud-reaction-tests | tee cloud-reaction-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotEditPatch.swift scripts/CloudBotEditPatchTests.swift -o /tmp/cloud-editpatch-tests
           /tmp/cloud-editpatch-tests | tee cloud-editpatch-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudAvatarPalette.swift scripts/CloudAvatarPaletteTests.swift -o /tmp/cloud-avatar-tests

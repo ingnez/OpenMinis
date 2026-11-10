@@ -81,15 +81,13 @@ enum CloudBeats {
 struct CloudMessageExtras {
     let id: Int?
     let botReaction: String?
-    let userReaction: String?
+    var userReaction: String?
     let replyExcerpt: String?
     let replyRole: String?
 
     init(_ m: [String: Any]) {
         id = (m["id"] as? NSNumber)?.intValue
-        let rs = m["reactions"] as? [[String: Any]] ?? []
-        botReaction = rs.first { $0["actor"] as? String == "bot" }?["emoji"] as? String
-        userReaction = rs.first { $0["actor"] as? String == "user" }?["emoji"] as? String
+        (botReaction, userReaction) = CloudReactionLogic.split(m["reactions"] as? [[String: Any]] ?? [])
         let r = m["reply_to"] as? [String: Any]
         replyExcerpt = r?["excerpt"] as? String
         replyRole = r?["role"] as? String
