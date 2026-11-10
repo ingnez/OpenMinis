@@ -639,6 +639,7 @@ struct CloudSessionView: View {
     @State private var outboxCount = 0
     @State private var privacyHits: [CloudPrivacyScan.Hit] = []
     @State private var privacyConfirmed = false
+    @State private var showPins = false
     @State private var outboxTask: Task<Void, Never>? = nil
     @State private var memoryOutbox: [String: (String, [String: Any])] = [:]
     @State private var showComputer = false
@@ -803,6 +804,7 @@ struct CloudSessionView: View {
             }
         }
         .animation(.spring(response: 0.45, dampingFraction: 0.78), value: call.active)
+        .sheet(isPresented: $showPins) { if let theme { CloudPinsSheet(botId: theme.botId, botName: theme.name) } }
         .modifier(CloudSessionExtras(followUp: $followUpNotice, outboxCount: outboxCount, privacyHits: $privacyHits,
                                      onDiscard: discardOutbox, onRedact: sendRedacted, onSend: sendAnyway,
                                      onAppear: resumeOutbox, onDisappear: pauseOutbox))
@@ -1164,6 +1166,7 @@ struct CloudSessionView: View {
                     }
                     Button { showFiles = true } label: { Label("选择文件", systemImage: "folder") }
                     Button { showCaseNote = true } label: { Label("口述病例（脱敏后复盘）", systemImage: "stethoscope") }
+                    Button { showPins = true } label: { Label("要点板", systemImage: "pin") }
                     Button { if !inputPrompt.hasPrefix("/") { inputPrompt = "/" } } label: { Label("斜杠命令", systemImage: "slash.circle") }
                     Picker("Bot 干活时发消息", selection: $steerInterrupt) {
                         Label("插话：直接告诉它", systemImage: "arrow.turn.up.right").tag(true)
@@ -1412,10 +1415,14 @@ struct CloudSessionView: View {
                                 CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
                                                        showHeader: !prevAssistant, collapsible: true)
                                     .modifier(CloudAssistantLongPress(text: msg.content, extras: extras,
-                                                                      onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 }))
+                                                                      onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 },
+                                                                      botId: theme.botId, onAsk: quickSend))
                                 CloudAssistantFooter(text: msg.content, latency: CloudLatency.line(for: turn.raw, tasks: tasks),
                                                      extras: extras, selfId: theme.botId,
                                                      onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 })
+                            }
+                            if idx == turns.count - 1, msg.role == .assistant, activeTaskStatus != "running" {
+                                CloudSmartReplyBar(text: msg.content, accent: theme.accent, onPick: quickSend)
                             }
                             ForEach(threadRows.filter { threadAnchor($0) == idx }) { CloudBotThreadCollapsedRow(item: $0) }
                             ForEach(callDividers.filter { CloudCallDivider.anchor($0, timestamps: stamps) == idx }) { CloudCallDividerRow(seconds: $0.seconds) }
@@ -1645,6 +1652,13 @@ struct CloudSessionView: View {
     private func sendFinished() {
         guard activeTaskStatus != "running", !isSubmitting else { return }
         inputPrompt = "我完成了：已在云电脑上完成手动操作（登录 / 验证码等），请截图确认后继续。"
+        sendTask()
+    }
+
+    /// 快捷回复 / 翻译：直接发（Bot 正在跑时不发，免得打断）
+    private func quickSend(_ text: String) {
+        guard activeTaskStatus != "running", !isSubmitting else { return }
+        inputPrompt = text
         sendTask()
     }
 

@@ -184,6 +184,9 @@ struct CloudAssistantLongPress: ViewModifier {
     let extras: CloudMessageExtras
     let onReact: (Int, String?) -> Void
     let onReply: (CloudReplyTarget) -> Void
+    var botId: String? = nil
+    /// 「翻译」等需要让 Bot 处理的：把一句话交给对话页发出去
+    var onAsk: ((String) -> Void)? = nil
 
     func body(content: Content) -> some View {
         if let id = extras.id {
@@ -194,6 +197,17 @@ struct CloudAssistantLongPress: ViewModifier {
                 Divider()
                 Button { UIPasteboard.general.string = text } label: { Label("复制", systemImage: "doc.on.doc") }
                 Button { onReply(CloudReplyTarget(id: id, excerpt: text)) } label: { Label("回复", systemImage: "arrowshape.turn.up.left") }
+                if let botId {
+                    Button { CloudBotSpeaker.speak(CloudMessageText.display(text).text, botId: botId) } label: { Label("朗读", systemImage: "speaker.wave.2") }
+                    Button { if CloudPins.add(botId, text: CloudMessageText.display(text).text) { CloudHaptics.success() } } label: {
+                        Label("钉到要点板", systemImage: "pin")
+                    }
+                }
+                if let onAsk {
+                    let excerpt = String(CloudMessageText.display(text).text.prefix(1500))
+                    Button { onAsk("把下面这段翻译成英文（只给译文）：\n\(excerpt)") } label: { Label("翻译成英文", systemImage: "character.bubble") }
+                    Button { onAsk("把下面这段翻译成中文（只给译文）：\n\(excerpt)") } label: { Label("翻译成中文", systemImage: "character.bubble") }
+                }
             }
         } else {
             content
