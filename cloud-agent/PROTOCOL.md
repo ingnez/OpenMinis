@@ -602,6 +602,10 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 
 - 修复：`GET /v1/tasks/<id>/replay/<i>` 里多余的局部 `import base64` 让整个 `do_GET` 把 `base64` 当成局部变量，`GET /v1/bots/<id>/avatar` 因此 500。接口形状不变。
 
+## 工作流不能绕圈（2.32.1）
+
+- `PUT /v1/routines/<id>` 把 schedule 改成 `after` 时，如果上一步是它自己或它下游的任务，返回 400（工作流画布连线用）。
+
 ## 对话分页（2.32.0）
 
 - `GET /v1/sessions/<id>?limit=N&before_id=M`：只回 `id < M` 的最近 N 条（N 最大 1000，按时间正序），并带 `has_more`（还有没有更早的）。不带 `limit` 时和以前一样回全部，`has_more` 为 false。

@@ -630,7 +630,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.32.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.32.1"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -5278,6 +5278,19 @@ def chain_depth(trigger):
     return int(m.group(1)) if m else 0
 
 
+def routine_after_creates_cycle(routine_id, upstream_id):
+    """工作流画布把 routine_id 接到 upstream_id 后面：顺着 upstream 往上找，碰到自己就是圈（2.32.1）"""
+    cur, seen = upstream_id, set()
+    while cur and cur not in seen:
+        if cur == routine_id:
+            return True
+        seen.add(cur)
+        r = get_routine(cur)
+        sch = (r or {}).get("schedule") or {}
+        cur = sch.get("routine_id") if sch.get("kind") == "after" else None
+    return False
+
+
 def fire_followups(routine, run):
     """上游例行任务结束后，启动 schedule.kind == after 且指向它的任务；最多连 3 层，防止循环。"""
     depth = chain_depth(run.get("trigger")) + 1
@@ -7311,6 +7324,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 fields = validate_routine_fields(req_json, existing=get_routine(rid))
+                sch = fields.get("schedule") or {}
+                if sch.get("kind") == "after" and routine_after_creates_cycle(rid, sch.get("routine_id")):
+                    raise ValueError("这样连会绕成圈：上一步不能是它自己或它后面的任务")
             except ValueError as e:
                 self._send(400, {"error": str(e)})
                 return
