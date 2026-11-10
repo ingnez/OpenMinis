@@ -669,7 +669,37 @@ struct CloudSessionView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.top, 60)
                         }
-                        ForEach(Array(CloudTaskFailure.display(messages).enumerated()), id: \.offset) { _, item in
+                        let shownItems = CloudTaskFailure.display(messages)
+                        if let theme {
+                            Color.clear.frame(height: 1).id("chat-top")
+                            ForEach(Array(shownItems.enumerated()), id: \.offset) { idx, item in
+                                let msg = item.message
+                                let role = msg["role"] as? String ?? "user"
+                                let content = msg["content"] as? String ?? ""
+                                if role == "user" {
+                                    CloudProseUser(content: content, accent: theme.accent)
+                                        .contextMenu {
+                                            Button { UIPasteboard.general.string = content } label: { Label("复制", systemImage: "doc.on.doc") }
+                                        }
+                                } else {
+                                    let prevAssistant = idx > 0 && (shownItems[idx - 1].message["role"] as? String) == "assistant"
+                                    CloudProseAssistant(spec: theme.spec, name: theme.name, content: content, accent: theme.accent,
+                                                        steps: item.steps, showHeader: !prevAssistant)
+                                    HStack(spacing: 12) {
+                                        Button { UIPasteboard.general.string = content; CloudHaptics.success() } label: {
+                                            Image(systemName: "doc.on.doc").font(.caption2)
+                                        }
+                                        .accessibilityLabel("复制回复")
+                                        if let line = CloudLatency.line(for: msg, tasks: tasks) {
+                                            Text(line).font(.caption2)
+                                        }
+                                    }
+                                    .foregroundStyle(.tertiary)
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        ForEach(Array((theme == nil ? shownItems : []).enumerated()), id: \.offset) { _, item in
                             let msg = item.message
                             let role = msg["role"] as? String ?? "user"
                             let content = msg["content"] as? String ?? ""
@@ -700,6 +730,7 @@ struct CloudSessionView: View {
                         if let theme {
                             themedTaskArea(theme)
                         }
+                        Color.clear.frame(height: 1).id("chat-bottom")
 
                         if theme == nil && !taskEvents.isEmpty {
                             Divider()
@@ -729,6 +760,18 @@ struct CloudSessionView: View {
                         }
                     }
                     .padding()
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if theme != nil && messages.count > 4 {
+                        CloudScrollButtons(onTop: { withAnimation { proxy.scrollTo("chat-top", anchor: .top) } },
+                                           onBottom: { withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) } })
+                    }
+                }
+                .onChange(of: messages.count) { _ in
+                    withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                }
+                .onAppear {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
                 }
             }
 
@@ -944,10 +987,24 @@ struct CloudSessionView: View {
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color.orange.opacity(0.1)))
             }
         }
-        if !liveText.isEmpty {
-            CloudThemedBubble(role: "assistant", content: liveText, accent: theme.accent)
+        let running = activeTaskStatus == "running" || activeTaskStatus == "waiting_user" || isSubmitting
+        if running && (!taskEvents.isEmpty || !liveText.isEmpty) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    CloudBotAvatarView(spec: theme.spec, size: 22)
+                    Text(theme.name).font(.subheadline.bold())
+                }
+                CloudLiveNarrative(events: taskEvents)
+                if !liveText.isEmpty {
+                    SelectableMarkdownView(markdown: CloudMessageText.display(liveText).text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        } else if !liveText.isEmpty {
+            CloudProseAssistant(spec: theme.spec, name: theme.name, content: liveText, accent: theme.accent)
         }
-        if activeTaskStatus == "running" || activeTaskStatus == "waiting_user" || isSubmitting {
+        if running {
             CloudBotWorkingRow(spec: theme.spec, events: taskEvents, status: activeTaskStatus)
         }
     }
@@ -978,6 +1035,26 @@ struct CloudSessionView: View {
                 }
             }
             if let err = dictation.errorText { Text(err).font(.caption).foregroundStyle(.red) }
+            let slash = CloudSlashCommand.matching(inputPrompt)
+            if !slash.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(slash) { cmd in
+                        Button { runSlash(cmd.id, theme: theme) } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: cmd.icon).frame(width: 20).foregroundStyle(theme.accent)
+                                Text(cmd.id).font(.subheadline.weight(.semibold))
+                                Text(cmd.title).font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 14).padding(.vertical, 9)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color(.secondarySystemBackground)))
+                .padding(.horizontal, 12)
+            }
             HStack {
                 Button { showModelPicker = true } label: {
                     HStack(spacing: 4) {
@@ -1008,42 +1085,75 @@ struct CloudSessionView: View {
                 }
                 .accessibilityLabel("添加附件")
                 HStack(alignment: .bottom, spacing: 4) {
-                    TextField(mentionBots.isEmpty ? "发消息" : "发消息，输入 @ 交给其他 Bot", text: $inputPrompt, axis: .vertical)
+                    TextField(mentionBots.isEmpty ? "发消息，/ 查看命令" : "发消息，@ 交给其他 Bot，/ 查看命令", text: $inputPrompt, axis: .vertical)
                         .lineLimit(1...6)
                         .padding(.vertical, 10).padding(.leading, 14)
                         .disabled(isSubmitting)
-                    if !hasDraft && !working {
-                        Button { toggleDictation() } label: {
-                            Image(systemName: dictation.isRecording ? "stop.circle.fill" : "mic").font(.system(size: 18))
-                                .foregroundStyle(dictation.isRecording ? Color.red : Color.secondary)
-                                .frame(width: 36, height: 40)
-                        }
-                        .accessibilityLabel(dictation.isRecording ? "停止听写" : "听写")
+                    Button { toggleDictation() } label: {
+                        Image(systemName: dictation.isRecording ? "stop.circle.fill" : "mic").font(.system(size: 17))
+                            .foregroundStyle(dictation.isRecording ? Color.red : Color.secondary)
+                            .frame(width: 34, height: 40)
                     }
+                    .accessibilityLabel(dictation.isRecording ? "停止听写" : "听写")
                 }
                 .background(Capsule().fill(Color(.systemGray6)))
+                composerIcon("slash.circle", label: "斜杠命令") {
+                    if !inputPrompt.hasPrefix("/") { inputPrompt = "/" }
+                }
+                composerIcon("phone", label: "和 \(theme.name) 通话") { showVoiceCall = true }
                 Button {
-                    if working { cancelActiveTask() } else if hasDraft { if dictation.isRecording { dictation.stop() }; sendTask() } else { showVoiceCall = true }
+                    if working { cancelActiveTask() } else if hasDraft { if dictation.isRecording { dictation.stop() }; sendTask() }
                 } label: {
                     Group {
                         if isSubmitting {
                             ProgressView().tint(.white)
                         } else {
-                            Image(systemName: working ? "stop.fill" : (hasDraft ? "arrow.up" : "waveform"))
-                                .font(.system(size: 17, weight: .bold))
+                            Image(systemName: working ? "stop.fill" : "arrow.up").font(.system(size: 16, weight: .bold))
                         }
                     }
                     .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
-                    .background(Circle().fill(theme.accent))
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(working || hasDraft ? theme.accent : Color(.systemGray3)))
                 }
-                .disabled(isSubmitting)
-                .accessibilityLabel(working ? "停止" : (hasDraft ? "发送" : "和 \(theme.name) 语音对话"))
+                .disabled(isSubmitting || (!working && !hasDraft))
+                .accessibilityLabel(working ? "停止" : "发送")
+                Button { showVoiceCall = true } label: {
+                    Image(systemName: "waveform").font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(Color(.systemBackground))
+                        .frame(width: 40, height: 40)
+                        .background(Circle().fill(Color.primary))
+                }
+                .accessibilityLabel("和 \(theme.name) 实时语音")
             }
             .padding(.horizontal, 12)
         }
         .padding(.vertical, 8)
         .background(Color(.systemBackground))
+    }
+
+    private func composerIcon(_ icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: 18)).foregroundStyle(.primary)
+                .frame(width: 32, height: 40)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private func runSlash(_ id: String, theme: CloudBotChatTheme) {
+        CloudHaptics.selection()
+        inputPrompt = ""
+        switch id {
+        case "/模型": showModelPicker = true
+        case "/电脑": showComputer = true
+        case "/通话": showVoiceCall = true
+        case "/照片": showPhotos = true
+        case "/文件": showFiles = true
+        case "/记住": inputPrompt = "记住："
+        case "/总结": inputPrompt = "请总结一下我们这段对话的要点和待办"; sendTask()
+        case "/停止": cancelActiveTask()
+        default: break
+        }
     }
 
     private var hasDraft: Bool {
