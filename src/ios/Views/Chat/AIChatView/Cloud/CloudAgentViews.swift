@@ -17,6 +17,7 @@ struct CloudAgentSettingsView: View {
     @State private var isConnecting = false
     @State private var isInstalling = false
     @State private var errorMessage: String? = nil
+    @State private var followUpNotice: String? = nil
 
     @AppStorage("OpenMinisCloud_selectedInstanceId") private var selectedProviderInstanceId: String = ""
     @AppStorage("OpenMinisCloud_manualModel") private var manualModel: String = ""
@@ -797,6 +798,7 @@ struct CloudSessionView: View {
             }
         }
         .animation(.spring(response: 0.45, dampingFraction: 0.78), value: call.active)
+        .overlay(alignment: .bottom) { CloudFollowUpToast(text: $followUpNotice) }
         .onAppear { callDividers = CloudCallDivider.load(sessionId) }
         .onChange(of: call.error) { e in if let e, !call.active { realtimeNotice = e } }
         .sheet(isPresented: $showPhotos) { CloudPhotoPicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
@@ -1709,6 +1711,13 @@ struct CloudSessionView: View {
                         let row: [String: Any] = ["role": "user", "content": content, "timestamp": Date().timeIntervalSince1970]
                         self.messages.append(row)
                         self.turns.append(CloudHistoryAdapter.Turn(message: ChatMessage(role: .user, content: content), raw: row))
+                    }
+                    let botId = theme?.botId, sid = sessionId
+                    Task { @MainActor in
+                        let locked = botId.map { CloudBotLock.isLockedStored($0) } ?? false
+                        if let note = await CloudFollowUpScheduler.schedule(text: content, sessionId: sid, botId: botId, botLocked: locked) {
+                            followUpNotice = note
+                        }
                     }
                     pollTaskStatus(taskId: tid)
                 } else {

@@ -219,6 +219,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopInput.swift scripts/CloudDesktopInputTests.swift -o /tmp/cloud-desktop-input-tests
           /tmp/cloud-desktop-input-tests
+      - name: 回头提醒解析单测
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudFollowUp.swift scripts/CloudFollowUpTests.swift -o /tmp//tmp/cloud_followup_tests
+          /tmp//tmp/cloud_followup_tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -379,6 +384,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudFollowUp.swift scripts/CloudFollowUpTests.swift -o /tmp//tmp/cloud_followup_tests
+          /tmp//tmp/cloud_followup_tests | tee /tmp/cloud_followup_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopInput.swift scripts/CloudDesktopInputTests.swift -o /tmp/cloud-desktop-input-tests
           /tmp/cloud-desktop-input-tests | tee cloud-desktop-input-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift scripts/WatchPayloadTests.swift -o /tmp/watch-payload-tests
@@ -694,6 +701,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudFollowUp.swift scripts/CloudFollowUpTests.swift -o /tmp//tmp/cloud_followup_tests
+          /tmp//tmp/cloud_followup_tests | tee /tmp/cloud_followup_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopInput.swift scripts/CloudDesktopInputTests.swift -o /tmp/cloud-desktop-input-tests
           /tmp/cloud-desktop-input-tests | tee cloud-desktop-input-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift scripts/WatchPayloadTests.swift -o /tmp/watch-payload-tests
