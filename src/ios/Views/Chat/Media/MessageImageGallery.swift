@@ -202,6 +202,8 @@ struct GalleryPresentation: Identifiable {
     let id = UUID()
     let items: [GalleryItem]
     let startIndex: Int
+    /// 「问 Bot 这张图」：把图引用进输入框；nil 时菜单里不出现
+    var onAsk: ((UIImage, ImageExport.Source?) -> Void)? = nil
 }
 
 // MARK: - MessageImageGallery
@@ -209,6 +211,8 @@ struct GalleryPresentation: Identifiable {
 struct MessageImageGallery: View {
     let items: [GalleryItem]
     let startIndex: Int
+    var onAsk: ((UIImage, ImageExport.Source?) -> Void)? = nil
+    @State private var toast: String?
     @Environment(\.dismiss) private var dismiss
     @State private var currentIndex: Int
     @State private var loaded: [String: UIImage] = [:]
@@ -222,11 +226,12 @@ struct MessageImageGallery: View {
 
     private enum SaveStatus { case idle, saving, saved, failed }
 
-    init(items: [GalleryItem], startIndex: Int) {
+    init(items: [GalleryItem], startIndex: Int, onAsk: ((UIImage, ImageExport.Source?) -> Void)? = nil) {
         self.items = items
         self.startIndex = startIndex
+        self.onAsk = onAsk
         // Clamp in case the caller passes a stale/out-of-range index.
-        let clamped = max(0, min(startIndex, max(items.count - 1, 0)))
+        let clamped = ImageViewerIndex.clamp(startIndex, count: items.count)
         _currentIndex = State(initialValue: clamped)
     }
 
@@ -274,10 +279,13 @@ struct MessageImageGallery: View {
             .animation(.easeInOut(duration: 0.2), value: chromeVisible)
             .zIndex(10)
 
-            // Bottom caption — file title, centered horizontally.
+            // 底部：多张时是缩略图条（选中的描边），一张时是文件名
             VStack {
                 Spacer()
-                if let item = currentItem {
+                if ImageViewerIndex.showsStrip(items.count) {
+                    GalleryThumbnailStrip(items: items, loaded: loaded, current: $currentIndex)
+                        .padding(.bottom, 16)
+                } else if let item = currentItem {
                     Text(item.title)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(ChatColors.primaryText)
@@ -293,6 +301,15 @@ struct MessageImageGallery: View {
             .opacity(chromeVisible ? 1 : 0)
             .animation(.easeInOut(duration: 0.2), value: chromeVisible)
             .zIndex(10)
+        }
+        .overlay(alignment: .top) {
+            if let toast {
+                Text(toast).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.top, 64)
+                    .transition(.opacity)
+            }
         }
         .onChange(of: currentIndex) { _ in
             // Reset per-image chrome state when swiping between pages so the
@@ -312,43 +329,37 @@ struct MessageImageGallery: View {
         chromeVisible.toggle()
     }
 
+    /// 顶栏：左上 ✕，右上「…」菜单（保存 / 分享 / 拷贝 / 识别文字 / 问 Bot / 打印）
     @ViewBuilder
     private var chromeTopBar: some View {
         HStack(alignment: .center) {
-            Button { dismiss() } label: {
-                chromeIcon("xmark")
-            }
-
+            Button { dismiss() } label: { chromeIcon("xmark") }
+                .accessibilityLabel("关闭")
             Spacer()
-
-            Button {
-                guard let img = currentImage else { return }
-                let source = currentItem?.source
-                copyDone = true
-                Task {
-                    await ImageExport.copy(source: source, displayed: img)
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    copyDone = false
-                }
-            } label: {
-                chromeIcon(copyDone ? "checkmark" : "doc.on.doc",
-                           tint: copyDone ? .green : nil)
+            if items.count > 1 {
+                Text("\(currentIndex + 1) / \(items.count)")
+                    .font(.subheadline.weight(.semibold).monospacedDigit()).foregroundStyle(ChatColors.primaryText)
+                Spacer()
             }
-            .disabled(copyDone || currentImage == nil)
-
-            Button {
-                saveCurrentToPhotos()
+            Menu {
+                Button { saveCurrentToPhotos() } label: { Label("保存到相册", systemImage: "square.and.arrow.down") }
+                Button { shareCurrent() } label: { Label("分享", systemImage: "square.and.arrow.up") }
+                Button { copyCurrent() } label: { Label("拷贝图片", systemImage: "doc.on.doc") }
+                Button { Task { await copyText() } } label: { Label("识别并拷贝文字", systemImage: "text.viewfinder") }
+                if let onAsk {
+                    Button {
+                        guard let img = currentImage else { return }
+                        let source = currentItem?.source
+                        dismiss()
+                        onAsk(img, source)
+                    } label: { Label("问问这张图", systemImage: "bubble.left.and.text.bubble.right") }
+                }
+                Button { printCurrent() } label: { Label("打印", systemImage: "printer") }
             } label: {
                 Group {
                     switch saveStatus {
-                    case .idle:
-                        Image(systemName: "square.and.arrow.down").offset(y: -1)
-                    case .saving:
-                        ProgressView().tint(ChatColors.primaryText)
-                    case .saved:
-                        Image(systemName: "checkmark").foregroundStyle(.green)
-                    case .failed:
-                        Image(systemName: "exclamationmark.triangle")
+                    case .saving: ProgressView().tint(ChatColors.primaryText)
+                    default: Image(systemName: "ellipsis")
                     }
                 }
                 .font(.body.weight(.semibold))
@@ -357,34 +368,55 @@ struct MessageImageGallery: View {
                 .contentShape(Circle())
                 .background(.ultraThinMaterial, in: Circle())
             }
-            .disabled(saveStatus != .idle || currentImage == nil)
-
-            Button {
-                guard let img = currentImage else { return }
-                let source = currentItem?.source
-                Task {
-                    guard let printable = await ImageExport.printableImage(source: source, displayed: img) else { return }
-                    PrintHelper.printImage(printable, jobName: AppLocalized("Image"))
-                }
-            } label: {
-                chromeIcon("printer")
-            }
             .disabled(currentImage == nil)
-
-            Button {
-                guard let img = currentImage else { return }
-                let source = currentItem?.source
-                Task {
-                    shareURL = await ImageExport.shareFile(source: source, displayed: img)
-                    showShareSheet = shareURL != nil
-                }
-            } label: {
-                chromeIcon("square.and.arrow.up")
-            }
-            .disabled(currentImage == nil)
+            .accessibilityLabel("更多")
         }
         .padding(.horizontal)
         .padding(.top, 7)
+    }
+
+    private func flash(_ text: String) {
+        withAnimation { toast = text }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await MainActor.run { withAnimation { if toast == text { toast = nil } } }
+        }
+    }
+
+    private func copyCurrent() {
+        guard let img = currentImage else { return }
+        let source = currentItem?.source
+        Task {
+            await ImageExport.copy(source: source, displayed: img)
+            flash("已拷贝")
+        }
+    }
+
+    private func shareCurrent() {
+        guard let img = currentImage else { return }
+        let source = currentItem?.source
+        Task {
+            shareURL = await ImageExport.shareFile(source: source, displayed: img)
+            showShareSheet = shareURL != nil
+        }
+    }
+
+    private func printCurrent() {
+        guard let img = currentImage else { return }
+        let source = currentItem?.source
+        Task {
+            guard let printable = await ImageExport.printableImage(source: source, displayed: img) else { return }
+            PrintHelper.printImage(printable, jobName: AppLocalized("Image"))
+        }
+    }
+
+    /// 实况文本同款：用 Vision 在本机识别图里的文字，拷贝到剪贴板（不上传）
+    private func copyText() async {
+        guard let img = currentImage else { return }
+        let text = await ImageTextRecognizer.recognize(img)
+        if text.isEmpty { flash("没有识别到文字"); return }
+        UIPasteboard.general.string = text
+        flash("已拷贝 \(text.count) 个字")
     }
 
     @ViewBuilder
@@ -410,6 +442,7 @@ struct MessageImageGallery: View {
         // [T-image-save-original] The original file, not the display bitmap.
         ImageExport.saveToPhotos(source: currentItem?.source, displayed: image) { success in
             saveStatus = success ? .saved : .failed
+            flash(success ? "已保存到相册" : "保存失败，请在设置里允许访问照片")
             if success {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     saveStatus = .idle
@@ -495,5 +528,47 @@ extension EnvironmentValues {
     var openImageGallery: OpenImageGalleryAction {
         get { self[OpenImageGalleryKey.self] }
         set { self[OpenImageGalleryKey.self] = newValue }
+    }
+}
+
+// MARK: - 缩略图条
+
+private struct GalleryThumbnailStrip: View {
+    let items: [GalleryItem]
+    let loaded: [String: UIImage]
+    @Binding var current: Int
+    @State private var thumbs: [String: UIImage] = [:]
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
+                        Button { withAnimation(.easeInOut(duration: 0.2)) { current = i } } label: {
+                            ZStack {
+                                Color.white.opacity(0.12)
+                                if let img = loaded[item.id] ?? thumbs[item.id] { Image(uiImage: img).resizable().scaledToFill() }
+                            }
+                            .frame(width: i == current ? 52 : 44, height: 56)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(i == current ? Color.white : Color.clear, lineWidth: 2))
+                            .opacity(i == current ? 1 : 0.6)
+                        }
+                        .buttonStyle(.plain)
+                        .id(i)
+                        .task(id: item.id) {
+                            if loaded[item.id] == nil, thumbs[item.id] == nil, let img = await item.load() { thumbs[item.id] = img }
+                        }
+                        .accessibilityLabel("第 \(i + 1) 张")
+                        .accessibilityAddTraits(i == current ? .isSelected : [])
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            .onChange(of: current) { i in withAnimation { proxy.scrollTo(i, anchor: .center) } }
+            .onAppear { proxy.scrollTo(current, anchor: .center) }
+        }
+        .frame(height: 60)
     }
 }

@@ -18,6 +18,10 @@ CHECKS = [
     ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudBotCallController", IOS / "Realtime/CloudBotCallController.swift"),
     ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudBotCallLine", IOS / "Realtime/CloudBotCallController.swift"),
     ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudBotCallSettingsSheet", IOS / "Realtime/CloudBotCallController.swift"),
+    ("scripts/CloudViewsTypecheckSupport.swift", "NativeMediaImageCache", IOS.parent / "Markdown/Media/NativeMediaImageCache.swift"),
+    ("scripts/CloudViewsTypecheckSupport.swift", "MessageImageGallery", IOS.parent / "Media/MessageImageGallery.swift"),
+    ("scripts/CloudViewsTypecheckSupport.swift", "GalleryPresentation", IOS.parent / "Media/MessageImageGallery.swift"),
+    ("scripts/CloudViewsTypecheckSupport.swift", "GalleryItem", IOS.parent / "Media/MessageImageGallery.swift"),
 ]
 DECL = re.compile(r"^\s*((?:@MainActor\s+)?(?:static\s+)?(?:func|var|init)\b.*)$")
 

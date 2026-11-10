@@ -47,3 +47,36 @@ struct CloudStepBar: View {
 struct FaceIDProtectionSettingsView: View {
     var body: some View { EmptyView() }
 }
+
+// MARK: - 看图（真实实现在 Views/Chat/Media/MessageImageGallery.swift、Markdown/Media/NativeMediaImageCache.swift）
+final class NativeMediaImageCache {
+    static let shared = NativeMediaImageCache()
+    func image(for key: String) -> UIImage? { nil }
+    func set(_ image: UIImage, for key: String) {}
+}
+func downsampleImageData(_ data: Data, maxPixelSize: CGFloat = 2048) -> UIImage? { UIImage(data: data) }
+enum ImageExport {
+    enum Source: Equatable {
+        case markdown(String)
+        case file(URL)
+        case remote(URL)
+    }
+}
+struct GalleryItem: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let load: () async -> UIImage?
+    var source: ImageExport.Source? = nil
+    static func == (lhs: GalleryItem, rhs: GalleryItem) -> Bool { lhs.id == rhs.id }
+}
+struct GalleryPresentation: Identifiable {
+    let id = UUID()
+    let items: [GalleryItem]
+    let startIndex: Int
+    var onAsk: ((UIImage, ImageExport.Source?) -> Void)? = nil
+}
+struct MessageImageGallery: View {
+    let items: [GalleryItem]
+    init(items: [GalleryItem], startIndex: Int, onAsk: ((UIImage, ImageExport.Source?) -> Void)? = nil) { self.items = items }
+    var body: some View { Text("\(items.count)") }
+}
