@@ -139,19 +139,24 @@ class EfficiencyServerTests(CloudServerTestCase):
         self.assertFalse(next(c for c in r["checks"] if c["id"] == "echo")["ok"])
 
     def test_06_search_cache(self):
-        st, a = self.request("GET", "/v1/search?q=zzz-unlikely")
-        self.assertEqual(st, 200)
+        # 前面用例的后台任务可能在这时写消息、清空缓存：检查期间先挡住别处的失效，只测缓存本身
+        cache = self.srv.SEARCH_CACHE
+        real_invalidate = cache.invalidate
+        cache.invalidate = lambda *a, **k: None
         calls = []
         orig = self.srv.search_everything
-        self.srv.search_everything = lambda q: calls.append(q) or []
         try:
+            st, a = self.request("GET", "/v1/search?q=zzz-unlikely")
+            self.assertEqual(st, 200)
+            self.srv.search_everything = lambda q: calls.append(q) or []
             self.request("GET", "/v1/search?q=zzz-unlikely")
             self.assertEqual(calls, [], "15 秒内同一关键词应直接用缓存")
-            self.srv.SEARCH_CACHE.invalidate()
+            real_invalidate()
             self.request("GET", "/v1/search?q=zzz-unlikely")
             self.assertEqual(calls, ["zzz-unlikely"])
         finally:
             self.srv.search_everything = orig
+            cache.invalidate = real_invalidate
 
 
     def test_07_library_delete(self):
