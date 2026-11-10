@@ -168,6 +168,7 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
                 on_text(text)
             return out, {"ttft_ms": round(ms, 1), "total_ms": round(ms, 1), "streamed": False}
         content, tool_calls, usage, finish, role = [], {}, None, None, "assistant"
+        served_model = None
         reasoning = []
         ttft = None
         last_emit = 0.0
@@ -187,6 +188,8 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
                 continue
             if chunk.get("usage"):
                 usage = chunk["usage"]
+            if chunk.get("model"):
+                served_model = chunk["model"]
             for ch in chunk.get("choices") or []:
                 d = ch.get("delta") or {}
                 if ttft is None and (d.get("content") or d.get("tool_calls") or d.get("reasoning_content")):
@@ -227,6 +230,8 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
         out = {"choices": [{"index": 0, "message": msg, "finish_reason": finish or "stop"}]}
         if usage:
             out["usage"] = usage
+        if served_model:
+            out["model"] = served_model     # 中转站实际返回的模型名（纯度检查用）
         total = (time.perf_counter() - t0) * 1000
         return out, {"ttft_ms": round(ttft if ttft is not None else total, 1), "total_ms": round(total, 1), "streamed": True}
     finally:

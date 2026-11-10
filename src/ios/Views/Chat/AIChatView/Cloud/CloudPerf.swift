@@ -43,6 +43,9 @@ struct CloudPerfView: View {
     @State private var trimTokens = 48000
     @State private var loaded = false
     @State private var clientTick = 0
+    @State private var autoTitle = true
+    @State private var fastModel = ""
+    @State private var failover: [[String: Any]] = []
 
     private var recent: [[String: Any]] { data["recent"] as? [[String: Any]] ?? [] }
     private var median: [String: Any] { data["median"] as? [String: Any] ?? [:] }
@@ -60,6 +63,11 @@ struct CloudPerfView: View {
                     Text("每次请求输入 token")
                     Spacer()
                     Text(CloudLatency.ms(median["prompt_tokens"]).map { "\(Int($0))" } ?? "—").foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text("缓存命中输入 token")
+                    Spacer()
+                    Text(CloudLatency.ms(median["cached_tokens"]).map { "\(Int($0))" } ?? "—").foregroundStyle(.secondary)
                 }
                 HStack {
                     Text("连接复用")
@@ -83,11 +91,27 @@ struct CloudPerfView: View {
                 Toggle("流式输出（边生成边显示）", isOn: $stream).onChange(of: stream) { v in save(["stream": v]) }
                 Toggle("按需发送工具定义", isOn: $lazyTools).onChange(of: lazyTools) { v in save(["lazy_tools": v]) }
                 Toggle("只读工具并行执行", isOn: $parallelTools).onChange(of: parallelTools) { v in save(["parallel_tools": v]) }
-                Toggle("Claude 提示缓存", isOn: $promptCache).onChange(of: promptCache) { v in save(["prompt_cache": v]) }
+                Toggle("提示缓存", isOn: $promptCache).onChange(of: promptCache) { v in save(["prompt_cache": v]) }
                 Stepper(value: $trimTokens, in: 0...200000, step: 8000) {
                     Text(trimTokens == 0 ? "长对话自动精简：关闭" : "超过约 \(trimTokens / 1000)k token 时精简")
                 }
                 .onChange(of: trimTokens) { v in save(["context_trim_tokens": v == 0 || v >= 4000 ? v : 8000]) }
+            }
+            Section {
+                Toggle("自动给对话起标题", isOn: $autoTitle).onChange(of: autoTitle) { v in save(["auto_title": v]) }
+                HStack {
+                    Text("小模型")
+                    TextField("留空：只截取首句", text: $fastModel)
+                        .multilineTextAlignment(.trailing)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .onSubmit { save(["fast_model": fastModel.trimmingCharacters(in: .whitespaces)]) }
+                }
+                NavigationLink { CloudFailoverView(initial: failover) } label: {
+                    HStack { Text("备用服务商"); Spacer(); Text(failover.isEmpty ? "未设置" : "\(failover.count) 个").foregroundStyle(.secondary) }
+                }
+                NavigationLink { CloudRelayCheckView() } label: { Label("中转站体检", systemImage: "stethoscope") }
+            } header: { Text("提效") } footer: {
+                Text("小模型用于起标题，与当前对话同一服务商（如 gpt-4.1-mini、qwen-turbo、deepseek-chat）。备用服务商：主模型连续出错（5xx、限流、超时、断连）时自动依次换用。提示缓存对 Claude、Qwen 加缓存标记，GPT 系按 Bot 固定缓存键，DeepSeek / Gemini / GLM 自动命中。")
             }
             Section("最近任务") {
                 if recent.isEmpty { Text("还没有记录，发一条消息后再来看").foregroundStyle(.secondary) }
@@ -147,6 +171,9 @@ struct CloudPerfView: View {
             parallelTools = s["parallel_tools"] as? Bool ?? true
             promptCache = s["prompt_cache"] as? Bool ?? true
             trimTokens = s["context_trim_tokens"] as? Int ?? 48000
+            autoTitle = s["auto_title"] as? Bool ?? true
+            fastModel = s["fast_model"] as? String ?? ""
+            failover = s["failover"] as? [[String: Any]] ?? []
             error = nil
             DispatchQueue.main.async { loaded = true }
         } catch {

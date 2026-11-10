@@ -76,6 +76,7 @@ public final class CloudConnection: ObservableObject {
         return URLSession(configuration: c, delegate: redirectDelegate, delegateQueue: nil)
     }()
     private static func isLongPoll(_ path: String) -> Bool {
+        if path.hasPrefix("/v1/relays/check") { return true }     // 中转站体检要发好几次真实请求
         guard let r = path.range(of: "wait=") else { return false }
         return !path[r.upperBound...].hasPrefix("0")
     }

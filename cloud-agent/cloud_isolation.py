@@ -51,6 +51,9 @@ DEFAULTS = {
     "prompt_cache": True,              # Claude 系模型给系统提示加缓存标记
     "context_trim_tokens": 48000,      # 上下文估算超过这么多 token 时自动精简，0 = 不精简
     "bark_fallback": "auto",           # App 关闭时用 Bark 兜底：auto（配置了 Bark 就兜底）/ on / off
+    "auto_title": True,                # 第一轮回答后给对话起一个短标题
+    "fast_model": "",                  # 起标题 / 摘要用的小模型（与当前任务同一服务商），空 = 不调模型，只截取首句
+    "failover": [],                    # 主模型连续失败（5xx / 超时 / 断连）时依次换用：[{"credential": 名称, "model": 模型}]，最多 3 个
 }
 
 RESERVED_PORTS = (18765, 18766, 5901)
@@ -161,6 +164,24 @@ def validate(patch, current):
             if v not in ("auto", "on", "off"):
                 raise SettingsError("bark_fallback 只能是 auto、on 或 off")
             s[k] = v
+        elif k == "auto_title":
+            if not isinstance(v, bool):
+                raise SettingsError("auto_title 必须是布尔值")
+            s[k] = v
+        elif k == "fast_model":
+            if not isinstance(v, str) or len(v) > 120 or (v and not re.match(r"^[A-Za-z0-9._:/@+-]+$", v)):
+                raise SettingsError("fast_model 是模型 ID（最多 120 个字符），留空表示不用")
+            s[k] = v
+        elif k == "failover":
+            if not isinstance(v, list) or len(v) > 3:
+                raise SettingsError("failover 是最多 3 项的列表")
+            clean = []
+            for item in v:
+                if not isinstance(item, dict) or not re.match(r"^[A-Za-z0-9_.:-]{1,64}$", str(item.get("credential", ""))) \
+                        or not re.match(r"^[A-Za-z0-9._:/@+-]{1,120}$", str(item.get("model", ""))):
+                    raise SettingsError("failover 每项需要 credential（凭据名称）和 model（模型 ID）")
+                clean.append({"credential": item["credential"], "model": item["model"]})
+            s[k] = clean
         elif k == "group_activity":
             if v not in ("quiet", "normal", "lively"):
                 raise SettingsError("group_activity 只能是 quiet、normal 或 lively")

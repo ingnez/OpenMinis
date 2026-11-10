@@ -53,6 +53,7 @@ import cloud_delegation as deleg
 import cloud_groups
 import cloud_usage
 import cloud_llm
+import cloud_efficiency as eff
 import cloud_appfeed
 import gzip
 from collections import deque
@@ -522,7 +523,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.1.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.2.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1919,6 +1920,46 @@ def _bot_provider(bot, fallback):
     raise RuntimeError("没有可用的模型：请给这个 Bot 选一个模型，或在手机上选好默认模型")
 
 USAGE_CAP = cloud_usage.CapState()
+SEARCH_CACHE = eff.TTLCache(ttl=15.0)      # 首页搜索：同一关键词 15 秒内直接返回；任务结束 / 新消息时失效
+
+def auto_title(session_id, provider_config, model):
+    """第一轮回答后给对话起短标题：设置了 fast_model 就用同一服务商的小模型，否则截取用户首句；用户改过的标题不动。"""
+    rs = resource_settings()
+    if not rs.get("auto_title", True):
+        return
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT title FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+        if not row or not eff.is_default_title(row[0]):
+            return
+        users = conn.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id LIMIT 3", (session_id,)).fetchall()
+        answer = conn.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL AND content != '' "
+                              "ORDER BY id LIMIT 1", (session_id,)).fetchone()
+    finally:
+        conn.close()
+    if not users or len(users) > 2:
+        return
+    first = users[0][0] or ""
+    title = ""
+    fast = rs.get("fast_model") or ""
+    if fast and provider_config and provider_config.get("api_key"):
+        try:
+            url = f"{provider_config.get('base_url', 'https://api.openai.com/v1').rstrip('/')}/chat/completions"
+            resp, _t = cloud_llm.chat_completion(url, {"Content-Type": "application/json", "Authorization": f"Bearer {provider_config['api_key']}"},
+                                                 {"model": fast, "messages": eff.title_prompt(first, answer[0] if answer else ""),
+                                                  "max_tokens": 30, "temperature": 0.3}, stream=False, timeout=20)
+            title = eff.clean_model_title(((resp.get("choices") or [{}])[0].get("message") or {}).get("content"))
+        except Exception as e:
+            print(f"auto title via fast model failed: {type(e).__name__}", flush=True)
+    title = title or eff.heuristic_title(first)
+    if not title:
+        return
+    conn = get_db_connection()
+    try:
+        conn.execute("UPDATE sessions SET title = ? WHERE session_id = ?", (title[:80], session_id))
+        conn.commit()
+    finally:
+        conn.close()
 
 # ---------------- 提速：流式、连接复用、快速模式、性能记录 ----------------
 PARALLEL_SAFE_TOOLS = {"file_read", "memory_search", "skill_load", "list_bots", "background_jobs", "request_tools"}
@@ -1946,31 +1987,40 @@ def _append_note(msgs, note):
             return out
     return out
 
-def _with_prompt_cache(body, url):
-    """Claude 系模型：给稳定的系统提示打 cache_control，后续轮次只为新增部分付全价、首字更快。"""
-    model = (body.get("model") or "").lower()
-    if "claude" not in model or (url, body.get("model")) in _CACHE_UNSUPPORTED or not resource_settings().get("prompt_cache", True):
+def _with_prompt_cache(body, url, cache_key=None, stream=False):
+    """提示缓存：Claude / Qwen 给稳定的系统提示打 cache_control；GPT 系带 prompt_cache_key（同一 Bot 落到同一缓存）；
+    DeepSeek / Gemini / GLM 等自动前缀缓存只要系统提示不变即可。流式时要求返回 usage 以统计缓存命中。
+    服务商不认这些字段（400）时由 call_chat 去掉重试并记住。"""
+    if (url, body.get("model")) in _CACHE_UNSUPPORTED or not resource_settings().get("prompt_cache", True):
         return body
-    msgs = body.get("messages") or []
-    if not msgs or msgs[0].get("role") != "system" or not isinstance(msgs[0].get("content"), str):
-        return body
-    sys_msg = {"role": "system", "content": [{"type": "text", "text": msgs[0]["content"], "cache_control": {"type": "ephemeral"}}]}
-    return dict(body, messages=[sys_msg] + msgs[1:])
+    return eff.with_cache_hints(body, cache_key=cache_key, stream=stream)
 
-def call_chat(url, headers, body, effort, stream=True, on_text=None):
+def _err_text(e):
+    """读出 HTTPError 的响应体（读完放回原位，别处还能再读），用来判断服务商拒绝的是哪个参数。"""
+    try:
+        fp = e.fp
+        pos = fp.tell()
+        text = fp.read().decode("utf-8", "replace")
+        fp.seek(pos)
+        return text.lower()
+    except Exception:
+        return ""
+
+def call_chat(url, headers, body, effort, stream=True, on_text=None, cache_key=None):
     """主循环的模型调用：复用连接、流式；服务商不支持流式 / 思考参数 / 缓存标记时各降级一次并记住。返回 (resp, timing)。"""
     model = body.get("model")
     use_stream = bool(stream) and (url, model) not in _STREAM_UNSUPPORTED
     use_cache = True
     for _attempt in range(7):
         payload = apply_reasoning(body, model, effort, url)
-        cached = _with_prompt_cache(payload, url) if use_cache else payload
+        cached = _with_prompt_cache(payload, url, cache_key=cache_key, stream=use_stream) if use_cache else payload
         try:
             return cloud_llm.chat_completion(url, headers, cached, stream=use_stream, on_text=on_text)
         except urllib.error.HTTPError as e:
             if e.code not in (400, 422):
                 raise
-            if cached is not payload:
+            blames_effort = payload is not body and any(k in _err_text(e) for k in ("reasoning", "thinking", "effort"))
+            if cached is not payload and not blames_effort:
                 use_cache = False
                 _CACHE_UNSUPPORTED.add((url, model))
                 continue
@@ -2015,6 +2065,7 @@ def finish_perf(perf, status):
            "total_ms": total_ms, "llm_calls": len(calls), "llm_ms": round(sum(c["total_ms"] for c in calls), 1),
            "streamed": all(c.get("streamed") for c in calls) if calls else False,
            "prompt_tokens": perf["prompt_tokens"], "completion_tokens": perf["completion_tokens"],
+           "cached_tokens": perf.get("cached_tokens", 0), "failover": perf.get("failover"),
            "tool_defs": perf["tool_defs"], "trimmed": perf["trimmed"], "finished_at": time.time()}
     PERF.append(rec)
     log_event(perf["task_id"], "timings", rec)
@@ -2693,7 +2744,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     extra_tools = set()
     perf = {"task_id": task_id, "session_id": session_id, "bot_id": session_persona_id(session_id) or "", "model": model,
             "started_at": time.time(), "queued_ms": 0, "llm_calls": [], "first_text_ms": None, "tools": 0,
-            "prompt_tokens": 0, "completion_tokens": 0, "tool_defs": 0, "trimmed": False}
+            "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "tool_defs": 0, "trimmed": False}
     try:
         created = get_db_connection().execute("SELECT created_at FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         perf["created_at"] = created[0] if created else perf["started_at"]
@@ -2705,6 +2756,37 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         if perf["first_text_ms"] is None:
             perf["first_text_ms"] = round((time.time() - perf["created_at"]) * 1000, 1)
         live_update(task_id, text)
+
+    # 主模型连续失败（5xx / 429 / 超时 / 断连）：先原地重试一次，再按资源设置里的 failover 依次换用备用服务商
+    route = {"url": chat_url, "key": api_key, "model": model, "chain": list(rs_perf.get("failover") or [])}
+
+    def call_with_failover(send_msgs, tools):
+        nonlocal model
+        retried = False
+        while True:
+            try:
+                return call_chat(route["url"], {"Content-Type": "application/json", "Authorization": f"Bearer {route['key']}"}, {
+                    "model": route["model"], "messages": send_msgs, "tools": tools, "tool_choice": "auto"
+                }, effort, stream=rs_perf.get("stream", True), on_text=on_text, cache_key=perf["bot_id"] or session_id)
+            except Exception as e:
+                if not eff.is_failover_error(e) or is_task_cancelled(task_id):
+                    raise
+                if not retried:
+                    retried = True
+                    time.sleep(1.0)
+                    continue
+                if not route["chain"]:
+                    raise
+                nxt = route["chain"].pop(0)
+                prov, _st, err = resolve_provider({"protocol": "chat", "credential": nxt["credential"]})
+                if err:
+                    log_event(task_id, "status", {"message": f"备用服务商 {nxt['credential']} 不可用：{err}"})
+                    continue
+                log_event(task_id, "status", {"message": f"主模型暂时不可用（{sanitize_err(e)[:80]}），已切换到备用：{nxt['model']}"})
+                route.update(url=f"{prov['base_url'].rstrip('/')}/chat/completions", key=prov["api_key"], model=nxt["model"])
+                model = nxt["model"]
+                perf["failover"] = nxt["model"]
+                retried = False
 
     try:
         for _ in range(MAX_TURNS):
@@ -2722,13 +2804,12 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                                                           always_all=not rs_perf.get("lazy_tools", True))
                 perf["tool_defs"] = max(perf["tool_defs"], len(tools))
                 live_update(task_id, "")
-                resp, timing = call_chat(chat_url, {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}, {
-                    "model": model, "messages": send_msgs, "tools": tools, "tool_choice": "auto"
-                }, effort, stream=rs_perf.get("stream", True), on_text=on_text)
+                resp, timing = call_with_failover(send_msgs, tools)
                 perf["llm_calls"].append(timing)
                 u = resp.get("usage") or {}
                 perf["prompt_tokens"] += int(u.get("prompt_tokens") or 0)
                 perf["completion_tokens"] += int(u.get("completion_tokens") or 0)
+                perf["cached_tokens"] += eff.cached_tokens(u)
             except Exception as e:
                 err = sanitize_err(e)
                 if answered:
@@ -2937,6 +3018,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 on_task_finished(task_id, session_id, final_status)
         except Exception as e:
             print(f"task notify failed: {type(e).__name__}")
+        SEARCH_CACHE.invalidate()
+        if depth == 0 and final_status == "completed" and answered:
+            threading.Thread(target=auto_title, args=(session_id, provider_config, model), daemon=True).start()
 
 # ======================= 云端例行任务 (Routines) =======================
 ROUTINE_ID_RE = re.compile(r'^rtn_[a-f0-9]{12}$')
@@ -3945,7 +4029,11 @@ class Handler(BaseHTTPRequestHandler):
             if not q or len(q) > 100:
                 self._send(400, {"error": "q 必须是 1–100 个字符"})
                 return
-            self._send(200, {"results": search_everything(q)})
+            hit = SEARCH_CACHE.get(q)
+            if hit is None:
+                hit = search_everything(q)
+                SEARCH_CACHE.put(q, hit)
+            self._send(200, {"results": hit})
             return
 
         if path == "/v1/models/effort":
@@ -3960,9 +4048,10 @@ class Handler(BaseHTTPRequestHandler):
                 vals = sorted(r[key] for r in recs if isinstance(r.get(key), (int, float)))
                 return vals[len(vals) // 2] if vals else None
             self._send(200, {"recent": list(reversed(recs)),
-                             "median": {k: med(k) for k in ("ttft_ms", "first_text_ms", "total_ms", "queued_ms", "prompt_tokens", "completion_tokens", "tool_defs")},
+                             "median": {k: med(k) for k in ("ttft_ms", "first_text_ms", "total_ms", "queued_ms", "prompt_tokens", "completion_tokens", "cached_tokens", "tool_defs")},
                              "pool": dict(cloud_llm.POOL.stats),
-                             "settings": {k: resource_settings().get(k) for k in ("stream", "lazy_tools", "parallel_tools", "prompt_cache", "context_trim_tokens")}})
+                             "settings": {k: resource_settings().get(k) for k in ("stream", "lazy_tools", "parallel_tools", "prompt_cache", "context_trim_tokens",
+                                                                  "auto_title", "fast_model", "failover")}})
             return
 
         if path == "/v1/usage":
@@ -4711,6 +4800,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": str(e)})
                 return
             self._send(200, stats)
+            return
+
+        if path == "/v1/relays/check":
+            # 中转站 / 服务商体检：原样复述、返回模型名、计费、系统提示是否生效、长上下文是否被截断（真实请求，不估计）
+            prov, st, err = resolve_provider(req_json.get("provider") or {})
+            model = req_json.get("model")
+            if err or not isinstance(model, str) or not model:
+                self._send(st if err else 400, {"error": err or "需要 model"})
+                return
+            needle = req_json.get("needle_tokens", 6000)
+            needle = needle if isinstance(needle, int) and 0 <= needle <= 60000 else 6000
+            url = f"{prov['base_url'].rstrip('/')}/chat/completions"
+            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {prov['api_key']}"}
+            result = eff.relay_check(lambda body: cloud_llm.chat_completion(url, headers, body, stream=False, timeout=18), model, needle)
+            result["model"] = model
+            self._send(200, result)
             return
 
         if path == "/v1/presence":
