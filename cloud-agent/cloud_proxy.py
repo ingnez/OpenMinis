@@ -134,11 +134,90 @@ def _name(u, fallback):
     return urllib.parse.unquote(u.fragment).strip() or fallback
 
 
+_SR_OBFS = {"websocket": "ws", "ws": "ws", "grpc": "grpc", "h2": "h2", "http": "http", "httpupgrade": "httpupgrade", "none": ""}
+
+
+def _shadowrocket(link):
+    """Shadowrocket 写法 → 标准写法：scheme://base64url("方法:密码或uuid@host:port")?remarks=&tls=1&peer=&xtls=&pbk=&sid=&obfs=…
+    不是这种写法返回 None。"""
+    scheme, rest = link.split("://", 1)
+    scheme = scheme.lower()
+    if scheme not in ("vless", "vmess", "trojan"):
+        return None
+    body, _, frag = rest.partition("#")
+    head, _, query = body.partition("?")
+    head = head.rstrip("/")
+    if "@" in head:
+        return None
+    try:
+        decoded = _b64decode(urllib.parse.unquote(head))
+    except Exception:
+        return None
+    m = re.match(r"^([^:@]*):(.+)@(\[[0-9A-Fa-f:]+\]|[^:@\[\]]+):(\d+)$", decoded.strip())
+    if not m:
+        return None
+    method, secret, host, port = m.groups()
+    q = {k: v[-1] for k, v in urllib.parse.parse_qs(query, keep_blank_values=True).items()}
+    name = q.get("remarks") or urllib.parse.unquote(frag) or ""
+    tls_on = _truthy(q.get("tls")) or q.get("security") in ("tls", "reality")
+    pbk, sid = q.get("pbk", ""), q.get("sid", "")
+    sni = q.get("peer") or q.get("sni") or ""
+    fp = q.get("fingerprint") or q.get("fp") or ""
+    obfs = (q.get("obfs") or q.get("type") or "").lower()
+    if obfs and obfs not in _SR_OBFS:
+        raise ProxyError(f"sing-box 不支持 {obfs} 传输")
+    net = _SR_OBFS.get(obfs, "")
+    path = q.get("path", "")
+    obfs_host = q.get("obfsParam") or q.get("host") or ""
+    if obfs_host.startswith("{"):
+        try:
+            obfs_host = json.loads(obfs_host).get("Host", "")
+        except ValueError:
+            obfs_host = ""
+    insecure = _truthy(q.get("allowInsecure") or q.get("insecure"))
+    if scheme == "vmess":
+        j = {"v": "2", "ps": name, "add": host.strip("[]"), "port": port, "id": secret, "aid": q.get("aid", "0"),
+             "scy": method or "auto", "net": net or "tcp", "host": obfs_host, "path": path,
+             "tls": "tls" if tls_on else "", "sni": sni, "fp": fp, "allowInsecure": "1" if insecure else ""}
+        return "vmess://" + base64.b64encode(json.dumps(j).encode()).decode()
+    out = {}
+    if tls_on:
+        out["security"] = "reality" if pbk else "tls"
+    elif scheme == "trojan":
+        out["security"] = "tls"
+    for k, v in (("sni", sni), ("fp", fp), ("pbk", pbk), ("sid", sid)):
+        if v:
+            out[k] = v
+    if insecure:
+        out["allowInsecure"] = "1"
+    xtls = q.get("xtls", "")
+    if q.get("flow"):
+        out["flow"] = q["flow"]
+    elif xtls == "2":
+        out["flow"] = "xtls-rprx-vision"
+    elif xtls == "1":
+        raise ProxyError("这个节点用的是 xtls-rprx-direct（xtls=1），sing-box 已不支持；请在机场换成 Vision（xtls=2）节点")
+    if net:
+        out["type"] = net
+        if net == "grpc":
+            out["serviceName"] = path or obfs_host
+        else:
+            if path:
+                out["path"] = path
+            if obfs_host:
+                out["host"] = obfs_host
+    hostpart = host if host.startswith("[") or ":" not in host else f"[{host}]"
+    return (f"{scheme}://{urllib.parse.quote(secret, safe='')}@{hostpart}:{port}?{urllib.parse.urlencode(out)}"
+            + (f"#{urllib.parse.quote(name)}" if name else ""))
+
+
 def parse_link(link):
     """一条分享链接 → 节点：{name, type, server, port, outbound(sing-box), extra}。不支持的写法抛 ProxyError（中文原因）。"""
     link = (link or "").strip()
     if "://" not in link:
         raise ProxyError("不是分享链接")
+    if not link.lower().startswith("vmess://") or "?" in link.split("#", 1)[0]:
+        link = _shadowrocket(link) or link
     scheme = link.split("://", 1)[0].lower()
     if scheme == "vmess":
         return _parse_vmess(link)

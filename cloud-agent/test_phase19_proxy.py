@@ -36,6 +36,44 @@ def singbox():
 
 
 class ParseTests(unittest.TestCase):
+    def test_shadowrocket_vless_reality(self):
+        # 全是假的：uuid / 公钥 / short id / 地址都是测试用值
+        fake_uuid = "00000000-1111-2222-3333-444444444444"
+        info = base64.urlsafe_b64encode(f":{fake_uuid}@203.0.113.7:57635".encode()).decode().rstrip("=")
+        link = (f"vless://{info}?remarks=%E6%B5%8B%E8%AF%95%E8%8A%82%E7%82%B9&tls=1&peer=www.example.com&udp=1&xtls=2"
+                "&pbk=FAKEpublicKeyForTestsOnly0000000000000000000&sid=abcd12&fingerprint=chrome")
+        n = cp.parse_link(link)
+        ob = n["outbound"]
+        self.assertEqual((n["name"], n["server"], n["port"]), ("测试节点", "203.0.113.7", 57635))
+        self.assertEqual((ob["uuid"], ob["flow"]), (fake_uuid, "xtls-rprx-vision"))
+        self.assertEqual(ob["tls"]["server_name"], "www.example.com")
+        self.assertEqual(ob["tls"]["reality"], {"enabled": True, "public_key": "FAKEpublicKeyForTestsOnly0000000000000000000", "short_id": "abcd12"})
+        self.assertEqual(ob["tls"]["utls"]["fingerprint"], "chrome")
+        # method 写成 auto、走 websocket
+        info2 = base64.urlsafe_b64encode(f"auto:{fake_uuid}@203.0.113.8:443".encode()).decode().rstrip("=")
+        n2 = cp.parse_link(f"vless://{info2}?remarks=ws&tls=1&peer=a.example.com&obfs=websocket&path=/ray&obfsParam=a.example.com")
+        self.assertEqual(n2["outbound"]["transport"], {"type": "ws", "path": "/ray", "headers": {"Host": "a.example.com"}})
+        self.assertEqual(n2["outbound"]["tls"]["server_name"], "a.example.com")
+        self.assertNotIn("reality", n2["outbound"]["tls"])
+        info3 = base64.urlsafe_b64encode(f":{fake_uuid}@203.0.113.9:443".encode()).decode().rstrip("=")
+        with self.assertRaises(cp.ProxyError) as e:
+            cp.parse_link(f"vless://{info3}?tls=1&xtls=1")
+        self.assertIn("xtls-rprx-direct", str(e.exception))
+
+    def test_shadowrocket_vmess_trojan(self):
+        fake = "99999999-8888-7777-6666-555555555555"
+        info = base64.urlsafe_b64encode(f"auto:{fake}@198.51.100.2:8443".encode()).decode().rstrip("=")
+        n = cp.parse_link(f"vmess://{info}?remarks=vm&obfs=websocket&path=/v&obfsParam=cdn.example.com&tls=1&peer=cdn.example.com&alterId=0")
+        ob = n["outbound"]
+        self.assertEqual((n["name"], ob["uuid"], ob["security"]), ("vm", fake, "auto"))
+        self.assertEqual(ob["transport"]["type"], "ws")
+        self.assertEqual(ob["tls"]["server_name"], "cdn.example.com")
+        info_t = base64.urlsafe_b64encode(b"none:fake-password@198.51.100.3:443").decode().rstrip("=")
+        t = cp.parse_link(f"trojan://{info_t}?remarks=tj&peer=t.example.com")
+        self.assertEqual((t["name"], t["outbound"]["password"], t["outbound"]["tls"]["server_name"]), ("tj", "fake-password", "t.example.com"))
+        # 标准 vmess 写法不受影响
+        self.assertEqual(cp.parse_link(cp._shadowrocket(f"vmess://{info}?remarks=x"))["outbound"]["uuid"], fake)
+
     def test_vless_reality_params(self):
         n = cp.parse_link(REALITY)
         o = n["outbound"]
