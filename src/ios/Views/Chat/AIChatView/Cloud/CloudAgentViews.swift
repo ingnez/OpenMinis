@@ -607,6 +607,7 @@ struct CloudSessionView: View {
     @State private var taskEvents: [[String: Any]] = []
     @State private var isLoading = false
     @State private var isSubmitting = false
+    @State private var watchedTasks: Set<String> = []
     @State private var isPolling = false
     @State private var loadedTaskId: String? = nil
     @State private var errorMessage: String? = nil
@@ -913,12 +914,26 @@ struct CloudSessionView: View {
         }
     }
 
+    /// 读请求静默重试：短暂断线、隧道重建时不打扰用户，连续失败约 10 秒后才交给调用方显示
+    private func quietly(_ path: String) async throws -> [String: Any] {
+        var lastError: Error?
+        for delay in [0, 1_500_000_000, 3_000_000_000, 5_000_000_000] as [UInt64] {
+            if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+            do {
+                try await connection.ensureConnected()
+                return try await connection.request(method: "GET", path: path)
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? URLError(.unknown)
+    }
+
     private func loadSessionDetail() {
         isLoading = true
         Task {
             do {
-                try await connection.ensureConnected()
-                let res = try await connection.request(method: "GET", path: "/v1/sessions/\(sessionId)")
+                let res = try await quietly("/v1/sessions/\(sessionId)")
                 await MainActor.run {
                     self.messages = res["messages"] as? [[String: Any]] ?? []
                     self.tasks = res["tasks"] as? [[String: Any]] ?? []
@@ -939,7 +954,8 @@ struct CloudSessionView: View {
                 }
             } catch {
                 await MainActor.run {
-                    self.errorMessage = error.localizedDescription
+                    // 持续失败才提示，且用温和的说法（状态点同时显示连接状态）
+                    if self.messages.isEmpty { self.errorMessage = "暂时连不上云电脑，正在自动重试…" }
                     self.isLoading = false
                 }
             }
@@ -1266,6 +1282,7 @@ struct CloudSessionView: View {
                         self.isSubmitting = false
                         self.activeTaskId = tid
                         self.activeTaskStatus = "running"
+                        self.watchedTasks.insert(tid)
                         self.taskEvents = []
                         self.eventCursor = 0
                         self.liveText = ""
@@ -1292,7 +1309,7 @@ struct CloudSessionView: View {
         isPolling = true
         Task {
             do {
-                let res = try await connection.request(method: "GET", path: "/v1/tasks/\(taskId)")
+                let res = try await quietly("/v1/tasks/\(taskId)")
                 await MainActor.run {
                     self.isPolling = false
                     self.loadedTaskId = taskId
@@ -1307,8 +1324,11 @@ struct CloudSessionView: View {
                     if ["running", "waiting_user", "queued"].contains(self.activeTaskStatus) {
                         self.streamEvents(taskId: taskId)
                     }
-                    if self.activeTaskStatus != "running" && self.activeTaskStatus != "waiting_user" {
-                        if ["failed", "interrupted", "limit_reached"].contains(self.activeTaskStatus) {
+                    if ["running", "waiting_user", "queued"].contains(self.activeTaskStatus) {
+                        self.watchedTasks.insert(taskId)
+                    } else {
+                        // 只对「这次在界面上看着它跑」的任务提示失败；打开对话时看到的旧任务结果不再弹横幅
+                        if self.watchedTasks.contains(taskId), ["failed", "interrupted", "limit_reached"].contains(self.activeTaskStatus) {
                             self.errorMessage = CloudTaskFailure.text(status: self.activeTaskStatus, events: self.taskEvents)
                         }
                         loadSessionDetail()
@@ -1317,7 +1337,8 @@ struct CloudSessionView: View {
             } catch {
                 await MainActor.run {
                     self.isPolling = false
-                    self.errorMessage = "轮询任务状态失败: \(error.localizedDescription)"
+                    // 静默：任务在云端继续，稍后再接上
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self.pollTaskStatus(taskId: taskId) }
                 }
             }
         }
@@ -1374,10 +1395,13 @@ struct CloudSessionView: View {
                 self.isStreaming = false
                 guard self.activeTaskId == taskId else { return }
                 if !["running", "waiting_user", "queued"].contains(self.activeTaskStatus) {
-                    if ["failed", "interrupted", "limit_reached"].contains(self.activeTaskStatus) {
+                    if self.watchedTasks.contains(taskId), ["failed", "interrupted", "limit_reached"].contains(self.activeTaskStatus) {
                         self.errorMessage = CloudTaskFailure.text(status: self.activeTaskStatus, events: self.taskEvents)
                     }
                     self.loadSessionDetail()
+                } else {
+                    // 长轮询因网络中断退出但任务还在跑：稍后静默接上
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.pollTaskStatus(taskId: taskId) }
                 }
             }
         }

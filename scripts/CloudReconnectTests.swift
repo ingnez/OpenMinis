@@ -44,6 +44,8 @@ struct CloudReconnectTests {
         check(D.action(for: .networkChanged(available: false), configured: true, connected: true, networkAvailable: false, inBackground: false) == .pause, "断网暂停")
         check(D.action(for: .heartbeatFailed, configured: true, connected: true, networkAvailable: true, inBackground: false) == .reconnect, "心跳失败重连")
         check(D.action(for: .requestFailed, configured: true, connected: true, networkAvailable: false, inBackground: false) == .pause, "无网时不白白重连")
+        check(D.action(for: .requestFailed, configured: true, connected: true, networkAvailable: true, inBackground: false) == .probe, "请求失败先探活，不直接拆隧道")
+        check(D.action(for: .requestFailed, configured: true, connected: false, networkAvailable: true, inBackground: false) == .reconnect, "未连接时请求失败直接重连")
         check(D.action(for: .background, configured: true, connected: true, networkAvailable: true, inBackground: true) == .pause, "进后台暂停心跳")
         check(D.action(for: .pageOpened, configured: true, connected: false, networkAvailable: true, inBackground: false) == .reconnect, "打开云端页面时连接")
 

@@ -48,8 +48,37 @@ public final class CloudConnection: ObservableObject {
         c.timeoutIntervalForRequest = 25
         c.timeoutIntervalForResource = 40
         c.connectionProxyDictionary = [:]
+        // 默认每个主机只有 4 条连接：多 Bot 模式同时挂着通知、任务事件、群聊长轮询时，普通请求和探活会排队超时，
+        // 被误判为「隧道断了」而拆隧道重连，进而所有请求一起失败——这是多 Bot 模式频繁「连接失败」的主因
+        c.httpMaximumConnectionsPerHost = 12
         return URLSession(configuration: c, delegate: redirectDelegate, delegateQueue: nil)
     }()
+    /// 长轮询（?wait=）专用：单独的连接池，不占普通请求的连接；超时放宽
+    private lazy var longHTTP: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.urlCache = nil; c.httpCookieStorage = nil
+        c.requestCachePolicy = .reloadIgnoringLocalCacheData
+        c.timeoutIntervalForRequest = 45
+        c.timeoutIntervalForResource = 60
+        c.connectionProxyDictionary = [:]
+        c.httpMaximumConnectionsPerHost = 8
+        return URLSession(configuration: c, delegate: redirectDelegate, delegateQueue: nil)
+    }()
+    /// 探活专用：永远不会排在别的请求后面
+    private lazy var probeHTTP: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.urlCache = nil; c.httpCookieStorage = nil
+        c.requestCachePolicy = .reloadIgnoringLocalCacheData
+        c.timeoutIntervalForRequest = 6
+        c.timeoutIntervalForResource = 8
+        c.connectionProxyDictionary = [:]
+        c.httpMaximumConnectionsPerHost = 2
+        return URLSession(configuration: c, delegate: redirectDelegate, delegateQueue: nil)
+    }()
+    private static func isLongPoll(_ path: String) -> Bool {
+        guard let r = path.range(of: "wait=") else { return false }
+        return !path[r.upperBound...].hasPrefix("0")
+    }
     private init() {
         let d = UserDefaults.standard
         name = d.string(forKey: "OpenMinisCloud_name") ?? "我的 VPS"
@@ -84,15 +113,28 @@ public final class CloudConnection: ObservableObject {
     /// 隧道是否还通：2 秒内 /health 应答才算活着
     public func probeAlive(timeout: TimeInterval = 2) async -> Bool {
         guard isConnected, let url = URL(string: "http://127.0.0.1:\(apiPort)/health") else { return false }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = timeout
-        req.cachePolicy = .reloadIgnoringLocalCacheData
-        guard let (data, resp) = try? await http.data(for: req), (resp as? HTTPURLResponse)?.statusCode == 200,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              obj["service"] as? String == "openminis-cloud-agent" else { return false }
-        lastHealth = obj
-        lastOK = Date()
-        return true
+        // 两次机会：第一次超时（服务器忙、手机网络抖动）再给一次更长的；本机端口直接拒绝连接才是真断
+        for t in [timeout, timeout * 2] {
+            var req = URLRequest(url: url)
+            req.timeoutInterval = t
+            req.cachePolicy = .reloadIgnoringLocalCacheData
+            do {
+                let (data, resp) = try await probeHTTP.data(for: req)
+                if (resp as? HTTPURLResponse)?.statusCode == 200,
+                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   obj["service"] as? String == "openminis-cloud-agent" {
+                    lastHealth = obj
+                    lastOK = Date()
+                    return true
+                }
+                return false
+            } catch let e as URLError where e.code == .cannotConnectToHost {
+                return false            // 本机转发端口已不在：隧道确实断了
+            } catch {
+                continue
+            }
+        }
+        return false
     }
     /// 最近一次 /health 的内容（Agent 版本、桌面状态），连接状态点和「更新服务器」横幅用
     @Published public private(set) var lastHealth: [String: Any] = [:]
@@ -440,7 +482,7 @@ public final class CloudConnection: ObservableObject {
         var req = URLRequest(url: url)
         req.timeoutInterval = 4
         do {
-            let (data, resp) = try await http.data(for: req)
+            let (data, resp) = try await probeHTTP.data(for: req)
             if let httpResp = resp as? HTTPURLResponse, httpResp.statusCode == 200 {
                 let html = String(data: data, encoding: .utf8) ?? ""
                 if html.contains("noVNC") || html.contains("RFB") {
@@ -459,6 +501,7 @@ public final class CloudConnection: ObservableObject {
             return try await requestRaw(method: method, path: path, body: body)
         } catch let error as URLError where Self.tunnelDropped(error) && canAutoConnect {
             // SSH 隧道断了（切网络、后台被挂起）：自动重连再重试，用户不用回设置页
+            if error.code == .timedOut && Self.isLongPoll(path) { throw error }   // 长轮询超时很正常，不能因此拆隧道
             if error.code == .timedOut, await probeAlive() { throw error }   // 隧道是好的，只是这次请求慢
             try await reconnect()
             // 请求肯定没发出去（连不上本机端口）或是只读请求时才自动重发，避免重复发送消息
@@ -508,7 +551,7 @@ public final class CloudConnection: ObservableObject {
             req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         }
         if let body = body { req.httpBody = try JSONSerialization.data(withJSONObject: body) }
-        let (data, response) = try await http.data(for: req)
+        let (data, response) = try await (Self.isLongPoll(path) ? longHTTP : http).data(for: req)
         guard let response = response as? HTTPURLResponse else { throw failure("云端响应无效") }
         guard (200...299).contains(response.statusCode) else {
             let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]

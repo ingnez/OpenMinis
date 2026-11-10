@@ -107,8 +107,12 @@ enum CloudLinkDecider {
             if !available { return .pause }
             // 网络切换（Wi-Fi ↔ 蜂窝）后旧 TCP 连接多半已失效：直接重连
             return inBackground ? .none : .reconnect
-        case .heartbeatFailed, .requestFailed:
+        case .heartbeatFailed:
             return networkAvailable ? .reconnect : .pause
+        case .requestFailed:
+            // 单个请求失败多半是服务器慢或长轮询超时：先探活，确认隧道死了才重建（重建会打断所有进行中的请求）
+            guard networkAvailable else { return .pause }
+            return connected ? .probe : .reconnect
         case .launch, .foreground, .pageOpened, .timer:
             guard networkAvailable, !inBackground || event == .timer else { return .none }
             return connected ? .probe : .reconnect

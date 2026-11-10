@@ -171,14 +171,22 @@ final class CloudLinkSupervisor: ObservableObject {
     private func startHeartbeat() {
         heartbeatTask?.cancel()
         heartbeatTask = Task { [weak self] in
+            var misses = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 25_000_000_000)
                 guard let self, !Task.isCancelled, !self.inBackground else { return }
+                // 最近有请求成功（长轮询一直在回）就不必探测
+                if Date().timeIntervalSince(self.conn.lastOK) < 20 { continue }
                 if await self.conn.probeAlive(timeout: 3) {
+                    misses = 0
                     self.evaluateHealth()
                 } else {
-                    self.handle(.heartbeatFailed)
-                    return
+                    // 连续两次（约 50 秒）都探测失败才判定断线，单次失败不打扰
+                    misses += 1
+                    if misses >= 2 {
+                        self.handle(.heartbeatFailed)
+                        return
+                    }
                 }
             }
         }
