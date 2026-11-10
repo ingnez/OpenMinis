@@ -16,6 +16,7 @@ import time
 import uuid
 
 import cloud_bots
+import cloud_debate
 from collections import deque
 
 SCHEMA = [
@@ -385,7 +386,10 @@ class GroupEngine:
         rid = uuid.uuid4().hex[:8]
         with self.cond:
             self.rounds[gid] = rid       # 新的用户消息开启新一轮，旧一轮剩下的接话作废
-        th = threading.Thread(target=self._run_round, args=(group, rid, msg_id, text, fallback), daemon=True, name="group-round")
+        cmd = cloud_debate.parse_command(text)
+        target = self._run_structured if cmd else self._run_round
+        args = (group, rid, cmd, fallback) if cmd else (group, rid, msg_id, text, fallback)
+        th = threading.Thread(target=target, args=args, daemon=True, name="group-round")
         th.start()
         return th
 
@@ -424,6 +428,75 @@ class GroupEngine:
                 break
             for t in alive:
                 t.join(timeout=0.5)
+
+    def _say(self, gid, sender, kind, text, meta=None):
+        conn = self.h["db"]()
+        try:
+            add_message(conn, gid, sender, kind, text, meta=meta)
+        finally:
+            conn.close()
+        self.notify()
+
+    def _ask(self, group, bot, prompt, fallback):
+        """辩论 / 投票里的一次发言：带上这个 Bot 的人设（含灵魂设定）"""
+        gid = group["group_id"]
+        self._set_typing(gid, bot["persona_id"], True)
+        try:
+            sys_text = (self.h["persona_text"](bot) or f"你是「{bot.get('name')}」。") + cloud_bots.language_tail(bot)
+            out, _tokens = self.h["llm"](bot, [{"role": "system", "content": sys_text}, {"role": "user", "content": prompt}], fallback)
+            return (out or "").strip()
+        except Exception as e:
+            self._say(gid, bot["persona_id"], "system", f"{bot.get('name')} 暂时回不了：{str(e)[:120]}")
+            return ""
+        finally:
+            self._set_typing(gid, bot["persona_id"], False)
+
+    def _run_structured(self, group, rid, cmd, fallback):
+        """「/辩论」「/投票」：按顺序发言，最后计票"""
+        gid = group["group_id"]
+        kind, topic, options = cmd
+        members = [b for b in (self.h["bot"](m) for m in group["members"]) if b][:cloud_debate.MAX_DEBATERS]
+        if len(members) < 2 and kind == "debate":
+            self._say(gid, "system", "system", "辩论至少要 2 个 Bot。")
+            return
+        name = lambda b: b.get("name") or b["persona_id"]
+        if kind == "debate":
+            self._say(gid, "system", "system", f"辩论开始：「{topic}」。顺序：亮观点 → 反驳 → 投票", meta={"debate": "start"})
+            openings = []
+            for b in members:
+                if not self._round_active(gid, rid):
+                    return
+                t = self._ask(group, b, cloud_debate.opening_prompt(name(b), topic), fallback)
+                if t:
+                    openings.append((b, t))
+                    self._say(gid, b["persona_id"], "text", t, meta={"debate": "opening"})
+            for b, _ in openings:
+                if not self._round_active(gid, rid):
+                    return
+                others = [(name(o), t) for o, t in openings if o is not b]
+                t = self._ask(group, b, cloud_debate.rebuttal_prompt(name(b), topic, others), fallback)
+                if t:
+                    self._say(gid, b["persona_id"], "text", t, meta={"debate": "rebuttal"})
+            options = [name(b) for b, _ in openings]
+            voters = [b for b, _ in openings]
+            question = f"辩论「{topic}」里谁的观点最有说服力？"
+        else:
+            self._say(gid, "system", "system", f"投票：{topic}\n" + "\n".join(f"{i + 1}. {o}" for i, o in enumerate(options)), meta={"vote": "start"})
+            voters = members
+            question = topic
+        choices = []
+        for b in voters:
+            if not self._round_active(gid, rid):
+                return
+            exclude = name(b) if kind == "debate" else None
+            t = self._ask(group, b, cloud_debate.vote_prompt(name(b), question, options, exclude), fallback)
+            c = cloud_debate.parse_choice(t, options)
+            if kind == "debate" and c is not None and options[c] == name(b):
+                c = None                  # 投自己不算
+            choices.append((name(b), c))
+            if t:
+                self._say(gid, b["persona_id"], "text", t, meta={"vote": "ballot"})
+        self._say(gid, "system", "system", cloud_debate.tally(choices, options), meta={"vote": "result"})
 
     def _round_active(self, gid, rid):
         with self.cond:

@@ -634,6 +634,7 @@ struct CloudGroupChatView: View {
                         .frame(width: 34, height: 38)
                 }
                 .accessibilityLabel(voice.isRecording ? "说完了，发送" : "语音消息")
+                CloudGroupDebateMenu { input = $0; focused = true }
                 TextField("发消息，@ 某个 Bot 让它回答或去做事", text: $input, axis: .vertical)
                     .lineLimit(1...6)
                     .focused($focused)
@@ -776,5 +777,22 @@ struct CloudGroupSettingsView: View {
             }
             saving = false
         }
+    }
+}
+
+
+/// 群聊输入框旁的「辩论 / 投票」：填入命令模板，服务器按顺序让各 Bot 发言并计票
+struct CloudGroupDebateMenu: View {
+    let insert: (String) -> Void
+
+    var body: some View {
+        Menu {
+            Button { insert("/辩论 ") } label: { Label("发起辩论（亮观点 → 反驳 → 投票）", systemImage: "person.2.wave.2") }
+            Button { insert("/投票 问题 | 选项一 | 选项二") } label: { Label("发起投票", systemImage: "checkmark.square") }
+        } label: {
+            Image(systemName: "hand.raised").font(.system(size: 17)).foregroundStyle(.secondary)
+                .frame(width: 30, height: 38)
+        }
+        .accessibilityLabel("辩论或投票")
     }
 }
