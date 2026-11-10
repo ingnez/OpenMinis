@@ -170,7 +170,20 @@ REPLY_STYLE_NOTE = (
     "\n\n[回复风格] 先给答案再解释；简洁，不说客套话和「好的，我来…」之类的填充；链接用 Markdown [文字](网址)。"
     "要用户做选择时用 ask_choice 给选项卡片，不要在文字里列 A/B/C 让用户打字。只需要表示收到 / 赞同 / 感谢时可以只用 react 回一个表情，不用再写字。"
     "内容超过一屏的报告、表格、看板用 page_write 存成页面，聊天里只放一句结论。"
-    "一条回复里有两三个独立的意思时，用单独一行 --- 分开，手机会拆成几个气泡。")
+    "一条回复里有两三个独立的意思时，用单独一行 --- 分开，手机会拆成几个气泡。"
+    "回复会超过 3 行时，第一行写「一句话：」加一句结论（数字、要做的动作），再空一行写细节；手机会把细节折叠起来。")
+
+ONE_LINE_PREFIX = "一句话："
+
+
+def split_one_line(text):
+    """回复以「一句话：」开头时拆成 (结论, 细节)；不是这种格式返回 (None, text)。手机端同口径（CloudOneLine）。"""
+    t = (text or "").lstrip()
+    if not t.startswith(ONE_LINE_PREFIX):
+        return None, text
+    first, _, rest = t.partition("\n")
+    head = first[len(ONE_LINE_PREFIX):].strip()
+    return (head or None), rest.strip()
 
 BEAT_SPLIT = re.compile(r"\n\s*---\s*\n")
 

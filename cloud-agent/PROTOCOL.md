@@ -624,6 +624,12 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 每项可选 `allowed_bots: [bot_id]`（`[]` 或 `null` = 所有 Bot）。不在名单的 Bot 调用会被拒并记一条失败使用记录；`vault_list` 的 `allowed` 按调用的 Bot 计算。
 - `GET /v1/vault`（只给 App）每项多出提示：卡片 `expiry_hint`（MM/YY）、联系信息 `address_hint`（默认地址一行）、登录 `pw_weak` / `pw_reused`（布尔）。服务端解密后只算提示，密码、卡号、CVV 原值不外传；模型看到的 `for_model` 不含这些提示。`?q=` 搜索也覆盖两个提示字段。
 
+## 一句话版本（2.35.0）
+
+- 回复风格提示要求：超过 3 行的回复第一行写 `一句话：` + 结论，空一行再写细节。
+- `cloud_runmodel.split_one_line(text)` → `(结论 | None, 细节)`；App 端 `CloudOneLine.split` 同口径：显示结论、细节默认折叠。
+- 任务完成通知（`task_completed`）有结论时正文只放结论（锁屏一眼看懂）。
+
 ## 云电脑接管 / 交还、剪贴板、保管库粘贴（2.34.0）
 
 - `POST /v1/desktop/control {"hold": true|false, "bot_id"?}` → `{"held", "display", "lease_s": 45}`。

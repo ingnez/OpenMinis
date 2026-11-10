@@ -632,7 +632,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.34.1"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.35.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -972,7 +972,9 @@ def on_task_finished(task_id, session_id, final_status):
     cfg = current_notify_config()
     if _bot_muted(session_id):
         return None
-    body = ((row[0] if row else "") or "").strip()[:600] or "（无文字回复）"
+    body = ((row[0] if row else "") or "").strip()
+    head, _ = cloud_runmodel.split_one_line(body)
+    body = (head or body)[:600] or "（无文字回复）"   # 有「一句话：」时锁屏只放那句结论
     bot = session_bot(session_id)
     if bot and final_status == "completed":
         title = bot.get("name") or "Bot"

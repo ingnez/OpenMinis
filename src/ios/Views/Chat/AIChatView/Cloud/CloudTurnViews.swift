@@ -173,7 +173,9 @@ struct CloudTextBlockView: View {
             if shown.images > 0 {
                 CloudMessageImages(content: block.content, alignment: .leading)
             }
-            if !shown.text.isEmpty {
+            if let one = CloudOneLine.split(shown.text) {
+                CloudOneLineView(head: one.head, detail: one.detail, accent: accent)
+            } else if !shown.text.isEmpty {
                 SelectableMarkdownView(markdown: shown.text)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
