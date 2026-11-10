@@ -103,3 +103,27 @@ struct CloudBotNameOptions: DynamicOptionsProvider {
         await MainActor.run { CloudBotService.cachedList().map(\.name) }
     }
 }
+
+/// 专注模式过滤器（设置 → 专注模式 → 某个专注 → 添加过滤条件 → Minis）：值班专注打开时首页只显示医疗 Bot。
+/// 专注关闭时系统用默认值（关）再调用一次，首页恢复显示全部。
+struct CloudDutyFocusFilter: SetFocusFilterIntent {
+    static var title: LocalizedStringResource = "值班时只显示医疗 Bot"
+    static var description: IntentDescription? = IntentDescription("这个专注模式打开时，Bot 首页只列出名字或指令里和医疗相关的 Bot（置顶的、搜索结果不受影响）。")
+
+    @Parameter(title: "只显示医疗 Bot", default: false)
+    var medicalOnly: Bool
+
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: medicalOnly ? "只显示医疗 Bot" : "显示全部 Bot")
+    }
+
+    func perform() async throws -> some IntentResult {
+        UserDefaults.standard.set(medicalOnly, forKey: CloudFocusFilter.key)
+        await MainActor.run { NotificationCenter.default.post(name: .cloudFocusFilterChanged, object: nil) }
+        return .result()
+    }
+}
+
+extension Notification.Name {
+    static let cloudFocusFilterChanged = Notification.Name("OpenMinisCloudFocusFilterChanged")
+}

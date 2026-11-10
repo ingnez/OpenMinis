@@ -149,7 +149,10 @@ final class CloudBotHomeModel: ObservableObject {
 
     func others(matching query: String) -> [CloudBot] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let focus = CloudFocusFilter.active
         return bots.filter { !$0.isPrimary && (!$0.hidden || !q.isEmpty) }
+            .filter { CloudFocusFilter.allows(name: $0.name, summary: $0.summary, instructions: $0.instructions,
+                                              pinned: $0.pinned, searching: !q.isEmpty, on: focus) }
             .filter { q.isEmpty || $0.name.lowercased().contains(q) || $0.lastPreview.lowercased().contains(q) || $0.id.contains(q) }
             .sorted {
                 if $0.pinned != $1.pinned { return $0.pinned }
@@ -611,6 +614,10 @@ struct CloudBotHomeScreen: View {
                         CloudBotSectionedList(model: model, search: search, actions: menuActions, open: open)
                         if search.isEmpty {
                             CloudHiddenFooter(count: model.hiddenBots.count) { path = ["hidden"] }
+                            if CloudFocusFilter.active {
+                                Label("专注模式过滤中：只显示医疗 Bot（在系统专注模式里关掉）", systemImage: "moon.circle")
+                                    .font(.caption).foregroundStyle(.secondary).padding(.top, 6)
+                            }
                         }
                         if !search.trimmingCharacters(in: .whitespaces).isEmpty {
                             CloudSearchResultsSection(model: searchModel, query: search) { target in
@@ -724,6 +731,7 @@ struct CloudBotHomeScreen: View {
         }
         .overlay { CloudMiniDesktopOverlay() }
         .modifier(CloudNightModeModifier(dutyUntil: model.dutyUntil))
+        .onReceive(NotificationCenter.default.publisher(for: .cloudFocusFilterChanged)) { _ in model.objectWillChange.send() }
         .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
         .sheet(isPresented: $showWorkbench) { CloudWorkbenchSheet() }
         .sheet(isPresented: $showHub) {
