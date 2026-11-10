@@ -2,12 +2,37 @@ name: Build Minis iOS IPA (unsigned)
 
 on:
   workflow_dispatch:
+    inputs:
+      quick:
+        description: "只跑几分钟的云端 Swift 快速类型检查（推送前预检），不构建 IPA"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
+  quick-typecheck:
+    if: ${{ inputs.quick }}
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: iOS 16 API 兼容预检
+        run: |
+          if grep -rnE --include='*.swift' 'onChange\(of:[^)]*\) \{ *[_a-zA-Z]+ *, ' src/ios | grep -v '/MinisTests/'; then
+            echo "::error::发现 iOS 17 才有的双参数 onChange"; exit 1
+          fi
+          if grep -rnE --include='*.swift' 'AVAudioApplication|navigationDestination\(item:|@Observable\b|ContentUnavailableView|\.sensoryFeedback|\.symbolEffect|\.scrollPosition\(' src/ios/Views/Chat/AIChatView/Cloud src/ios/Views/ContentView; then
+            echo "::error::云端 / 首页代码使用了 iOS 17+ API"; exit 1
+          fi
+      - name: 云端 Swift 类型检查（iOS 16 目标）
+        run: |
+          set -o pipefail
+          xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift 2>&1 | tee cloud-typecheck.log
+
   cloud-computer-linux:
+    if: ${{ !inputs.quick }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -42,6 +67,7 @@ jobs:
             cloud-browser-real.log
             cloud-browser-agent.log
   build:
+    if: ${{ !inputs.quick }}
     runs-on: macos-26
     timeout-minutes: 350
 
