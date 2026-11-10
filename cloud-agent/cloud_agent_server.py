@@ -68,6 +68,7 @@ from collections import deque
 import cloud_desktop
 import cloud_vision
 import cloud_handoff
+import cloud_botstatus
 import cloud_secrets
 import cloud_policy
 import cloud_cron
@@ -563,7 +564,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.14.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.15.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1929,6 +1930,8 @@ def bot_detail(bot):
         out["prefs"] = cloud_admin.prefs(conn, pid)
         out["running_tasks"] = counts.get("running", 0) + counts.get("queued", 0)
         out["waiting_approvals"] = counts.get("waiting_user", 0)
+        # 首页状态：未读数、待回答卡片、最近一次任务是否出错、例行任务在跑 → status {state, unread, flags}
+        cloud_botstatus.fill(conn, out, "COALESCE(s.incognito, 0) = 0 AND s.session_id NOT IN (SELECT worker_session FROM bot_workers)")
         return out
     finally:
         conn.close()

@@ -488,3 +488,8 @@
 没有 `target_bot` 时交给主 Bot，消息里提示它自己做或 `delegate_task` 给最合适的 Bot、长活用 `spawn_task`；有就直接交给它。
 文件存进目标会话工作区 `attachments/`（≤10 个、每个 ≤20 MB），消息文字经过脱敏。进 Bot 那条连续对话（它正忙就另开会话）。
 返回 `{session_id, task_id, bot_id, bot_name, routed, files}`；完成时照常推送通知。
+
+## 首页 Bot 状态（2.15.0）
+
+`GET /v1/bots` 每个 Bot 多了：`unread_count`（已读时间 `prefs.seen_at` 之后的助手消息数）、`pending_cards`（最近 20 张选项卡里没回答的）、`last_task_status`（最近一次结束的任务状态）、`routine_running`，以及推出的 `status {state, unread, flags}`：
+`state` 按优先级 needs_you（待审批 / 待回答）> error（最近一次结束的任务 failed / limit_reached / interrupted）> working（运行 / 排队 / 后台任务）> unread > idle；`flags` 里有 routine_running / routine_scheduled、muted。App 自己再叠加连接状态（离线显示灰色）。
