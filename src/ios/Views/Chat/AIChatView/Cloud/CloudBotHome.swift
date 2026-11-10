@@ -456,7 +456,7 @@ struct CloudBotHomeScreen: View {
 
     private var groupsMatching: [CloudGroup] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
-        return model.groups.filter { q.isEmpty || $0.name.lowercased().contains(q) || ($0.lastContent ?? "").lowercased().contains(q) }
+        return model.groups.filter { q.isEmpty || $0.name.lowercased().contains(q) || (!CloudBotLock.isLockedStored($0.lastSender ?? "") && ($0.lastContent ?? "").lowercased().contains(q)) }
     }
 
     private func open(_ id: String) {

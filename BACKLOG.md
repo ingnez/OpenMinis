@@ -44,7 +44,7 @@
 - [ ] 真机核对：照片头像上传、OAuth 回调（ASWebAuthenticationSession 无需额外权限，侧载 IPA 可用；授权服务器不支持动态注册时只能用密钥）
 - [ ] 小组件在侧载重签后读不到 App Group 时只显示「主 Bot」入口（已做降级，需真机确认）
 - [ ] 云端 Bot 的实时语音（双向流式）通话：当前是「听完 → 发送 → 朗读」轮流模式。本地模式已有 OpenAI Realtime / Gemini Live 双向通话，侧载未签名 IPA 可用（只需麦克风和 WebSocket）；接到云端 Bot 需要改动不在快速检查范围内的 AIChatViewModel，暂缓，避免完整构建出错
-- [ ] Face ID 锁：已上锁 Bot 在群聊里的发言仍会在群聊页面显示
+- [x] Face ID 锁：已上锁 Bot 在群聊里的发言、群聊预览和首页搜索也不再显示内容（轻点用 Face ID 解锁）
 - [ ] 真机核对：Live Activity、Face ID 锁、Siri 短语识别
 
 ## 第二批（后续）

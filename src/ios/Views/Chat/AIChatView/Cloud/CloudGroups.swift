@@ -173,6 +173,7 @@ struct CloudGroupHomeRow: View {
         guard let content = group.lastContent, !content.isEmpty else { return "群里有：" + members.map(\.name).joined(separator: "、") }
         if group.lastSender == "user" { return "我：" + content }
         let name = bots.first(where: { $0.id == group.lastSender })?.name ?? ""
+        if let sender = group.lastSender, CloudBotLock.isLockedStored(sender) { return (name.isEmpty ? "" : "\(name)：") + "（已上锁）" }
         return name.isEmpty ? content : "\(name)：\(content)"
     }
 }
@@ -346,6 +347,7 @@ struct CloudGroupChatView: View {
     @FocusState private var focused: Bool
     /// 群里的语音消息：说完自动转成文字发出（带 🎤 标记），Bot 的回复可以长按朗读
     @StateObject private var voice = CloudDictation()
+    @ObservedObject private var lock = CloudBotLock.shared
 
     init(groupId: String) {
         self.groupId = groupId
@@ -481,6 +483,9 @@ struct CloudGroupChatView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(b?.name ?? m.sender).font(.caption.weight(.semibold))
                     .foregroundStyle(b.map { CloudBotAvatarSpec.of($0).fill } ?? Color.secondary)
+                if lock.needsUnlock(m.sender) {
+                    lockedPlaceholder(m.sender)
+                } else {
                 Text(m.content).textSelection(.enabled)
                     .padding(.horizontal, 12).padding(.vertical, 9)
                     .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.systemGray6)))
@@ -488,11 +493,25 @@ struct CloudGroupChatView: View {
                         Button { CloudBotSpeaker.speak(m.content, botId: m.sender) } label: { Label("朗读", systemImage: "speaker.wave.2") }
                         Button { UIPasteboard.general.string = m.content } label: { Label("复制", systemImage: "doc.on.doc") }
                     }
+                }
                 reactionChips(m.id)
             }
             Spacer(minLength: 32)
         }
         .padding(.horizontal, 12)
+    }
+
+    /// 已上锁 Bot 在群里的发言：不显示内容，轻点用 Face ID 解锁
+    private func lockedPlaceholder(_ botId: String) -> some View {
+        Button {
+            Task { await lock.unlock(botId) }
+        } label: {
+            Label("已上锁，轻点解锁查看", systemImage: "lock.fill").font(.callout)
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.systemGray6)))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
     }
 
     @ViewBuilder
@@ -527,8 +546,12 @@ struct CloudGroupChatView: View {
                     ProgressView().controlSize(.small)
                 }
             }
+            if lock.needsUnlock(m.sender) {
+                lockedPlaceholder(m.sender)
+            } else {
             Text(m.content).font(.callout).lineLimit(done ? 12 : 4).textSelection(.enabled)
-            if let sid = m.sessionId, let b {
+            }
+            if let sid = m.sessionId, let b, !lock.needsUnlock(m.sender) {
                 NavigationLink {
                     CloudSessionView(sessionId: sid, sessionTitle: b.name,
                                      model: UserDefaults.standard.string(forKey: "OpenMinisCloud_manualModel") ?? "",
