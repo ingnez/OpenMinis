@@ -254,7 +254,7 @@
 
 ## 4. 扩展接口（Grok Bot 对齐 Phase 1）
 
-以下接口均需 `Authorization: Bearer <TOKEN>`。`GET /health` 的 `capabilities` 新增布尔字段 `credential_store`（加密存储是否可用），后续小节的能力字段同理。
+以下接口均需 `Authorization: Bearer <TOKEN>`。`GET /health` 的 `capabilities` 新增布尔字段 `credential_store`（加密存储是否可用）与 `approvals`，后续小节的能力字段同理。
 
 ### 4.1 加密凭据存储 (Credentials)
 - **加密方案**: AES-256-GCM（Python `cryptography` 库 `AESGCM`，不自行实现密码算法）。每条密文 = `v1` + 12 字节随机 nonce + 密文与 tag，AAD 为 `credential:<name>`，密文不能在记录间挪用。
@@ -263,3 +263,19 @@
 - **GET /v1/credentials**: `{"available": true, "reason": null, "credentials": [{"name", "protocol", "base_url", "key_hint", "created_at", "updated_at"}]}`，任何接口都不返回明文或密文。
 - **DELETE /v1/credentials/{name}**: 删除成功 `200`，不存在 `404`。
 - **在任务中引用**: `POST /v1/sessions/{id}/messages` 的 `provider` 可写 `{"credential": "<name>"}` 代替 `api_key`（可选 `base_url` 覆盖保存值）。凭据不存在 `404`；密文被篡改或主密钥更换 `409`；存储不可用 `503`。解密后的 Key 只在任务线程内存中使用。
+
+### 4.2 风险操作审批 (Approvals)
+- **行为**: 每个工具调用执行前按审批策略匹配。命中规则时服务端：
+  1. 写入 `approvals` 记录，任务状态 `running → waiting_user`；
+  2. 追加事件 `approval_required`，负载 `{"approval_id", "tool_call_id", "tool", "arguments", "rule_id", "category", "reason", "expires_at"}`；
+  3. 阻塞等待用户决定、超时 (`timeout_seconds`) 或任务取消；
+  4. 追加事件 `approval_resolved` `{"approval_id", "tool_call_id", "decision"}`，`decision` ∈ `approved` / `denied` / `expired` / `cancelled`，状态回到 `running`（取消时为 `cancelled`）。
+  被拒绝或超时的工具不执行，模型收到 `{"error": "...未执行...", "approval": "denied|expired", "rule_id"}` 并继续。
+- `waiting_user` 与 `running` 一样占用会话：同会话提交新任务返回 `409`；`POST /v1/tasks/{id}/cancel` 可取消等待中的任务。服务重启时 `waiting_user` 任务转为 `interrupted`，挂起审批转为 `expired`。
+- **POST /v1/tasks/{id}/approvals/{approval_id}**: `{"decision": "approve" | "deny", "note": "可选，≤1000 字"}`。成功 `200`；已处理 `409`（附当前状态）；不存在 `404`。
+- **GET /v1/tasks/{id}/approvals**: 返回该任务全部审批及状态。
+- **审批策略**: `GET /v1/approval-policy` 返回 `{"policy", "default", "customized"}`；`PUT /v1/approval-policy` 以 `{"policy": {...}}` 整体替换（校验正则、工具名、类别，非法 `400`）；`DELETE /v1/approval-policy` 恢复默认。策略文件默认位于数据库同目录 `approval_policy.json`（`OPENMINIS_APPROVAL_POLICY_FILE` 可覆盖）。
+  - 规则字段：`id`、`tool`（工具名或 `*`）、`field`（参数名或 `*` 表示整个参数 JSON）、`pattern`（Python 正则，忽略大小写）、`category`（`destructive` / `package` / `outbound` / `purchase` / `privilege` / `custom`）、`reason`、可选 `actions`（限定 `action` 参数）、可选 `enabled: false`。
+  - 默认规则覆盖：`rm -r/-f`、`find -delete`、`dd of=`、`mkfs`/分区工具、`shred`、关机重启、fork 炸弹、递归改根目录权限、`sudo`、系统与语言包安装、`curl | sh`、HTTP 写请求、发邮件、`scp/rsync` 到远端、`git push`、浏览器上的发送/提交/支付点击与结算页、桌面输入发送/付款内容。
+  - 这是“暂停并询问”的护栏，不是安全沙箱；匹配是保守的文本匹配，可能多问（如 `echo rm -rf`）。
+- **iOS**: 事件流中仍未结束的审批以 `UserAskCenter` 确认卡（高风险样式，App 在后台时发本地通知）呈现；卡片 `toolUseId` 为 `cloud-approval-<approval_id>`，本地恢复流程跳过此类卡片，重连后由事件重放重新挂出。

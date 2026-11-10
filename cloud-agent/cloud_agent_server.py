@@ -13,6 +13,7 @@ OpenMinis Cloud Computer & Agent Service (cloud_agent_server.py) v2.0
 - Integrated X11 desktop computer tools (scrot, xdotool)
 - Workspace attachments endpoint with Bearer auth (/v1/sessions/{id}/attachments/{filename})
 - Encrypted provider credential store (AES-256-GCM, /v1/credentials; names only are ever listed)
+- Approval cards: risky tool calls pause the task in waiting_user until the user approves or denies
 """
 
 import os
@@ -40,6 +41,7 @@ import re
 import cloud_browser
 import cloud_desktop
 import cloud_secrets
+import cloud_policy
 
 HOST = os.environ.get("OPENMINIS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
@@ -145,7 +147,9 @@ def init_db():
                 cursor.execute('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + kind)
     cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_local ON sessions(local_session_id) WHERE local_session_id IS NOT NULL')
     cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_nonce ON tasks(client_nonce) WHERE client_nonce IS NOT NULL')
-    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_session_running ON tasks(session_id) WHERE status = 'running'")
+    # 等待审批 (waiting_user) 的任务同样占用会话，同会话只允许一个活动任务
+    cursor.execute("DROP INDEX IF EXISTS idx_tasks_session_running")
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_session_active ON tasks(session_id) WHERE status IN ('running', 'waiting_user')")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id, created_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id)")
 
@@ -162,8 +166,29 @@ def init_db():
     )
     """)
     
+    # 风险操作审批记录
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS approvals (
+        approval_id TEXT PRIMARY KEY,
+        task_id TEXT,
+        tool_call_id TEXT,
+        tool TEXT,
+        arguments TEXT,
+        rule_id TEXT,
+        category TEXT,
+        reason TEXT,
+        status TEXT,
+        note TEXT,
+        created_at REAL,
+        expires_at REAL,
+        decided_at REAL
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_approvals_task ON approvals(task_id, created_at)")
+
     # Server restart: mark interrupted
-    cursor.execute("UPDATE tasks SET status = 'interrupted' WHERE status IN ('running', 'queued')")
+    cursor.execute("UPDATE tasks SET status = 'interrupted' WHERE status IN ('running', 'queued', 'waiting_user')")
+    cursor.execute("UPDATE approvals SET status = 'expired', decided_at = ? WHERE status = 'pending'", (time.time(),))
     conn.commit()
     conn.close()
 
@@ -327,6 +352,108 @@ def resolve_provider(provider):
     if not ok:
         return None, 400, err
     return {"protocol": "chat", "base_url": base_url, "api_key": api_key}, 200, None
+
+ACTIVE_TASK_STATUSES = ("running", "waiting_user")
+
+def approval_policy_path():
+    return os.environ.get("OPENMINIS_APPROVAL_POLICY_FILE",
+                          os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "approval_policy.json"))
+
+def current_approval_policy():
+    return cloud_policy.load_policy(approval_policy_path())
+
+# approval_id -> {"event": threading.Event, "decision": str|None, "note": str|None, "task_id": str}
+pending_approvals = {}
+pending_approvals_lock = threading.Lock()
+
+def on_approval_required(task_id, session_id, approval):
+    """审批挂起时的扩展钩子（推送通知等），异常不影响任务。"""
+    return None
+
+def request_approval(task_id, session_id, tool_call_id, tool_name, args, rule, timeout_seconds):
+    """挂起任务直到用户批准、拒绝、超时或取消。返回 approved / denied / expired / cancelled。"""
+    approval_id = "appr_" + uuid.uuid4().hex[:12]
+    now = time.time()
+    expires_at = now + timeout_seconds
+    waiter = {"event": threading.Event(), "decision": None, "note": None, "task_id": task_id}
+    with pending_approvals_lock:
+        pending_approvals[approval_id] = waiter
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("INSERT INTO approvals (approval_id, task_id, tool_call_id, tool, arguments, rule_id, category, reason, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                  (approval_id, task_id, tool_call_id, tool_name, json.dumps(args, ensure_ascii=False), rule["id"], rule["category"], rule["reason"], now, expires_at))
+        c.execute("UPDATE tasks SET status = 'waiting_user' WHERE task_id = ? AND status = 'running'", (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    approval = {"approval_id": approval_id, "tool_call_id": tool_call_id, "tool": tool_name, "arguments": args,
+                "rule_id": rule["id"], "category": rule["category"], "reason": rule["reason"], "expires_at": expires_at}
+    log_event(task_id, "approval_required", approval)
+    try:
+        on_approval_required(task_id, session_id, approval)
+    except Exception:
+        pass
+
+    decision = None
+    while decision is None:
+        if waiter["event"].wait(0.25):
+            decision = waiter["decision"]
+        elif is_task_cancelled(task_id):
+            decision = "cancelled"
+        elif time.time() >= expires_at:
+            decision = "expired"
+    with pending_approvals_lock:
+        pending_approvals.pop(approval_id, None)
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE approvals SET status = ?, note = ?, decided_at = ? WHERE approval_id = ? AND status = 'pending'",
+                  (decision, waiter.get("note"), time.time(), approval_id))
+        if decision != "cancelled":
+            c.execute("UPDATE tasks SET status = 'running' WHERE task_id = ? AND status = 'waiting_user'", (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    log_event(task_id, "approval_resolved", {"approval_id": approval_id, "tool_call_id": tool_call_id, "decision": decision})
+    return decision
+
+def resolve_approval(task_id, approval_id, decision, note=None):
+    """返回 (http_status, body)。"""
+    with pending_approvals_lock:
+        waiter = pending_approvals.get(approval_id)
+        if waiter and waiter["task_id"] == task_id and waiter["decision"] is None:
+            waiter["decision"] = decision
+            waiter["note"] = note
+            waiter["event"].set()
+            return 200, {"approval_id": approval_id, "task_id": task_id, "status": decision}
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT status FROM approvals WHERE approval_id = ? AND task_id = ?", (approval_id, task_id))
+        row = c.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return 404, {"error": "Approval not found"}
+    return 409, {"error": "Approval already resolved", "approval_id": approval_id, "status": row[0]}
+
+def list_approvals(task_id):
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT approval_id, tool_call_id, tool, arguments, rule_id, category, reason, status, note, created_at, expires_at, decided_at FROM approvals WHERE task_id = ? ORDER BY created_at ASC", (task_id,))
+        rows = c.fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        try: args = json.loads(r[3])
+        except Exception: args = {}
+        out.append({"approval_id": r[0], "tool_call_id": r[1], "tool": r[2], "arguments": args, "rule_id": r[4],
+                    "category": r[5], "reason": r[6], "status": r[7], "note": r[8], "created_at": r[9],
+                    "expires_at": r[10], "decided_at": r[11]})
+    return out
 
 def log_event(task_id, etype, payload):
     conn = get_db_connection()
@@ -666,7 +793,19 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
                         final_status = "cancelled"
                         break
 
-                    if fn_name == "shell_execute": res = tool_shell_execute(task_id, session_id, fn_args)
+                    policy = current_approval_policy()
+                    hit = cloud_policy.evaluate(fn_name, fn_args, policy)
+                    decision = None
+                    if hit:
+                        decision = request_approval(task_id, session_id, tc_id, fn_name, fn_args, hit, policy.get("timeout_seconds", 1800))
+                        if decision == "cancelled" or is_task_cancelled(task_id):
+                            final_status = "cancelled"
+                            break
+
+                    if hit and decision != "approved":
+                        label = {"denied": "用户拒绝", "expired": "审批超时未获批准"}.get(decision, decision)
+                        res = {"error": f"{label}，未执行：{hit['reason']}", "approval": decision, "rule_id": hit["id"]}
+                    elif fn_name == "shell_execute": res = tool_shell_execute(task_id, session_id, fn_args)
                     elif fn_name == "file_read": res = tool_file_read(task_id, session_id, fn_args)
                     elif fn_name == "file_write": res = tool_file_write(task_id, session_id, fn_args)
                     elif fn_name == "file_edit": res = tool_file_edit(task_id, session_id, fn_args)
@@ -725,7 +864,7 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
             final_status = "cancelled"
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute("UPDATE tasks SET status = ? WHERE task_id = ? AND status = 'running'", (final_status, task_id))
+        c.execute("UPDATE tasks SET status = ? WHERE task_id = ? AND status IN ('running', 'waiting_user')", (final_status, task_id))
         conn.commit()
         conn.close()
         with active_tasks_lock:
@@ -759,7 +898,8 @@ class Handler(BaseHTTPRequestHandler):
                     "display": os.environ.get("DISPLAY", ":99"),
                     "vnc_port": 5901,
                     "novnc_port": 18766,
-                    "credential_store": cloud_secrets.status()[0]
+                    "credential_store": cloud_secrets.status()[0],
+                    "approvals": True
                 },
                 "timestamp": time.time()
             })
@@ -850,6 +990,25 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
                 self._send(200, {"session_id": s[0], "local_session_id": s[1], "title": s[2], "instructions": s[3], "created_at": s[4], "messages": msgs, "tasks": tasks})
                 return
+
+        if path == "/v1/approval-policy":
+            self._send(200, {"policy": current_approval_policy(), "default": cloud_policy.DEFAULT_POLICY,
+                             "customized": os.path.exists(approval_policy_path())})
+            return
+
+        if path.startswith("/v1/tasks/") and path.endswith("/approvals"):
+            parts = path.split("/")
+            tid = parts[3] if len(parts) == 5 else ""
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT status FROM tasks WHERE task_id = ?", (tid,))
+            t = c.fetchone()
+            conn.close()
+            if not t:
+                self._send(404, {"error": "Task not found"})
+                return
+            self._send(200, {"task_id": tid, "status": t[0], "approvals": list_approvals(tid)})
+            return
 
         if path.startswith("/v1/tasks/") and path.endswith("/events"):
             # /v1/tasks/{id}/events?after=...
@@ -993,6 +1152,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(201 if created else 200, {"name": name, "base_url": base_url, "key_hint": credential_hint(api_key.strip()), "stored": True})
             return
 
+        if path == "/v1/approval-policy":
+            try:
+                saved = cloud_policy.save_policy(approval_policy_path(), req_json.get("policy", req_json))
+            except cloud_policy.PolicyError as e:
+                self._send(400, {"error": str(e)})
+                return
+            self._send(200, {"policy": saved, "customized": True})
+            return
+
         self._send(404, {"error": "Not found"})
 
     def do_DELETE(self):
@@ -1009,6 +1177,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"name": name, "deleted": True})
             else:
                 self._send(404, {"error": "Credential not found"})
+            return
+
+        if path == "/v1/approval-policy":
+            cloud_policy.reset_policy(approval_policy_path())
+            self._send(200, {"policy": current_approval_policy(), "customized": False})
             return
 
         self._send(404, {"error": "Not found"})
@@ -1198,7 +1371,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(200, {"task_id": existing_task[0], "session_id": sid, "status": existing_task[1], "idempotent_replayed": True})
                         return
 
-                c.execute("SELECT task_id FROM tasks WHERE session_id = ? AND status = 'running'", (sid,))
+                c.execute("SELECT task_id FROM tasks WHERE session_id = ? AND status IN ('running', 'waiting_user')", (sid,))
                 running = c.fetchone()
                 if running:
                     conn.rollback()
@@ -1248,6 +1421,24 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return
 
+        if path.startswith("/v1/tasks/") and "/approvals/" in path:
+            parts = path.split("/")
+            if len(parts) != 6 or parts[4] != "approvals":
+                self._send(404, {"error": "Not found"})
+                return
+            tid, aid = parts[3], parts[5]
+            decision = req_json.get("decision")
+            if decision not in ("approve", "deny"):
+                self._send(400, {"error": "decision must be 'approve' or 'deny'"})
+                return
+            note = req_json.get("note")
+            if note is not None and (not isinstance(note, str) or len(note) > 1000):
+                self._send(400, {"error": "note must be a string (max 1000)"})
+                return
+            code, body = resolve_approval(tid, aid, "approved" if decision == "approve" else "denied", note)
+            self._send(code, body)
+            return
+
         if path.startswith("/v1/tasks/") and path.endswith("/cancel"):
             parts = path.split("/")
             tid = parts[3] if len(parts) >= 4 else ""
@@ -1264,7 +1455,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"task_id": tid, "status": r[0]})
                 return
             set_task_cancelled(tid)
-            c.execute("UPDATE tasks SET status = 'cancelled' WHERE task_id = ? AND status = 'running'", (tid,))
+            c.execute("UPDATE tasks SET status = 'cancelled' WHERE task_id = ? AND status IN ('running', 'waiting_user')", (tid,))
             conn.commit()
             conn.close()
             log_event(tid, "cancelled", {"message": "Cancelled via API"})

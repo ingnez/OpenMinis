@@ -35,6 +35,12 @@ public enum CloudTaskStatus: String, Sendable {
     }
 }
 
+/// 审批事件：pending 为仍等待用户的 approval_required 负载；resolved 为服务端结论。
+enum CloudApprovalSignal {
+    case pending([String: Any])
+    case resolved(approvalId: String, decision: String)
+}
+
 @MainActor
 public final class CloudChatBridge: ObservableObject {
     public static let shared = CloudChatBridge()
@@ -47,6 +53,8 @@ public final class CloudChatBridge: ObservableObject {
     @Published public private(set) var boundRemoteSessionBySession: [String: String] = [:]
 
     private var activePollTasks: [String: Task<Void, Never>] = [:]
+    /// 审批卡处理钩子（CloudApprovalBridge.install 注册）；未注册时审批只出现在任务日志中。
+    var approvalHandler: (@MainActor (CloudApprovalSignal, String, String, ChatMessage, @escaping @MainActor () -> Void) -> Void)?
     private let logger = AppLogger(category: "CloudChatBridge")
 
     private init() {}
@@ -258,7 +266,7 @@ public final class CloudChatBridge: ObservableObject {
         } catch {
             if error.localizedDescription.contains("409") || error.localizedDescription.contains("Conflict") {
                 let detail = try await CloudConnection.shared.request(method: "GET", path: "/v1/sessions/\(targetRemoteSid)", body: nil)
-                if let tasks = detail["tasks"] as? [[String: Any]], let active = tasks.first(where: { ($0["status"] as? String) == "running" }), let tid = active["task_id"] as? String {
+                if let tasks = detail["tasks"] as? [[String: Any]], let active = tasks.first(where: { ["running", "waiting_user"].contains(($0["status"] as? String) ?? "") }), let tid = active["task_id"] as? String {
                     setActiveTaskId(tid, for: localSessionId)
                     throw NSError(domain: "CloudChatBridge", code: 409, userInfo: [NSLocalizedDescriptionKey: "此消息尚未提交：云端仍有正在运行的任务。请先恢复该任务或停止后重发，避免把旧任务误当成本次结果。"])
                 }
@@ -366,6 +374,8 @@ extension CloudChatBridge {
             var completed = false
             var finalStatus: CloudTaskStatus = .unknown
             var hasVisibleEvents = false
+            var pendingApprovals: [String: [String: Any]] = [:]
+            var approvalOrder: [String] = []
 
             while !Task.isCancelled && !isRetired() && !completed {
                 do {
@@ -390,14 +400,31 @@ extension CloudChatBridge {
                             lastCursor = eventID
                             guard let etype = ev["type"] as? String else { continue }
                             let payload = ev["payload"] as? [String: Any] ?? [:]
-                            if !hasVisibleEvents && ["thought", "text", "content", "tool_call", "tool_result", "final", "error"].contains(etype) {
+                            if !hasVisibleEvents && ["thought", "text", "content", "tool_call", "tool_result", "final", "error", "approval_required"].contains(etype) {
                                 targetMessage.blocks.removeAll()
                                 hasVisibleEvents = true
+                            }
+                            if etype == "approval_required", let aid = payload["approval_id"] as? String {
+                                if pendingApprovals[aid] == nil { approvalOrder.append(aid) }
+                                pendingApprovals[aid] = payload
+                            } else if etype == "approval_resolved", let aid = payload["approval_id"] as? String {
+                                pendingApprovals.removeValue(forKey: aid)
+                                approvalOrder.removeAll { $0 == aid }
+                                self.approvalHandler?(.resolved(approvalId: aid, decision: payload["decision"] as? String ?? "denied"),
+                                                      remoteTaskId, localSessionId, targetMessage, onUpdate)
                             }
                             self.applyEventToMessage(targetMessage, type: etype, payload: payload)
                         }
                         if !events.isEmpty {
                             onUpdate()
+                        }
+                    }
+                    // 只为整批重放后仍未结束的审批挂卡，避免把已处理的旧审批再弹一次
+                    if finalStatus == .waitingUser {
+                        for aid in approvalOrder {
+                            if let payload = pendingApprovals[aid] {
+                                self.approvalHandler?(.pending(payload), remoteTaskId, localSessionId, targetMessage, onUpdate)
+                            }
                         }
                     }
                 } catch {

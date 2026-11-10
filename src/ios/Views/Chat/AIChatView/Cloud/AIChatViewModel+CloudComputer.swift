@@ -139,6 +139,7 @@ extension AIChatViewModel {
         )
 
         // 5. Stream and poll events via Task + CancellationHandler
+        CloudApprovalBridge.install()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 var resumed = false
@@ -218,6 +219,7 @@ extension AIChatViewModel {
         }
 
         isProcessing = true
+        CloudApprovalBridge.install()
         CloudChatBridge.shared.pollAndStream(
             localSessionId: sid,
             remoteTaskId: taskId,
@@ -254,6 +256,10 @@ extension AIChatViewModel {
             case .thinking:
                 if !block.content.isEmpty {
                     parts.append(.text(block.content))
+                }
+            case .userAskTool:
+                if !block.content.isEmpty {
+                    parts.append(.text(CloudApprovalBridge.summary(for: block)))
                 }
             case .shellTool, .fileReadTool, .fileWriteTool, .fileEditTool, .browserTool:
                 if !block.content.isEmpty {

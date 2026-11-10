@@ -569,10 +569,24 @@ struct CloudSessionView: View {
                         if !taskEvents.isEmpty {
                             Divider()
                             Text("当前/最新任务实时日志").font(.caption).bold().foregroundColor(.secondary)
+                            let resolvedApprovals = Set(taskEvents.compactMap { ev -> String? in
+                                guard ev["type"] as? String == "approval_resolved" else { return nil }
+                                return (ev["payload"] as? [String: Any])?["approval_id"] as? String
+                            })
                             ForEach(Array(taskEvents.enumerated()), id: \.offset) { _, ev in
                                 let type = ev["type"] as? String ?? "event"
                                 let payload = ev["payload"] as? [String: Any] ?? [:]
                                 CloudTaskEventRow(type: type, payload: payload)
+                                if type == "approval_required", activeTaskStatus == "waiting_user",
+                                   let aid = payload["approval_id"] as? String, !resolvedApprovals.contains(aid) {
+                                    HStack {
+                                        Button("拒绝") { decide(approvalId: aid, approve: false) }
+                                            .buttonStyle(.bordered).tint(.red)
+                                        Button("批准执行") { decide(approvalId: aid, approve: true) }
+                                            .buttonStyle(.borderedProminent).tint(.orange)
+                                    }
+                                    .controlSize(.small)
+                                }
                             }
                         }
                     }
@@ -583,11 +597,11 @@ struct CloudSessionView: View {
             Divider()
 
             // Active Task Status Bar if running
-            if activeTaskStatus == "running" {
+            if activeTaskStatus == "running" || activeTaskStatus == "waiting_user" {
                 HStack {
                     ProgressView()
                         .padding(.trailing, 4)
-                    Text("云端任务执行中 [\(activeTaskId ?? "")]")
+                    Text(activeTaskStatus == "waiting_user" ? "云端任务等待你审批 [\(activeTaskId ?? "")]" : "云端任务执行中 [\(activeTaskId ?? "")]")
                         .font(.caption)
                         .foregroundColor(.blue)
                     Spacer()
@@ -631,7 +645,7 @@ struct CloudSessionView: View {
             loadSessionDetail()
         }
         .onReceive(timer) { _ in
-            if activeTaskStatus == "running", let tid = activeTaskId, !isPolling {
+            if activeTaskStatus == "running" || activeTaskStatus == "waiting_user", let tid = activeTaskId, !isPolling {
                 pollTaskStatus(taskId: tid)
             }
         }
@@ -652,7 +666,7 @@ struct CloudSessionView: View {
                         let needsEvents = self.loadedTaskId != tid
                         self.activeTaskId = tid
                         self.activeTaskStatus = status
-                        if status == "running" || needsEvents { pollTaskStatus(taskId: tid) }
+                        if status == "running" || status == "waiting_user" || needsEvents { pollTaskStatus(taskId: tid) }
                     } else {
                         self.activeTaskId = nil
                         self.activeTaskStatus = "idle"
@@ -746,7 +760,7 @@ struct CloudSessionView: View {
                         self.taskEvents = events
                     }
                     self.errorMessage = nil
-                    if self.activeTaskStatus != "running" {
+                    if self.activeTaskStatus != "running" && self.activeTaskStatus != "waiting_user" {
                         if ["failed", "interrupted", "limit_reached"].contains(self.activeTaskStatus) {
                             self.errorMessage = "云端任务状态：\(self.activeTaskStatus)。请查看任务日志；修复原因后可发送新任务继续。"
                         }
@@ -758,6 +772,19 @@ struct CloudSessionView: View {
                     self.isPolling = false
                     self.errorMessage = "轮询任务状态失败: \(error.localizedDescription)"
                 }
+            }
+        }
+    }
+
+    private func decide(approvalId: String, approve: Bool) {
+        guard let tid = activeTaskId else { return }
+        Task {
+            do {
+                _ = try await connection.request(method: "POST", path: "/v1/tasks/\(tid)/approvals/\(approvalId)",
+                                                 body: ["decision": approve ? "approve" : "deny"])
+                pollTaskStatus(taskId: tid)
+            } catch {
+                await MainActor.run { self.errorMessage = "提交审批失败: \(error.localizedDescription)" }
             }
         }
     }
@@ -821,6 +848,10 @@ struct CloudTaskEventRow: View {
                 Text("调用工具: \(tool) -> \(String(describing: args))")
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundColor(.purple)
+            } else if type == "approval_required" {
+                Text("需要审批：\(payload["reason"] as? String ?? "") — \(payload["tool"] as? String ?? "")\n\(String(describing: payload["arguments"] ?? ""))")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundColor(.orange)
             } else if type == "tool_result", let tool = payload["tool"] as? String, let res = payload["result"] {
                 Text("工具结果 [\(tool)]: \(String(describing: res))")
                     .font(.system(.caption2, design: .monospaced))
@@ -841,7 +872,7 @@ struct CloudTaskEventRow: View {
         case "tool_call": return .purple
         case "tool_result": return .green
         case "error": return .red
-        case "cancelled": return .orange
+        case "cancelled", "approval_required": return .orange
         default: return .secondary
         }
     }

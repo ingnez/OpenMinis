@@ -23,7 +23,7 @@ enum ToolBlockStatus: Equatable { case streaming(bytes: Int), running, success, 
 enum AssistantBlockKind: Equatable {
  case text, thinking
  case shellTool(command: String), fileReadTool(path: String), fileWriteTool(path: String), fileEditTool(path: String)
- case browserTool(action: String), info
+ case browserTool(action: String), info, userAskTool
 }
 final class AssistantBlock: ObservableObject {
  @Published var kind: AssistantBlockKind

@@ -523,6 +523,11 @@ final class UserAskCenter: ObservableObject {
         let now = Date()
         store.purge(now: now)
         for (rid, r) in store.all() where waiters[rid] == nil && !inProcess.contains(rid) {
+            // 云电脑审批卡没有本地 tool_use 行，由服务端状态与事件重放重新挂出，不能走本地投递
+            if r.ask.toolCallId.hasPrefix("cloud-approval-") {
+                store.remove(rid)
+                continue
+            }
             let inStore = await Self.toolResultExists(sessionId: r.ask.sessionId, toolUseId: r.ask.toolCallId)
             switch UserAskRecovery.action(for: r, now: now, toolResultInStore: inStore) {
             case .alreadyDelivered:
