@@ -138,9 +138,10 @@ class BrowserOwnerDaemon:
                         self.cmd_queue.task_done()
                     break
 
-                future, session_id, workspace_dir, action_args = item
+                future, session_id, workspace_dir, action_args = item[:4]
+                owner, display = (item[4], item[5]) if len(item) > 5 else (None, None)
                 try:
-                    res = self._execute_on_owner_thread(session_id, workspace_dir, action_args)
+                    res = self._execute_on_owner_thread(session_id, workspace_dir, action_args, owner, display)
                     if not future.done():
                         future.set_result(res)
                 except Exception as e:
@@ -176,7 +177,7 @@ class BrowserOwnerDaemon:
                 except Exception:
                     break
 
-    def _get_or_create_context(self, session_id, workspace_dir):
+    def _get_or_create_context(self, session_id, workspace_dir, display_override=None):
         safe_id = self._sanitize_session_id(session_id)
         if safe_id in self.contexts:
             ctx_data = self.contexts[safe_id]
@@ -212,7 +213,7 @@ class BrowserOwnerDaemon:
             raise ValueError(f"Path escape detected in session: {session_id}")
         os.makedirs(profile_dir, exist_ok=True)
 
-        display = os.environ.get("DISPLAY", ":99")
+        display = display_override or os.environ.get("DISPLAY", ":99")
         is_headless = False if display else True
 
         args = [
@@ -289,9 +290,39 @@ class BrowserOwnerDaemon:
         self.contexts[safe_id] = ctx_data
         return ctx_data
 
-    def _execute_on_owner_thread(self, session_id, workspace_dir, args):
+    def _execute_on_owner_thread(self, session_id, workspace_dir, args, owner=None, display=None):
+        """owner：共用同一浏览器资料（context）的多个 Bot 各自记住自己的当前标签页。"""
+        if args.get("action") == "__close__":
+            ctx = self.contexts.pop(self._sanitize_session_id(session_id), None)
+            if ctx:
+                try:
+                    ctx["context"].close()
+                except Exception:
+                    pass
+            return {"status": "closed"}
+        if args.get("action") == "__warm__":
+            self._get_or_create_context(session_id, workspace_dir, display)
+            return {"status": "warm"}
+        if not owner:
+            return self._execute_core(session_id, workspace_dir, args, display)
+        ctx_data = self._get_or_create_context(session_id, workspace_dir, display)
+        by_owner = ctx_data.setdefault("active_by_owner", {})
+        mine = by_owner.get(owner)
+        if mine and mine in ctx_data["pages"] and not ctx_data["pages"][mine].is_closed():
+            ctx_data["active_tab_id"] = mine
+        elif by_owner:
+            # 这个 Bot 第一次用共享浏览器：给它开一个新标签页，不抢别的 Bot 正在用的页面
+            new_id = "tab_" + uuid.uuid4().hex[:6]
+            ctx_data["pages"][new_id] = ctx_data["context"].new_page()
+            ctx_data["active_tab_id"] = new_id
+        try:
+            return self._execute_core(session_id, workspace_dir, args, display)
+        finally:
+            by_owner[owner] = ctx_data.get("active_tab_id")
+
+    def _execute_core(self, session_id, workspace_dir, args, display=None):
         action = args.get("action", "")
-        ctx_data = self._get_or_create_context(session_id, workspace_dir)
+        ctx_data = self._get_or_create_context(session_id, workspace_dir, display)
         ctx_data["workspace_dir"] = workspace_dir
         ctx_data["downloads_dir"] = os.path.join(workspace_dir, "downloads")
 
@@ -493,7 +524,7 @@ class BrowserOwnerDaemon:
         else:
             return {"error": f"Unsupported browser action: {action}"}
 
-    def submit(self, session_id, workspace_dir, args):
+    def submit(self, session_id, workspace_dir, args, owner=None, display=None):
         if not playwright_available:
             return {"error": "Playwright is not installed in the environment."}
         self.start()
@@ -505,7 +536,7 @@ class BrowserOwnerDaemon:
             return {"error": "Browser daemon is not running"}
 
         future = concurrent.futures.Future()
-        self.cmd_queue.put((future, session_id, workspace_dir, args))
+        self.cmd_queue.put((future, session_id, workspace_dir, args, owner, display))
         try:
             return future.result(timeout=40.0)
         except concurrent.futures.TimeoutError:
@@ -556,11 +587,12 @@ def is_browser_available():
 
     return True
 
-def execute_browser_action(session_id, workspace_dir, args):
+def execute_browser_action(session_id, workspace_dir, args, owner=None, display=None):
+    """session_id 实际是浏览器资料键：shared（所有 Bot 共用登录）或 bot-<id>（独立资料）。"""
     if not isinstance(args, dict):
         return {"error": "Invalid arguments: expected object"}
     daemon = get_daemon()
     try:
-        return daemon.submit(session_id, workspace_dir, args)
+        return daemon.submit(session_id, workspace_dir, args, owner=owner, display=display)
     except Exception as e:
         return {"error": f"Browser daemon error: {e}"}

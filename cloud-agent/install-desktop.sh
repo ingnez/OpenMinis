@@ -176,6 +176,18 @@ if [ -z "$NOVNC_WEB_PATH" ]; then
     exit 1
 fi
 
+# 每个 Bot 的独立屏幕通过 websockify token 区分：main = 主屏 :99，bot-<id> 由 Agent 按需写入
+TOKEN_DIR="$VAR_LIB_DIR/vnc-tokens"
+mkdir -p "$TOKEN_DIR"
+echo "main: 127.0.0.1:5901" > "$TOKEN_DIR/main"
+chown -R "$SERVICE_USER:$SERVICE_USER" "$TOKEN_DIR"
+WEBSOCKIFY_TARGET="127.0.0.1:5901"
+if /usr/bin/websockify --help 2>&1 | grep -q -- "--token-plugin"; then
+    WEBSOCKIFY_TARGET="--token-plugin TokenFile --token-source $TOKEN_DIR"
+else
+    rm -f "$TOKEN_DIR/main"  # 旧版 websockify 不支持 token：手机端回退到只看主屏
+fi
+
 cat << EOF > /etc/systemd/system/openminis-novnc.service
 [Unit]
 Description=OpenMinis noVNC Web & Websockify Proxy
@@ -189,7 +201,7 @@ Group=$SERVICE_USER
 Environment=HOME=$VAR_LIB_DIR
 Environment=XDG_CONFIG_HOME=$VAR_LIB_DIR/.config
 Environment=XDG_CACHE_HOME=$VAR_LIB_DIR/.cache
-ExecStart=/usr/bin/websockify --web=$NOVNC_WEB_PATH 127.0.0.1:18766 127.0.0.1:5901
+ExecStart=/usr/bin/websockify --web=$NOVNC_WEB_PATH 127.0.0.1:18766 $WEBSOCKIFY_TARGET
 Restart=always
 RestartSec=3
 
@@ -225,6 +237,7 @@ Environment=OPENMINIS_DB=$VAR_LIB_DIR/data/openminis_agent.db
 Environment=OPENMINIS_WORKSPACE=$VAR_LIB_DIR/workspace
 Environment=OPENMINIS_TOKEN_FILE=$TOKEN_FILE
 Environment=OPENMINIS_MASTER_KEY_FILE=$MASTER_KEY_FILE
+Environment=OPENMINIS_VNC_TOKENS=$VAR_LIB_DIR/vnc-tokens
 
 NoNewPrivileges=true
 ProtectSystem=full

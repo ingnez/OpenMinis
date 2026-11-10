@@ -46,7 +46,7 @@ def is_desktop_available():
 
     return True
 
-def execute_desktop_action(session_id, workspace_dir, args):
+def execute_desktop_action(session_id, workspace_dir, args, display_override=None):
     """
     Executes a desktop action (screenshot, click, type, key, mouse_move).
     Only allowed on DISPLAY user, thread-safe.
@@ -55,7 +55,7 @@ def execute_desktop_action(session_id, workspace_dir, args):
         return {"error": "Invalid arguments: expected object"}
 
     action = args.get("action", "")
-    display = os.environ.get("DISPLAY", ":99")
+    display = display_override or os.environ.get("DISPLAY", ":99")
 
     # Verify X11 tools & auth
     env = os.environ.copy()

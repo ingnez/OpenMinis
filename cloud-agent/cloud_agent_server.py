@@ -61,6 +61,8 @@ import cloud_bots
 import cloud_plugins
 import cloud_mcp
 import cloud_deps
+import cloud_isolation as iso
+import cloud_displays
 
 HOST = os.environ.get("OPENMINIS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
@@ -312,8 +314,22 @@ def is_task_cancelled(task_id):
         # 子代理随父任务一起取消
         return bool(parent) and active_tasks.get(parent, {}).get("cancelled", False)
 
+SHARED_WORKSPACE = os.path.join(GLOBAL_WORKSPACE, "shared")
+ACTIVE_SLOTS = {}   # session_id -> 同一 Bot 的并发槽（>0 时用独立子工作区 / 屏幕）
+
 def get_session_workspace(session_id):
-    ws = os.path.join(GLOBAL_WORKSPACE, session_id)
+    """Bot 会话用 Bot 自己的工作区 workspace/bots/<id>/workspace（并发槽 k>0 用 bots/<id>/slots/<k>）；
+    旧会话已有 workspace/<session_id> 目录时继续用，升级不丢文件。"""
+    legacy = os.path.join(GLOBAL_WORKSPACE, session_id)
+    ws = legacy
+    if not os.path.isdir(legacy):
+        try:
+            pid = session_persona_id(session_id)
+        except Exception:
+            pid = None
+        if pid and re.match(r"^[a-z0-9][a-z0-9_-]{0,31}$", pid):
+            slot = ACTIVE_SLOTS.get(session_id, 0)
+            ws = os.path.join(GLOBAL_WORKSPACE, "bots", pid, "workspace" if not slot else os.path.join("slots", str(slot)))
     os.makedirs(ws, exist_ok=True)
     return ws
 
@@ -321,6 +337,10 @@ def safe_path_resolve(session_id, user_path):
     ws = get_session_workspace(session_id)
     if not user_path:
         return None, "Missing path"
+    if user_path == "@shared" or user_path.startswith("@shared/"):
+        # 所有 Bot 共用的交换目录
+        os.makedirs(SHARED_WORKSPACE, exist_ok=True)
+        ws, user_path = SHARED_WORKSPACE, user_path[len("@shared"):].lstrip("/") or "."
     try:
         joined = os.path.join(ws, user_path)
         real_target = os.path.realpath(joined)
@@ -538,7 +558,7 @@ def bot_library(bot_id, limit=300):
             items.append({"kind": "link", "id": "l" + hashlib.sha256(url.encode()).hexdigest()[:16], "url": url,
                           "title": host, "session_id": sid, "role": role, "at": ts})
     for sid in sids:
-        adir = os.path.join(GLOBAL_WORKSPACE, sid, "attachments")
+        adir = os.path.join(get_session_workspace(sid), "attachments")
         if not os.path.isdir(adir):
             continue
         for name in os.listdir(adir):
@@ -730,9 +750,27 @@ def tool_shell_execute(task_id, session_id, args):
     if not cmd:
         return {"error": "Missing command"}
     ws = get_session_workspace(session_id)
+    bot_id = session_persona_id(session_id)
+    limits = iso.bot_settings(resource_settings(), bot_id)
+    env = task_env(session_id)
+    if args.get("background"):
+        lane = task_lane(session_id)
+        cap = limits.get("bg_jobs_max") or 0
+        if cap and BG_JOBS.running_count(lane) >= cap:
+            return {"error": f"后台命令已达上限 {cap} 个，请等待或用 background_jobs 停止一个"}
+        job = BG_JOBS.start(lane, session_id, cmd, ws, env, limits, os.path.join(ws, ".bg"), on_background_done)
+        return {"status": "started", "job_id": job["job_id"], "log": os.path.relpath(job["log"], ws),
+                "note": "命令在后台运行，完成后会写回对话并推送；可用 background_jobs 查看进度。"}
+    argv, use_shell, preexec = iso.wrap_command(cmd, limits)
+    system_op = resource_settings()["system_lock"] and iso.is_system_op(cmd)
+    if system_op and not iso.SYSTEM_LOCK.acquire(blocking=False):
+        log_event(task_id, "status", {"message": "等待其他 Bot 的系统级安装完成…"})
+        if not iso.SYSTEM_LOCK.acquire(timeout=max(timeout, 600)):
+            return {"error": "等待系统级操作锁超时（其他 Bot 正在安装软件或修改系统配置）"}
     try:
         with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
-            proc = subprocess.Popen(cmd, shell=True, stdout=out_f, stderr=err_f, cwd=ws, start_new_session=True)
+            proc = subprocess.Popen(argv, shell=use_shell, stdout=out_f, stderr=err_f, cwd=ws, env=env,
+                                    start_new_session=True, preexec_fn=preexec)
             with active_tasks_lock:
                 if task_id in active_tasks:
                     active_tasks[task_id]["process"] = proc
@@ -764,6 +802,9 @@ def tool_shell_execute(task_id, session_id, args):
             }
     except Exception as e:
         return {"error": str(e)}
+    finally:
+        if system_op:
+            iso.SYSTEM_LOCK.release()
 
 def tool_file_read(task_id, session_id, args):
     if is_task_cancelled(task_id):
@@ -819,7 +860,155 @@ def tool_browser_action(task_id, session_id, args):
     if is_task_cancelled(task_id):
         return {"error": "Cancelled"}
     ws = get_session_workspace(session_id)
-    return cloud_browser.execute_browser_action(session_id, ws, args)
+    key, owner, display = browser_route(session_id)
+    return cloud_browser.execute_browser_action(key, ws, args, owner=owner, display=display)
+
+# ---------- 多 Bot 隔离：资源设置、排队、屏幕、端口、后台命令 ----------
+_resource_cache = {"value": None}
+_resource_lock = threading.Lock()
+
+def _settings_get(name):
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT value FROM app_settings WHERE name = ?", (name,)).fetchone()
+        return json.loads(row[0]) if row else None
+    except (ValueError, sqlite3.Error):
+        return None
+    finally:
+        conn.close()
+
+def _settings_put(name, value):
+    conn = get_db_connection()
+    try:
+        conn.execute("INSERT INTO app_settings (name, value) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+                     (name, json.dumps(value, ensure_ascii=False)))
+        conn.commit()
+    finally:
+        conn.close()
+
+def resource_settings():
+    with _resource_lock:
+        if _resource_cache["value"] is None:
+            _resource_cache["value"] = iso.merged_with_defaults(_settings_get("resources"))
+        return _resource_cache["value"]
+
+def update_resource_settings(patch):
+    with _resource_lock:
+        current = _resource_cache["value"] or iso.merged_with_defaults(_settings_get("resources"))
+        new = iso.validate(patch, current)
+        _settings_put("resources", new)
+        _resource_cache["value"] = new
+    GATE.poke()
+    return new
+
+_index_lock = threading.Lock()
+
+def slot_index(key):
+    """Bot / 屏幕键的稳定编号（>=1），用于屏幕号 :10+N 与端口段。"""
+    with _index_lock:
+        idx = _settings_get("slot_index") or {}
+        if key not in idx:
+            used = set(idx.values())
+            idx[key] = next(i for i in range(1, 10000) if i not in used)
+            _settings_put("slot_index", idx)
+        return idx[key]
+
+def task_lane(session_id):
+    pid = session_persona_id(session_id)
+    return ("bot:" + pid) if pid else ("session:" + session_id)
+
+def display_key(session_id):
+    pid = session_persona_id(session_id)
+    if not pid:
+        return None
+    slot = ACTIVE_SLOTS.get(session_id, 0)
+    return pid if not slot else f"{pid}:{slot}"
+
+def browser_route(session_id):
+    """(浏览器资料键, 标签页归属, DISPLAY)。共享模式：所有 Bot 共用 shared 资料（登录状态共享），
+    浏览器开在主屏 :99，每个 Bot 记住自己的标签页；独立模式：Bot 自己的资料和独立屏幕。"""
+    pid = session_persona_id(session_id)
+    owner = pid or session_id
+    if pid and iso.bot_settings(resource_settings(), pid)["browser_profile"] == "per_bot":
+        info = DISPLAYS.ensure(display_key(session_id))
+        if info:
+            DISPLAYS.touch(display_key(session_id))
+            return "bot-" + display_key(session_id).replace(":", "-"), owner, info["display"]
+        return "bot-" + pid, owner, None
+    return "shared", owner, None
+
+def task_env(session_id):
+    env = os.environ.copy()
+    s = resource_settings()
+    env.update(iso.mirror_env(s, os.path.join(os.path.dirname(GLOBAL_WORKSPACE), "cache")))
+    pid = session_persona_id(session_id)
+    ports = iso.bot_port_range(s, slot_index("bot:" + pid) if pid else 0)
+    env["OPENMINIS_SHARED"] = SHARED_WORKSPACE
+    env["OPENMINIS_PORTS"] = f"{ports[0]}-{ports[-1]}" if ports else ""
+    if ports:
+        env["PORT"] = str(ports[0])
+    _k, _o, display = browser_route(session_id) if pid else (None, None, None)
+    if display:
+        env["DISPLAY"] = display
+    os.makedirs(SHARED_WORKSPACE, exist_ok=True)
+    return env
+
+def isolation_note(session_id):
+    s = resource_settings()
+    pid = session_persona_id(session_id)
+    ports = iso.bot_port_range(s, slot_index("bot:" + pid) if pid else 0)
+    return ("\n[工作区] 你的 Shell 当前目录是你自己的工作区；和其他 Bot 交换文件用环境变量 $OPENMINIS_SHARED 目录"
+            "（文件工具里写作 @shared/文件名）。"
+            + (f"开发服务器请只用端口 {ports[0]}–{ports[-1]}（$PORT 为第一个），不要占用 18765/18766。" if ports else "")
+            + "耗时很久的命令（安装、编译、下载）用 shell_execute 的 background=true 在后台跑，完成后会通知你，别阻塞对话。")
+
+def on_background_done(job, log_tail):
+    sid = job["session_id"]
+    text = (f"[后台命令完成] {job['job_id']} 退出码 {job['exit_code']}\n命令：{job['command'][:200]}\n"
+            f"最后输出：\n{log_tail[-1500:]}")
+    conn = get_db_connection()
+    try:
+        busy = conn.execute("SELECT 1 FROM tasks WHERE session_id = ? AND status IN ('running', 'waiting_user')", (sid,)).fetchone()
+        if not busy:
+            conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'assistant', ?, ?)",
+                         (sid, text, time.time()))
+            conn.commit()
+    finally:
+        conn.close()
+    cfg = current_notify_config()
+    if cfg and not _bot_muted(sid):
+        cloud_notify.notify_async(cfg, "task_completed", f"后台命令完成：{_session_title(sid)}"[:120], text[:600])
+
+def tool_background_jobs(task_id, session_id, args):
+    action = (args or {}).get("action", "list")
+    lane = task_lane(session_id)
+    if action == "list":
+        return {"jobs": [{k: v for k, v in j.items() if k not in ("pid", "lane")} for j in BG_JOBS.list(lane)]}
+    job = BG_JOBS.get(str(args.get("job_id", "")))
+    if not job or job["lane"] != lane:
+        return {"error": "没有这个后台命令"}
+    if action == "log":
+        return {"job_id": job["job_id"], "status": job["status"], "exit_code": job["exit_code"], "log_tail": iso.tail(job["log"])}
+    if action == "stop":
+        return {"stopped": BG_JOBS.stop(job["job_id"])}
+    return {"job_id": job["job_id"], "status": job["status"], "exit_code": job["exit_code"]}
+
+def resource_usage():
+    st = GATE.status()
+    return {"running_tasks": len(st["running"]), "queued_tasks": len(st["queued"]),
+            "running_bots": len({r["lane"] for r in st["running"]}), "displays_open": len(DISPLAYS.list()),
+            "background_jobs": sum(1 for j in BG_JOBS.list() if j["status"] == "running"),
+            "displays": DISPLAYS.list(), "queue": st["queued"]}
+
+def _close_browser_for_display(key):
+    try:
+        cloud_browser.execute_browser_action("bot-" + key.replace(":", "-"), SHARED_WORKSPACE, {"action": "__close__"})
+    except Exception:
+        pass
+
+GATE = iso.TaskGate(resource_settings)
+DISPLAYS = cloud_displays.DisplayManager(resource_settings, slot_index, on_stop=_close_browser_for_display)
+BG_JOBS = iso.BackgroundJobs()
 
 def tool_request_user_takeover(task_id, session_id, args):
     """需要用户亲自操作（登录、验证码、扫码、付款确认）时请求接管：记事件让手机显示「打开电脑」卡片，并推送提醒。"""
@@ -837,7 +1026,8 @@ def tool_desktop_action(task_id, session_id, args):
     if is_task_cancelled(task_id):
         return {"error": "Cancelled"}
     ws = get_session_workspace(session_id)
-    return cloud_desktop.execute_desktop_action(session_id, ws, args)
+    _key, _owner, display = browser_route(session_id)
+    return cloud_desktop.execute_desktop_action(session_id, ws, args, display_override=display)
 
 def tool_memory_write(task_id, session_id, args):
     if is_task_cancelled(task_id):
@@ -946,6 +1136,9 @@ def bot_detail(bot):
         counts = dict(conn.execute("SELECT t.status, COUNT(*) FROM tasks t JOIN sessions s ON s.session_id = t.session_id "
                                    "WHERE s.persona_id = ? AND t.status IN ('running', 'queued', 'waiting_user') GROUP BY t.status", (pid,)).fetchall())
         out["notify"] = pid not in muted_bots()
+        out["queued_tasks"] = sum(1 for q in GATE.status()["queued"] if q["lane"] == "bot:" + pid)
+        out["resources"] = iso.bot_settings(resource_settings(), pid)
+        out["resource_overrides"] = resource_settings()["bot_overrides"].get(pid, {})
         out["routines_enabled"] = conn.execute("SELECT COUNT(*) FROM routines WHERE persona_id = ? AND enabled = 1", (pid,)).fetchone()[0]
         out["running_tasks"] = counts.get("running", 0) + counts.get("queued", 0)
         out["waiting_approvals"] = counts.get("waiting_user", 0)
@@ -1063,7 +1256,7 @@ def server_tool_notes(session_id):
     if others:
         personas_note = "\n[其他人格] 需要其他人格的专长或它们的私有记忆时，用 subagent_task 并传 persona 询问：" + "；".join(
             f"{p['persona_id']}（{p['name']}）" for p in others[:20])
-    return SERVER_TOOL_NOTES + personas_note + skills_index
+    return SERVER_TOOL_NOTES + personas_note + isolation_note(session_id) + skills_index
 
 def tool_skill_load(task_id, session_id, args):
     if is_task_cancelled(task_id):
@@ -1248,7 +1441,8 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {
                     "command": {"type": "string"},
-                    "timeout": {"type": "integer"}
+                    "timeout": {"type": "integer"},
+                    "background": {"type": "boolean", "description": "Run detached for long installs/builds; you'll be notified on completion"}
                 },
                 "required": ["command"]
             }
@@ -1332,6 +1526,18 @@ TOOL_DEFINITIONS = [
                     "key": {"type": "string"},
                     "button": {"type": "integer"}
                 },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "background_jobs",
+            "description": "List, check, read the log tail of, or stop your background shell commands.",
+            "parameters": {
+                "type": "object",
+                "properties": {"action": {"type": "string", "enum": ["list", "status", "log", "stop"]}, "job_id": {"type": "string"}},
                 "required": ["action"]
             }
         }
@@ -1475,6 +1681,42 @@ def call_llm(url, headers, body):
         return json.loads(resp.read().decode("utf-8"))
 
 def run_agent_task(task_id, session_id, initial_content, model, provider_config, instructions, depth=0):
+    """顶层任务先排队：同一 Bot 的并发数、全局并发数、同时运行的 Bot 数都来自资源设置；子代理在父任务的名额里运行。"""
+    if depth > 0:
+        return _run_agent_task_inner(task_id, session_id, initial_content, model, provider_config, instructions, depth)
+    lane = task_lane(session_id)
+    bot_id = session_persona_id(session_id)
+
+    def queued(pos):
+        log_event(task_id, "queued", {"position": pos, "message": f"排队中（第 {pos} 位）"})
+
+    slot = GATE.acquire(task_id, lane, bot_id, cancelled=lambda: is_task_cancelled(task_id), on_queued=queued)
+    if slot is None:
+        return None
+    timer = None
+    try:
+        if slot:
+            ACTIVE_SLOTS[session_id] = slot
+        limit = iso.bot_settings(resource_settings(), bot_id).get("task_timeout_min") or 0
+        if limit:
+            def expire():
+                log_event(task_id, "error", {"error": f"任务超过 {limit} 分钟上限，已停止"})
+                set_task_cancelled(task_id)
+            timer = threading.Timer(limit * 60, expire)
+            timer.daemon = True
+            timer.start()
+        return _run_agent_task_inner(task_id, session_id, initial_content, model, provider_config, instructions, depth)
+    finally:
+        if timer:
+            timer.cancel()
+        ACTIVE_SLOTS.pop(session_id, None)
+        if bot_id and slot:
+            key = f"{bot_id}:{slot}"
+            if DISPLAYS.info(key):
+                DISPLAYS.stop(key)
+        GATE.release(task_id)
+
+def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_config, instructions, depth=0):
     api_key = provider_config.get("api_key", "")
     chat_url = f"{provider_config.get('base_url', 'https://api.openai.com/v1').rstrip('/')}/chat/completions"
 
@@ -1613,6 +1855,7 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
                     elif fn_name == "browser_action": res = tool_browser_action(task_id, session_id, fn_args)
                     elif fn_name == "desktop_action": res = tool_desktop_action(task_id, session_id, fn_args)
                     elif fn_name == "request_user_takeover": res = tool_request_user_takeover(task_id, session_id, fn_args)
+                    elif fn_name == "background_jobs": res = tool_background_jobs(task_id, session_id, fn_args)
                     elif fn_name == "memory_write": res = tool_memory_write(task_id, session_id, fn_args)
                     elif fn_name == "memory_search": res = tool_memory_search(task_id, session_id, fn_args)
                     elif fn_name == "skill_load": res = tool_skill_load(task_id, session_id, fn_args)
@@ -2575,7 +2818,19 @@ class Handler(BaseHTTPRequestHandler):
                 running = conn.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('running', 'queued')").fetchone()[0]
             finally:
                 conn.close()
-            self._send(200, {"available": cloud_desktop.is_desktop_available(), "busy": running > 0, "running_tasks": running})
+            self._send(200, {"available": cloud_desktop.is_desktop_available(), "busy": running > 0, "running_tasks": running,
+                             "token_proxy": cloud_displays.token_proxy_enabled(), "displays": DISPLAYS.list()})
+            return
+
+        if path == "/v1/resources":
+            specs = iso.server_specs(GLOBAL_WORKSPACE)
+            self._send(200, {"settings": resource_settings(), "defaults": iso.DEFAULTS, "specs": specs,
+                             "recommended": iso.recommend(specs), "usage": resource_usage(),
+                             "per_bot_display": cloud_displays.DisplayManager.available()})
+            return
+
+        if path == "/v1/queue":
+            self._send(200, GATE.status())
             return
 
         if path.startswith("/v1/bots/") and path.endswith("/export"):
@@ -2920,6 +3175,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"bot_id": bid, "notify": req_json["enabled"]})
             return
 
+        if path == "/v1/resources":
+            try:
+                new = update_resource_settings(req_json)
+            except iso.SettingsError as e:
+                self._send(400, {"error": str(e)})
+                return
+            self._send(200, {"settings": new, "usage": resource_usage()})
+            return
+
         if path == "/v1/settings":
             tz = req_json.get("timezone")
             if tz is not None and (not isinstance(tz, str) or not re.match(r"^[A-Za-z0-9_+\-]+(/[A-Za-z0-9_+\-]+){0,2}$", tz)):
@@ -3255,6 +3519,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": str(e)})
             return
 
+        if path == "/v1/desktop/display":
+            # 手机「电脑」页：打开某个 Bot 的屏幕（独立模式按需启动），返回 noVNC token
+            bid = req_json.get("bot_id")
+            proxy = cloud_displays.token_proxy_enabled()
+            if bid:
+                if not isinstance(bid, str) or not get_persona(bid):
+                    self._send(404, {"error": "Bot not found"})
+                    return
+                if iso.bot_settings(resource_settings(), bid)["browser_profile"] == "per_bot":
+                    info = DISPLAYS.ensure(bid)
+                    if info:
+                        self._send(200, {"token_proxy": proxy, "token": info["token"], "display": info["display"],
+                                         "own_display": True, "resolution": info["resolution"]})
+                        return
+            self._send(200, {"token_proxy": proxy, "token": "main", "display": cloud_displays.MAIN_DISPLAY, "own_display": False})
+            return
+
         if path == "/v1/desktop/input":
             # 手机「电脑」页：把剪贴板文字或键盘输入发到云电脑桌面（与 Agent 共用 desktop_lock）
             action = req_json.get("action")
@@ -3276,7 +3557,12 @@ class Handler(BaseHTTPRequestHandler):
             if not cloud_desktop.is_desktop_available():
                 self._send(503, {"error": "云电脑桌面未运行：请先安装 / 更新云电脑桌面环境"})
                 return
-            res = cloud_desktop.execute_desktop_action("phone", GLOBAL_WORKSPACE, args)
+            display = None
+            bid = req_json.get("bot_id")
+            if isinstance(bid, str) and DISPLAYS.info(bid):
+                display = DISPLAYS.info(bid)["display"]
+                DISPLAYS.touch(bid)
+            res = cloud_desktop.execute_desktop_action("phone", GLOBAL_WORKSPACE, args, display_override=display)
             self._send(200 if not res.get("error") else 500, res)
             return
 
@@ -3535,6 +3821,13 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(200, {"task_id": existing_task[0], "session_id": sid, "status": existing_task[1], "idempotent_replayed": True})
                         return
 
+                try:
+                    GATE.check_capacity(task_lane(sid), session_persona_id(sid))
+                except iso.QueueFull as e:
+                    conn.rollback()
+                    conn.close()
+                    self._send(429, {"error": str(e)})
+                    return
                 c.execute("SELECT task_id FROM tasks WHERE session_id = ? AND status IN ('running', 'waiting_user')", (sid,))
                 running = c.fetchone()
                 if running:
@@ -3686,6 +3979,14 @@ class Handler(BaseHTTPRequestHandler):
 
 CloudAgentHandler = Handler
 
+def warm_browser():
+    """资源设置开启预热时，启动后先把共享浏览器开好，第一次网页操作不用等冷启动。"""
+    if not resource_settings().get("browser_warm") or not cloud_browser.is_browser_available():
+        return
+    os.makedirs(SHARED_WORKSPACE, exist_ok=True)
+    res = cloud_browser.execute_browser_action("shared", SHARED_WORKSPACE, {"action": "__warm__"})
+    print(f"[startup] browser warm: {res}", flush=True)
+
 def run_server():
     global SERVER_TOKEN
     if not SERVER_TOKEN:
@@ -3694,7 +3995,7 @@ def run_server():
 
     def start_background():
         # 后台服务（定时任务、Telegram 长轮询）放在独立线程启动：任何一项出错或网络不通都不影响 /health 与 API 立即可用
-        for name, fn in (("scheduler", start_scheduler), ("telegram", start_telegram)):
+        for name, fn in (("scheduler", start_scheduler), ("telegram", start_telegram), ("browser-warm", warm_browser)):
             try:
                 fn()
             except Exception as e:
