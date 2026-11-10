@@ -67,7 +67,7 @@ jobs:
         run: |
           set -o pipefail
           python3 scripts/check_cloud_no_intents_refs.py
-          xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift src/ios/WatchShared/*.swift src/ios/Agent/Intents/CloudIntents.swift src/ios/AgentWidget/CloudBotsWidget.swift 2>&1 | tee cloud-typecheck.log
+          xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift src/ios/WatchShared/*.swift src/ios/Agent/Intents/CloudIntents.swift src/ios/AgentWidget/CloudBotsWidget.swift src/ios/AgentWidget/CloudVoiceControl.swift 2>&1 | tee cloud-typecheck.log
       - name: 纯逻辑 Swift 单测在 macOS 上也能编译（CoreGraphics 差异只在 Mac 上暴露）
         run: |
           set -e

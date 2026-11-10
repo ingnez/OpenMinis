@@ -69,10 +69,15 @@ enum CloudBotEntry {
             ?? bots.first(where: { $0.name.lowercased().contains(k) || k.contains($0.name.lowercased()) })?.id
     }
 
-    /// 深链：minis://bot/<id 或名字>?text=…&send=1
+    /// 深链：minis://bot/<id 或名字>?text=…&send=1；?voice=1 直接开语音
     static func handle(url: URL) {
         let key = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).removingPercentEncoding
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        // minis://bot/<id>?voice=1：控制中心按钮 / 快捷指令直接开语音（没给 Bot 就用主 Bot）
+        if items.first(where: { $0.name == "voice" })?.value == "1" {
+            openVoice(bot: (key ?? "").isEmpty ? nil : key)
+            return
+        }
         open(bot: key, text: items.first(where: { $0.name == "text" })?.value,
              send: items.first(where: { $0.name == "send" })?.value == "1")
     }

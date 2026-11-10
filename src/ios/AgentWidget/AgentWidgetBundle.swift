@@ -9,5 +9,8 @@ struct AgentWidgetBundle: WidgetBundle {
         if #available(iOSApplicationExtension 16.2, *) {
             AgentLiveActivityWidget()
         }
+        if #available(iOSApplicationExtension 18.0, *) {
+            CloudVoiceControl()
+        }
     }
 }

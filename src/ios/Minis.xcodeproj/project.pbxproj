@@ -301,6 +301,7 @@
 		E5H000001 /* AgentWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5H000011 /* AgentWidgetBundle.swift */; };
 		E5H000002 /* AgentLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5H000012 /* AgentLiveActivityWidget.swift */; };
 		E5H000004 /* CloudBotsWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5H000015 /* CloudBotsWidget.swift */; };
+		E5H00000V /* CloudVoiceControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5H00001V /* CloudVoiceControl.swift */; };
 		E5H000003 /* AgentActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5G000014 /* AgentActivityAttributes.swift */; };
 		E5H000009 /* AgentWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E5H000010 /* AgentWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		E5HBV0001 /* HelperBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5HBV0011 /* HelperBlockView.swift */; };
@@ -1089,6 +1090,7 @@
 		E5H000012 /* AgentLiveActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentLiveActivityWidget.swift; sourceTree = "<group>"; };
 		E5H000013 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		E5H000015 /* CloudBotsWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudBotsWidget.swift; sourceTree = "<group>"; };
+		E5H00001V /* CloudVoiceControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudVoiceControl.swift; sourceTree = "<group>"; };
 		E5H000014 /* AgentWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AgentWidget.entitlements; sourceTree = "<group>"; };
 		E5HBV0011 /* HelperBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperBlockView.swift; sourceTree = "<group>"; };
 		E5I000011 /* SpeechRecognitionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecognitionManager.swift; sourceTree = "<group>"; };
@@ -2150,6 +2152,7 @@
 				E5H000011 /* AgentWidgetBundle.swift */,
 				E5H000012 /* AgentLiveActivityWidget.swift */,
 				E5H000015 /* CloudBotsWidget.swift */,
+				E5H00001V /* CloudVoiceControl.swift */,
 				E5H000013 /* Info.plist */,
 				E5H000014 /* AgentWidget.entitlements */,
 			);
@@ -3735,6 +3738,7 @@
 				E5H000001 /* AgentWidgetBundle.swift in Sources */,
 				E5H000002 /* AgentLiveActivityWidget.swift in Sources */,
 				E5H000004 /* CloudBotsWidget.swift in Sources */,
+				E5H00000V /* CloudVoiceControl.swift in Sources */,
 				E5H000003 /* AgentActivityAttributes.swift in Sources */,
 				E5AT00003 /* AudioTogglePlaybackIntent.swift in Sources */,
 			);
