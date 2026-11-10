@@ -57,6 +57,11 @@ enum CloudRoutineService {
         _ = try await CloudConnection.shared.request(method: "PUT", path: "/v1/routines/\(routineId)", body: ["enabled": enabled])
     }
 
+    /// 工作流画布连线 / 断开：只改 schedule
+    static func setSchedule(routineId: String, _ schedule: [String: Any]) async throws {
+        _ = try await CloudConnection.shared.request(method: "PUT", path: "/v1/routines/\(routineId)", body: ["schedule": schedule])
+    }
+
     static func runNow(routineId: String) async throws -> [String: Any] {
         try await CloudConnection.shared.request(method: "POST", path: "/v1/routines/\(routineId)/run", body: [:])
     }
@@ -164,6 +169,9 @@ struct CloudRoutinesView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { showingNew = true } label: { Image(systemName: "plus") }
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                NavigationLink { CloudWorkflowCanvasView() } label: { Label("工作流画布", systemImage: "point.3.connected.trianglepath.dotted") }
             }
         }
         .sheet(isPresented: $showingNew) {

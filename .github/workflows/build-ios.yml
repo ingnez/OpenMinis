@@ -179,6 +179,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudGroupVoiceRules.swift scripts/CloudGroupVoiceTests.swift -o /tmp/cloud-group-voice-tests
           /tmp/cloud-group-voice-tests
+      - name: 工作流画布逻辑测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWorkflowGraph.swift scripts/CloudWorkflowGraphTests.swift -o /tmp/cloud-workflow-graph-tests
+          /tmp/cloud-workflow-graph-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -326,6 +331,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWorkflowGraph.swift scripts/CloudWorkflowGraphTests.swift -o /tmp/cloud-workflow-graph-tests
+          /tmp/cloud-workflow-graph-tests | tee cloud-workflow-graph-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudGroupVoiceRules.swift scripts/CloudGroupVoiceTests.swift -o /tmp/cloud-group-voice-tests
           /tmp/cloud-group-voice-tests | tee cloud-group-voice-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudHistoryPager.swift scripts/CloudHistoryPagerTests.swift -o /tmp/cloud-history-pager-tests
