@@ -25,6 +25,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Swift 文件都在 Xcode 工程里
+        run: python3 scripts/check_xcode_membership.py
       - name: iOS 16 API 兼容预检
         run: |
           if grep -rnE --include='*.swift' 'onChange\(of:[^)]*\) \{ *[_a-zA-Z]+ *, ' src/ios | grep -v '/MinisTests/'; then
