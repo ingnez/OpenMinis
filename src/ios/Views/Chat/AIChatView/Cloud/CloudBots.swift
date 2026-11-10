@@ -36,6 +36,11 @@ struct CloudBot: Identifiable, Hashable {
     var waitingApprovals: Int
     /// 首页状态用（服务器 2.15.0+）：未读条数、待回答的选项卡片、最近一次结束的任务状态、运行中的例行任务
     var unreadCount = 0
+    /// 最近的动静是和别的 Bot 说话时（服务器 2.16.0+）：「➤ 已发消息给 X：…」/「← 来自 X：…」
+    var threadPreview: String?
+    var threadAt: Double = 0
+    var threadOutgoing = false
+    var threadPriority = false
     var pendingCards = 0
     var lastTaskStatus: String?
     var routineRunning = 0
@@ -107,6 +112,12 @@ struct CloudBot: Identifiable, Hashable {
         runningWorkers = d["running_workers"] as? Int ?? 0
         waitingApprovals = d["waiting_approvals"] as? Int ?? 0
         unreadCount = d["unread_count"] as? Int ?? 0
+        if let tp = d["thread_preview"] as? [String: Any] {
+            threadPreview = tp["text"] as? String
+            threadAt = (tp["at"] as? NSNumber)?.doubleValue ?? 0
+            threadOutgoing = tp["outgoing"] as? Bool ?? false
+            threadPriority = (tp["priority"] as? String) == "high"
+        }
         pendingCards = d["pending_cards"] as? Int ?? 0
         lastTaskStatus = d["last_task_status"] as? String
         routineRunning = d["routine_running"] as? Int ?? 0

@@ -605,6 +605,8 @@ struct CloudSessionView: View {
     @State private var replyTarget: CloudReplyTarget?
     /// 用户刚点的表情回应（服务器确认前先显示）；值为 nil 表示刚取消
     @State private var localReactions: [Int: String?] = [:]
+    /// 这次对话里发给其他 Bot 的消息：折叠成「N 条消息，与 X」，点开只读线程
+    @State private var threadRows: [CloudBotThreadCollapsed] = []
     @State private var pendingExtras: [String: Any] = [:]
     @State private var activeTaskId: String? = nil
     @State private var activeTaskStatus: String = "idle"
@@ -696,6 +698,7 @@ struct CloudSessionView: View {
                         let shownItems = CloudTaskFailure.display(messages)
                         if let theme {
                             Color.clear.frame(height: 1).id("chat-top")
+                            ForEach(threadRows.filter { threadAnchor($0) == -1 }) { CloudBotThreadCollapsedRow(item: $0) }
                             ForEach(Array(turns.enumerated()), id: \.offset) { idx, turn in
                                 let msg = turn.message
                                 if msg.role == .user {
@@ -712,6 +715,7 @@ struct CloudSessionView: View {
                                                          extras: extras, selfId: theme.botId,
                                                          onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 })
                                 }
+                                ForEach(threadRows.filter { threadAnchor($0) == idx }) { CloudBotThreadCollapsedRow(item: $0) }
                             }
                         }
                         ForEach(Array((theme == nil ? shownItems : []).enumerated()), id: \.offset) { _, item in
@@ -1043,6 +1047,7 @@ struct CloudSessionView: View {
                         self.ledger.reset()
                         self.rebuildTurns()
                     }
+                    if self.theme != nil { self.loadThreadRows() }
                 }
             } catch {
                 await MainActor.run {
@@ -1447,6 +1452,19 @@ struct CloudSessionView: View {
             }
             loadSessionDetail()
         }
+    }
+
+    private func loadThreadRows() {
+        let sid = sessionId
+        Task {
+            if let rows = try? await CloudBotThreadService.collapsed(sessionId: sid) { threadRows = rows }
+        }
+    }
+
+    private func threadAnchor(_ row: CloudBotThreadCollapsed) -> Int {
+        CloudBotThreadRules.anchor(firstAt: row.firstAt, turnTimes: turns.map { t in
+            (t.raw["timestamp"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
+        })
     }
 
     private func reactionExtras(_ e: CloudMessageExtras) -> CloudMessageExtras {

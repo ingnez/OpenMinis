@@ -124,6 +124,7 @@ struct CloudDelegationCard: View {
     let mark: CloudDelegationMark
     let accent: Color
     @ObservedObject private var home = CloudBotHomeModel.shared
+    @Environment(\.cloudChatBotId) private var selfId
     @State private var expanded = false
 
     var body: some View {
@@ -152,6 +153,16 @@ struct CloudDelegationCard: View {
                         .font(.caption).foregroundStyle(accent)
                 }
                 Spacer()
+                if let other, !selfId.isEmpty {
+                    // 两个 Bot 之间来回的消息（只读线程）
+                    NavigationLink {
+                        CloudBotThreadView(a: selfId, b: other.id)
+                    } label: {
+                        Label("对话", systemImage: "bubble.left.and.bubble.right").font(.caption.weight(.medium))
+                    }
+                    .foregroundStyle(accent)
+                    .accessibilityLabel("查看和 \(other.name) 之间的对话")
+                }
                 if let other {
                     // 点一下进入被委托 Bot 的对话（同一个导航栈，返回回到这里）
                     NavigationLink(value: other.id) {

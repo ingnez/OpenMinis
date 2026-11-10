@@ -138,10 +138,12 @@ def session_summary(conn, session_id, task_ids=None):
     rows = conn.execute("SELECT d.delegation_id, d.from_bot, d.to_bot FROM bot_delegations d WHERE d.from_session = ?", (session_id,)).fetchall()
     peers = {}
     for did, fb, tb in rows:
-        p = peers.setdefault(norm(tb), {"peer": norm(tb), "me": norm(fb), "count": 0, "delegations": [], "last_at": 0})
-        n, last = conn.execute("SELECT COUNT(*), MAX(ts) FROM bot_thread_messages WHERE delegation_id = ?", (did,)).fetchone()
+        p = peers.setdefault(norm(tb), {"peer": norm(tb), "me": norm(fb), "count": 0, "delegations": [], "last_at": 0, "first_at": None})
+        n, first, last = conn.execute("SELECT COUNT(*), MIN(ts), MAX(ts) FROM bot_thread_messages WHERE delegation_id = ?", (did,)).fetchone()
         p["count"] += n or 0
         p["last_at"] = max(p["last_at"], last or 0)
+        if first is not None:
+            p["first_at"] = first if p["first_at"] is None else min(p["first_at"], first)
         p["delegations"].append(did)
     return sorted(peers.values(), key=lambda x: -x["last_at"])
 

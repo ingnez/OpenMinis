@@ -394,7 +394,7 @@ struct CloudBotHomeRow: View {
                     Text(bot.name).font(.system(size: 17, weight: .semibold)).lineLimit(1)
                     CloudPresenceFlags(presence: presence)
                     Spacer(minLength: 8)
-                    Text(CloudBotHome.timeText(bot.lastAt)).font(.footnote).foregroundStyle(.tertiary)
+                    Text(CloudBotHome.timeText(max(bot.lastAt, showsThread ? bot.threadAt : 0))).font(.footnote).foregroundStyle(.tertiary)
                 }
                 HStack(spacing: 8) {
                     if status.busy { CloudBotStatusChip(status: status) }
@@ -402,6 +402,12 @@ struct CloudBotHomeRow: View {
                         Label("\(bot.runningWorkers)", systemImage: "gearshape.2.fill")
                             .font(.caption2.weight(.semibold)).foregroundStyle(.green)
                             .accessibilityLabel("\(bot.runningWorkers) 个后台任务进行中")
+                    }
+                    if showsThread {
+                        // 和别的 Bot 说话：纸飞机 = 它发出的，箭头 = 收到的
+                        Image(systemName: bot.threadOutgoing ? "paperplane.fill" : "arrow.down.left")
+                            .font(.caption).foregroundStyle(bot.threadPriority ? Color.red : Color.secondary)
+                            .accessibilityHidden(true)
                     }
                     Text(previewText).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     Spacer(minLength: 0)
@@ -413,8 +419,20 @@ struct CloudBotHomeRow: View {
         .contentShape(Rectangle())
     }
 
+    private var threadChoice: (text: String, isThread: Bool) {
+        CloudBotThreadRules.homePreview(chat: bot.lastPreview, chatAt: bot.lastAt > 0 ? Date(timeIntervalSince1970: bot.lastAt) : nil,
+                                        thread: bot.threadPreview, threadAt: bot.threadAt > 0 ? Date(timeIntervalSince1970: bot.threadAt) : nil)
+    }
+
+    private var showsThread: Bool { !CloudBotLock.shared.isLocked(bot.id) && threadChoice.isThread }
+
     private var previewText: String {
         if CloudBotLock.shared.isLocked(bot.id) { return "已上锁" }
+        if showsThread {
+            // 去掉文字里的「➤」「←」，用前面的图标表示方向
+            let t = threadChoice.text
+            return t.hasPrefix("➤ ") || t.hasPrefix("← ") ? String(t.dropFirst(2)) : t
+        }
         if bot.waitingApprovals > 0 && bot.lastPreview.isEmpty { return "等你处理" }
         if bot.runningTasks > 0 && bot.lastPreview.isEmpty { return "正在处理…" }
         if bot.runningWorkers > 0 && bot.lastPreview.isEmpty { return "后台任务进行中…" }
@@ -570,6 +588,8 @@ struct CloudBotHomeScreen: View {
             .navigationDestination(for: String.self) { id in
                 if id.hasPrefix("group:") {
                     CloudGroupChatView(groupId: String(id.dropFirst(6)))
+                } else if let pair = CloudBotThreadRules.parseRoute(id) {
+                    CloudBotThreadView(a: pair.0, b: pair.1)
                 } else if id == "hidden" {
                     CloudHiddenBotsPage(model: model)
                 } else if id.hasPrefix("detail:"), let bot = model.bot(String(id.dropFirst(7))) {
@@ -789,6 +809,7 @@ struct CloudBotChatView: View {
                                  mentionBots: model.bots.filter { $0.id != botId },
                                  theme: CloudBotChatTheme(bot: bot))
                     .id(sid + "|" + backdropRaw)
+                    .environment(\.cloudChatBotId, botId)
                     .environment(\.colorScheme, CloudChatBackdrop(rawValue: backdropRaw)?.colorScheme ?? systemScheme)
                     .safeAreaInset(edge: .top) {
                         if incognito?.id == sid {

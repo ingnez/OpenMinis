@@ -115,6 +115,11 @@ struct CloudSearchHit: Identifiable {
                                   title: (d["group_name"] as? String ?? "群聊") + " · " + (d["bot_name"] as? String ?? ""),
                                   snippet: d["snippet"] as? String ?? "", role: "", timestamp: ts)
         }
+        if kind == "bot_thread", let bots = d["bots"] as? [String], bots.count == 2 {
+            // Bot 之间的对话：点开只读线程
+            return CloudSearchHit(id: "t\(index)", kind: kind, target: CloudBotThreadRules.route(bots[0], bots[1]),
+                                  title: d["title"] as? String ?? "Bot 之间的对话", snippet: d["snippet"] as? String ?? "", role: "", timestamp: ts)
+        }
         let bot = d["bot_id"] as? String ?? ""
         guard !bot.isEmpty else { return nil }
         return CloudSearchHit(id: "b\(index)", kind: kind, target: bot, title: d["bot_name"] as? String ?? "Bot",
@@ -145,6 +150,7 @@ final class CloudSearchModel: ObservableObject {
                 // 上锁 Bot 的对话不出现在搜索结果里（包括它在群聊里说的话）
                 self.hits = items.enumerated().compactMap { pair -> CloudSearchHit? in
                     if let bid = pair.element["bot_id"] as? String, CloudBotLock.isLockedStored(bid) { return nil }
+                    if let bots = pair.element["bots"] as? [String], bots.contains(where: { CloudBotLock.isLockedStored($0) }) { return nil }
                     return CloudSearchHit.parse(pair.element, index: pair.offset)
                 }
                 self.errorText = nil
@@ -179,7 +185,7 @@ struct CloudSearchResultsSection: View {
                     onOpen(hit.target)
                 } label: {
                     HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: hit.kind == "group" ? "person.3.fill" : (hit.role == "user" ? "person.fill" : "bubble.left.fill"))
+                        Image(systemName: hit.kind == "group" ? "person.3.fill" : hit.kind == "bot_thread" ? "arrow.left.arrow.right" : (hit.role == "user" ? "person.fill" : "bubble.left.fill"))
                             .font(.system(size: 13)).foregroundStyle(.secondary).frame(width: 22, height: 22)
                         VStack(alignment: .leading, spacing: 3) {
                             HStack {

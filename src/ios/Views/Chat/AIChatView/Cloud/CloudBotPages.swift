@@ -389,6 +389,8 @@ struct CloudBotDetailView: View {
                 }
             }
 
+            CloudBotThreadsSection(botId: bot.id)
+
             Section("配置 Bot") {
                 NavigationLink {
                     List {
