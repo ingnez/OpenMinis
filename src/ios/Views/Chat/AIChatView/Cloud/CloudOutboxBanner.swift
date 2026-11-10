@@ -21,3 +21,21 @@ struct CloudOutboxBanner: View {
         }
     }
 }
+
+/// 发送前的隐私提醒对话框
+struct CloudPrivacyDialog: ViewModifier {
+    @Binding var hits: [CloudPrivacyScan.Hit]
+    let onRedact: () -> Void
+    let onSend: () -> Void
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog("发现可能的病人身份信息", isPresented: Binding(get: { !hits.isEmpty }, set: { if !$0 { hits = [] } }),
+                                   titleVisibility: .visible) {
+            Button("隐去后发送", action: onRedact)
+            Button("照原样发送", action: onSend)
+            Button("取消", role: .cancel) { hits = [] }
+        } message: {
+            Text(CloudPrivacyScan.summary(hits) + "。只在手机上检查，不会上传。")
+        }
+    }
+}

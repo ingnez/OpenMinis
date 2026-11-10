@@ -805,14 +805,7 @@ struct CloudSessionView: View {
         .animation(.spring(response: 0.45, dampingFraction: 0.78), value: call.active)
         .overlay(alignment: .bottom) { CloudFollowUpToast(text: $followUpNotice) }
         .overlay(alignment: .top) { CloudOutboxBanner(count: outboxCount, onDiscard: discardOutbox) }
-        .confirmationDialog("发现可能的病人身份信息", isPresented: Binding(get: { !privacyHits.isEmpty }, set: { if !$0 { privacyHits = [] } }),
-                            titleVisibility: .visible) {
-            Button("隐去后发送") { inputPrompt = CloudPrivacyScan.redact(inputPrompt); privacyHits = []; privacyConfirmed = true; sendTask() }
-            Button("照原样发送") { privacyHits = []; privacyConfirmed = true; sendTask() }
-            Button("取消", role: .cancel) { privacyHits = [] }
-        } message: {
-            Text(CloudPrivacyScan.summary(privacyHits) + "。只在手机上检查，不会上传。")
-        }
+        .modifier(CloudPrivacyDialog(hits: $privacyHits, onRedact: sendRedacted, onSend: sendAnyway))
         .onAppear { refreshOutboxCount(); if outboxCount > 0 { flushOutbox() } }
         .onDisappear { outboxTask?.cancel() }
         .onAppear { callDividers = CloudCallDivider.load(sessionId) }
@@ -1653,6 +1646,17 @@ struct CloudSessionView: View {
     private func sendFinished() {
         guard activeTaskStatus != "running", !isSubmitting else { return }
         inputPrompt = "我完成了：已在云电脑上完成手动操作（登录 / 验证码等），请截图确认后继续。"
+        sendTask()
+    }
+
+    private func sendRedacted() {
+        inputPrompt = CloudPrivacyScan.redact(inputPrompt)
+        sendAnyway()
+    }
+
+    private func sendAnyway() {
+        privacyHits = []
+        privacyConfirmed = true
         sendTask()
     }
 
