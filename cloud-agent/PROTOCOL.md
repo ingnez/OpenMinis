@@ -310,3 +310,11 @@
 - **GET /v1/skills**: `{"skills": [{"name", "description", "size", "source", "updated_at"}]}`（不含全文）；**GET /v1/skills/{name}**（名称 URL 编码）返回全文；**DELETE /v1/skills/{name}**。
 - **兼容**: `POST /v1/sessions/import` 中 `skills/<名称>/SKILL.md` 仍写入会话工作区，同时更新技能库（响应 `skills_indexed`）。
 - **iOS**: 开启“同步技能”时先 `GET /v1/skills` 比对，本地内容哈希未变且服务端名称一致则跳过上传，否则 `POST /v1/skills/sync`（`prune: true`）；成功后会话导入不再携带技能文件。旧版服务端（无此接口）回退为随会话上传说明文件。
+
+### 4.6 完成推送 (Notify)
+- **作用**: VPS 在以下事件直接推送到用户配置的 Bark 或 ntfy，手机离线也能收到：`task_completed`（对话任务完成 / 失败 / 达到轮数上限；用户主动取消不推送）、`approval_required`（§4.2 审批挂起）、`routine_finished`（§4.3 例行任务结束，跳过的运行不推送；例行任务 `notify: false` 可单独关闭）。`capabilities.notify = true`。
+- **配置**: `PUT /v1/notify` `{"config": {"provider": "bark" | "ntfy", "url", "token"?, "group"?, "events"?: {"task_completed", "approval_required", "routine_finished"}}}`（`config` 外层可省略）。`url` 必须是 http(s)、不含用户名密码，且包含 Bark 设备 Key（`https://api.day.app/<key>`，自建服务同理）或 ntfy 主题（`https://ntfy.sh/<topic>`）。`events` 未给出的项默认开启。整份配置以 AES-256-GCM 加密保存（AAD `setting:notify`），加密存储不可用时 `503`。
+- **GET /v1/notify**: `{"available", "reason", "configured", "config": {"provider", "url": "https://host/…末4位", "events", "has_token", "group"}, "last": {"at", "ok", "error", "event"}}`，不返回设备 Key 或令牌。**DELETE /v1/notify** 删除配置。
+- **POST /v1/notify/test**: 同步发送一条测试推送，成功 `200 {"ok": true}`，失败 `502 {"ok": false, "error": "HTTP 4xx | 异常类型"}`，未配置 `404`。
+- **发送格式**: Bark 为 `POST <url>` JSON `{"title", "body", "group"}`；ntfy 为 `POST <服务器根>/` JSON 发布 `{"topic", "title", "message", "tags"}`（标题可含中文），有令牌时带 `Authorization: Bearer`。超时 10 秒，禁止重定向，后台线程发送，失败只记录在 `last`。
+- **iOS**: 云电脑设置 → “完成推送”分区配置服务、地址、令牌与事件开关，可发送测试或关闭。

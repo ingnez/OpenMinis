@@ -17,6 +17,7 @@ OpenMinis Cloud Computer & Agent Service (cloud_agent_server.py) v2.0
 - Routines: cron / interval / once saved prompts run by a scheduler thread with stored encrypted credentials
 - Structured memory: memory_write / memory_search over SQLite FTS5 (trigram), shared Markdown format with the phone
 - Skills lazy-load: only a name + description index goes into the prompt; skill_load reads the full SKILL.md
+- Push: Bark / ntfy notifications on task completion, approvals and routine runs (config stored encrypted)
 """
 
 import os
@@ -48,6 +49,7 @@ import cloud_policy
 import cloud_cron
 import cloud_memory
 import cloud_skills
+import cloud_notify
 
 HOST = os.environ.get("OPENMINIS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
@@ -233,6 +235,7 @@ def init_db():
     conn.commit()
     cloud_memory.ensure_schema(conn)
     cloud_skills.ensure_schema(conn)
+    cloud_notify.ensure_schema(conn)
 
     # Server restart: mark interrupted
     cursor.execute("UPDATE tasks SET status = 'interrupted' WHERE status IN ('running', 'queued', 'waiting_user')")
@@ -415,9 +418,51 @@ def current_approval_policy():
 pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
+def current_notify_config():
+    """解密推送配置；未配置或加密存储不可用时返回 None。"""
+    conn = get_db_connection()
+    try:
+        return cloud_notify.load(conn)
+    except Exception as e:
+        print(f"notify config unavailable: {type(e).__name__}")
+        return None
+    finally:
+        conn.close()
+
+def _session_title(session_id):
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT title FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+        return (row[0] if row else None) or "云端会话"
+    finally:
+        conn.close()
+
 def on_approval_required(task_id, session_id, approval):
-    """审批挂起时的扩展钩子（推送通知等），异常不影响任务。"""
-    return None
+    """审批挂起时推送提醒，异常不影响任务。"""
+    cfg = current_notify_config()
+    if not cfg:
+        return None
+    args = json.dumps(approval.get("arguments"), ensure_ascii=False)
+    body = f"{approval.get('reason', '')}\n工具：{approval.get('tool')}  {args[:300]}\n会话：{_session_title(session_id)}"
+    cloud_notify.notify_async(cfg, "approval_required", "云电脑等待你的审批", body)
+
+def on_task_finished(task_id, session_id, final_status):
+    """对话任务结束时推送（例行任务由 on_routine_finished 推送；用户主动取消不推送）。"""
+    if final_status not in ("completed", "failed", "limit_reached"):
+        return None
+    conn = get_db_connection()
+    try:
+        if conn.execute("SELECT 1 FROM routine_runs WHERE task_id = ?", (task_id,)).fetchone():
+            return None
+        row = conn.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
+    finally:
+        conn.close()
+    cfg = current_notify_config()
+    if not cfg:
+        return None
+    label = {"completed": "已完成", "failed": "失败", "limit_reached": "达到轮数上限"}[final_status]
+    body = ((row[0] if row else "") or "").strip()[:600] or "（无文字回复）"
+    cloud_notify.notify_async(cfg, "task_completed", f"云电脑任务{label}：{_session_title(session_id)}"[:120], body)
 
 def request_approval(task_id, session_id, tool_call_id, tool_name, args, rule, timeout_seconds):
     """挂起任务直到用户批准、拒绝、超时或取消。返回 approved / denied / expired / cancelled。"""
@@ -1030,6 +1075,10 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
         conn.close()
         with active_tasks_lock:
             active_tasks.pop(task_id, None)
+        try:
+            on_task_finished(task_id, session_id, final_status)
+        except Exception as e:
+            print(f"task notify failed: {type(e).__name__}")
 
 # ======================= 云端例行任务 (Routines) =======================
 ROUTINE_ID_RE = re.compile(r'^rtn_[a-f0-9]{12}$')
@@ -1224,8 +1273,16 @@ def _finish_routine_run(run_id, routine_id, status, result=None, error=None):
         conn.close()
 
 def on_routine_finished(routine, run):
-    """例行任务结束的扩展钩子（推送通知等），异常不影响调度。"""
-    return None
+    """例行任务结束时推送，异常不影响调度。"""
+    if not routine.get("notify", True) or run.get("status") == "skipped":
+        return None
+    cfg = current_notify_config()
+    if not cfg:
+        return None
+    label = {"completed": "完成", "failed": "失败", "limit_reached": "达到轮数上限", "cancelled": "已取消",
+             "interrupted": "中断"}.get(run.get("status"), run.get("status"))
+    body = (run.get("result") or run.get("error") or "（无文字结果）").strip()[:600]
+    cloud_notify.notify_async(cfg, "routine_finished", f"例行任务「{routine['name']}」{label}"[:120], body)
 
 def launch_routine_run(routine, trigger="schedule"):
     """启动一次例行任务。返回 run dict（含 run_id / task_id / status）。"""
@@ -1393,7 +1450,8 @@ class Handler(BaseHTTPRequestHandler):
                     "approvals": True,
                     "routines": True,
                     "memory_search": True,
-                    "skills_lazy_load": True
+                    "skills_lazy_load": True,
+                    "notify": True
                 },
                 "timestamp": time.time()
             })
@@ -1439,6 +1497,20 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer ") or auth[7:].strip() != SERVER_TOKEN:
             self._send(401, {"error": "Unauthorized"})
+            return
+
+        if path == "/v1/notify":
+            available, reason = cloud_secrets.status()
+            conn = get_db_connection()
+            try:
+                cfg = cloud_notify.load(conn) if available else None
+                err = None
+            except Exception as e:
+                cfg, err = None, type(e).__name__
+            finally:
+                conn.close()
+            self._send(200, {"available": available, "reason": reason or err, "configured": cfg is not None,
+                             "config": cloud_notify.masked(cfg), "last": cloud_notify.last_status()})
             return
 
         if path == "/v1/skills":
@@ -1708,6 +1780,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send(201 if created else 200, {"name": name, "base_url": base_url, "key_hint": credential_hint(api_key.strip()), "stored": True})
             return
 
+        if path == "/v1/notify":
+            conn = get_db_connection()
+            try:
+                cfg = cloud_notify.save(conn, req_json.get("config", req_json))
+            except cloud_notify.NotifyConfigError as e:
+                self._send(400, {"error": str(e)})
+                return
+            except cloud_secrets.SecretStoreUnavailable as e:
+                self._send(503, {"error": f"Encrypted store unavailable: {e}"})
+                return
+            finally:
+                conn.close()
+            self._send(200, {"configured": True, "config": cloud_notify.masked(cfg)})
+            return
+
         if path.startswith("/v1/routines/"):
             rid = path[len("/v1/routines/"):]
             if not ROUTINE_ID_RE.match(rid) or not get_routine(rid):
@@ -1746,6 +1833,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"name": name, "deleted": True})
             else:
                 self._send(404, {"error": "Credential not found"})
+            return
+
+        if path == "/v1/notify":
+            conn = get_db_connection()
+            try:
+                existed = cloud_notify.delete(conn)
+            finally:
+                conn.close()
+            self._send(200, {"configured": False, "deleted": existed})
             return
 
         if path.startswith("/v1/skills/"):
@@ -2046,6 +2142,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 # BrokenPipeError / Client disconnected immediately after sending - task is already running!
                 pass
+            return
+
+        if path == "/v1/notify/test":
+            cfg = current_notify_config()
+            if not cfg:
+                self._send(404, {"error": "Notification not configured"})
+                return
+            ok, err = cloud_notify.send_now(cfg, "OpenMinis 云电脑", "推送测试：收到这条说明配置正确。", event="test")
+            self._send(200 if ok else 502, {"ok": ok, "error": err})
             return
 
         if path == "/v1/skills/sync":

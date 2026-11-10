@@ -141,6 +141,7 @@ struct CloudAgentSettingsView: View {
 
             if connection.isConnected {
                 CloudCredentialSection(selectedInstanceId: selectedProviderInstanceId)
+                CloudNotifySection()
             }
 
             Section {
