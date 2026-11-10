@@ -12,6 +12,7 @@ INSTALL_DIR="/opt/openminis-cloud-agent"
 VAR_LIB_DIR="/var/lib/openminis-cloud-agent"
 CONFIG_DIR="/etc/openminis"
 TOKEN_FILE="$CONFIG_DIR/token"
+MASTER_KEY_FILE="$CONFIG_DIR/master.key"
 VENV_DIR="$INSTALL_DIR/venv"
 PW_BROWSERS="$VAR_LIB_DIR/ms-playwright"
 
@@ -77,6 +78,8 @@ fi
 
 "$VENV_DIR/bin/pip" install --upgrade pip
 "$VENV_DIR/bin/pip" install playwright==1.49.0
+# 凭据加密 (AES-256-GCM)；服务以 venv 解释器运行，系统包对其不可见
+"$VENV_DIR/bin/pip" install "cryptography>=41,<46"
 
 echo "[+] 正在通过 playwright install --with-deps chromium 安装浏览器及依赖..."
 env HOME="$VAR_LIB_DIR" PLAYWRIGHT_BROWSERS_PATH="$PW_BROWSERS" "$VENV_DIR/bin/python3" -m playwright install --with-deps chromium
@@ -194,6 +197,7 @@ Environment=OPENMINIS_PORT=18765
 Environment=OPENMINIS_DB=$VAR_LIB_DIR/data/openminis_agent.db
 Environment=OPENMINIS_WORKSPACE=$VAR_LIB_DIR/workspace
 Environment=OPENMINIS_TOKEN_FILE=$TOKEN_FILE
+Environment=OPENMINIS_MASTER_KEY_FILE=$MASTER_KEY_FILE
 
 NoNewPrivileges=true
 ProtectSystem=full

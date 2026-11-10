@@ -139,6 +139,10 @@ struct CloudAgentSettingsView: View {
                 Text("自动从所选服务商获取在线模型；目录列出不代表已验证工具调用能力。模型分别按服务商记住。所选服务商密钥通过 SSH 传入 VPS 内存供任务调用。")
             }
 
+            if connection.isConnected {
+                CloudCredentialSection(selectedInstanceId: selectedProviderInstanceId)
+            }
+
             Section {
                 Toggle("同步灵魂与人设配置", isOn: $includeSoul)
                 Toggle("同步技能说明 (仅 SKILL.md)", isOn: $includeSkills)

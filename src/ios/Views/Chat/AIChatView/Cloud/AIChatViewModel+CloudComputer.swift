@@ -117,6 +117,9 @@ extension AIChatViewModel {
 
         let cloudHistory = CloudChatBridge.shared.convertHistoryForCloud(effectiveHistory)
 
+        // 已开启“VPS 加密保存”时刷新服务端副本（Key 轮换后例行任务仍可用）；失败不阻断本次对话。
+        await CloudCredentialSync.refreshIfEnabled(instanceId: instance.id)
+
         // 4. Submit task to VPS Cloud Bridge
         let taskId = try await CloudChatBridge.shared.importAndExecute(
             localSessionId: sid,

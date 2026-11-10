@@ -249,3 +249,17 @@
 - **行为规范**:
   - 截图保存在 session attachments 目录。
   - 仅允许在当前用户 session 下的 display 执行，不依赖外部手机连接。
+
+---
+
+## 4. 扩展接口（Grok Bot 对齐 Phase 1）
+
+以下接口均需 `Authorization: Bearer <TOKEN>`。`GET /health` 的 `capabilities` 新增布尔字段 `credential_store`（加密存储是否可用），后续小节的能力字段同理。
+
+### 4.1 加密凭据存储 (Credentials)
+- **加密方案**: AES-256-GCM（Python `cryptography` 库 `AESGCM`，不自行实现密码算法）。每条密文 = `v1` + 12 字节随机 nonce + 密文与 tag，AAD 为 `credential:<name>`，密文不能在记录间挪用。
+- **主密钥**: 环境变量 `OPENMINIS_MASTER_KEY`（base64 32 字节）优先；否则读取 `OPENMINIS_MASTER_KEY_FILE`（默认 `/etc/openminis/master.key`，必须 600 权限，install.sh 生成）。主密钥缺失或 `cryptography` 未安装时接口返回 `503`，绝不回退为明文。
+- **PUT /v1/credentials/{name}**: `name` 匹配 `^[A-Za-z0-9_.:-]{1,64}$`。请求体 `{"api_key": "...", "base_url": "https://.../v1", "protocol": "chat"}`。新建返回 `201`，覆盖返回 `200`，响应只含 `name`、`base_url`、`key_hint`（末 4 位）。
+- **GET /v1/credentials**: `{"available": true, "reason": null, "credentials": [{"name", "protocol", "base_url", "key_hint", "created_at", "updated_at"}]}`，任何接口都不返回明文或密文。
+- **DELETE /v1/credentials/{name}**: 删除成功 `200`，不存在 `404`。
+- **在任务中引用**: `POST /v1/sessions/{id}/messages` 的 `provider` 可写 `{"credential": "<name>"}` 代替 `api_key`（可选 `base_url` 覆盖保存值）。凭据不存在 `404`；密文被篡改或主密钥更换 `409`；存储不可用 `503`。解密后的 Key 只在任务线程内存中使用。

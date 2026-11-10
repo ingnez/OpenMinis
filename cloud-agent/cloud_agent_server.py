@@ -12,6 +12,7 @@ OpenMinis Cloud Computer & Agent Service (cloud_agent_server.py) v2.0
 - Integrated Playwright Chromium browser tools with persistent per-workspace profile
 - Integrated X11 desktop computer tools (scrot, xdotool)
 - Workspace attachments endpoint with Bearer auth (/v1/sessions/{id}/attachments/{filename})
+- Encrypted provider credential store (AES-256-GCM, /v1/credentials; names only are ever listed)
 """
 
 import os
@@ -35,8 +36,10 @@ SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
+import re
 import cloud_browser
 import cloud_desktop
+import cloud_secrets
 
 HOST = os.environ.get("OPENMINIS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
@@ -145,6 +148,19 @@ def init_db():
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_session_running ON tasks(session_id) WHERE status = 'running'")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id, created_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id)")
+
+    # 加密凭据：api_key 仅以 AES-GCM 密文落盘，AAD 绑定凭据名
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS credentials (
+        name TEXT PRIMARY KEY,
+        protocol TEXT,
+        base_url TEXT,
+        ciphertext BLOB NOT NULL,
+        key_hint TEXT,
+        created_at REAL,
+        updated_at REAL
+    )
+    """)
     
     # Server restart: mark interrupted
     cursor.execute("UPDATE tasks SET status = 'interrupted' WHERE status IN ('running', 'queued')")
@@ -214,6 +230,103 @@ def sanitize_err(e):
     s = re.sub(r'sk-[a-zA-Z0-9\-_]{20,}', 'sk-***REDACTED***', s)
     s = re.sub(r'Bearer\s+[a-zA-Z0-9\-_.\s]+', 'Bearer ***REDACTED***', s)
     return s
+
+CREDENTIAL_NAME_RE = re.compile(r'^[A-Za-z0-9_.:-]{1,64}$')
+
+def credential_aad(name):
+    return "credential:" + name
+
+def credential_hint(api_key):
+    # 只保留末 4 位便于用户辨认，短 Key 不显示任何字符
+    return ("…" + api_key[-4:]) if len(api_key) >= 12 else "…"
+
+def put_credential(name, api_key, base_url, protocol="chat"):
+    box = cloud_secrets.get_box()
+    blob = box.encrypt(api_key, credential_aad(name))
+    now = time.time()
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT created_at FROM credentials WHERE name = ?", (name,))
+        row = c.fetchone()
+        if row:
+            c.execute("UPDATE credentials SET protocol = ?, base_url = ?, ciphertext = ?, key_hint = ?, updated_at = ? WHERE name = ?",
+                      (protocol, base_url, blob, credential_hint(api_key), now, name))
+        else:
+            c.execute("INSERT INTO credentials (name, protocol, base_url, ciphertext, key_hint, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                      (name, protocol, base_url, blob, credential_hint(api_key), now, now))
+        conn.commit()
+        return not bool(row)
+    finally:
+        conn.close()
+
+def delete_credential(name):
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM credentials WHERE name = ?", (name,))
+        conn.commit()
+        return c.rowcount > 0
+    finally:
+        conn.close()
+
+def list_credentials():
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT name, protocol, base_url, key_hint, created_at, updated_at FROM credentials ORDER BY name ASC")
+        return [{"name": r[0], "protocol": r[1], "base_url": r[2], "key_hint": r[3], "created_at": r[4], "updated_at": r[5]} for r in c.fetchall()]
+    finally:
+        conn.close()
+
+def load_credential(name):
+    """返回 {"protocol","base_url","api_key"}；不存在返回 None。解密失败抛 SecretDecryptError。"""
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT protocol, base_url, ciphertext FROM credentials WHERE name = ?", (name,))
+        row = c.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    api_key = cloud_secrets.get_box().decrypt(row[2], credential_aad(name))
+    return {"protocol": row[0] or "chat", "base_url": row[1], "api_key": api_key}
+
+def resolve_provider(provider):
+    """把请求里的 provider 规范为 {"protocol","base_url","api_key"}。
+    provider.credential 指向已加密保存的凭据；否则沿用请求内存中的 api_key。
+    返回 (provider_config, http_status, error)。"""
+    if not isinstance(provider, dict):
+        return None, 400, "provider must be a dictionary"
+    protocol = provider.get("protocol", "chat")
+    if not isinstance(protocol, str) or protocol != "chat":
+        return None, 400, "Unsupported provider protocol. Only 'chat' is supported."
+    cred_name = provider.get("credential")
+    if cred_name is not None:
+        if not isinstance(cred_name, str) or not CREDENTIAL_NAME_RE.match(cred_name):
+            return None, 400, "Invalid credential name"
+        try:
+            stored = load_credential(cred_name)
+        except cloud_secrets.SecretStoreUnavailable as e:
+            return None, 503, "Credential store unavailable: " + str(e)
+        except cloud_secrets.SecretDecryptError as e:
+            return None, 409, str(e)
+        if not stored:
+            return None, 404, "Credential not found: " + cred_name
+        base_url = provider.get("base_url") or stored.get("base_url") or "https://api.openai.com/v1"
+        ok, err = validate_base_url(base_url)
+        if not ok:
+            return None, 400, err
+        return {"protocol": "chat", "base_url": base_url, "api_key": stored["api_key"], "credential": cred_name}, 200, None
+    api_key = provider.get("api_key", "")
+    if not isinstance(api_key, str):
+        return None, 400, "api_key must be a string"
+    base_url = provider.get("base_url", "https://api.openai.com/v1")
+    ok, err = validate_base_url(base_url)
+    if not ok:
+        return None, 400, err
+    return {"protocol": "chat", "base_url": base_url, "api_key": api_key}, 200, None
 
 def log_event(task_id, etype, payload):
     conn = get_db_connection()
@@ -645,7 +758,8 @@ class Handler(BaseHTTPRequestHandler):
                     "desktop": cloud_desktop.is_desktop_available(),
                     "display": os.environ.get("DISPLAY", ":99"),
                     "vnc_port": 5901,
-                    "novnc_port": 18766
+                    "novnc_port": 18766,
+                    "credential_store": cloud_secrets.status()[0]
                 },
                 "timestamp": time.time()
             })
@@ -691,6 +805,11 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer ") or auth[7:].strip() != SERVER_TOKEN:
             self._send(401, {"error": "Unauthorized"})
+            return
+
+        if path == "/v1/credentials":
+            available, reason = cloud_secrets.status()
+            self._send(200, {"available": available, "reason": reason, "credentials": list_credentials()})
             return
 
         if path == "/v1/sessions":
@@ -806,23 +925,25 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send(404, {"error": "Not found"})
 
-    def do_POST(self):
-        path = self.path.split("?")[0]
+    def _authorized(self):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer ") or auth[7:].strip() != SERVER_TOKEN:
             self._send(401, {"error": "Unauthorized"})
-            return
-        
+            return False
+        return True
+
+    def _read_json_body(self):
+        """返回 dict；出错时已发送错误响应并返回 None。"""
         raw_len = self.headers.get("Content-Length", 0)
         try:
             length = int(raw_len)
         except Exception:
             self._send(400, {"error": "Invalid Content-Length"})
-            return
+            return None
 
         if length < 0 or length > 5 * 1024 * 1024:
             self._send(400 if length < 0 else 413, {"error": "Invalid body size or exceeds 5MB limit"})
-            return
+            return None
 
         req_json = {}
         if length > 0:
@@ -831,10 +952,73 @@ class Handler(BaseHTTPRequestHandler):
                 req_json = json.loads(body_bytes.decode("utf-8"))
             except Exception:
                 self._send(400, {"error": "Invalid JSON body"})
-                return
+                return None
 
         if not isinstance(req_json, dict):
             self._send(400, {"error": "Request body must be a JSON object"})
+            return None
+        return req_json
+
+    def do_PUT(self):
+        path = self.path.split("?")[0]
+        if not self._authorized():
+            return
+        req_json = self._read_json_body()
+        if req_json is None:
+            return
+
+        if path.startswith("/v1/credentials/"):
+            name = path[len("/v1/credentials/"):]
+            if not CREDENTIAL_NAME_RE.match(name):
+                self._send(400, {"error": "Invalid credential name"})
+                return
+            api_key = req_json.get("api_key")
+            if not isinstance(api_key, str) or not api_key.strip() or len(api_key) > 8192:
+                self._send(400, {"error": "api_key must be a non-empty string"})
+                return
+            base_url = req_json.get("base_url", "https://api.openai.com/v1")
+            ok, err = validate_base_url(base_url)
+            if not ok:
+                self._send(400, {"error": err})
+                return
+            protocol = req_json.get("protocol", "chat")
+            if protocol != "chat":
+                self._send(400, {"error": "Unsupported provider protocol. Only 'chat' is supported."})
+                return
+            try:
+                created = put_credential(name, api_key.strip(), base_url, protocol)
+            except cloud_secrets.SecretStoreUnavailable as e:
+                self._send(503, {"error": "Credential store unavailable: " + str(e)})
+                return
+            self._send(201 if created else 200, {"name": name, "base_url": base_url, "key_hint": credential_hint(api_key.strip()), "stored": True})
+            return
+
+        self._send(404, {"error": "Not found"})
+
+    def do_DELETE(self):
+        path = self.path.split("?")[0]
+        if not self._authorized():
+            return
+
+        if path.startswith("/v1/credentials/"):
+            name = path[len("/v1/credentials/"):]
+            if not CREDENTIAL_NAME_RE.match(name):
+                self._send(400, {"error": "Invalid credential name"})
+                return
+            if delete_credential(name):
+                self._send(200, {"name": name, "deleted": True})
+            else:
+                self._send(404, {"error": "Credential not found"})
+            return
+
+        self._send(404, {"error": "Not found"})
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        if not self._authorized():
+            return
+        req_json = self._read_json_body()
+        if req_json is None:
             return
 
         if path == "/v1/sessions":
@@ -985,25 +1169,9 @@ class Handler(BaseHTTPRequestHandler):
             model = req_json.get("model", "gpt-4o")
             client_nonce = req_json.get("client_nonce")
 
-            provider = req_json.get("provider", {})
-            if not isinstance(provider, dict):
-                self._send(400, {"error": "provider must be a dictionary"})
-                return
-
-            protocol = provider.get("protocol", "chat")
-            if not isinstance(protocol, str) or protocol != "chat":
-                self._send(400, {"error": "Unsupported provider protocol. Only 'chat' is supported."})
-                return
-
-            api_key = provider.get("api_key", "")
-            if not isinstance(api_key, str):
-                self._send(400, {"error": "api_key must be a string"})
-                return
-
-            base_url = provider.get("base_url", "https://api.openai.com/v1")
-            ok, err = validate_base_url(base_url)
-            if not ok:
-                self._send(400, {"error": err})
+            provider, p_status, p_err = resolve_provider(req_json.get("provider", {}))
+            if p_err:
+                self._send(p_status, {"error": p_err})
                 return
 
             conn = get_db_connection()

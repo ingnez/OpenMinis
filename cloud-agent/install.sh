@@ -15,6 +15,7 @@ INSTALL_DIR="/opt/openminis-cloud-agent"
 VAR_LIB_DIR="/var/lib/openminis-cloud-agent"
 CONFIG_DIR="/etc/openminis"
 TOKEN_FILE="$CONFIG_DIR/token"
+MASTER_KEY_FILE="$CONFIG_DIR/master.key"
 SERVICE_FILE="/etc/systemd/system/openminis-cloud-agent.service"
 
 echo "=== 1. 检查权限与操作系统支持 ==="
@@ -43,6 +44,12 @@ if ! command -v curl &> /dev/null; then
     apt-get update && apt-get install -y curl
 fi
 
+# 凭据加密 (AES-256-GCM) 依赖系统 cryptography 包；缺失时服务仍可运行，但拒绝保存凭据
+if ! python3 -c "import cryptography.hazmat.primitives.ciphers.aead" &> /dev/null; then
+    echo "[+] 安装 python3-cryptography 用于加密保存服务商凭据..."
+    apt-get update && apt-get install -y python3-cryptography || echo "[-] 警告: python3-cryptography 安装失败，云端将无法保存凭据"
+fi
+
 echo "=== 2. 创建专用服务用户 ($SERVICE_USER) ==="
 if ! id "$SERVICE_USER" &>/dev/null; then
     useradd -r -s /bin/false -M -d "$VAR_LIB_DIR" "$SERVICE_USER"
@@ -60,12 +67,10 @@ mkdir -p "$CONFIG_DIR"
 CURRENT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # 仅复制核心服务与文档，避免污染测试数据或密钥文件
 cp -f "$CURRENT_DIR/cloud_agent_server.py" "$INSTALL_DIR/"
-if [ -f "$CURRENT_DIR/cloud_browser.py" ]; then
-    cp -f "$CURRENT_DIR/cloud_browser.py" "$INSTALL_DIR/"
-fi
-if [ -f "$CURRENT_DIR/cloud_desktop.py" ]; then
-    cp -f "$CURRENT_DIR/cloud_desktop.py" "$INSTALL_DIR/"
-fi
+# 所有服务模块 (cloud_browser / cloud_desktop / cloud_secrets 等)
+for module in "$CURRENT_DIR"/cloud_*.py; do
+    [ -f "$module" ] && cp -f "$module" "$INSTALL_DIR/"
+done
 cp -f "$CURRENT_DIR/PROTOCOL.md" "$INSTALL_DIR/"
 cp -f "$CURRENT_DIR/README.md" "$INSTALL_DIR/"
 if [ -f "$CURRENT_DIR/install.sh" ]; then
@@ -89,6 +94,16 @@ fi
 chmod 600 "$TOKEN_FILE"
 chown "$SERVICE_USER:$SERVICE_USER" "$TOKEN_FILE"
 
+echo "=== 4b. 生成凭据加密主密钥 (AES-256，600 权限，归属 openminis) ==="
+if [ ! -s "$MASTER_KEY_FILE" ]; then
+    (umask 077; python3 -c "import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())" > "$MASTER_KEY_FILE")
+    echo "[+] 已生成新的主密钥并写入 $MASTER_KEY_FILE（丢失后已保存的云端凭据无法解密，需要重新上传）"
+else
+    echo "[+] 检测到现有主密钥文件: $MASTER_KEY_FILE"
+fi
+chmod 600 "$MASTER_KEY_FILE"
+chown "$SERVICE_USER:$SERVICE_USER" "$MASTER_KEY_FILE"
+
 echo "=== 5. 配置 Systemd 服务文件 (openminis-cloud-agent.service) ==="
 cat << EOF > "$SERVICE_FILE"
 [Unit]
@@ -107,6 +122,7 @@ Environment=OPENMINIS_PORT=18765
 Environment=OPENMINIS_DB=$VAR_LIB_DIR/data/openminis_agent.db
 Environment=OPENMINIS_WORKSPACE=$VAR_LIB_DIR/workspace
 Environment=OPENMINIS_TOKEN_FILE=$TOKEN_FILE
+Environment=OPENMINIS_MASTER_KEY_FILE=$MASTER_KEY_FILE
 
 # 基本安全加固（非安全虚拟化沙箱：同 UID 下 shell 拥有该用户系统权限）
 NoNewPrivileges=true
@@ -165,5 +181,6 @@ echo "==========================================================================
 echo " [OK] OpenMinis Cloud Agent 安装成功！"
 echo " 服务监听地址: 127.0.0.1:18765 (标准统一端口)"
 echo " 认证 Token 文件: $TOKEN_FILE (600 权限，归属 $SERVICE_USER)"
+echo " 凭据主密钥文件: $MASTER_KEY_FILE (600 权限，归属 $SERVICE_USER)"
 echo " 工作目录: $VAR_LIB_DIR"
 echo "=============================================================================="

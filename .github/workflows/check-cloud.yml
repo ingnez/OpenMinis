@@ -12,7 +12,7 @@ jobs:
       - name: 真实云端模块类型检查
         run: |
           set -o pipefail
-          xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/AIChatViewModel+CloudComputer.swift src/ios/Views/Chat/AIChatView/Cloud/CloudModelCatalog.swift src/ios/Views/Chat/AIChatView/Cloud/CloudConnection.swift src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopView.swift src/ios/Views/Chat/AIChatView/Cloud/CloudWorkContext.swift src/ios/Views/Chat/AIChatView/Cloud/CloudAgentViews.swift 2>&1 | tee cloud-ui-typecheck.log
+          xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/AIChatViewModel+CloudComputer.swift src/ios/Views/Chat/AIChatView/Cloud/CloudModelCatalog.swift src/ios/Views/Chat/AIChatView/Cloud/CloudConnection.swift src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopView.swift src/ios/Views/Chat/AIChatView/Cloud/CloudWorkContext.swift src/ios/Views/Chat/AIChatView/Cloud/CloudAgentViews.swift src/ios/Views/Chat/AIChatView/Cloud/CloudCredentialSync.swift 2>&1 | tee cloud-ui-typecheck.log
       - name: 云端服务集成验证
         run: python3 -m unittest discover -s cloud-agent -p 'test*.py' -v
       - uses: actions/upload-artifact@v4
