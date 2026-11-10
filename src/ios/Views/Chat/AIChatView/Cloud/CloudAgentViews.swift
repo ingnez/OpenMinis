@@ -693,124 +693,7 @@ struct CloudSessionView: View {
             }
 
             // Messages & Event Log area
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        if let theme, messages.isEmpty, !isSubmitting, liveText.isEmpty {
-                            VStack(spacing: 12) {
-                                CloudBotAliveAvatar(spec: theme.spec, size: 120)
-                                Text("和 \(theme.name) 说点什么").font(.subheadline).foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 60)
-                        }
-                        let shownItems = CloudTaskFailure.display(messages)
-                        if let theme {
-                            Color.clear.frame(height: 1).id("chat-top")
-                            ForEach(threadRows.filter { threadAnchor($0) == -1 }) { CloudBotThreadCollapsedRow(item: $0) }
-                            let stamps = turns.map { ($0.raw["timestamp"] as? NSNumber)?.doubleValue ?? 0 }
-                            ForEach(callDividers.filter { CloudCallDivider.anchor($0, timestamps: stamps) == -1 }) { CloudCallDividerRow(seconds: $0.seconds) }
-                            ForEach(Array(turns.enumerated()), id: \.offset) { idx, turn in
-                                let msg = turn.message
-                                if msg.role == .user {
-                                    CloudUserTurnRow(content: msg.content, accent: theme.accent, extras: CloudMessageExtras(turn.raw),
-                                                     onReply: { replyTarget = $0 })
-                                } else {
-                                    let prevAssistant = idx > 0 && turns[idx - 1].message.role == .assistant
-                                    let extras = reactionExtras(CloudMessageExtras(turn.textRaw))
-                                    CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
-                                                           showHeader: !prevAssistant, collapsible: true)
-                                        .modifier(CloudAssistantLongPress(text: msg.content, extras: extras,
-                                                                          onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 }))
-                                    CloudAssistantFooter(text: msg.content, latency: CloudLatency.line(for: turn.raw, tasks: tasks),
-                                                         extras: extras, selfId: theme.botId,
-                                                         onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 })
-                                }
-                                ForEach(threadRows.filter { threadAnchor($0) == idx }) { CloudBotThreadCollapsedRow(item: $0) }
-                                ForEach(callDividers.filter { CloudCallDivider.anchor($0, timestamps: stamps) == idx }) { CloudCallDividerRow(seconds: $0.seconds) }
-                            }
-                        }
-                        ForEach(Array((theme == nil ? shownItems : []).enumerated()), id: \.offset) { _, item in
-                            let msg = item.message
-                            let role = msg["role"] as? String ?? "user"
-                            let content = msg["content"] as? String ?? ""
-                            if !item.steps.isEmpty {
-                                CloudStepsLine(steps: item.steps)
-                            }
-                            Group {
-                                if let theme {
-                                    CloudThemedBubble(role: role, content: content, accent: theme.accent)
-                                } else {
-                                    CloudMessageBubble(role: role, content: content)
-                                }
-                            }
-                            .contextMenu {
-                                Button { UIPasteboard.general.string = content } label: { Label("复制", systemImage: "doc.on.doc") }
-                                if role == "assistant", let line = CloudLatency.line(for: msg, tasks: tasks) {
-                                    Text(line)
-                                }
-                            }
-                        }
-                        if theme == nil && !liveText.isEmpty {
-                            CloudMessageBubble(role: "assistant", content: liveText)
-                        }
-                        if theme == nil && isSubmitting {
-                            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("正在发送，云端准备中…").font(.caption).foregroundStyle(.secondary) }
-                        }
-
-                        if let theme {
-                            themedTaskArea(theme)
-                        }
-                        Color.clear.frame(height: 1).id("chat-bottom")
-
-                        if theme == nil && !taskEvents.isEmpty {
-                            Divider()
-                            Text("当前/最新任务实时日志").font(.caption).bold().foregroundColor(.secondary)
-                            let resolvedApprovals = Set(taskEvents.compactMap { ev -> String? in
-                                guard ev["type"] as? String == "approval_resolved" else { return nil }
-                                return (ev["payload"] as? [String: Any])?["approval_id"] as? String
-                            })
-                            ForEach(Array(taskEvents.enumerated()), id: \.offset) { _, ev in
-                                let type = ev["type"] as? String ?? "event"
-                                let payload = ev["payload"] as? [String: Any] ?? [:]
-                                CloudTaskEventRow(type: type, payload: payload)
-                                if type == "takeover_request" {
-                                    CloudTakeoverCard(reason: payload["reason"] as? String ?? "") { showComputer = true }
-                                }
-                                if type == "approval_required", activeTaskStatus == "waiting_user",
-                                   let aid = payload["approval_id"] as? String, !resolvedApprovals.contains(aid) {
-                                    HStack {
-                                        Button("拒绝") { decide(approvalId: aid, approve: false) }
-                                            .buttonStyle(.bordered).tint(.red)
-                                        Button("批准执行") { decide(approvalId: aid, approve: true) }
-                                            .buttonStyle(.borderedProminent).tint(.orange)
-                                    }
-                                    .controlSize(.small)
-                                }
-                            }
-                        }
-                    }
-                    .padding()
-                }
-                .environment(\.cloudChatActions, chatActions)
-                .overlay(alignment: .bottomTrailing) {
-                    if theme != nil && messages.count > 4 {
-                        CloudScrollButtons(onTop: { withAnimation { proxy.scrollTo("chat-top", anchor: .top) } },
-                                           onBottom: { withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) } })
-                    }
-                }
-                .onChange(of: messages.count) { _ in
-                    withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) }
-                }
-                .onAppear {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
-                }
-            }
-            // 看图页「问问这张图」：图片放回附件，输入框起个头
-            .environment(\.cloudAskImage) { img in
-                if let a = CloudAttachmentKit.image(img, name: "引用的图片.jpg") { attachments.append(a) }
-                if inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { inputPrompt = "关于这张图片：" }
-            }
+            messagesArea
 
             Divider()
 
@@ -1465,6 +1348,130 @@ struct CloudSessionView: View {
                   let text = row["content"] as? String, !text.isEmpty else { return nil }
             return ["role": role, "text": CloudMessageText.display(text).text]
         }
+    }
+
+    /// 消息列表（从 body 拆出来，免得类型检查超时）
+    private var messagesArea: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if let theme, messages.isEmpty, !isSubmitting, liveText.isEmpty {
+                        VStack(spacing: 12) {
+                            CloudBotAliveAvatar(spec: theme.spec, size: 120)
+                            Text("和 \(theme.name) 说点什么").font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 60)
+                    }
+                    let shownItems = CloudTaskFailure.display(messages)
+                    if let theme {
+                        Color.clear.frame(height: 1).id("chat-top")
+                        ForEach(threadRows.filter { threadAnchor($0) == -1 }) { CloudBotThreadCollapsedRow(item: $0) }
+                        let stamps = turns.map { ($0.raw["timestamp"] as? NSNumber)?.doubleValue ?? 0 }
+                        ForEach(callDividers.filter { CloudCallDivider.anchor($0, timestamps: stamps) == -1 }) { CloudCallDividerRow(seconds: $0.seconds) }
+                        ForEach(Array(turns.enumerated()), id: \.offset) { idx, turn in
+                            let msg = turn.message
+                            if msg.role == .user {
+                                CloudUserTurnRow(content: msg.content, accent: theme.accent, extras: CloudMessageExtras(turn.raw),
+                                                 onReply: { replyTarget = $0 })
+                            } else {
+                                let prevAssistant = idx > 0 && turns[idx - 1].message.role == .assistant
+                                let extras = reactionExtras(CloudMessageExtras(turn.textRaw))
+                                CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
+                                                       showHeader: !prevAssistant, collapsible: true)
+                                    .modifier(CloudAssistantLongPress(text: msg.content, extras: extras,
+                                                                      onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 }))
+                                CloudAssistantFooter(text: msg.content, latency: CloudLatency.line(for: turn.raw, tasks: tasks),
+                                                     extras: extras, selfId: theme.botId,
+                                                     onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 })
+                            }
+                            ForEach(threadRows.filter { threadAnchor($0) == idx }) { CloudBotThreadCollapsedRow(item: $0) }
+                            ForEach(callDividers.filter { CloudCallDivider.anchor($0, timestamps: stamps) == idx }) { CloudCallDividerRow(seconds: $0.seconds) }
+                        }
+                    }
+                    ForEach(Array((theme == nil ? shownItems : []).enumerated()), id: \.offset) { _, item in
+                        let msg = item.message
+                        let role = msg["role"] as? String ?? "user"
+                        let content = msg["content"] as? String ?? ""
+                        if !item.steps.isEmpty {
+                            CloudStepsLine(steps: item.steps)
+                        }
+                        Group {
+                            if let theme {
+                                CloudThemedBubble(role: role, content: content, accent: theme.accent)
+                            } else {
+                                CloudMessageBubble(role: role, content: content)
+                            }
+                        }
+                        .contextMenu {
+                            Button { UIPasteboard.general.string = content } label: { Label("复制", systemImage: "doc.on.doc") }
+                            if role == "assistant", let line = CloudLatency.line(for: msg, tasks: tasks) {
+                                Text(line)
+                            }
+                        }
+                    }
+                    if theme == nil && !liveText.isEmpty {
+                        CloudMessageBubble(role: "assistant", content: liveText)
+                    }
+                    if theme == nil && isSubmitting {
+                        HStack(spacing: 6) { ProgressView().controlSize(.small); Text("正在发送，云端准备中…").font(.caption).foregroundStyle(.secondary) }
+                    }
+
+                    if let theme {
+                        themedTaskArea(theme)
+                    }
+                    Color.clear.frame(height: 1).id("chat-bottom")
+
+                    if theme == nil && !taskEvents.isEmpty {
+                        Divider()
+                        Text("当前/最新任务实时日志").font(.caption).bold().foregroundColor(.secondary)
+                        let resolvedApprovals = Set(taskEvents.compactMap { ev -> String? in
+                            guard ev["type"] as? String == "approval_resolved" else { return nil }
+                            return (ev["payload"] as? [String: Any])?["approval_id"] as? String
+                        })
+                        ForEach(Array(taskEvents.enumerated()), id: \.offset) { _, ev in
+                            let type = ev["type"] as? String ?? "event"
+                            let payload = ev["payload"] as? [String: Any] ?? [:]
+                            CloudTaskEventRow(type: type, payload: payload)
+                            if type == "takeover_request" {
+                                CloudTakeoverCard(reason: payload["reason"] as? String ?? "") { showComputer = true }
+                            }
+                            if type == "approval_required", activeTaskStatus == "waiting_user",
+                               let aid = payload["approval_id"] as? String, !resolvedApprovals.contains(aid) {
+                                HStack {
+                                    Button("拒绝") { decide(approvalId: aid, approve: false) }
+                                        .buttonStyle(.bordered).tint(.red)
+                                    Button("批准执行") { decide(approvalId: aid, approve: true) }
+                                        .buttonStyle(.borderedProminent).tint(.orange)
+                                }
+                                .controlSize(.small)
+                            }
+                        }
+                    }
+                }
+                .padding()
+            }
+            .environment(\.cloudChatActions, chatActions)
+            .overlay(alignment: .bottomTrailing) {
+                if theme != nil && messages.count > 4 {
+                    CloudScrollButtons(onTop: { withAnimation { proxy.scrollTo("chat-top", anchor: .top) } },
+                                       onBottom: { withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) } })
+                }
+            }
+            .onChange(of: messages.count) { _ in
+                withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+            }
+            .onAppear {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+            }
+        }
+        // 看图页「问问这张图」：图片放回附件，输入框起个头
+        .environment(\.cloudAskImage, askAboutImage)
+    }
+
+    private func askAboutImage(_ img: UIImage) {
+        if let a = CloudAttachmentKit.image(img, name: "引用的图片.jpg") { attachments.append(a) }
+        if inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { inputPrompt = "关于这张图片：" }
     }
 
     private func photoTarget(_ kind: String) -> CloudPhotoRouter.Candidate? {
