@@ -491,10 +491,10 @@ struct CloudBotHomeScreen: View {
                     Menu {
                         Button { showCreate = true } label: { Label("新 Bot", systemImage: "person.crop.circle.badge.plus") }
                         Button { showCreateGroup = true } label: { Label("新群聊", systemImage: "person.3") }
+                            .disabled(model.bots.isEmpty)
                         if !model.hiddenBots.isEmpty {
                             Button { showHidden = true } label: { Label("已隐藏的 Bot（\(model.hiddenBots.count)）", systemImage: "eye.slash") }
                         }
-                            .disabled(model.bots.isEmpty)
                         Menu {
                             Button("8 小时") { Task { await model.setDuty(hours: 8) } }
                             Button("12 小时") { Task { await model.setDuty(hours: 12) } }
