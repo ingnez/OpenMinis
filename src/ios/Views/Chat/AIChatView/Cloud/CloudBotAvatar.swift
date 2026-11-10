@@ -18,20 +18,13 @@ struct CloudBotAvatarSpec: Hashable {
     var pendingPhoto: Data? = nil
 
     static let shapeCount = 13
-    static let colors: [Color] = [
-        .black,
-        Color(red: 0.55, green: 0.38, blue: 0.24),  // 棕
-        Color(red: 0.93, green: 0.26, blue: 0.27),  // 红
-        Color(red: 0.95, green: 0.45, blue: 0.16),  // 橙
-        Color(red: 0.96, green: 0.63, blue: 0.20),  // 琥珀
-        Color(red: 0.36, green: 0.78, blue: 0.45),  // 绿
-        Color(red: 0.33, green: 0.73, blue: 0.65),  // 青
-        Color(red: 0.24, green: 0.52, blue: 0.96),  // 蓝
-        Color(red: 0.55, green: 0.36, blue: 0.96),  // 紫
-        Color(red: 0.92, green: 0.29, blue: 0.60),  // 粉
-        Color(red: 0.39, green: 0.40, blue: 0.95),  // 靛
-        Color(red: 0.47, green: 0.47, blue: 0.49),  // 灰
-    ]
+    /// 颜色随外观变化：深色模式下黑色换成石墨灰（见 CloudAvatarPalette），身体不会融进背景
+    static let colors: [Color] = (0..<CloudAvatarPalette.count).map { i in
+        Color(UIColor { trait in
+            let c = CloudAvatarPalette.rgb(i, dark: trait.userInterfaceStyle == .dark)
+            return UIColor(red: c.r, green: c.g, blue: c.b, alpha: 1)
+        })
+    }
 
     var encoded: String {
         if let photo { return "av:p\(photo)c\(color)" }
