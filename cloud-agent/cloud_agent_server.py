@@ -92,6 +92,7 @@ import cloud_vault
 import cloud_workers
 import cloud_runmodel
 import cloud_shift_card
+import cloud_workbench
 import cloud_plugins
 import cloud_oauth
 import cloud_mcp
@@ -633,7 +634,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.36.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.37.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -6246,6 +6247,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Media not found"})
                 return
             self._send(200, {"url": url})
+            return
+
+        if path == "/v1/workbench":
+            # 工作台：所有 Bot 在跑 / 等你的任务（App 可逐个或批量 POST /v1/tasks/<id>/cancel）
+            conn = get_db_connection()
+            try:
+                items = cloud_workbench.items(conn, lambda sid: session_bot(sid), _session_title)
+            finally:
+                conn.close()
+            self._send(200, {"items": items, "running": sum(1 for i in items if i["status"] == "running"),
+                             "waiting_you": sum(1 for i in items if i["status"] == "waiting_user")})
             return
 
         if path == "/v1/shift-card":

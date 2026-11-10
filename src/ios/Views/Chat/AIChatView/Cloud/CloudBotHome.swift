@@ -526,6 +526,7 @@ struct CloudBotHomeScreen: View {
     @State private var showCreateGroup = false
     @State private var showHub = false
     @State private var showShiftCard = false
+    @State private var showWorkbench = false
     /// 打开 Bot 设置时直接进「云电脑设置」（连接出问题的修复按钮用）
     @State private var hubOpensCloud = false
     @State private var showConnectApps = false
@@ -713,6 +714,7 @@ struct CloudBotHomeScreen: View {
                 .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
+        .sheet(isPresented: $showWorkbench) { CloudWorkbenchSheet() }
         .sheet(isPresented: $showHub) {
             NavigationStack {
                 CloudBotHubView(onDone: { showHub = false }, openCloudFirst: hubOpensCloud,
@@ -811,6 +813,7 @@ struct CloudBotHomeScreen: View {
         HStack(spacing: 12) {
             Menu {
                 Button { showConnectApps = true } label: { Label("连接应用", systemImage: "square.grid.2x2") }
+                Button { showWorkbench = true } label: { Label("工作台（在跑的任务）", systemImage: "rectangle.stack.badge.play") }
                 Button { showShiftCard = true } label: { Label("交班卡", systemImage: "list.clipboard") }
                 Button { path = ["hidden"] } label: {
                     Label(model.hiddenBots.isEmpty ? "已隐藏对话" : "已隐藏对话（\(model.hiddenBots.count)）", systemImage: "eye.slash")

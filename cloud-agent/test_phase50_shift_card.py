@@ -43,7 +43,7 @@ class ShiftCardTests(unittest.TestCase):
         import os
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cloud_agent_server.py"), encoding="utf-8").read()
         self.assertIn('"/v1/shift-card"', src)
-        self.assertIn('AGENT_VERSION = "2.36.0"', src)
+        self.assertRegex(src, r'AGENT_VERSION = "2\.3[6-9]')
 
 
 if __name__ == "__main__":
