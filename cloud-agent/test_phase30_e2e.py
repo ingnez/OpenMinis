@@ -145,6 +145,10 @@ class E2EScenarios(CloudServerTestCase):
         rest = self._events(res["task_id"], after=mid)
         self.assertEqual([e["id"] for e in rest], [i for i in ids if i > mid])
         # 通知流同样能从断点续上
+        # 完成通知在任务状态变 completed 之后才写（慢机器上有间隙）：先等它出现再取断点
+        self.wait_until(lambda: any(i.get("session_id") == sid and i.get("kind") == "task_completed"
+                                    for i in self.request("GET", "/v1/notifications?after=0")[1].get("items", [])),
+                        timeout=10, message="完成通知没出现")
         n = self.request("GET", "/v1/notifications?after=0")[1]
         self.assertIn("last_id", n)
         again = self.request("GET", f"/v1/notifications?after={n['last_id']}")[1]
