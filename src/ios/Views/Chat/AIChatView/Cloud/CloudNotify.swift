@@ -27,7 +27,7 @@ struct CloudNotifySection: View {
                 Text("ntfy").tag("ntfy")
             }
             .pickerStyle(.segmented)
-            TextField(provider == "bark" ? "https://api.day.app/<设备 Key>" : "https://ntfy.sh/<主题>", text: $url)
+            TextField(provider == "bark" ? "Bark App 里的地址（可直接粘贴示例链接）或设备 Key" : "https://ntfy.sh/<主题>", text: $url)
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -59,10 +59,40 @@ struct CloudNotifySection: View {
         .task { await refresh() }
     }
 
+    /// Bark：接受 App 里的示例地址（含标题、内容、查询参数）、只有设备 Key、或自建服务器地址，
+    /// 归一为 https://<主机>[/<前缀>]/<Key>；云端也会做同样的归一。返回 nil 表示没找到 Key。
+    static func normalizedBarkURL(_ text: String) -> String? {
+        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let keyPattern = #"^[A-Za-z0-9]{8,64}$"#
+        if raw.range(of: keyPattern, options: .regularExpression) != nil { return "https://api.day.app/\(raw)" }
+        guard let r = raw.range(of: #"https?://[^\s<>"'，。]+"#, options: .regularExpression),
+              let comps = URLComponents(string: String(raw[r])), let scheme = comps.scheme, let host = comps.host, !host.isEmpty,
+              comps.user == nil, comps.password == nil else { return nil }
+        let segments = comps.path.split(separator: "/").map(String.init)
+        var found = segments.firstIndex(where: { $0.range(of: keyPattern, options: .regularExpression) != nil })
+        if found == nil && segments.count == 1 { found = 0 }  // 自建服务器的短 Key
+        guard let idx = found else { return nil }
+        let prefix = segments[..<idx].joined(separator: "/")
+        let port = comps.port.map { ":\($0)" } ?? ""
+        return "\(scheme)://\(host)\(port)/" + (prefix.isEmpty ? "" : prefix + "/") + segments[idx]
+    }
+
     private func save() {
+        var target = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        if target.isEmpty {
+            errorText = provider == "bark" ? "请粘贴 Bark App 里的地址或设备 Key" : "请填写 ntfy 地址，如 https://ntfy.sh/<主题>"
+            return
+        }
+        if provider == "bark" {
+            guard let normalized = Self.normalizedBarkURL(target) else {
+                errorText = "没有在 Bark 地址里找到设备 Key：请复制 Bark App 首页的地址（形如 https://api.day.app/你的Key/…），或只填 Key"
+                return
+            }
+            target = normalized
+        }
         var config: [String: Any] = [
             "provider": provider,
-            "url": url.trimmingCharacters(in: .whitespacesAndNewlines),
+            "url": target,
             "events": ["task_completed": onTaskCompleted, "approval_required": onApproval, "routine_finished": onRoutine],
         ]
         if provider == "ntfy", !token.isEmpty { config["token"] = token }

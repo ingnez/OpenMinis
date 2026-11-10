@@ -194,6 +194,17 @@ struct CloudAgentSettingsView: View {
                     }
                 }
                 .disabled(isConnecting || isInstalling || connection.host.isEmpty || passwordInput.isEmpty)
+
+                if isInstalling && !connection.installLog.isEmpty {
+                    ScrollView {
+                        Text(String(connection.installLog.suffix(3000)))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 180)
+                }
             }
 
             if let pendingMsg = connection.pendingHostKeyMessage {
@@ -219,7 +230,7 @@ struct CloudAgentSettingsView: View {
                 Section("连接状态") {
                     HStack {
                         Circle().fill(Color.green).frame(width: 10, height: 10)
-                        Text("已连接 (端口 18765)")
+                        Text("已连接 (本机端口 \(connection.apiPort))")
                         Spacer()
                         Button("断开连接") {
                             connection.disconnect()

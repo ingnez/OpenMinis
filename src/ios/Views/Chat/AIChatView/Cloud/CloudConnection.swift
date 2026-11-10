@@ -25,6 +25,12 @@ public final class CloudConnection: ObservableObject {
     @Published public private(set) var isConnected = false
     @Published public private(set) var currentFingerprint: String?
     @Published public private(set) var pendingHostKeyMessage: String?
+    /// 本机隧道端口：默认 18765 / 18766；被残留进程占用时自动换成空闲端口
+    @Published public private(set) var apiPort: Int = 18765
+    @Published public private(set) var desktopPort: Int = 18766
+    /// 安装过程中实时拉回的服务器安装日志（末尾一段）
+    @Published public private(set) var installLog: String = ""
+    public var desktopURL: URL? { URL(string: "http://127.0.0.1:\(desktopPort)/vnc.html?autoconnect=1&resize=remote") }
     @Published public var name: String { didSet { persist() } }
     @Published public var host: String { didSet { if oldValue != host { changed() } } }
     @Published public var sshPort: Int { didSet { if oldValue != sshPort { changed() } } }
@@ -124,7 +130,12 @@ public final class CloudConnection: ObservableObject {
     private func checked(_ command: String, input: Data? = nil, timeout: TimeInterval = 45) async throws -> String {
         let r = try await shell(command, input: input, timeout: timeout)
         guard r.exitCode == 0 else {
-            let message = String((r.errorOutput.isEmpty ? r.output : r.errorOutput).suffix(2000))
+            // 同时保留 stderr 与 stdout 末尾，避免只看到半截输出
+            let parts = [r.errorOutput, r.output].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            let message = String(parts.joined(separator: "\n").suffix(3000))
+            if r.exitCode == 255 {
+                throw failure("SSH 连接失败或中途断开（255）：\(message)")
+            }
             throw failure("SSH 操作失败（\(r.exitCode)）：\(message)")
         }
         return r.output
@@ -194,14 +205,72 @@ public final class CloudConnection: ObservableObject {
         do { try await openTunnel(expected: expected) }
         catch { status = .error(error.localizedDescription); throw error }
     }
+    /// 本机 127.0.0.1 上该端口能否绑定（被残留 ssh 转发占用时返回 false）。
+    private static func portIsFree(_ port: Int) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(UInt16(port).bigEndian)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let rc = withUnsafePointer(to: &addr) { ptr -> Int32 in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        return rc == 0
+    }
+    private static func findFreePortPair() -> (Int, Int)? {
+        for base in stride(from: 28765, to: 29765, by: 2) where portIsFree(base) && portIsFree(base + 1) {
+            return (base, base + 1)
+        }
+        return nil
+    }
+    /// 关闭本 App 以前留下的所有隧道（控制套接字与残留 ssh 进程）。
+    /// 模式写成 [c]loud-ctl- 以免 pkill 匹配到执行本命令的 shell 自身。
+    private func closeStrayTunnels() async {
+        let command = "for s in /tmp/[c]loud-ctl-*; do if [ -S \"$s\" ]; then ssh -S \"$s\" -O exit placeholder >/dev/null 2>&1; fi; rm -f \"$s\"; done; pkill -f '[c]loud-ctl-' >/dev/null 2>&1; true"
+        _ = try? await shell(command, timeout: 15)
+    }
+    /// 选定本次隧道使用的本机端口：优先 18765/18766，等待残留转发释放；仍被占用时若是可用的同一服务则复用，否则换空闲端口。
+    /// 返回 true 表示直接复用了现有隧道。
+    private func chooseLocalPorts() async throws -> Bool {
+        await closeStrayTunnels()
+        for _ in 0..<12 {
+            if Self.portIsFree(18765) && Self.portIsFree(18766) {
+                apiPort = 18765; desktopPort = 18766
+                return false
+            }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        apiPort = 18765; desktopPort = 18766
+        if !Self.portIsFree(18765),
+           let health = try? await requestRaw(method: "GET", path: "/health", body: nil),
+           health["service"] as? String == "openminis-cloud-agent",
+           (try? await requestRaw(method: "GET", path: "/v1/sessions", body: nil)) != nil {
+            return true
+        }
+        guard let pair = Self.findFreePortPair() else {
+            throw failure("本机端口 18765 / 18766 被占用，且找不到其他空闲端口。请从后台划掉 App 后重新打开再连接。")
+        }
+        apiPort = pair.0; desktopPort = pair.1
+        return false
+    }
     private func openTunnel(expected: UUID) async throws {
+        if try await chooseLocalPorts() {
+            guard generation == expected else { throw failure("连接已取消，请重新连接") }
+            isConnected = true; status = .connected
+            _ = try? await requestRaw(method: "PUT", path: "/v1/settings", body: ["timezone": TimeZone.current.identifier])
+            return
+        }
         let password = try await passwordFile()
         let control = "/tmp/cloud-ctl-\(UUID().uuidString)"
         controlPath = control
         do {
             let log = control + ".log"
-            // 同时转发 API (18765) 与无VNC桌面 (18766)
-            _ = try await checked("umask 077; sshpass -f \(quote(password)) ssh \(options()) -n -f -N -M -S \(quote(control)) -o ExitOnForwardFailure=yes -L 127.0.0.1:18765:127.0.0.1:18765 -L 127.0.0.1:18766:127.0.0.1:18766 \(destination) >\(quote(log)) 2>&1; rc=$?; if [ $rc -ne 0 ]; then cat \(quote(log)) >&2; fi; rm -f \(quote(log)); exit $rc", timeout: 50)
+            // 同时转发 API（远端 18765）与 noVNC 桌面（远端 18766）到本机选定端口
+            let forwards = "-L 127.0.0.1:\(apiPort):127.0.0.1:18765 -L 127.0.0.1:\(desktopPort):127.0.0.1:18766"
+            _ = try await checked("umask 077; sshpass -f \(quote(password)) ssh \(options()) -n -f -N -M -S \(quote(control)) -o ExitOnForwardFailure=yes \(forwards) \(destination) >\(quote(log)) 2>&1; rc=$?; if [ $rc -ne 0 ]; then cat \(quote(log)) >&2; fi; rm -f \(quote(log)); exit $rc", timeout: 50)
             await cleanup(password)
             guard generation == expected else { throw failure("连接已取消，请重新连接") }
             let health = try await requestRaw(method: "GET", path: "/health", body: nil)
@@ -215,7 +284,11 @@ public final class CloudConnection: ObservableObject {
             await cleanup(password)
             _ = try? await shell("ssh -S \(quote(control)) -O exit \(destination) >/dev/null 2>&1", timeout: 10)
             controlPath = nil; isConnected = false
-            throw failure("\(error.localizedDescription)\n若尚未安装云电脑桌面，请点击“安装 / 更新云电脑桌面与 Agent 服务”；已有服务请核对 Token。")
+            let text = error.localizedDescription
+            if text.contains("Address in use") || text.contains("cannot listen") || text.contains("Could not request local forwarding") {
+                throw failure("\(text)\n本机隧道端口仍被上一次连接占用。已自动清理残留隧道，请等几秒再点「重连」；仍失败请从后台划掉 App 后重开。")
+            }
+            throw failure("\(text)\n若尚未安装，请点「安装 / 更新服务器 Agent 服务」或「安装 / 更新云电脑桌面环境 (Xvfb/noVNC)」；已安装的请核对 Token。")
         }
     }
     public func disconnect() {
@@ -237,10 +310,10 @@ public final class CloudConnection: ObservableObject {
         let data = try Data(contentsOf: url)
         let expectedIdentity = identity
         let password = try await passwordFile()
+        installLog = ""
         do {
-            let scriptName = withDesktop ? "install-desktop.sh" : "install.sh"
-            let remote = "set -e; d=$(mktemp -d /tmp/openminis-cloud.XXXXXXXX); trap 'rm -rf \"$d\"' EXIT; tar -xzf - -C \"$d\"; cd \"$d\"; if [ \"$(id -u)\" = 0 ]; then bash \(scriptName); else sudo -n bash \(scriptName); fi"
-            _ = try await checked("sshpass -f \(quote(password)) ssh \(options()) \(destination) \(quote(remote))", input: data, timeout: 720)
+            try await runDetachedInstall(scriptName: withDesktop ? "install-desktop.sh" : "install.sh", bundle: data,
+                                         password: password, maxSeconds: withDesktop ? 3600 : 1200)
             let read = "if [ \"$(id -u)\" = 0 ]; then cat /etc/openminis/token; else sudo -n cat /etc/openminis/token; fi"
             let result = try await shell("sshpass -f \(quote(password)) ssh \(options()) -n \(destination) \(quote(read))", timeout: 45)
             let token = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -253,9 +326,54 @@ public final class CloudConnection: ObservableObject {
             try await connect()
         } catch { await cleanup(password); throw error }
     }
+    /// 上传安装包后在服务器上用 nohup + setsid 后台运行安装脚本，日志写入文件，手机端用短连接轮询。
+    /// 国内网络下长时间 SSH 会话容易被中断（255），这样连接断开也不会打断安装，重连后继续看进度。
+    private func runDetachedInstall(scriptName: String, bundle: Data, password: String, maxSeconds: TimeInterval) async throws {
+        let dir = "/tmp/openminis-install-" + UUID().uuidString.prefix(8).lowercased()
+        let sudo = "if [ \"$(id -u)\" = 0 ]; then S=''; else S='sudo -n'; fi"
+        func ssh(_ remote: String, stdin: Bool = false) -> String {
+            "sshpass -f \(quote(password)) ssh \(options())\(stdin ? "" : " -n") \(destination) \(quote(remote))"
+        }
+        let upload = "set -e; umask 022; rm -rf \(dir); mkdir -p \(dir); tar -xzf - -C \(dir); \(sudo); $S true || { echo '安装需要 root 或免密 sudo 权限' >&2; exit 3; }; echo uploaded"
+        _ = try await checked(ssh(upload, stdin: true), input: bundle, timeout: 300)
+        let start = "\(sudo); cd \(dir) && $S nohup setsid bash -c 'bash ./\(scriptName) > ./install.log 2>&1; echo $? > ./install.rc' >/dev/null 2>&1 </dev/null & sleep 1; echo started"
+        _ = try await checked(ssh(start), timeout: 60)
+        installLog = "安装已在服务器后台运行（日志 \(dir)/install.log）…"
+        let poll = "\(sudo); if [ -f \(dir)/install.rc ]; then echo \"__RC__=$($S cat \(dir)/install.rc)\"; fi; $S tail -c 4000 \(dir)/install.log 2>/dev/null; true"
+        let deadline = Date().addingTimeInterval(maxSeconds)
+        var dropped = 0
+        var exitCode: Int?
+        while Date() < deadline {
+            try await Task.sleep(nanoseconds: 4_000_000_000)
+            guard let r = try? await shell(ssh(poll), timeout: 40), r.exitCode == 0 else {
+                dropped += 1
+                if dropped >= 20 {
+                    throw failure("SSH 连接多次中断，安装可能仍在服务器上进行。可稍后重连查看；服务器日志：\(dir)/install.log\n最近输出：\n\(installLog.suffix(1500))")
+                }
+                continue
+            }
+            dropped = 0
+            var text = r.output
+            if text.hasPrefix("__RC__=") {
+                let firstLine = text.prefix(while: { $0 != "\n" })
+                exitCode = Int(firstLine.dropFirst("__RC__=".count).trimmingCharacters(in: .whitespaces)) ?? -1
+                text = String(text.dropFirst(firstLine.count)).trimmingCharacters(in: .newlines)
+            }
+            if !text.isEmpty { installLog = text }
+            if exitCode != nil { break }
+        }
+        guard let code = exitCode else {
+            throw failure("安装超时（\(Int(maxSeconds / 60)) 分钟）仍未结束，可能卡在下载。服务器日志：\(dir)/install.log\n最近输出：\n\(installLog.suffix(1500))")
+        }
+        guard code == 0 else {
+            let journal = (try? await shell(ssh("\(sudo); $S journalctl -u openminis-cloud-agent --no-pager -n 30 2>&1; true"), timeout: 40))?.output ?? ""
+            throw failure("安装脚本失败（退出码 \(code)）。服务器日志：\(dir)/install.log\n最近输出：\n\(installLog.suffix(2500))" + (journal.isEmpty ? "" : "\n----- 服务日志 -----\n\(journal.suffix(1500))"))
+        }
+        _ = try? await shell(ssh("\(sudo); $S rm -rf \(dir)"), timeout: 30)
+    }
     public func checkDesktopReachable() async -> Bool {
         guard isConnected else { return false }
-        guard let url = URL(string: "http://127.0.0.1:18766/vnc.html") else { return false }
+        guard let url = URL(string: "http://127.0.0.1:\(desktopPort)/vnc.html") else { return false }
         var req = URLRequest(url: url)
         req.timeoutInterval = 4
         do {
@@ -281,7 +399,7 @@ public final class CloudConnection: ObservableObject {
             || (route == "/v1/memory" && String(components[1]).range(of: #"^[A-Za-z0-9_=&%.\-]{1,600}$"#, options: .regularExpression) != nil)
             || ((route.hasPrefix("/v1/personas/") || route.hasPrefix("/v1/bots/")) && String(components[1]) == "purge_memory=1")
             || ((route == "/v1/sessions" || route == "/v1/routines") && String(components[1]).range(of: #"^bot=[a-z0-9_-]{1,32}$"#, options: .regularExpression) != nil)
-        guard (route == "/health" || route.hasPrefix("/v1/")), queryAllowed, !path.contains(".."), !path.contains("#"), !path.contains("\\"), !path.contains("//"), let url = URL(string: "http://127.0.0.1:18765" + path), url.host == "127.0.0.1", url.port == 18765 else {
+        guard (route == "/health" || route.hasPrefix("/v1/")), queryAllowed, !path.contains(".."), !path.contains("#"), !path.contains("\\"), !path.contains("//"), let url = URL(string: "http://127.0.0.1:\(apiPort)" + path), url.host == "127.0.0.1", url.port == apiPort else {
             throw failure("云端 API 路径无效")
         }
         var req = URLRequest(url: url)
