@@ -59,7 +59,10 @@ class BotTests(CloudServerTestCase):
         system = FakeModelHandler.requests[-1]["messages"][0]["content"]
         self.assertIn("[主 Bot]", system)
         self.assertIn("law（法务：合同审查）", system)
-        self.assertIn("[@提及] 用户在消息中 @ 了：law、doc", system)
+        # @提及提示随本轮请求接在最后一条用户消息后，系统提示保持稳定以便命中前缀缓存
+        self.assertNotIn("[@提及]", system)
+        last_user = [m for m in FakeModelHandler.requests[-1]["messages"] if m["role"] == "user"][-1]["content"]
+        self.assertIn("[@提及] 用户在消息中 @ 了：law、doc", last_user)
 
     def test_05_home_list_activity(self):
         self.request("PUT", "/v1/bots/home", {"name": "首页", "instructions": "x"})

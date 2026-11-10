@@ -48,6 +48,23 @@ class FakeModelHandler(BaseHTTPRequestHandler):
             return
         script = FakeModelHandler.scripts.get(data.get("model"))
         message = script(data) if script else {"role": "assistant", "content": "ok"}
+        if isinstance(message, dict) and message.get("_chunks") is not None:
+            # 流式回复：按 _chunks 逐块发 SSE，每块间隔 _delay 秒
+            chunks, delay = message["_chunks"], message.get("_delay", 0.05)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for piece in chunks:
+                if delay:
+                    time.sleep(delay)
+                self.wfile.write(b"data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": piece}}]}).encode() + b"\n\n")
+                self.wfile.flush()
+            self.wfile.write(b"data: " + json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                                                     "usage": {"prompt_tokens": 11, "completion_tokens": len(chunks)}}).encode() + b"\n\n")
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+            self.close_connection = True
+            return
         body = json.dumps({"id": "fake", "object": "chat.completion",
                            "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]}).encode("utf-8")
         self.send_response(200)

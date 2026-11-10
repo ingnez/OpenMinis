@@ -1,0 +1,36 @@
+{
+  "server_dir": "/tmp/bench-before/cloud-agent",
+  "runs": 5,
+  "ttft_ms": 400,
+  "token_ms": 25,
+  "reply_tokens": 60,
+  "longpoll": false,
+  "results": {
+    "chat": {
+      "accept_ms": 4.4,
+      "first_text_api_ms": 1946.8,
+      "first_text_app_ms": 2000.0,
+      "total_ms": 1946.8,
+      "request_tokens": 3033,
+      "tool_defs": 19,
+      "llm_calls": 1,
+      "streamed": false,
+      "statuses": [
+        "completed"
+      ]
+    },
+    "tools": {
+      "accept_ms": 4.2,
+      "first_text_api_ms": 3531.0,
+      "first_text_app_ms": 4000.0,
+      "total_ms": 3531.0,
+      "request_tokens": 9309,
+      "tool_defs": 19,
+      "llm_calls": 3,
+      "streamed": false,
+      "statuses": [
+        "completed"
+      ]
+    }
+  }
+}

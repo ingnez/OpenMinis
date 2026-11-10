@@ -45,6 +45,11 @@ DEFAULTS = {
     "group_activity": "normal",        # quiet 安静 / normal 正常 / lively 活跃
     "daily_token_cap": 0,              # 每天所有 Bot 合计 token 上限，0 = 不限；达到后新任务暂停到第二天
     "usage_alert_percent": 80,         # 用到上限的百分之多少时推送提醒，0 = 不提醒
+    "stream": True,                    # 流式接收模型输出，边生成边显示
+    "lazy_tools": True,                # 只发送和当前对话相关的工具定义（模型可用 request_tools 要更多）
+    "parallel_tools": True,            # 互不依赖的只读工具并行执行
+    "prompt_cache": True,              # Claude 系模型给系统提示加缓存标记
+    "context_trim_tokens": 48000,      # 上下文估算超过这么多 token 时自动精简，0 = 不精简
 }
 
 RESERVED_PORTS = (18765, 18766, 5901)
@@ -101,7 +106,7 @@ def validate(patch, current):
     for k, v in patch.items():
         if k not in DEFAULTS:
             raise SettingsError(f"未知设置：{k}")
-        if k in ("system_lock", "browser_warm"):
+        if k in ("system_lock", "browser_warm", "stream", "lazy_tools", "parallel_tools", "prompt_cache"):
             if not isinstance(v, bool):
                 raise SettingsError(f"{k} 必须是布尔值")
             s[k] = v
@@ -140,6 +145,11 @@ def validate(patch, current):
             s[k] = str(v or "")
         elif k == "port_base":
             s[k] = _int(v, k, 1024, 64000)
+        elif k == "context_trim_tokens":
+            n = _int(v, k, 0, 1000000)
+            if 0 < n < 4000:
+                raise SettingsError("context_trim_tokens 为 0（不精简）或至少 4000")
+            s[k] = n
         elif k == "port_range":
             s[k] = _int(v, k, 1, 1000)
         elif k == "usage_alert_percent":

@@ -1,0 +1,36 @@
+{
+  "server_dir": "/workspace/OpenMinis/cloud-agent",
+  "runs": 5,
+  "ttft_ms": 400,
+  "token_ms": 25,
+  "reply_tokens": 60,
+  "longpoll": true,
+  "results": {
+    "chat": {
+      "accept_ms": 3.2,
+      "first_text_api_ms": 453.6,
+      "first_text_app_ms": 453.6,
+      "total_ms": 1934.9,
+      "request_tokens": 1791,
+      "tool_defs": 10,
+      "llm_calls": 1,
+      "streamed": true,
+      "statuses": [
+        "completed"
+      ]
+    },
+    "tools": {
+      "accept_ms": 2.9,
+      "first_text_api_ms": 2026.9,
+      "first_text_app_ms": 2026.9,
+      "total_ms": 3505.4,
+      "request_tokens": 5583,
+      "tool_defs": 10,
+      "llm_calls": 3,
+      "streamed": true,
+      "statuses": [
+        "completed"
+      ]
+    }
+  }
+}

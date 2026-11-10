@@ -51,6 +51,9 @@ import cloud_browser
 import cloud_delegation as deleg
 import cloud_groups
 import cloud_usage
+import cloud_llm
+import gzip
+from collections import deque
 import cloud_desktop
 import cloud_secrets
 import cloud_policy
@@ -744,6 +747,10 @@ def list_approvals(task_id):
                     "expires_at": r[10], "decided_at": r[11]})
     return out
 
+EVENT_COND = threading.Condition()   # 新事件 / 流式文字更新时唤醒长轮询
+LIVE = {}                            # task_id -> {"text", "seq"}：正在生成的文字，只在内存里
+LIVE_SEQ = [0]
+
 def log_event(task_id, etype, payload):
     conn = get_db_connection()
     c = conn.cursor()
@@ -753,6 +760,24 @@ def log_event(task_id, etype, payload):
     )
     conn.commit()
     conn.close()
+    with EVENT_COND:
+        EVENT_COND.notify_all()
+
+def live_update(task_id, text):
+    with EVENT_COND:
+        LIVE_SEQ[0] += 1
+        LIVE[task_id] = {"text": text, "seq": LIVE_SEQ[0]}
+        EVENT_COND.notify_all()
+
+def live_clear(task_id):
+    with EVENT_COND:
+        LIVE.pop(task_id, None)
+        EVENT_COND.notify_all()
+
+def live_get(task_id):
+    with EVENT_COND:
+        v = LIVE.get(task_id)
+        return dict(v) if v else None
 
 def tool_shell_execute(task_id, session_id, args):
     if is_task_cancelled(task_id):
@@ -1780,6 +1805,105 @@ def _bot_provider(bot, fallback):
 
 USAGE_CAP = cloud_usage.CapState()
 
+# ---------------- 提速：流式、连接复用、快速模式、性能记录 ----------------
+PARALLEL_SAFE_TOOLS = {"file_read", "memory_search", "skill_load", "list_bots", "background_jobs", "request_tools"}
+FAST_MODE_NOTE = "\n[快速模式] 用户希望快：直接给结论，回答尽量短；能一步完成就不要多步规划，非必要不调用工具。"
+PERF = deque(maxlen=200)
+_STREAM_UNSUPPORTED = set()
+_CACHE_UNSUPPORTED = set()
+SPILL_CHARS = 12000
+
+def _bot_fast(session_id):
+    b = session_bot(session_id)
+    return bool(b and b.get("fast_mode"))
+
+def _append_note(msgs, note):
+    """把本轮才有的提示接在最后一条用户消息后面（不改动稳定的系统提示）。"""
+    out = list(msgs)
+    for i in range(len(out) - 1, 0, -1):
+        if out[i].get("role") == "user":
+            m = dict(out[i])
+            if isinstance(m.get("content"), str):
+                m["content"] = m["content"] + "\n\n" + note.strip()
+            elif isinstance(m.get("content"), list):
+                m["content"] = m["content"] + [{"type": "text", "text": note.strip()}]
+            out[i] = m
+            return out
+    return out
+
+def _with_prompt_cache(body, url):
+    """Claude 系模型：给稳定的系统提示打 cache_control，后续轮次只为新增部分付全价、首字更快。"""
+    model = (body.get("model") or "").lower()
+    if "claude" not in model or (url, body.get("model")) in _CACHE_UNSUPPORTED or not resource_settings().get("prompt_cache", True):
+        return body
+    msgs = body.get("messages") or []
+    if not msgs or msgs[0].get("role") != "system" or not isinstance(msgs[0].get("content"), str):
+        return body
+    sys_msg = {"role": "system", "content": [{"type": "text", "text": msgs[0]["content"], "cache_control": {"type": "ephemeral"}}]}
+    return dict(body, messages=[sys_msg] + msgs[1:])
+
+def call_chat(url, headers, body, effort, stream=True, on_text=None):
+    """主循环的模型调用：复用连接、流式；服务商不支持流式 / 思考参数 / 缓存标记时各降级一次并记住。返回 (resp, timing)。"""
+    model = body.get("model")
+    use_stream = bool(stream) and (url, model) not in _STREAM_UNSUPPORTED
+    use_cache = True
+    for _attempt in range(5):
+        payload = apply_reasoning(body, model, effort, url)
+        cached = _with_prompt_cache(payload, url) if use_cache else payload
+        try:
+            return cloud_llm.chat_completion(url, headers, cached, stream=use_stream, on_text=on_text)
+        except urllib.error.HTTPError as e:
+            if e.code not in (400, 422):
+                raise
+            if cached is not payload:
+                use_cache = False
+                _CACHE_UNSUPPORTED.add((url, model))
+                continue
+            if payload is not body:
+                if effort == "xhigh" and "claude" not in (model or "").lower():
+                    effort = "high"
+                    continue
+                _EFFORT_UNSUPPORTED.add((url, model))
+                continue
+            if use_stream:
+                use_stream = False
+                _STREAM_UNSUPPORTED.add((url, model))
+                continue
+            raise
+    raise RuntimeError("model call failed after fallbacks")
+
+def spill_tool_output(session_id, tc_id, text):
+    """工具输出太长时：完整内容写进工作区文件，给模型头尾摘要 + 文件路径，避免撑爆上下文。"""
+    if len(text) <= SPILL_CHARS:
+        return text
+    try:
+        ws = get_session_workspace(session_id)
+        d = os.path.join(ws, ".outputs")
+        os.makedirs(d, exist_ok=True)
+        name = re.sub(r"[^A-Za-z0-9_-]", "_", str(tc_id or uuid.uuid4().hex[:8]))[:40] + ".txt"
+        with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+            f.write(text)
+        rel = ".outputs/" + name
+    except OSError:
+        rel = None
+    head, tail = text[:6000], text[-3000:]
+    note = f"\n…[输出共 {len(text)} 字，中间省略；完整内容在 {rel}，需要时用 file_read 分段读取]…\n" if rel else f"\n…[输出共 {len(text)} 字，中间省略]…\n"
+    return head + note + tail
+
+def finish_perf(perf, status):
+    calls = perf["llm_calls"]
+    total_ms = round((time.time() - perf["created_at"]) * 1000, 1)
+    rec = {"task_id": perf["task_id"], "session_id": perf["session_id"], "bot_id": perf["bot_id"], "model": perf["model"],
+           "status": status, "queued_ms": perf["queued_ms"],
+           "ttft_ms": calls[0]["ttft_ms"] if calls else None,
+           "first_text_ms": perf["first_text_ms"] if perf["first_text_ms"] is not None else total_ms,
+           "total_ms": total_ms, "llm_calls": len(calls), "llm_ms": round(sum(c["total_ms"] for c in calls), 1),
+           "streamed": all(c.get("streamed") for c in calls) if calls else False,
+           "prompt_tokens": perf["prompt_tokens"], "completion_tokens": perf["completion_tokens"],
+           "tool_defs": perf["tool_defs"], "trimmed": perf["trimmed"], "finished_at": time.time()}
+    PERF.append(rec)
+    log_event(perf["task_id"], "timings", rec)
+
 def note_usage(bot_id, model, resp, request_messages=None):
     """记一次模型调用的 token，并在接近 / 达到每日上限时推送一次提醒。"""
     try:
@@ -2278,21 +2402,24 @@ def apply_reasoning(body, model, effort, chat_url):
 def call_llm_with_effort(url, headers, body, effort):
     payload = apply_reasoning(body, body.get("model"), effort, url)
     if payload is body:
-        return call_llm(url, headers, body)
+        return call_llm_pooled(url, headers, body)
     try:
-        return call_llm(url, headers, payload)
+        return call_llm_pooled(url, headers, payload)
     except urllib.error.HTTPError as e:
         if e.code not in (400, 422):
             raise
         # 模型不支持思考参数（或不支持 xhigh）：降级一次，再不行就不发送
         if effort == "xhigh" and "claude" not in (body.get("model") or "").lower():
             try:
-                return call_llm(url, headers, apply_reasoning(body, body.get("model"), "high", url))
+                return call_llm_pooled(url, headers, apply_reasoning(body, body.get("model"), "high", url))
             except urllib.error.HTTPError as e2:
                 if e2.code not in (400, 422):
                     raise
         _EFFORT_UNSUPPORTED.add((url, body.get("model")))
-        return call_llm(url, headers, body)
+        return call_llm_pooled(url, headers, body)
+
+def call_llm_pooled(url, headers, body):
+    return cloud_llm.chat_completion(url, headers, body, stream=False)[0]
 
 def call_llm(url, headers, body):
     opener = urllib.request.build_opener(NoRedirect)
@@ -2377,7 +2504,11 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     conn.close()
 
     plugin_defs, plugin_map, plugin_note = plugin_tools_for_session(session_id, depth)
-    system_text = persona_prompt(session_id) + (instructions or "") + server_tool_notes(session_id) + plugin_note + mention_note(session_id, initial_content)
+    # 系统提示保持稳定（不放随消息变化的内容），服务商的前缀缓存才能命中；@提及提示放到本轮请求的末尾
+    system_text = persona_prompt(session_id) + (instructions or "") + server_tool_notes(session_id) + plugin_note
+    if _bot_fast(session_id):
+        system_text += FAST_MODE_NOTE
+    dynamic_note = mention_note(session_id, initial_content)
     messages = [{"role": "system", "content": system_text.lstrip()}]
     for r_role, r_content, r_tc, r_tcid in rows:
         m = {"role": r_role}
@@ -2400,8 +2531,26 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
 
     _bot = session_bot(session_id)
     effort = TASK_EFFORT.pop(task_id, None) or (_bot or {}).get("reasoning_effort")
+    if _bot_fast(session_id) and effort not in (None, "", "off"):
+        effort = "low"
     log_event(task_id, "started", {"message": "Started", "model": model, "reasoning_effort": effort})
     final_status = "completed"
+    rs_perf = resource_settings()
+    extra_tools = set()
+    perf = {"task_id": task_id, "session_id": session_id, "bot_id": session_persona_id(session_id) or "", "model": model,
+            "started_at": time.time(), "queued_ms": 0, "llm_calls": [], "first_text_ms": None, "tools": 0,
+            "prompt_tokens": 0, "completion_tokens": 0, "tool_defs": 0, "trimmed": False}
+    try:
+        created = get_db_connection().execute("SELECT created_at FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        perf["created_at"] = created[0] if created else perf["started_at"]
+    except Exception:
+        perf["created_at"] = perf["started_at"]
+    perf["queued_ms"] = round((perf["started_at"] - perf["created_at"]) * 1000, 1)
+
+    def on_text(text):
+        if perf["first_text_ms"] is None:
+            perf["first_text_ms"] = round((time.time() - perf["created_at"]) * 1000, 1)
+        live_update(task_id, text)
 
     try:
         for _ in range(MAX_TURNS):
@@ -2409,9 +2558,23 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 final_status = "cancelled"
                 break
             try:
-                resp = call_llm_with_effort(chat_url, {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}, {
-                    "model": model, "messages": messages, "tools": tools_for_depth(depth) + plugin_defs, "tool_choice": "auto", "stream": False
-                }, effort)
+                send_msgs, trim_note = cloud_llm.trim_messages(messages, rs_perf.get("context_trim_tokens", 0))
+                if trim_note and not perf["trimmed"]:
+                    perf["trimmed"] = True
+                    log_event(task_id, "status", {"message": "对话较长，已自动精简较早的内容"})
+                if dynamic_note:
+                    send_msgs = _append_note(send_msgs, dynamic_note)
+                tools, _omitted = cloud_llm.select_tools(tools_for_depth(depth) + plugin_defs, send_msgs, extra_tools,
+                                                          always_all=not rs_perf.get("lazy_tools", True))
+                perf["tool_defs"] = max(perf["tool_defs"], len(tools))
+                live_update(task_id, "")
+                resp, timing = call_chat(chat_url, {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}, {
+                    "model": model, "messages": send_msgs, "tools": tools, "tool_choice": "auto"
+                }, effort, stream=rs_perf.get("stream", True), on_text=on_text)
+                perf["llm_calls"].append(timing)
+                u = resp.get("usage") or {}
+                perf["prompt_tokens"] += int(u.get("prompt_tokens") or 0)
+                perf["completion_tokens"] += int(u.get("completion_tokens") or 0)
             except Exception as e:
                 log_event(task_id, "error", {"error": sanitize_err(e)})
                 final_status = "failed"
@@ -2459,10 +2622,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 conn.commit()
                 conn.close()
 
-                for tc in tool_calls:
+                def exec_tool(tc):
                     if is_task_cancelled(task_id):
-                        final_status = "cancelled"
-                        break
+                        return None
                     tc_id = tc.get("id")
                     fn = tc.get("function", {})
                     fn_name = fn.get("name")
@@ -2471,8 +2633,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
 
                     log_event(task_id, "tool_call", {"id": tc_id, "tool": fn_name, "arguments": fn_args})
                     if is_task_cancelled(task_id):
-                        final_status = "cancelled"
-                        break
+                        return None
 
                     policy = current_approval_policy()
                     hit = cloud_policy.evaluate(fn_name, fn_args, policy)
@@ -2485,8 +2646,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     if hit:
                         decision = request_approval(task_id, session_id, tc_id, fn_name, fn_args, hit, policy.get("timeout_seconds", 1800))
                         if decision == "cancelled" or is_task_cancelled(task_id):
-                            final_status = "cancelled"
-                            break
+                            return None
 
                     if hit and decision != "approved":
                         label = {"denied": "用户拒绝", "expired": "审批超时未获批准"}.get(decision, decision)
@@ -2505,6 +2665,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     elif fn_name == "page_write": res = tool_page_write(task_id, session_id, fn_args)
                     elif fn_name == "subagent_task": res = tool_subagent_task(task_id, session_id, fn_args, model, provider_config, depth)
                     elif fn_name == "list_bots": res = tool_list_bots(task_id, session_id, fn_args)
+                    elif fn_name == "request_tools":
+                        known = {d["function"]["name"] for d in tools_for_depth(depth)}
+                        want = [n for n in (fn_args.get("names") or []) if n in known]
+                        res = {"enabled": want, "note": "下一步可以使用这些工具"} if want else {"error": "没有这些工具", "available": sorted(known)}
                     elif fn_name == "skill_save": res = tool_skill_save(task_id, session_id, fn_args)
                     elif fn_name == "send_to_bot" and depth == 0: res = tool_send_to_bot(task_id, session_id, fn_args, model, provider_config)
                     elif fn_name == "delegate_task" and depth == 0: res = tool_delegate_task(task_id, session_id, fn_args, model, provider_config)
@@ -2515,11 +2679,15 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                         if isinstance(res, dict) and res.get("error") == "needs_auth":
                             log_event(task_id, "auth_required", {"plugin": res.get("plugin"), "message": res.get("message")})
                     else: res = {"error": f"Unknown tool {fn_name}"}
+                    return (tc_id, fn_name, res)
 
+                def post_tool(tc_id, fn_name, res):
+                    if fn_name == "request_tools" and isinstance(res, dict) and res.get("enabled"):
+                        extra_tools.update(res["enabled"])
                     log_event(task_id, "tool_result", {"id": tc_id, "tool": fn_name, "result": res})
                     
                     # Tool result formatting: If screenshot produced, include attachment path and format
-                    tool_content_str = json.dumps(res, ensure_ascii=False)
+                    tool_content_str = spill_tool_output(session_id, tc_id, json.dumps(res, ensure_ascii=False))
                     messages.append({"role": "tool", "tool_call_id": tc_id, "content": tool_content_str})
 
                     # If model is vision-capable (e.g. gpt-4o, claude-3, gemini-1.5, qwen-vl) and screenshot generated, inject vision user message
@@ -2549,6 +2717,27 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     conn.commit()
                     conn.close()
 
+                parallel = (len(tool_calls) > 1 and resource_settings().get("parallel_tools", True)
+                            and all(((tc.get("function") or {}).get("name")) in PARALLEL_SAFE_TOOLS for tc in tool_calls))
+                if parallel:
+                    # 互不依赖的只读工具一起执行，结果按原顺序写回
+                    from concurrent.futures import ThreadPoolExecutor
+                    with ThreadPoolExecutor(max_workers=min(4, len(tool_calls))) as ex:
+                        outcomes = list(ex.map(exec_tool, tool_calls))
+                    log_event(task_id, "status", {"message": f"并行执行了 {len(tool_calls)} 个工具"})
+                    for outcome in outcomes:
+                        if outcome is None:
+                            final_status = "cancelled"
+                            break
+                        post_tool(*outcome)
+                else:
+                    for tc in tool_calls:
+                        outcome = exec_tool(tc)
+                        if outcome is None:
+                            final_status = "cancelled"
+                            break
+                        post_tool(*outcome)
+
                 if final_status == "cancelled":
                     break
             else:
@@ -2565,6 +2754,11 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     finally:
         if is_task_cancelled(task_id):
             final_status = "cancelled"
+        try:
+            finish_perf(perf, final_status)
+        except Exception as e:
+            print(f"perf record failed: {e}", flush=True)
+        live_clear(task_id)
         conn = get_db_connection()
         c = conn.cursor()
         c.execute("UPDATE tasks SET status = ? WHERE task_id = ? AND status IN ('running', 'waiting_user')", (final_status, task_id))
@@ -3308,7 +3502,12 @@ def telegram_view(channel):
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, data):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        gz = len(body) > 4096 and "gzip" in (self.headers.get("Accept-Encoding") or "")
+        if gz:
+            body = gzip.compress(body, 5)   # 大响应压缩，经 SSH 隧道传得更快
         self.send_response(code)
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -3347,6 +3546,9 @@ class Handler(BaseHTTPRequestHandler):
                     "bots": True,
                     "delegation": True,
                     "group_chat": True,
+                    "event_longpoll": True,
+                    "streaming": True,
+                    "perf": True,
                     "plugins": True
                 },
                 "timestamp": time.time()
@@ -3542,6 +3744,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "q 必须是 1–100 个字符"})
                 return
             self._send(200, {"results": search_everything(q)})
+            return
+
+        if path == "/v1/perf":
+            recs = list(PERF)[-50:]
+            def med(key):
+                vals = sorted(r[key] for r in recs if isinstance(r.get(key), (int, float)))
+                return vals[len(vals) // 2] if vals else None
+            self._send(200, {"recent": list(reversed(recs)),
+                             "median": {k: med(k) for k in ("ttft_ms", "first_text_ms", "total_ms", "queued_ms", "prompt_tokens", "completion_tokens", "tool_defs")},
+                             "pool": dict(cloud_llm.POOL.stats),
+                             "settings": {k: resource_settings().get(k) for k in ("stream", "lazy_tools", "parallel_tools", "prompt_cache", "context_trim_tokens")}})
             return
 
         if path == "/v1/usage":
@@ -3798,26 +4011,42 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "Invalid after cursor: must be an integer"})
                 return
 
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT task_id, session_id, status, model, created_at FROM tasks WHERE task_id = ?", (tid,))
-            t = c.fetchone()
-            if not t:
-                conn.close()
-                self._send(404, {"error": "Task not found"})
+            try:
+                wait_s = max(0.0, min(25.0, float(query_params.get("wait", ["0"])[0])))
+                live_after = int(query_params.get("live_after", ["-1"])[0])
+            except ValueError:
+                self._send(400, {"error": "wait / live_after must be numbers"})
                 return
-            
-            c.execute("SELECT id, event_type, payload, timestamp FROM task_events WHERE task_id = ? AND id > ? ORDER BY id ASC", (tid, after_cursor))
+            # 长轮询：没有新事件也没有新的流式文字时挂起，有更新立刻返回（比定时轮询省流量、首字更早）
+            deadline = time.time() + wait_s
+            while True:
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("SELECT task_id, session_id, status, model, created_at FROM tasks WHERE task_id = ?", (tid,))
+                t = c.fetchone()
+                if not t:
+                    conn.close()
+                    self._send(404, {"error": "Task not found"})
+                    return
+                c.execute("SELECT id, event_type, payload, timestamp FROM task_events WHERE task_id = ? AND id > ? ORDER BY id ASC", (tid, after_cursor))
+                rows_ev = c.fetchall()
+                conn.close()
+                live = live_get(tid)
+                fresh_live = live is not None and live["seq"] > live_after and live["text"]
+                remaining = deadline - time.time()
+                if rows_ev or fresh_live or t[2] not in ("queued", "running") or remaining <= 0:
+                    break
+                with EVENT_COND:
+                    EVENT_COND.wait(min(remaining, 5.0))
             events = []
             max_id = after_cursor
-            for er in c.fetchall():
+            for er in rows_ev:
                 eid, etype, payload_str, etime = er
                 max_id = max(max_id, eid)
                 try: pl = json.loads(payload_str)
                 except: pl = {"raw": payload_str}
                 events.append({"monotonic_id": eid, "id": eid, "type": etype, "payload": pl, "timestamp": etime})
-            conn.close()
-            self._send(200, {
+            out = {
                 "task_id": t[0],
                 "session_id": t[1],
                 "status": t[2],
@@ -3825,7 +4054,10 @@ class Handler(BaseHTTPRequestHandler):
                 "created_at": t[4],
                 "last_cursor": max_id,
                 "events": events
-            })
+            }
+            if live and live["text"]:
+                out["live"] = live
+            self._send(200, out)
             return
 
         if path.startswith("/v1/tasks/"):
@@ -4258,6 +4490,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": str(e)})
                 return
             self._send(200, stats)
+            return
+
+        m_warm = re.match(r"^/v1/sessions/([A-Za-z0-9_-]{1,80})/warm$", path)
+        if m_warm:
+            # 打开对话 / 开始输入时调用：提前建好到模型服务商的连接、拉起浏览器，真正发送时少等一次握手
+            def _warm():
+                try:
+                    cloud_llm.POOL.warm_known()
+                except Exception:
+                    pass
+                try:
+                    if req_json.get("browser") and cloud_browser.is_browser_available():
+                        warm_browser_now()
+                except Exception:
+                    pass
+            threading.Thread(target=_warm, name="warm", daemon=True).start()
+            self._send(202, {"status": "warming"})
             return
 
         if path == "/v1/groups":
@@ -4828,6 +5077,10 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 CloudAgentHandler = Handler
+
+def warm_browser_now():
+    os.makedirs(SHARED_WORKSPACE, exist_ok=True)
+    return cloud_browser.execute_browser_action("shared", SHARED_WORKSPACE, {"action": "__warm__"})
 
 def warm_browser():
     """资源设置开启预热时，启动后先把共享浏览器开好，第一次网页操作不用等冷启动。"""
