@@ -359,7 +359,7 @@ struct CloudBotMemoryView: View {
             Section {
                 Toggle("同时显示共享记忆", isOn: $includeShared)
             } footer: {
-                Text("「仅此 Bot」的记忆只有 \(botName) 能用；主 Bot 写的是共享记忆，所有 Bot 都能看到。编辑共享记忆会把它变成这个 Bot 自己的一条。")
+                Text("「仅此 Bot」的记忆只有 \(botName) 能用；主 Bot 写的是共享记忆，所有 Bot 都能看到。编辑共享记忆会把它变成这个 Bot 自己的一条。共享的「用户本人」类记忆是所有 Bot 常驻的用户档案；这个 Bot 自己的「用户本人 / 偏好与约定」是它常驻的档案（各最多约 1500 字）；其余按日期记的是日记，Bot 需要时再检索。")
             }
             if entries.isEmpty && !loading {
                 Text("还没有记忆。对话里说「记住…」，或点右上角 + 手动添加。").font(.footnote).foregroundStyle(.secondary)
