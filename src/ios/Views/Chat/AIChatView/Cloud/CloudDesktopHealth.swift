@@ -285,7 +285,11 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
             try { rfb.qualityLevel = 2; rfb.compressionLevel = 9; } catch (e) {}
             window.__omRFB = rfb;
             rfb.addEventListener('clipboard', e => om.send({ type: 'clipboard', text: (e.detail && e.detail.text) || '' }));
-            rfb.addEventListener('connect', () => { tries = 0; post('connected'); setTimeout(om.fb, 50); });
+            rfb.addEventListener('connect', () => {
+              tries = 0; post('connected'); setTimeout(om.fb, 50);
+              // 真实流量计数：统计 WebSocket 收到的字节，每 2 秒报一次
+              try { const ws = rfb._sock && rfb._sock._websocket; if (ws && !ws.__omBytes) { ws.__omBytes = 1; ws.addEventListener('message', e => { om.bytes = (om.bytes || 0) + ((e.data && e.data.byteLength) || 0); }); } } catch (e) {}
+            });
             rfb.addEventListener('securityfailure', e => post('error:security ' + ((e.detail && e.detail.reason) || '')));
             rfb.addEventListener('disconnect', e => {
               post((e.detail && e.detail.clean) ? 'disconnected' : 'error:画面连接断开');
@@ -310,6 +314,8 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
     static let omScript = """
     const om = window.om = {};
     om.send = o => { try { window.webkit.messageHandlers.om.postMessage(JSON.stringify(o)); } catch (e) {} };
+    om.bytes = 0;
+    setInterval(() => { if (om.bytes) { om.send({ type: 'bytes', n: om.bytes }); om.bytes = 0; } }, 2000);
     const scr = document.getElementById('screen');
     const cvs = () => scr.querySelector('canvas');
     const cur = document.createElement('div');

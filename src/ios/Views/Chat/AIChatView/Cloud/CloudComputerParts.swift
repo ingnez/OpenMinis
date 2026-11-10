@@ -60,6 +60,7 @@ struct CloudComputerTopBar: View {
                 Button { ctl.pinnedQuality = level } label: { checked(level.label, ctl.pinnedQuality == level) }
             }
         } label: { Label("画质", systemImage: "dial.medium") }
+        CloudLowDataMenu(ctl: ctl)
         if ctl.zoom.scale > 1.01 {
             Button { ctl.resetZoom() } label: { Label("恢复原始大小", systemImage: "arrow.down.right.and.arrow.up.left") }
         }
@@ -313,5 +314,68 @@ struct CloudComputerHelpSheet: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("好") { dismiss() } } }
         }
         .presentationDetents([.medium, .large])
+    }
+}
+
+/// 省流量：蜂窝 / 低数据模式自动最省画质，可常开 / 关闭；显示本次连接实际收到的流量
+struct CloudLowDataMenu: View {
+    @ObservedObject var ctl: CloudDesktopController
+    @AppStorage(CloudLowBandwidth.key) private var setting = "auto"
+
+    var body: some View {
+        Menu {
+            Picker("省流量", selection: $setting) {
+                Text("用蜂窝时自动").tag("auto")
+                Text("常开").tag("on")
+                Text("关闭").tag("off")
+            }
+            Text("本次流量 \(CloudLowBandwidth.bytesText(ctl.bytesReceived))\(ctl.expensiveNetwork ? " · 蜂窝 / 低数据" : "")")
+        } label: {
+            Label("省流量 · \(CloudLowBandwidth.bytesText(ctl.bytesReceived))", systemImage: "antenna.radiowaves.left.and.right")
+        }
+        .onChange(of: setting) { _ in
+            if ctl.pinnedQuality == nil { ctl.setQuality(ctl.lowBandwidth ? CloudStreamQuality.saver : CloudStreamQuality.balanced) }
+        }
+    }
+}
+
+/// 「指给 Bot 看」：点屏幕一处 → 标记 → 写一句要求 → 发给这个 Bot（带远端坐标）
+struct CloudPointOverlay: View {
+    @ObservedObject var ctl: CloudDesktopController
+    let onSend: (CGPoint, String) -> Void
+    let onCancel: () -> Void
+    @State private var mark: CGPoint?
+    @State private var remote: CGPoint = .zero
+    @State private var text = ""
+    @State private var asking = false
+
+    var body: some View {
+        GeometryReader { _ in
+            ZStack(alignment: .topLeading) {
+                Color.white.opacity(0.001)
+                    .contentShape(Rectangle())
+                    .onTapGesture(coordinateSpace: .local) { p in
+                        mark = p
+                        remote = ctl.remotePoint(fromView: p)
+                        asking = true
+                    }
+                if let mark {
+                    Circle().stroke(Color.orange, lineWidth: 3).frame(width: 44, height: 44)
+                        .position(mark)
+                        .allowsHitTesting(false)
+                }
+                Text(mark == nil ? "点一下要指给 Bot 看的位置" : "x \(Int(remote.x)) · y \(Int(remote.y))")
+                    .font(.footnote.weight(.medium)).foregroundStyle(.black)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Capsule().fill(Color.orange))
+                    .padding(12)
+            }
+        }
+        .alert("要 Bot 在这里做什么？", isPresented: $asking) {
+            TextField("比如：点这个按钮 / 这里填什么", text: $text)
+            Button("发给 Bot") { onSend(remote, text); text = ""; mark = nil }
+            Button("重新指", role: .cancel) { mark = nil }
+            Button("不指了", role: .destructive) { onCancel() }
+        }
     }
 }

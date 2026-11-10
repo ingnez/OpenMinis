@@ -32,6 +32,7 @@ struct CloudComputerView: View {
     @State private var token: String?
     @State private var ownDisplay = false
     @State private var rechecking = false
+    @State private var pointing = false
 
     enum Phase: Equatable { case connecting, live, failed(String), problem(CloudDesktopProblem) }
 
@@ -47,6 +48,7 @@ struct CloudComputerView: View {
         .safeAreaInset(edge: .top) { if !immersive { topBar } }
         .safeAreaInset(edge: .bottom) { if !immersive { bottomArea } }
         .overlay(alignment: .topTrailing) { if immersive { exitImmersive } }
+        .overlay(alignment: .bottomTrailing) { if !immersive, !ctl.controlling, sessionId != nil, phase == .live { pointButton } }
         .overlay(alignment: .top) { toastView }
         .overlay(alignment: .bottom) { if dictation.isRecording || !dictation.transcript.isEmpty { dictationBar } }
         .toolbar(.hidden, for: .navigationBar)
@@ -72,6 +74,9 @@ struct CloudComputerView: View {
                                      onLoaded: { reused in pageLoaded(reused) }, onState: { vncStateChanged($0) })
                 if ctl.controlling && ctl.mode == .trackpad {
                     CloudTrackpadSurface(controller: ctl)
+                }
+                if pointing && !ctl.controlling {
+                    CloudPointOverlay(ctl: ctl, onSend: { p, t in sendPoint(p, t) }, onCancel: { pointing = false })
                 }
             }
             .opacity(phase == .live ? 1 : 0.01)
@@ -115,6 +120,32 @@ struct CloudComputerView: View {
                                    onPastePhone: pastePhoneClipboard, onSyncClipboard: syncClipboardToRemote,
                                    onFetchClipboard: fetchRemoteClipboard, onVault: { showVault = true },
                                    onDictate: toggleDictation)
+        }
+    }
+
+    private var pointButton: some View {
+        Button { pointing.toggle() } label: {
+            Label(pointing ? "取消指点" : "指给 Bot 看", systemImage: "hand.point.up.left")
+                .font(.footnote.weight(.semibold)).foregroundStyle(pointing ? .black : .white)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(Capsule().fill(pointing ? Color.orange : Color.black.opacity(0.6)))
+        }
+        .padding(.trailing, 14).padding(.bottom, 120)
+    }
+
+    /// 把坐标 + 要求作为一条消息发给这个 Bot（Bot 自己截图确认再操作）
+    private func sendPoint(_ p: CGPoint, _ text: String) {
+        pointing = false
+        guard let sid = sessionId else { return }
+        let msg = CloudPointAndTell.message(point: p, screen: ctl.trackpad.screen, instruction: text)
+        Task {
+            do {
+                _ = try await connection.request(method: "POST", path: "/v1/sessions/\(sid)/messages",
+                                                 body: ["content": msg, "model": "bot", "provider": [String: Any](), "client_nonce": UUID().uuidString])
+                show("已发给 Bot：x \(Int(p.x)), y \(Int(p.y))")
+            } catch {
+                show("没发出去：\(error.localizedDescription)")
+            }
         }
     }
 

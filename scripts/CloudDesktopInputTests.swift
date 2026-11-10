@@ -99,6 +99,15 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(reused.summary == "复用已连接的画面 · 30 ms", "复用")
         check(CloudDesktopReuse.fresh(t0, now: t0.addingTimeInterval(30)) && !CloudDesktopReuse.fresh(t0, now: t0.addingTimeInterval(61)) && !CloudDesktopReuse.fresh(nil), "体检结果 60 秒内复用")
         check(CloudControlLease.heartbeat * 3 == CloudControlLease.serverLease, "续租间隔是租期的 1/3")
+        check(CloudCombo.forGesture(.threeLeft) == .nextTab && CloudCombo.forGesture(.edgeBack).keysyms == [0xffe9, 0xff51], "手势快捷键")
+        check(CloudCombo.prevTab.events.count == 6 && CloudCombo.prevTab.events.last! == (0xffe3, false), "上一个标签：按下再反向松开")
+        check(CloudLowBandwidth.active(setting: "auto", expensive: true) && !CloudLowBandwidth.active(setting: "auto", expensive: false), "蜂窝自动省流")
+        check(CloudLowBandwidth.active(setting: "on", expensive: false) && !CloudLowBandwidth.active(setting: "off", expensive: true), "常开 / 关闭")
+        check(CloudLowBandwidth.level(CloudStreamQuality.high, lowBandwidth: true) == CloudStreamQuality.saver && CloudLowBandwidth.level(CloudStreamQuality.high, lowBandwidth: false) == CloudStreamQuality.high, "省流量压到最省画质")
+        check(CloudLowBandwidth.bytesText(500) == "500 B" && CloudLowBandwidth.bytesText(2048) == "2 KB" && CloudLowBandwidth.bytesText(3 * 1024 * 1024) == "3.0 MB", "流量文字")
+        let pt = CloudPointAndTell.message(point: CGPoint(x: 1500.4, y: 30.6), screen: CGSize(width: 1280, height: 800), instruction: " 点这个按钮 ")
+        check(pt.contains("x=1279, y=31") && pt.contains("1280×800") && pt.contains("要求：点这个按钮") && pt.contains("先截图"), "指给 Bot 看：\(pt)")
+        check(CloudPointAndTell.message(point: .zero, screen: CGSize(width: 1280, height: 800), instruction: "").contains("看看这里是什么"), "没说要求")
         print("CloudDesktopInputTests OK")
     }
 }

@@ -175,6 +175,22 @@ struct CloudCombo: Identifiable, Equatable {
 
     static let all: [CloudCombo] = [copy, paste, cut, selectAll, undo, find, newTab, closeTab, refresh, switchApp]
 
+    // 手势快捷键：三指左右滑 = 下/上一个标签，三指上滑 = 切换窗口，左边缘右滑 = 后退
+    static let nextTab = CloudCombo(id: "nexttab", label: "下一个标签", keysyms: [CloudKey.ctrl.keysym, CloudKey.tab.keysym])
+    static let prevTab = CloudCombo(id: "prevtab", label: "上一个标签", keysyms: [CloudKey.ctrl.keysym, CloudKey.shift.keysym, CloudKey.tab.keysym])
+    static let back = CloudCombo(id: "back", label: "后退", keysyms: [CloudKey.alt.keysym, 0xff51])
+
+    enum Gesture { case threeLeft, threeRight, threeUp, edgeBack }
+
+    static func forGesture(_ g: Gesture) -> CloudCombo {
+        switch g {
+        case .threeLeft: return nextTab
+        case .threeRight: return prevTab
+        case .threeUp: return switchApp
+        case .edgeBack: return back
+        }
+    }
+
     /// 按下顺序 + 反向松开
     var events: [(Int, Bool)] { keysyms.map { ($0, true) } + keysyms.reversed().map { ($0, false) } }
 }
@@ -329,5 +345,43 @@ enum CloudDesktopReuse {
         guard let at else { return false }
         let age = now.timeIntervalSince(at)
         return age >= 0 && age < ttl
+    }
+}
+
+/// 省流量模式：蜂窝 / 低数据模式下自动用最省画质（auto），或常开 / 关闭；外加本次连接的真实流量计数（页面里统计 WebSocket 收到的字节）
+enum CloudLowBandwidth {
+    static let key = "OpenMinisDesktopLowData"   // auto / on / off
+
+    static func active(setting: String, expensive: Bool) -> Bool {
+        switch setting {
+        case "on": return true
+        case "off": return false
+        default: return expensive
+        }
+    }
+
+    static func level(_ adaptive: CloudStreamQuality.Level, lowBandwidth: Bool) -> CloudStreamQuality.Level {
+        lowBandwidth ? CloudStreamQuality.saver : adaptive
+    }
+
+    static func bytesText(_ n: Int) -> String {
+        if n < 1024 { return "\(n) B" }
+        if n < 1024 * 1024 { return String(format: "%.0f KB", Double(n) / 1024) }
+        return String(format: "%.1f MB", Double(n) / 1024 / 1024)
+    }
+}
+
+/// 「指给 Bot 看」：看 Bot 干活时点一下屏幕某处，再说 / 打一句要求，Bot 收到坐标（远端像素）和要求，先截图再操作
+enum CloudPointAndTell {
+    static func clamp(_ p: CGPoint, screen: CGSize) -> CGPoint {
+        CGPoint(x: min(max(0, p.x), max(0, screen.width - 1)).rounded(), y: min(max(0, p.y), max(0, screen.height - 1)).rounded())
+    }
+
+    static func message(point: CGPoint, screen: CGSize, instruction: String) -> String {
+        let p = clamp(point, screen: screen)
+        let ask = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "[指给你看] 我在云电脑屏幕上点了这个位置：x=\(Int(p.x)), y=\(Int(p.y))（屏幕 \(Int(screen.width))×\(Int(screen.height)) 像素）。"
+            + (ask.isEmpty ? "看看这里是什么。" : "要求：\(ask)")
+            + "\n请先截图确认这个位置是什么，再按要求操作。"
     }
 }

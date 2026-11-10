@@ -32,6 +32,13 @@ final class CloudDesktopController: ObservableObject {
     @Published var pinnedQuality: CloudStreamQuality.Level? { didSet { if let pinnedQuality { setQuality(pinnedQuality) } } }
     @Published private(set) var recording = false
     @Published private(set) var pointerUnsupported = false
+    /// 本次连接收到的画面字节数（页面里统计 WebSocket 消息，真实值）
+    @Published private(set) var bytesReceived = 0
+    /// 蜂窝 / 低数据模式（auto 时据此压画质）
+    @Published private(set) var expensiveNetwork = false
+    var lowBandwidth: Bool {
+        CloudLowBandwidth.active(setting: UserDefaults.standard.string(forKey: CloudLowBandwidth.key) ?? "auto", expensive: expensiveNetwork)
+    }
 
     weak var web: WKWebView?
     var viewport: CGSize = .zero
@@ -52,7 +59,7 @@ final class CloudDesktopController: ObservableObject {
     func js(_ code: String) { web?.evaluateJavaScript(code, completionHandler: nil) }
 
     func connected() {
-        setQuality(pinnedQuality ?? CloudStreamQuality.adaptive(rttMs: latencyMs))
+        setQuality(pinnedQuality ?? CloudLowBandwidth.level(CloudStreamQuality.adaptive(rttMs: latencyMs), lowBandwidth: lowBandwidth))
         syncPage()
         js("window.om&&om.fb()")
     }
@@ -75,6 +82,8 @@ final class CloudDesktopController: ObservableObject {
                 mode = .direct
                 onNotice?("这台服务器的 noVNC 不支持触控板模式，已换成直接触控")
             }
+        case "bytes":
+            bytesReceived += ev["n"] as? Int ?? 0
         case "shot":
             saveShot(ev)
         case "rec":
@@ -85,6 +94,17 @@ final class CloudDesktopController: ObservableObject {
     }
 
     // MARK: 触控板
+
+    /// 视图点 → 远端像素（「指给 Bot 看」用；未缩放时）
+    func remotePoint(fromView v: CGPoint) -> CGPoint {
+        if let c = canvas, c.width > 0, trackpad.screen.width > 0 {
+            let k = trackpad.screen.width / c.width
+            let z = zoom.scale
+            let vx = (v.x - zoom.offset.width) / max(0.0001, z), vy = (v.y - zoom.offset.height) / max(0.0001, z)
+            return CloudPointAndTell.clamp(CGPoint(x: (vx - c.minX) * k, y: (vy - c.minY) * k), screen: trackpad.screen)
+        }
+        return CloudPointAndTell.clamp(CloudScreenFit(screen: trackpad.screen, viewport: viewport).toScreen(v), screen: trackpad.screen)
+    }
 
     /// 远端像素 → 视图点（未缩放）
     private func toView(_ p: CGPoint) -> CGPoint {
@@ -203,7 +223,8 @@ final class CloudDesktopController: ObservableObject {
                 guard let self else { return }
                 self.latencyMs = ms
                 if self.pinnedQuality == nil {
-                    self.history = Array((self.history + [CloudStreamQuality.adaptive(rttMs: ms)]).suffix(4))
+                    let lvl = CloudLowBandwidth.level(CloudStreamQuality.adaptive(rttMs: ms), lowBandwidth: self.lowBandwidth)
+                    self.history = Array((self.history + [lvl]).suffix(4))
                     if let next = CloudStreamQuality.shouldSwitch(current: self.quality, history: self.history) { self.setQuality(next) }
                 }
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
@@ -212,9 +233,14 @@ final class CloudDesktopController: ObservableObject {
         let m = NWPathMonitor()
         m.pathUpdateHandler = { [weak self] path in
             let sig = path.status == .satisfied ? path.availableInterfaces.map(\.name).joined(separator: ",") : "offline"
+            let expensive = path.isExpensive || path.isConstrained
             Task { @MainActor in
                 guard let self else { return }
                 defer { self.lastPath = sig }
+                if self.expensiveNetwork != expensive {
+                    self.expensiveNetwork = expensive
+                    if self.pinnedQuality == nil, self.lowBandwidth { self.setQuality(CloudStreamQuality.saver) }
+                }
                 // 只在换网（Wi-Fi ↔ 蜂窝、断网恢复）时立刻重连，第一次回调不算
                 if let old = self.lastPath, old != sig, path.status == .satisfied { self.onNetworkChange?() }
             }
@@ -305,6 +331,19 @@ struct CloudTrackpadSurface: UIViewRepresentable {
             g.delegate = c
             v.addGestureRecognizer(g)
         }
+        // 手势快捷键：三指快速左 / 右 / 上滑、左边缘右滑（三指拖动画面要等快速滑动判定失败）
+        for (dir, sel) in [(UISwipeGestureRecognizer.Direction.left, #selector(Coordinator.swipeLeft)),
+                           (.right, #selector(Coordinator.swipeRight)), (.up, #selector(Coordinator.swipeUp))] {
+            let sw = UISwipeGestureRecognizer(target: c, action: sel)
+            sw.direction = dir
+            sw.numberOfTouchesRequired = 3
+            v.addGestureRecognizer(sw)
+            move.require(toFail: sw)
+        }
+        let edge = UIScreenEdgePanGestureRecognizer(target: c, action: #selector(Coordinator.edgeBack(_:)))
+        edge.edges = .left
+        v.addGestureRecognizer(edge)
+        pan.require(toFail: edge)
         pan.require(toFail: long)
         return v
     }
@@ -332,6 +371,13 @@ struct CloudTrackpadSurface: UIViewRepresentable {
             let t = g.translation(in: g.view)
             g.setTranslation(.zero, in: g.view)
             return CGSize(width: t.x, height: t.y)
+        }
+
+        @objc func swipeLeft() { controller.combo(.forGesture(.threeLeft)) }
+        @objc func swipeRight() { controller.combo(.forGesture(.threeRight)) }
+        @objc func swipeUp() { controller.combo(.forGesture(.threeUp)) }
+        @objc func edgeBack(_ g: UIScreenEdgePanGestureRecognizer) {
+            if g.state == .ended { controller.combo(.forGesture(.edgeBack)) }
         }
 
         @objc func pan(_ g: UIPanGestureRecognizer) {
