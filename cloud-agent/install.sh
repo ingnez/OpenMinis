@@ -73,6 +73,11 @@ mkdir -p "$CONFIG_DIR"
 CURRENT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # 仅复制核心服务与文档，避免污染测试数据或密钥文件
 cp -f "$CURRENT_DIR/cloud_agent_server.py" "$INSTALL_DIR/"
+# 升级时先删掉新版本里已经不存在的旧模块（只动 cloud_*.py，不碰 venv 等其它文件）
+for old in "$INSTALL_DIR"/cloud_*.py; do
+    [ -f "$old" ] || continue
+    [ -f "$CURRENT_DIR/$(basename "$old")" ] || { rm -f "$old"; echo "[+] 删除旧版本遗留模块 $(basename "$old")"; }
+done
 # 所有服务模块 (cloud_browser / cloud_desktop / cloud_secrets 等)
 for module in "$CURRENT_DIR"/cloud_*.py; do
     [ -f "$module" ] && cp -f "$module" "$INSTALL_DIR/"
@@ -111,6 +116,12 @@ chmod 600 "$MASTER_KEY_FILE"
 chown "$SERVICE_USER:$SERVICE_USER" "$MASTER_KEY_FILE"
 
 echo "=== 5. 配置 Systemd 服务文件 (openminis-cloud-agent.service) ==="
+# 已装过云电脑桌面时，服务配置由 install-desktop.sh 写（venv 里的 Python、DISPLAY、浏览器路径）。
+# 只「更新服务器 Agent」时保留它，否则浏览器和桌面工具会在升级后失效。
+if [ -f /etc/systemd/system/openminis-display.service ] && [ -x "$INSTALL_DIR/venv/bin/python3" ] \
+   && grep -q "^Environment=DISPLAY=" "$SERVICE_FILE" 2>/dev/null; then
+  echo "[+] 检测到已安装云电脑桌面：保留带桌面环境的服务配置 $SERVICE_FILE"
+else
 cat << EOF > "$SERVICE_FILE"
 [Unit]
 Description=OpenMinis Cloud Agent Service
@@ -143,6 +154,7 @@ WantedBy=multi-user.target
 EOF
 
 echo "[+] Systemd 服务已写入: $SERVICE_FILE"
+fi
 
 echo "=== 6. 启动并启用服务 ==="
 systemctl daemon-reload

@@ -83,6 +83,20 @@ jobs:
           set -o pipefail
           sudo cp cloud-agent/test_browser_agent_real.py /opt/openminis-cloud-agent/test_browser_agent_real.py
           sudo -u openminis env DISPLAY=:99 XAUTHORITY=/var/lib/openminis-cloud-agent/.Xauthority HOME=/var/lib/openminis-cloud-agent PLAYWRIGHT_BROWSERS_PATH=/var/lib/openminis-cloud-agent/ms-playwright OPENMINIS_REAL_BROWSER_AGENT_TEST=1 OPENMINIS_EVIDENCE_PATH=/tmp/combined-browser-evidence.log /opt/openminis-cloud-agent/venv/bin/python3 /opt/openminis-cloud-agent/test_browser_agent_real.py 2>&1 | tee cloud-browser-agent.log
+      - name: 只更新服务器 Agent（重复安装）不丢 Token、主密钥、数据和桌面配置
+        run: |
+          set -euo pipefail
+          TOKEN=$(sudo cat /etc/openminis/token)
+          KEY=$(sudo sha256sum /etc/openminis/master.key)
+          SID=$(curl -fsS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"title":"升级前"}' http://127.0.0.1:18765/v1/sessions | python3 -c 'import sys,json;print(json.load(sys.stdin)["session_id"])')
+          sudo touch /opt/openminis-cloud-agent/cloud_stale_module.py
+          sudo bash cloud-agent/install.sh 2>&1 | tee cloud-reinstall.log
+          test "$(sudo cat /etc/openminis/token)" = "$TOKEN"
+          test "$(sudo sha256sum /etc/openminis/master.key)" = "$KEY"
+          test ! -e /opt/openminis-cloud-agent/cloud_stale_module.py
+          grep -q '^Environment=DISPLAY=' /etc/systemd/system/openminis-cloud-agent.service
+          curl -fsS -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:18765/v1/sessions/$SID" > /dev/null
+          curl -fsS http://127.0.0.1:18765/health | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("agent_version"), d; print("agent", d["agent_version"])'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
