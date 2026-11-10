@@ -807,6 +807,7 @@ struct CloudSessionView: View {
                                      onDiscard: discardOutbox, onRedact: sendRedacted, onSend: sendAnyway,
                                      onAppear: resumeOutbox, onDisappear: pauseOutbox))
         .onAppear { callDividers = CloudCallDivider.load(sessionId) }
+        .modifier(CloudDraftKeeper(sessionId: sessionId, text: $inputPrompt))
         .onChange(of: call.error) { e in if let e, !call.active { realtimeNotice = e } }
         .sheet(isPresented: $showPhotos) { CloudPhotoPicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showCamera) { CloudCameraPicker { attachments.append($0) }.ignoresSafeArea() }
@@ -1830,6 +1831,11 @@ struct CloudSessionView: View {
     }
 
     private func resumeOutbox() {
+        // 「和 Bot 语音」快捷指令 / 操作按钮打开的：直接开通话
+        if let theme, CloudBotEntry.pendingVoiceBot == theme.botId {
+            CloudBotEntry.pendingVoiceBot = nil
+            openVoiceCall()
+        }
         refreshOutboxCount()
         if outboxCount > 0 { flushOutbox() }
     }

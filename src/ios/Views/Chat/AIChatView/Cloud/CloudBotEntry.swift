@@ -34,6 +34,18 @@ enum CloudBotEntry {
         }
     }
 
+    /// 「和 Bot 语音」快捷指令 / 操作按钮：打开对话后自动开通话（对话页 onAppear 取走）
+    static var pendingVoiceBot: String?
+
+    static func openVoice(bot: String?) {
+        let model = CloudBotHomeModel.shared
+        Task { @MainActor in
+            if model.bots.isEmpty { await model.refresh() }
+            pendingVoiceBot = resolve(bot, in: model.bots) ?? model.primary?.id ?? model.bots.first?.id
+            open(bot: pendingVoiceBot, text: nil, send: false)
+        }
+    }
+
     static func open(bot: String?, text: String?, send: Bool, attachments: [CloudPendingAttachment] = []) {
         UserDefaults.standard.set("bots", forKey: CloudBotHome.modeKey)
         let model = CloudBotHomeModel.shared

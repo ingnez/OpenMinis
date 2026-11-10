@@ -81,6 +81,22 @@ struct OpenCloudBotIntent: AppIntent {
     }
 }
 
+/// 快捷指令 / iPhone 操作按钮（iOS 17+ 可把任意快捷指令放到操作按钮）：直接和某个 Bot 语音通话
+struct StartCloudBotVoiceIntent: AppIntent {
+    static var title: LocalizedStringResource = "和云端 Bot 语音"
+    static var description = IntentDescription("打开指定 Bot 的对话并直接开始语音通话；不填就是主 Bot。可放到操作按钮或锁屏。")
+    static var openAppWhenRun = true
+
+    @Parameter(title: "Bot 名称", optionsProvider: CloudBotNameOptions())
+    var bot: String?
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        CloudBotEntry.openVoice(bot: bot)
+        return .result()
+    }
+}
+
 /// 「快捷指令」里 Bot 名称的候选：App 上次刷新时缓存的 Bot 列表（不联网）
 struct CloudBotNameOptions: DynamicOptionsProvider {
     func results() async throws -> [String] {

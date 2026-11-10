@@ -60,3 +60,15 @@ struct CloudSessionExtras: ViewModifier {
             .onDisappear(perform: onDisappear)
     }
 }
+
+/// 草稿：进对话时恢复，打字时保存（发出去后输入框清空 = 草稿删除）
+struct CloudDraftKeeper: ViewModifier {
+    let sessionId: String
+    @Binding var text: String
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { if text.isEmpty, let d = CloudDrafts.load(sessionId) { text = d } }
+            .onChange(of: text) { CloudDrafts.save(sessionId, text: $0) }
+    }
+}
