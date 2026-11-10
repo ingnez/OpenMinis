@@ -2672,6 +2672,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         effort = "low"
     log_event(task_id, "started", {"message": "Started", "model": model, "reasoning_effort": effort})
     final_status = "completed"
+    answered = False            # 本任务是否已经给用户写出过回答文字
     rs_perf = resource_settings()
     extra_tools = set()
     perf = {"task_id": task_id, "session_id": session_id, "bot_id": session_persona_id(session_id) or "", "model": model,
@@ -2713,8 +2714,14 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 perf["prompt_tokens"] += int(u.get("prompt_tokens") or 0)
                 perf["completion_tokens"] += int(u.get("completion_tokens") or 0)
             except Exception as e:
-                log_event(task_id, "error", {"error": sanitize_err(e)})
-                final_status = "failed"
+                err = sanitize_err(e)
+                if answered:
+                    # 已经给出过回答，后续步骤（如回答后顺手记忆）调用失败：保留回答，任务算完成，只记一条提醒
+                    log_event(task_id, "status", {"message": "回答已给出；后续步骤调用模型失败，已跳过：" + str(err)[:200]})
+                    final_status = "completed"
+                else:
+                    log_event(task_id, "error", {"error": err})
+                    final_status = "failed"
                 break
 
             note_usage(session_persona_id(session_id), model, resp, messages)
@@ -2729,9 +2736,13 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             tool_calls = msg.get("tool_calls")
 
             if not content and not tool_calls:
-                log_event(task_id, "error", {"error": "Empty model response"})
+                if answered:
+                    break               # 工具做完后模型没再说话：前面的回答就是最终回答
+                log_event(task_id, "error", {"error": "模型返回了空回复（没有文字也没有工具调用）"})
                 final_status = "failed"
                 break
+            if content:
+                answered = True
 
             if content and not tool_calls:
                 log_event(task_id, "thought", {"content": content})
@@ -2750,6 +2761,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 else:
                     ast_msg["content"] = None
                 ast_msg["tool_calls"] = tool_calls
+                if msg.get("reasoning_content"):
+                    ast_msg["reasoning_content"] = msg["reasoning_content"]
                 messages.append(ast_msg)
 
                 conn = get_db_connection()

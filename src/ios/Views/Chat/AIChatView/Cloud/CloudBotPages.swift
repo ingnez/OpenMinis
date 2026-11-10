@@ -1020,17 +1020,17 @@ struct CloudComputerWebView: UIViewRepresentable {
         context.coordinator.onLoaded = onLoaded
         context.coordinator.allowedPort = url.port ?? 18766
         context.coordinator.lastReloadToken = reloadToken
-        web.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20))
+        context.coordinator.bridge.load(url, in: web)
         return web
     }
 
     func updateUIView(_ web: WKWebView, context: Context) {
         context.coordinator.onLoaded = onLoaded
         context.coordinator.bridge.onState = onState
-        if context.coordinator.lastReloadToken != reloadToken || web.url?.port != url.port || web.url?.query != url.query {
+        if context.coordinator.lastReloadToken != reloadToken || context.coordinator.bridge.current != url {
             context.coordinator.lastReloadToken = reloadToken
             context.coordinator.allowedPort = url.port ?? 18766
-            web.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20))
+            context.coordinator.bridge.load(url, in: web)
         }
     }
 }

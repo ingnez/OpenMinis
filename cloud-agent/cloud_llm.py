@@ -219,6 +219,9 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
         if on_text and text:
             on_text(text)
         msg = {"role": role, "content": text or None}
+        if reasoning:
+            # DeepSeek 等思考模式：带工具调用的这一轮要把 reasoning_content 原样传回，否则下一次请求会 400
+            msg["reasoning_content"] = "".join(reasoning)
         if tool_calls:
             msg["tool_calls"] = [dict(v, id=v["id"] or f"call_{i}") for i, v in sorted(tool_calls.items())]
         out = {"choices": [{"index": 0, "message": msg, "finish_reason": finish or "stop"}]}

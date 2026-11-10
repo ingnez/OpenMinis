@@ -9,11 +9,11 @@ struct CloudDesktopProblem: Equatable {
 
     var title: String {
         switch kind {
-        case .serverOld: return "服务器未更新"
+        case .serverOld: return "服务器 Agent 版本过旧"
         case .desktopDown: return "桌面服务未运行"
         case .vncDown: return "VNC 端口不通"
         case .proxyDown: return "桌面网页代理未运行"
-        case .tunnelDown: return "桌面端口隧道不通"
+        case .tunnelDown: return "隧道未转发桌面端口"
         case .sshFailed: return "连接云电脑失败"
         case .other: return "桌面暂时不可用"
         }
@@ -64,18 +64,60 @@ enum CloudDesktopCheck {
             let kind: CloudDesktopProblem.Kind
             switch code {
             case "display_down": kind = .desktopDown
-            case "vnc_down": kind = .vncDown
+            case "vnc_down", "ws_failed", "token_mismatch": kind = .vncDown
             case "proxy_down": kind = .proxyDown
             case "proxy_old": kind = .serverOld
             default: kind = .other
             }
             return .problem(.init(kind: kind, message: msg + "（已自动尝试重启桌面）"))
         }
-        guard await conn.checkDesktopReachable() else {
-            return .problem(.init(kind: .tunnelDown, message: "服务器上的桌面正常，但手机到 \(conn.desktopPort) 端口的 SSH 隧道不通。请点「重新连接」。"))
+        if !(await conn.checkDesktopReachable()) {
+            // 隧道可能在后台被系统断掉、或重连时没转发桌面端口：自动重建一次隧道（每次重建都同时转发 API 与桌面端口）
+            if autoRepair { try? await conn.reconnect() }
+            guard await conn.checkDesktopReachable() else {
+                return .problem(.init(kind: .tunnelDown, message: "服务器上的桌面正常，但手机到本机 \(conn.desktopPort) 端口的 SSH 隧道没有转发桌面。已自动重建过一次隧道，请点「重新连接」再试。"))
+            }
         }
         let proxy = h["token_proxy"] as? Bool ?? false
-        return .ready(token: proxy ? (h["token"] as? String ?? "main") : nil, ownDisplay: h["own_display"] as? Bool ?? false)
+        let token = proxy ? (h["token"] as? String ?? "main") : nil
+        // 端到端：从手机经隧道连 websocket，确认真的能收到 VNC 握手（RFB），否则 noVNC 只会显示「无法连接到服务器」
+        if let why = await probeStream(token: token) {
+            if autoRepair, (h["own_display"] as? Bool) != true, (try? await conn.restartDesktop()) != nil {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if await probeStream(token: token) == nil {
+                    return .ready(token: token, ownDisplay: h["own_display"] as? Bool ?? false)
+                }
+            }
+            return .problem(.init(kind: .vncDown, message: "桌面网页能打开，但画面通道不通：\(why)。已自动重启过一次桌面；仍不行请点「安装 / 更新桌面环境」。"))
+        }
+        return .ready(token: token, ownDisplay: h["own_display"] as? Bool ?? false)
+    }
+
+    /// 经隧道连 ws://127.0.0.1:<桌面端口>/websockify[?token=]，5 秒内收到以 "RFB " 开头的握手即通过；返回 nil 表示正常，否则是中文原因
+    static func probeStream(token: String?) async -> String? {
+        let port = CloudConnection.shared.desktopPort
+        var path = "/websockify"
+        if let token, token.range(of: #"^[A-Za-z0-9_-]{1,64}$"#, options: .regularExpression) != nil { path += "?token=" + token }
+        guard let url = URL(string: "ws://127.0.0.1:\(port)" + path) else { return "地址无效" }
+        let task = URLSession.shared.webSocketTask(with: url, protocols: ["binary"])
+        task.resume()
+        let timeout = Task { try? await Task.sleep(nanoseconds: 5_000_000_000); task.cancel(with: .goingAway, reason: nil) }
+        defer { timeout.cancel(); task.cancel(with: .normalClosure, reason: nil) }
+        do {
+            let msg = try await task.receive()
+            let head: String
+            switch msg {
+            case .data(let d): head = String(decoding: d.prefix(4), as: UTF8.self)
+            case .string(let s): head = String(s.prefix(4))
+            @unknown default: head = ""
+            }
+            return head.hasPrefix("RFB") ? nil : "收到的不是 VNC 握手"
+        } catch {
+            if let code = (task.response as? HTTPURLResponse)?.statusCode, code != 101 {
+                return code == 404 ? "websockify 找不到这个屏幕（token 不对）" : "websockify 返回 HTTP \(code)"
+            }
+            return task.closeCode == .invalid ? "websocket 没有响应（x11vnc 未就绪或 token 目标不对）" : "websocket 被关闭（\(task.closeCode.rawValue)）"
+        }
     }
 
     /// 旧版服务器没有 /v1/desktop/health：沿用 /v1/desktop/display 的 token 逻辑，再不行就提示更新
@@ -90,7 +132,8 @@ enum CloudDesktopCheck {
             own = resp["own_display"] as? Bool ?? false
         }
         if await conn.checkDesktopReachable() {
-            return .ready(token: token, ownDisplay: own)
+            if await probeStream(token: token) == nil { return .ready(token: token, ownDisplay: own) }
+            return .problem(.init(kind: .serverOld, message: "服务器上的 Agent 版本过旧：桌面网页能打开，但画面连不上，也无法自动诊断。请点「安装 / 更新桌面环境」一键更新。"))
         }
         return .problem(.init(kind: .serverOld, message: "服务器上的 Agent 版本较旧，无法检查桌面状态，桌面网页也打不开。请点「安装 / 更新桌面环境」。"))
     }
@@ -120,7 +163,7 @@ struct CloudDesktopProblemView: View {
                 } else {
                     VStack(spacing: 10) {
                         if problem.kind == .tunnelDown || problem.kind == .sshFailed {
-                            wide("重新连接", prominent: true) { act("正在重新连接…") { try await connection.connect() } }
+                            wide("重新连接（重建隧道）", prominent: true) { act("正在重建隧道…") { try await connection.reconnect() } }
                         }
                         if problem.kind != .serverOld {
                             wide("重启桌面", prominent: problem.kind != .tunnelDown && problem.kind != .sshFailed) {
@@ -170,12 +213,18 @@ struct CloudDesktopProblemView: View {
     }
 }
 
-/// 注入 noVNC 页面：隐藏它自带的控制栏、连接按钮和状态条，把连接状态回传给 App（App 自己显示诊断）
+/// 桌面画面：不用 noVNC 自带的 vnc.html（它的落地页有「连接」按钮和英文/中文错误条），
+/// 而是在 App 自己的页面里直接加载服务器上 noVNC 的 core/rfb.js 连 websocket，状态全部回传给 App 显示中文诊断。
+/// 服务器 noVNC 太旧（没有 ES 模块）时回退到 vnc.html，并注入样式隐藏它的控制栏、连接按钮和状态条。
 final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
     var onState: ((String) -> Void)?
+    weak var webView: WKWebView?
+    private(set) var current: URL?
+    private var fellBack = false
 
-    static let script = """
+    static let hideScript = """
     (function(){
+      if(!document.getElementById('noVNC_control_bar_anchor')&&!document.getElementById('noVNC_status')){return;}
       var css=document.createElement('style');
       css.textContent='#noVNC_control_bar_anchor,#noVNC_control_bar,#noVNC_connect_dlg,#noVNC_status,#noVNC_transition{display:none !important}';
       (document.head||document.documentElement).appendChild(css);
@@ -192,14 +241,89 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
     })();
     """
 
+    /// 从 streamURL 的参数生成 App 自己的画面页
+    static func page(for url: URL) -> String {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let path = items.first(where: { $0.name == "path" })?.value ?? "websockify"
+        let safePath = path.range(of: #"^websockify(\?token=[A-Za-z0-9_-]{1,64})?$"#, options: .regularExpression) != nil ? path : "websockify"
+        let viewOnly = items.contains(where: { $0.name == "view_only" && $0.value == "1" })
+        let port = url.port ?? 18766
+        return """
+        <!DOCTYPE html><html><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+        <style>html,body{margin:0;height:100%;background:#000;overflow:hidden}#screen{position:absolute;inset:0}</style>
+        </head><body><div id="screen"></div>
+        <script type="module">
+        const post = s => { try { window.webkit.messageHandlers.vncState.postMessage(s); } catch (e) {} };
+        let RFB = null;
+        try { RFB = (await import('./core/rfb.js')).default; } catch (e) { post('nomodule'); }
+        if (RFB) {
+          const url = 'ws://127.0.0.1:\(port)/\(safePath)';
+          let rfb = null, tries = 0, timer = null;
+          const connect = () => {
+            timer = null;
+            post('connecting');
+            try { rfb = new RFB(document.getElementById('screen'), url, { wsProtocols: ['binary'] }); }
+            catch (e) { post('error:' + e); retry(); return; }
+            rfb.scaleViewport = true;
+            rfb.resizeSession = false;
+            rfb.viewOnly = \(viewOnly ? "true" : "false");
+            rfb.background = '#000';
+            rfb.addEventListener('connect', () => { tries = 0; post('connected'); });
+            rfb.addEventListener('securityfailure', e => post('error:security ' + ((e.detail && e.detail.reason) || '')));
+            rfb.addEventListener('disconnect', e => {
+              post((e.detail && e.detail.clean) ? 'disconnected' : 'error:画面连接断开');
+              retry();
+            });
+          };
+          const retry = () => {
+            if (timer) return;
+            tries += 1;
+            timer = setTimeout(connect, Math.min(10000, 800 * Math.pow(1.6, tries)));
+          };
+          window.__omReconnect = () => { tries = 0; try { rfb && rfb.disconnect(); } catch (e) {} if (!timer) connect(); };
+          connect();
+        }
+        </script></body></html>
+        """
+    }
+
     static func install(on config: WKWebViewConfiguration, bridge: CloudNoVNCBridge) {
         let ctl = config.userContentController
-        ctl.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-        ctl.add(bridge, name: "vncState")
+        ctl.addUserScript(WKUserScript(source: hideScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        ctl.add(CloudWeakScriptHandler(bridge), name: "vncState")
+    }
+
+    /// 加载画面：优先 App 自己的页面
+    func load(_ url: URL, in web: WKWebView) {
+        webView = web
+        current = url
+        fellBack = false
+        guard let base = URL(string: "http://127.0.0.1:\(url.port ?? 18766)/") else { return }
+        web.loadHTMLString(Self.page(for: url), baseURL: base)
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let s = message.body as? String else { return }
-        DispatchQueue.main.async { self.onState?(s) }
+        DispatchQueue.main.async {
+            if s == "nomodule" {
+                // 服务器 noVNC 没有 core/rfb.js（很旧的版本）：退回 vnc.html + 隐藏控件
+                if !self.fellBack, let url = self.current, let web = self.webView {
+                    self.fellBack = true
+                    web.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20))
+                }
+                return
+            }
+            self.onState?(s)
+        }
+    }
+}
+
+/// WKUserContentController 会强引用 handler，用弱引用包一层避免 WebView 与 bridge 循环引用
+final class CloudWeakScriptHandler: NSObject, WKScriptMessageHandler {
+    weak var target: WKScriptMessageHandler?
+    init(_ target: WKScriptMessageHandler) { self.target = target }
+    func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
+        target?.userContentController(c, didReceive: message)
     }
 }

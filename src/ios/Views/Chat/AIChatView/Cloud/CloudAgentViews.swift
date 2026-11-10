@@ -648,6 +648,9 @@ struct CloudSessionView: View {
                         loadSessionDetail()
                     }
                     .font(.caption)
+                    Button { errorMessage = nil } label: { Image(systemName: "xmark").font(.caption.weight(.semibold)) }
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("关闭提示")
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 4)
@@ -666,7 +669,7 @@ struct CloudSessionView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.top, 60)
                         }
-                        ForEach(Array(messages.enumerated()), id: \.offset) { _, msg in
+                        ForEach(Array(CloudTaskFailure.visible(messages).enumerated()), id: \.offset) { _, msg in
                             let role = msg["role"] as? String ?? "user"
                             let content = msg["content"] as? String ?? ""
                             Group {
@@ -1192,7 +1195,7 @@ struct CloudSessionView: View {
                     }
                     if self.activeTaskStatus != "running" && self.activeTaskStatus != "waiting_user" {
                         if ["failed", "interrupted", "limit_reached"].contains(self.activeTaskStatus) {
-                            self.errorMessage = "云端任务状态：\(self.activeTaskStatus)。请查看任务日志；修复原因后可发送新任务继续。"
+                            self.errorMessage = CloudTaskFailure.text(status: self.activeTaskStatus, events: self.taskEvents)
                         }
                         loadSessionDetail()
                     }
@@ -1258,7 +1261,7 @@ struct CloudSessionView: View {
                 guard self.activeTaskId == taskId else { return }
                 if !["running", "waiting_user", "queued"].contains(self.activeTaskStatus) {
                     if ["failed", "interrupted", "limit_reached"].contains(self.activeTaskStatus) {
-                        self.errorMessage = "云端任务状态：\(self.activeTaskStatus)。请查看任务日志；修复原因后可发送新任务继续。"
+                        self.errorMessage = CloudTaskFailure.text(status: self.activeTaskStatus, events: self.taskEvents)
                     }
                     self.loadSessionDetail()
                 }
@@ -1366,5 +1369,48 @@ struct CloudTaskEventRow: View {
         case "cancelled", "approval_required": return .orange
         default: return .secondary
         }
+    }
+}
+
+
+/// 聊天显示规则与任务失败说明
+enum CloudTaskFailure {
+    /// 只显示用户与助手的文字消息：工具结果（role=tool）、只有工具调用没有文字的助手消息、空消息都不显示
+    static func visible(_ messages: [[String: Any]]) -> [[String: Any]] {
+        messages.filter { m in
+            let role = m["role"] as? String ?? ""
+            guard role == "user" || role == "assistant" else { return false }
+            let content = (m["content"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return !content.isEmpty
+        }
+    }
+
+    /// 失败横幅：状态 + 任务日志里最后一条错误的中文原因
+    static func text(status: String, events: [[String: Any]]) -> String {
+        let head: String
+        switch status {
+        case "failed": head = "任务失败"
+        case "interrupted": head = "任务被中断（服务器重启或断电）"
+        case "limit_reached": head = "达到单次任务的轮数上限，已停下"
+        default: head = "任务状态：\(status)"
+        }
+        let raw = events.reversed().first(where: { ($0["type"] as? String) == "error" })
+            .flatMap { ($0["payload"] as? [String: Any])?["error"] as? String } ?? ""
+        let reason = explain(raw)
+        return reason.isEmpty ? head + "。可以直接再发一次。" : head + "：" + reason
+    }
+
+    static func explain(_ raw: String) -> String {
+        let r = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !r.isEmpty else { return "" }
+        let l = r.lowercased()
+        if l.contains("401") || l.contains("unauthorized") || l.contains("invalid api key") { return "服务商拒绝了 API Key（401），请检查 Key 是否有效" }
+        if l.contains("402") || l.contains("insufficient") || l.contains("quota") || l.contains("余额") { return "服务商额度不足，请充值或换一个服务商" }
+        if l.contains("429") || l.contains("rate limit") { return "服务商限流（429），稍等片刻再试" }
+        if l.contains("timed out") || l.contains("timeout") { return "调用模型超时，可能是服务商或网络慢，可以再试一次" }
+        if l.contains("reasoning_content") { return "这个模型的思考模式要求回传思考内容，已在新版服务器修复，请更新服务器 Agent" }
+        if l.contains("model") && (l.contains("not found") || l.contains("does not exist") || l.contains("404")) { return "服务商没有这个模型，请换一个模型" }
+        if l.contains("50") && (l.contains("http 5") || l.contains("bad gateway") || l.contains("service unavailable")) { return "服务商临时故障（5xx），稍后再试" }
+        return String(r.prefix(160))
     }
 }

@@ -3,8 +3,10 @@
 并把 websockify token（bot-<key>: 127.0.0.1:<端口>）写进 token 目录，手机「电脑」页按 token 看对应屏幕。
 按需启动，空闲超时关闭；数量上限来自资源设置。没有 Xvfb 时返回 None，调用方回退主屏 :99。
 """
+import base64
 import os
 import re
+import socket
 import shutil
 import subprocess
 import threading
@@ -59,6 +61,68 @@ def display_alive(display):
     return os.path.exists(f"/tmp/.X11-unix/X{n}")
 
 
+def ws_probe(web_port, token=None, timeout=3.0):
+    """像浏览器里的 noVNC 一样连 websockify：WebSocket 握手（binary 子协议）后应收到 VNC 的 "RFB " 握手帧。
+    返回 (ok, 原因)。这一步能发现 token 不对 / 目标端口不对 / websockify 卡死等「网页能打开但画面连不上」的问题。"""
+    path = "/websockify" + (f"?token={token}" if token else "")
+    try:
+        sock = socket.create_connection(("127.0.0.1", web_port), timeout=timeout)
+    except OSError:
+        return False, "websockify 端口连不上"
+    try:
+        sock.settimeout(timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        sock.sendall((f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{web_port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                      f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: binary\r\n"
+                      "Origin: http://127.0.0.1\r\n\r\n").encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf and len(buf) < 8192:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        head, _, rest = buf.partition(b"\r\n\r\n")
+        status = head.split(b"\r\n", 1)[0].decode("latin-1", "replace")
+        parts = status.split()
+        if len(parts) < 2 or parts[1] != "101":
+            code = parts[1] if len(parts) >= 2 else "?"
+            return False, ("websockify 找不到这个屏幕（token 不对）" if code == "404" else f"websockify 拒绝了 websocket（HTTP {code}）")
+        def need(n):
+            nonlocal rest
+            while len(rest) < n:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    raise OSError("closed")
+                rest += chunk
+            out, rest = rest[:n], rest[n:]
+            return out
+        b0, b1 = need(2)
+        if b0 & 0x0F == 0x8:
+            return False, "websockify 接受后立刻关闭（转发目标 VNC 连不上）"
+        n = b1 & 0x7F
+        if n == 126:
+            n = int.from_bytes(need(2), "big")
+        elif n == 127:
+            n = int.from_bytes(need(8), "big")
+        mask = need(4) if b1 & 0x80 else None
+        payload = need(min(n, 12))
+        if mask:
+            payload = bytes(c ^ mask[i % 4] for i, c in enumerate(payload))
+        if b0 & 0x0F == 0x1:           # 旧版 base64 文本帧
+            try:
+                payload = base64.b64decode(payload + b"==")
+            except Exception:
+                pass
+        return (True, "") if payload.startswith(b"RFB ") else (False, "收到的不是 VNC 握手")
+    except (OSError, ValueError):
+        return False, "websocket 没有响应（x11vnc 未就绪或转发目标不对）"
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
 def diagnose(display=None, vnc_port=5901, token="main", web_port=18766, mode="auto"):
     """桌面链路逐段检查：Xvfb → x11vnc（RFB 握手）→ websockify（端口与 token 目标）。返回给手机显示的中文诊断。"""
     display = display or MAIN_DISPLAY
@@ -98,6 +162,11 @@ def diagnose(display=None, vnc_port=5901, token="main", web_port=18766, mode="au
         code, msg = "token_mismatch", f"屏幕 {token} 的转发目标不对或缺失，需要重启桌面"
     elif mode == "fixed" and vnc_port != 5901:
         code, msg = "proxy_old", "服务器的桌面代理是旧版（只能看主屏），请安装 / 更新桌面环境"
+    else:
+        ok, why = ws_probe(web_port, token if mode == "token" else None)
+        checks["stream"] = ok
+        if not ok:
+            code, msg = "ws_failed", f"画面通道不通：{why}"
     checks["ok"] = code == "ok"
     checks["diagnosis"] = code
     checks["message"] = msg

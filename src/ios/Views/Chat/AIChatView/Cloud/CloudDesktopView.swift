@@ -139,21 +139,19 @@ struct CloudDesktopWebView: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .clear
 
-        let req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         context.coordinator.allowedPort = url.port ?? 18766
         context.coordinator.lastReloadToken = reloadToken
-        webView.load(req)
+        context.coordinator.bridge.load(url, in: webView)
         return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
         context.coordinator.bridge.onState = onState
         // 当 reloadToken 变化或 URL 变化时重新加载
-        if uiView.url != url || context.coordinator.lastReloadToken != reloadToken {
+        if context.coordinator.bridge.current != url || context.coordinator.lastReloadToken != reloadToken {
             context.coordinator.lastReloadToken = reloadToken
             context.coordinator.allowedPort = url.port ?? 18766
-            let req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
-            uiView.load(req)
+            context.coordinator.bridge.load(url, in: uiView)
         }
     }
 }

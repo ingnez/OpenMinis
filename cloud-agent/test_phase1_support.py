@@ -66,7 +66,8 @@ class FakeModelHandler(BaseHTTPRequestHandler):
             for piece in chunks:
                 if delay:
                     time.sleep(delay)
-                self.wfile.write(b"data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": piece}}]}).encode() + b"\n\n")
+                delta = piece if isinstance(piece, dict) else {"content": piece}     # dict = 原样的 delta（reasoning_content / tool_calls）
+                self.wfile.write(b"data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}).encode() + b"\n\n")
                 self.wfile.flush()
             self.wfile.write(b"data: " + json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                                                      "usage": {"prompt_tokens": 11, "completion_tokens": len(chunks)}}).encode() + b"\n\n")
