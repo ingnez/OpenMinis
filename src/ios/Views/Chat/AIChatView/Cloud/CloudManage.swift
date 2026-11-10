@@ -258,7 +258,9 @@ struct CloudUsageView: View {
                     Text("30 天").tag(30)
                 }
                 .pickerStyle(.segmented)
-                CloudUsageBars(points: byDay).frame(height: 120).padding(.vertical, 6)
+                CloudUsageChart(points: CloudUsageSeries.points(items: data["items"] as? [[String: Any]] ?? [], today: data["today"] as? String ?? "",
+                                                                count: days, names: botNames))
+                    .frame(height: 170).padding(.vertical, 6)
             } header: { Text("每日用量") }
             if !ranked("by_bot").isEmpty {
                 Section("按 Bot") {
@@ -320,32 +322,6 @@ struct CloudUsageView: View {
             CloudHaptics.warning()
             errorText = error.localizedDescription
         }
-    }
-}
-
-struct CloudUsageBars: View {
-    let points: [CloudKV]
-
-    var body: some View {
-        GeometryReader { geo in
-            let maxV = max(1, points.map { $0.value }.max() ?? 1)
-            let w = points.isEmpty ? 0 : geo.size.width / CGFloat(points.count)
-            HStack(alignment: .bottom, spacing: 0) {
-                ForEach(points) { p in
-                    VStack(spacing: 3) {
-                        Spacer(minLength: 0)
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(Color.accentColor.opacity(0.8))
-                            .frame(width: max(3, w * 0.6), height: max(2, (geo.size.height - 16) * CGFloat(p.value) / CGFloat(maxV)))
-                        Text(String(p.key.suffix(2))).font(.system(size: 8)).foregroundStyle(.secondary)
-                    }
-                    .frame(width: w)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("\(p.key)：\(p.value) tokens")
-                }
-            }
-        }
-        .overlay { if points.isEmpty { Text("暂无数据").font(.caption).foregroundStyle(.secondary) } }
     }
 }
 
