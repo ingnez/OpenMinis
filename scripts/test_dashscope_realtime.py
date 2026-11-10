@@ -14,7 +14,16 @@ with tempfile.TemporaryDirectory() as d:
     verdict = Path(d) / "verdict.json"
     srv = subprocess.Popen([sys.executable, str(root / "scripts/mock_dashscope_ws.py"), str(verdict)], stdout=subprocess.PIPE, text=True)
     port = srv.stdout.readline().strip()
-    subprocess.run([d + "/t", port], check=True, timeout=60)
+    r = subprocess.run([d + "/t", port], capture_output=True, text=True, timeout=60)
+    sys.stdout.write(r.stdout)
+    if r.returncode != 0 and "WebSockets not supported by libcurl" in r.stderr:
+        srv.kill()
+        # 部分 Linux 运行器的 libcurl 编译时没开 WebSocket；协议测试交给 macOS 快检，这里如实跳过
+        print("跳过：这台机器的 libcurl 不支持 WebSocket，百炼协议测试由 macOS 快检跑")
+        sys.exit(0)
+    if r.returncode != 0:
+        sys.stderr.write(r.stderr)
+        sys.exit(r.returncode)
     srv.wait(timeout=20)
     v = json.loads(verdict.read_text())
     assert v["auth_ok"], "握手头要带 Bearer 假密钥"
