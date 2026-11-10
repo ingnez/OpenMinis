@@ -3265,10 +3265,18 @@ def _finish_routine_run(run_id, routine_id, status, result=None, error=None):
     finally:
         conn.close()
 
+PROACTIVE_SKIP_MARKERS = ("[SKIP]", "[静默]", "[无需打扰]")
+
+def is_quiet_result(text):
+    t = (text or "").strip()
+    return any(t.startswith(m) or t.endswith(m) for m in PROACTIVE_SKIP_MARKERS)
+
 def on_routine_finished(routine, run):
     """例行任务结束时推送，异常不影响调度。"""
     if not routine.get("notify", True) or run.get("status") == "skipped" or _bot_muted(persona_id=routine.get("persona_id") or ""):
         return None
+    if run.get("status") == "completed" and is_quiet_result(run.get("result")):
+        return None     # 主动消息：Bot 觉得这次没什么值得说的，就不打扰
     cfg = current_notify_config()
     label = {"completed": "完成", "failed": "失败", "limit_reached": "达到轮数上限", "cancelled": "已取消",
              "interrupted": "中断"}.get(run.get("status"), run.get("status"))
