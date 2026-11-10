@@ -365,6 +365,7 @@ struct CloudBotDetailView: View {
                     LabeledContent("技能", value: bot.skills.map { "\($0.count) 个" } ?? "全部")
                 }
                 NavigationLink { CloudDelegationsView(sessionId: bot.latestSessionId) } label: { Text("委托记录") }
+                NavigationLink { CloudAuditView(botId: bot.id) } label: { Text("操作记录") }
                 NavigationLink {
                     CloudComputerView(botId: bot.id, sessionId: bot.latestSessionId, reason: nil)
                 } label: {

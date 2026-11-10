@@ -121,7 +121,7 @@ class IncognitoTests(CloudServerTestCase):
         listed = [x["session_id"] for x in self.request("GET", "/v1/sessions")[1]["sessions"]]
         self.assertIn(normal, listed)
         self.assertNotIn(sid, listed)
-        res = self.srv.tool_memory_write("t_x", sid, {"content": "不该被记住", "category": "fact"})
+        res = self.srv.tool_memory_write("t_x", sid, {"content": "不该被记住", "category": "note"})
         self.assertFalse(res["saved"])
         self.assertEqual(self.request("DELETE", "/v1/sessions/" + normal)[0], 400)
         self.assertEqual(self.request("DELETE", "/v1/sessions/" + sid)[0], 200)
@@ -135,6 +135,39 @@ class IncognitoTests(CloudServerTestCase):
             self.assertEqual(self.srv.purge_stale_incognito(conn, time.time() + 2 * 86400), 1)
             conn.commit()
             self.assertIsNone(conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (sid,)).fetchone())
+        finally:
+            conn.close()
+
+
+
+class AuditTests(CloudServerTestCase):
+    def test_01_file_write_edit_undo(self):
+        import os
+        sid = self.request("POST", "/v1/sessions", {"title": "审计"})[1]["session_id"]
+        self.assertEqual(self.srv.tool_file_write("t_a", sid, {"path": "notes/a.txt", "content": "v1"})["status"], "success")
+        self.srv.tool_file_edit("t_a", sid, {"path": "notes/a.txt", "old_string": "v1", "new_string": "v2"})
+        target, _ = self.srv.safe_path_resolve(sid, "notes/a.txt")
+        items = self.request("GET", "/v1/audit")[1]["items"]
+        edit, create = items[0], items[1]
+        self.assertEqual(edit["tool"], "file_edit")
+        self.assertTrue(edit["undoable"])
+        self.assertEqual(self.request("POST", f"/v1/audit/{edit['id']}/undo", {})[0], 200)
+        with open(target, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "v1")
+        self.assertEqual(self.request("POST", f"/v1/audit/{edit['id']}/undo", {})[0], 400)
+        self.assertEqual(self.request("POST", f"/v1/audit/{create['id']}/undo", {})[0], 200)
+        self.assertFalse(os.path.exists(target))
+
+    def test_02_memory_write_undo(self):
+        sid = self.request("POST", "/v1/sessions", {"title": "审计记忆"})[1]["session_id"]
+        res = self.srv.tool_memory_write("t_m", sid, {"content": "用户喜欢黑咖啡 审计测试", "category": "profile"})
+        self.assertTrue(res["saved"])
+        item = self.request("GET", "/v1/audit")[1]["items"][0]
+        self.assertEqual(item["tool"], "memory_write")
+        self.assertEqual(self.request("POST", f"/v1/audit/{item['id']}/undo", {})[0], 200)
+        conn = self.srv.get_db_connection()
+        try:
+            self.assertIsNone(conn.execute("SELECT 1 FROM memory_entries WHERE id = ?", (res["id"],)).fetchone())
         finally:
             conn.close()
 

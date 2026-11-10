@@ -57,6 +57,7 @@ import cloud_usage
 import cloud_llm
 import cloud_efficiency as eff
 import cloud_appfeed
+import cloud_audit
 import gzip
 from collections import deque
 import cloud_desktop
@@ -288,6 +289,7 @@ def init_db():
         print(f"timezone setting ignored: {e}")
     cloud_notify.ensure_schema(conn)
     cloud_appfeed.ensure_schema(conn)
+    cloud_audit.ensure_schema(conn)
     cloud_pages.ensure_schema(conn)
     cursor.execute("CREATE TABLE IF NOT EXISTS telegram_chats (chat_id INTEGER PRIMARY KEY, session_id TEXT, updated_at REAL)")
     cursor.execute("CREATE TABLE IF NOT EXISTS telegram_tasks (task_id TEXT PRIMARY KEY, chat_id INTEGER, created_at REAL)")
@@ -1018,6 +1020,19 @@ def tool_file_read(task_id, session_id, args):
     except Exception as e:
         return {"error": str(e)}
 
+def audit(session_id, tool, target, summary, undo=None):
+    """记一笔操作记录；出错不影响工具本身。"""
+    try:
+        conn = get_db_connection()
+        try:
+            cloud_audit.record(conn, tool, target, summary, undo, session_id=session_id,
+                               bot_id=session_persona_id(session_id) if session_id else None)
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[audit] record failed: {type(e).__name__}", flush=True)
+
+
 def tool_file_write(task_id, session_id, args):
     if is_task_cancelled(task_id):
         return {"error": "Cancelled"}
@@ -1025,9 +1040,11 @@ def tool_file_write(task_id, session_id, args):
     if err:
         return {"error": err}
     try:
+        snap = cloud_audit.file_snapshot(target)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "w", encoding="utf-8") as f:
             f.write(args.get("content", ""))
+        audit(session_id, "file_write", args.get("path"), ("改写 " if snap and snap.get("existed") else "新建 ") + str(args.get("path")), snap)
         return {"status": "success", "path": args.get("path")}
     except Exception as e:
         return {"error": str(e)}
@@ -1046,8 +1063,10 @@ def tool_file_edit(task_id, session_id, args):
         old_s, new_s = args.get("old_string", ""), args.get("new_string", "")
         if old_s not in content:
             return {"error": "old_string not found"}
+        snap = cloud_audit.file_snapshot(target)
         with open(target, "w", encoding="utf-8") as f:
             f.write(content.replace(old_s, new_s, 1))
+        audit(session_id, "file_edit", args.get("path"), "修改 " + str(args.get("path")), snap)
         return {"status": "success", "path": args.get("path")}
     except Exception as e:
         return {"error": str(e)}
@@ -1241,6 +1260,9 @@ def tool_memory_write(task_id, session_id, args):
         return {"error": str(e)}
     finally:
         conn.close()
+    if created:
+        audit(session_id, "memory_write", entry["id"], "记住：" + " ".join(str(entry.get("content", "")).split())[:80],
+              {"kind": "memory", "id": entry["id"]})
     return {"saved": created, "duplicate": not created, "id": entry["id"], "category": entry["category"], "entry_time": entry["entry_time"]}
 
 def tool_memory_search(task_id, session_id, args):
@@ -4137,6 +4159,16 @@ class Handler(BaseHTTPRequestHandler):
                              "token_proxy": cloud_displays.token_proxy_enabled(), "displays": DISPLAYS.list()})
             return
 
+        if path == "/v1/audit":
+            bot = (query_params.get("bot") or [None])[0]
+            conn = get_db_connection()
+            try:
+                items = cloud_audit.list_entries(conn, bot_id=bot)
+            finally:
+                conn.close()
+            self._send(200, {"items": items})
+            return
+
         if path == "/v1/feed":
             self._send(200, {"items": daily_feed()})
             return
@@ -5009,6 +5041,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_json = self._read_json_body()
         if req_json is None:
+            return
+        m_undo = re.match(r"^/v1/audit/(\d{1,12})/undo$", path)
+        if m_undo:
+            conn = get_db_connection()
+            try:
+                def _del_memory(mid):
+                    c2 = get_db_connection()
+                    try:
+                        cloud_memory.delete(c2, mid)
+                    finally:
+                        c2.close()
+                ok, msg = cloud_audit.undo(conn, int(m_undo.group(1)), _del_memory)
+            except OSError as e:
+                ok, msg = False, f"撤销失败：{type(e).__name__}"
+            finally:
+                conn.close()
+            self._send(200 if ok else 400, {"undone": True, "message": msg} if ok else {"error": msg})
             return
 
         if path == "/v1/backup/import":
