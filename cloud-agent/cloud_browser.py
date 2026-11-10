@@ -533,6 +533,27 @@ class BrowserOwnerDaemon:
         elif action == "__vault_fill__":
             return vault_fill_page(page, args)
 
+        elif action == "__snapshot__":
+            # 会话快照：cookie + 打开的网页地址（只在 VPS 上保存，见 cloud_snapshots）
+            ctx = ctx_data["context"]
+            tabs = [p.url for p in ctx.pages if not p.is_closed()]
+            return {"status": "ok", "cookies": ctx.cookies(), "tabs": tabs}
+
+        elif action == "__restore__":
+            ctx = ctx_data["context"]
+            cookies = args.get("cookies") or []
+            if cookies:
+                ctx.add_cookies(cookies)
+            opened = 0
+            for url in (args.get("tabs") or [])[:6]:
+                try:
+                    p = ctx.new_page()
+                    p.goto(url, wait_until="commit", timeout=8000)
+                    opened += 1
+                except Exception:
+                    continue
+            return {"status": "ok", "cookies": len(cookies), "opened": opened}
+
         elif action == "__thumb__":
             # 对话里步骤预览用的小图：当前页截屏缩到 width 宽的 JPEG（不落盘）
             return {"status": "ok", "thumb": jpeg_thumb(page.screenshot(type="jpeg", quality=60), int(args.get("width") or 240)),

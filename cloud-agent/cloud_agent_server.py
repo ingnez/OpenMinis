@@ -95,6 +95,7 @@ import cloud_runmodel
 import cloud_shift_card
 import cloud_workbench
 import cloud_desktop_files
+import cloud_snapshots
 import cloud_plugins
 import cloud_oauth
 import cloud_mcp
@@ -637,7 +638,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.41.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.42.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1399,6 +1400,13 @@ def step_preview(session_id, fn_name, res):
             out["thumb"] = base64.b64encode(data).decode()
             out["thumb_mime"] = "image/jpeg"
     return out
+
+def snapshot_route(session_id):
+    """快照对应的浏览器资料：给了会话就按那个 Bot 的路由，否则用共享资料"""
+    if session_id and re.match(r"^[A-Za-z0-9_-]{1,64}$", session_id):
+        key, owner, display = browser_route(session_id)
+        return key, owner, display, get_session_workspace(session_id)
+    return "shared", None, None, SHARED_WORKSPACE
 
 def tool_browser_action(task_id, session_id, args):
     if is_task_cancelled(task_id):
@@ -6292,6 +6300,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"items": items, "last_id": last})
             return
 
+        if path == "/v1/browser/snapshots":
+            self._send(200, {"snapshots": cloud_snapshots.listing(os.path.dirname(DB_PATH))})
+            return
+
         if path == "/v1/desktop/files":
             # 云电脑「下载」文件夹里最近的文件（取回手机用）
             self._send(200, {"files": cloud_desktop_files.listing()})
@@ -7518,6 +7530,11 @@ class Handler(BaseHTTPRequestHandler):
         query_params = parse_qs(urlparse(self.path).query)
         if not self._authorized():
             return
+        m_snap = re.match(r"^/v1/browser/snapshots/(snap_[0-9a-f]{10})$", path)
+        if m_snap:
+            ok = cloud_snapshots.delete(os.path.dirname(DB_PATH), m_snap.group(1))
+            self._send(200 if ok else 404, {"deleted": ok})
+            return
         m_ev = re.match(r"^/v1/event-triggers/(evt_[0-9a-f]{10})$", path)
         if m_ev:
             conn = get_db_connection()
@@ -8105,6 +8122,30 @@ class Handler(BaseHTTPRequestHandler):
                 return
             res = cloud_desktop.execute_desktop_action("phone", GLOBAL_WORKSPACE, args, display_override=display)
             self._send(200 if not res.get("error") else 500, res)
+            return
+
+        if path == "/v1/browser/snapshots":
+            key, owner, display, ws = snapshot_route(req_json.get("session_id"))
+            res = cloud_browser.execute_browser_action(key, ws, {"action": "__snapshot__"}, owner=owner, display=display)
+            if not isinstance(res, dict) or res.get("error"):
+                self._send(503, {"error": (res or {}).get("error") or "浏览器没开"})
+                return
+            self._send(201, cloud_snapshots.save(os.path.dirname(DB_PATH), req_json.get("name"), key, res))
+            return
+
+        m_snap = re.match(r"^/v1/browser/snapshots/(snap_[0-9a-f]{10})/restore$", path)
+        if m_snap:
+            snap = cloud_snapshots.load(os.path.dirname(DB_PATH), m_snap.group(1))
+            if not snap:
+                self._send(404, {"error": "快照不在了"})
+                return
+            key, owner, display, ws = snapshot_route(req_json.get("session_id"))
+            res = cloud_browser.execute_browser_action(key, ws, {"action": "__restore__", "cookies": snap.get("cookies") or [],
+                                                                 "tabs": snap.get("tabs") or []}, owner=owner, display=display)
+            if not isinstance(res, dict) or res.get("error"):
+                self._send(503, {"error": (res or {}).get("error") or "浏览器没开"})
+                return
+            self._send(200, {"restored": True, "cookies": res.get("cookies", 0), "opened": res.get("opened", 0)})
             return
 
         if path == "/v1/desktop/files":

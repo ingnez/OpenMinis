@@ -624,6 +624,14 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 每项可选 `allowed_bots: [bot_id]`（`[]` 或 `null` = 所有 Bot）。不在名单的 Bot 调用会被拒并记一条失败使用记录；`vault_list` 的 `allowed` 按调用的 Bot 计算。
 - `GET /v1/vault`（只给 App）每项多出提示：卡片 `expiry_hint`（MM/YY）、联系信息 `address_hint`（默认地址一行）、登录 `pw_weak` / `pw_reused`（布尔）。服务端解密后只算提示，密码、卡号、CVV 原值不外传；模型看到的 `for_model` 不含这些提示。`?q=` 搜索也覆盖两个提示字段。
 
+## 浏览器会话快照（2.42.0）
+
+- `POST /v1/browser/snapshots {"name"?, "session_id"?}` → 201 元数据 `{"id","name","profile","tabs","hosts","cookies","created_at"}`；cookie 数组只存 VPS（文件 600），任何接口都不返回 cookie 内容。
+- `GET /v1/browser/snapshots` → `{"snapshots":[元数据…]}`（最多 20 个，新的在前）。
+- `POST /v1/browser/snapshots/<id>/restore {"session_id"?}` → `{"restored":true,"cookies":n,"opened":n}`：写回 cookie，重新打开最多 6 个网页。
+- `DELETE /v1/browser/snapshots/<id>`。
+- 不恢复 localStorage / 表单内容。给了 `session_id` 就用该会话 Bot 的浏览器资料，否则用共享资料。
+
 ## 手机 ⇄ 云电脑文件（2.41.0）
 
 - `POST /v1/desktop/files {"filename","data_base64"}` → 201 `{"name","id","bytes"}`：放进云电脑「下载」文件夹（重名自动加序号，≤ 50 MB）。

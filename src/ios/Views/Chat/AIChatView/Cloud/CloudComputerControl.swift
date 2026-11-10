@@ -38,6 +38,8 @@ final class CloudDesktopController: ObservableObject {
     @Published var macro: CloudMacro?
     /// 「文件」面板（手机 ⇄ 云电脑）
     @Published var showFiles = false
+    /// 浏览器快照面板
+    @Published var showSnapshots = false
     /// 蜂窝 / 低数据模式（auto 时据此压画质）
     @Published private(set) var expensiveNetwork = false
     var lowBandwidth: Bool {

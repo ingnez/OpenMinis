@@ -24,6 +24,12 @@ func check(_ ok: Bool, _ what: String) { if !ok { failures += 1; print("FAIL:", 
         check(d?.name == "取回.txt" && d?.data == Data("hi".utf8), "decode")
         check(CloudDesktopFiles.decode(["name": "x", "data_base64": "!!"]) == nil, "bad b64")
         check(CloudDesktopFiles.sizeText(500) == "500 B" && CloudDesktopFiles.sizeText(2048) == "2 KB" && CloudDesktopFiles.sizeText(3 * 1024 * 1024) == "3.0 MB", "size")
+        let snaps = CloudBrowserSnapshot.parse(["snapshots": [
+            ["id": "snap_0123456789", "name": "示例登录", "tabs": 2, "hosts": ["a.example", "b.example"], "created_at": 1_700_000_000.0],
+            ["id": "evil", "name": "x"],
+        ]])
+        check(snaps.count == 1 && snaps[0].subtitle == "2 个网页：a.example、b.example", "snapshot parse")
+        check(CloudBrowserSnapshot(id: "snap_x", name: "n", tabs: 0, hosts: [], created: Date()).subtitle == "只有登录状态", "no tabs")
         if failures > 0 { print("\(failures) failures"); exit(1) }
         print("CloudDesktopFilesTests OK")
     }

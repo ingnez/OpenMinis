@@ -52,3 +52,27 @@ enum CloudDesktopFiles {
         return String(format: "%.1f MB", Double(n) / 1024 / 1024)
     }
 }
+
+/// 浏览器会话快照（服务器 2.42.0）：手机只看到名字、网页数、站点，cookie 不出 VPS
+struct CloudBrowserSnapshot: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let tabs: Int
+    let hosts: [String]
+    let created: Date
+
+    static func parse(_ json: [String: Any]) -> [CloudBrowserSnapshot] {
+        (json["snapshots"] as? [[String: Any]] ?? []).compactMap { m in
+            guard let id = m["id"] as? String, id.hasPrefix("snap_") else { return nil }
+            return CloudBrowserSnapshot(id: id, name: m["name"] as? String ?? id,
+                                        tabs: (m["tabs"] as? NSNumber)?.intValue ?? 0,
+                                        hosts: m["hosts"] as? [String] ?? [],
+                                        created: Date(timeIntervalSince1970: (m["created_at"] as? NSNumber)?.doubleValue ?? 0))
+        }
+    }
+
+    var subtitle: String {
+        let sites = hosts.prefix(3).joined(separator: "、")
+        return tabs == 0 ? "只有登录状态" : "\(tabs) 个网页" + (sites.isEmpty ? "" : "：\(sites)")
+    }
+}
