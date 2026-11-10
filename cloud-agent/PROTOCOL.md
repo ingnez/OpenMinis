@@ -461,3 +461,7 @@
 - `POST /v1/sessions/<sid>/messages` 可带 `reply_to: <message_id>`（引用回复，模型看到被引用的那句）和 `choice_answer: {message_id, selected: ["1"], custom, dismissed}`（服务器把选择写成「我选：…」并标记卡片已答，只能答一次）。
 - `POST /v1/sessions/<sid>/messages/<id>/reaction {"emoji"}`：用户给 Bot 的消息点表情（空 = 取消）。
 - 系统提示：回复风格（先答案、简洁、Markdown 链接、`---` 分气泡）、记忆习惯、常驻档案（共用用户档案 + 这个 Bot 自己的 profile/rules，各最多 1500 字；日记不常驻，用 memory_search 查）。例行 / 监控结果只有「无变化」时不通知。
+
+## 先回话（2.11.0）
+
+资源设置 `quick_ack`（默认开，需要设置 `fast_model`）：前台对话里主模型 1.5 秒还没出字时，用 fast_model 生成一句 ≤20 字的确认，立刻作为 `thought` 事件显示；写库时并进第一条工具调用消息的文字（不打乱 tool_calls / tool 顺序），主模型已经说话就丢掉。

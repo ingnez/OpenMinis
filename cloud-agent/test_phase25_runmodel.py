@@ -225,6 +225,36 @@ class RunModelTests(CloudServerTestCase):
         self.assertEqual([m["content"] for m in miles], ["⏳ 调研：阶段 1", "⏳ 调研：阶段 2", "⏳ 调研：阶段 3"])
         gate.set()
 
+    def test_09_quick_ack_with_fast_model(self):
+        self.srv.QUICK_ACK_DELAY = 0.3
+        self.srv.update_resource_settings({"fast_model": "m-fast"})
+        try:
+            FakeModelHandler.scripts["m-fast"] = lambda d: {"role": "assistant", "content": "收到，马上去查"}
+
+            def slow(d):
+                if not fresh_tools(d):
+                    time.sleep(1.5)
+                    return tool_call("c0", "memory_search", {"query": "x"})
+                return {"role": "assistant", "content": "查到了：42"}
+            FakeModelHandler.scripts["m-slow"] = slow
+            sid = self._sid()
+            self._say(sid, "帮我查个数", "m-slow")
+            fast = self._calls("m-fast")
+            self.assertEqual(len(fast), 1)
+            self.assertIn("不超过 20 个字", system_of(fast[0]))
+            msgs = self._msgs(sid)
+            ack = [m for m in msgs if m["role"] == "assistant" and m.get("tool_calls")][0]
+            self.assertEqual(ack["content"], "收到，马上去查")       # 并进工具调用那条消息，顺序不乱
+            self.assertEqual(msgs[-1]["content"], "查到了：42")
+            # 主模型很快就说话：不调快速模型
+            FakeModelHandler.scripts["m-quick"] = lambda d: {"role": "assistant", "content": "马上答"}
+            self._say(sid, "你好", "m-quick")
+            time.sleep(0.6)
+            self.assertEqual(len(self._calls("m-fast")), 1)
+        finally:
+            self.srv.update_resource_settings({"fast_model": ""})
+            self.srv.QUICK_ACK_DELAY = 1.5
+
     def test_08_beats_split(self):
         self.assertEqual(cloud_runmodel.split_beats("答案是 42。\n---\n顺便：记下了。"), ["答案是 42。", "顺便：记下了。"])
         self.assertIsNone(cloud_runmodel.split_beats("```\na\n---\nb\n```"))

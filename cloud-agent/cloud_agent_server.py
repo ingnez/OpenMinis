@@ -560,7 +560,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.10.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.11.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -2602,6 +2602,55 @@ def _parse_at(at, tz):
         dt = dt.replace(tzinfo=ZoneInfo(tz))
     return dt.timestamp()
 
+QUICK_ACK_DELAY = float(os.environ.get("OPENMINIS_QUICK_ACK_DELAY", "1.5"))
+QUICK_ACK_PROMPT = ("你是 {name}。用户刚发来一条消息，你马上要去处理。先用一句不超过 20 个字的话回应（确认收到、说明马上去做），"
+                    "不要回答具体内容，不要客套，不要用引号。{lang}")
+TURN_LOCK = threading.Lock()
+
+def _quick_ack(task_id, session_id, user_text, fast_model, chat_url, api_key, perf):
+    time.sleep(QUICK_ACK_DELAY)
+    if perf.get("first_text_ms") is not None or perf.get("tools") or is_task_cancelled(task_id):
+        return
+    bot = session_bot(session_id) or {}
+    lang = (bot.get("soul") or {}).get("language") if isinstance(bot.get("soul"), dict) else None
+    sys_text = QUICK_ACK_PROMPT.format(name=bot.get("name") or "助手", lang=f"用「{lang}」回复。" if lang else "用用户的语言回复。")
+    text = user_text if isinstance(user_text, str) else json.dumps(user_text, ensure_ascii=False)
+    try:
+        resp, _t = cloud_llm.chat_completion(chat_url, {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+                                             {"model": fast_model, "messages": [{"role": "system", "content": sys_text},
+                                                                                {"role": "user", "content": text[:2000]}],
+                                              "max_tokens": 60, "temperature": 0.3}, stream=False, timeout=6)
+        ack = (((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip().strip("\"「」")[:80]
+    except Exception as e:
+        print(f"quick ack failed: {type(e).__name__}", flush=True)
+        return
+    if not ack:
+        return
+    with TURN_LOCK:
+        tf = TURN_FLAGS.setdefault(task_id, {})
+        if tf.get("spoke") or perf.get("first_text_ms") is not None:
+            return
+        tf["ack"] = ack
+    log_event(task_id, "thought", {"content": ack, "ack": True})
+    perf["quick_ack_ms"] = round((time.time() - perf["created_at"]) * 1000, 1)
+
+def _take_ack(task_id, content, tool_calls):
+    """模型这一轮的输出写库前调用：还没给出的快速确认并进第一条工具调用消息（不打乱 tool_calls / tool 的顺序）；模型自己已经说话了就丢掉。"""
+    with TURN_LOCK:
+        tf = TURN_FLAGS.setdefault(task_id, {})
+        tf["spoke"] = True
+        ack = tf.pop("ack", None)
+    if ack and not content and tool_calls:
+        return ack
+    return content
+
+def _flush_ack(task_id, session_id):
+    """任务结束时快速确认还没并进任何消息（比如出错了）：单独写一条。"""
+    with TURN_LOCK:
+        ack = (TURN_FLAGS.get(task_id) or {}).pop("ack", None)
+    if ack:
+        insert_message(session_id, "assistant", ack, meta={"ack": True})
+
 def _turn_meta(task_id, meta):
     """最终回复上挂本轮写的页面（App 显示页面卡片）。"""
     pages = (TURN_FLAGS.get(task_id) or {}).pop("pages", None)
@@ -4049,6 +4098,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         route["model"] = model = rs_perf["fast_model"]
         perf["auto_model"] = model
         log_event(task_id, "status", {"message": f"简单问题，用快速模型 {model} 回答"})
+    if front_session and rs_perf.get("quick_ack", True) and rs_perf.get("fast_model") and rs_perf["fast_model"] != route["model"]:
+        # 先回话：主模型 1.5 秒还没出字，就用快速模型先回一句简短确认
+        threading.Thread(target=_quick_ack, args=(task_id, session_id, initial_content, rs_perf["fast_model"], chat_url, api_key, perf),
+                         daemon=True).start()
 
     def call_with_failover(send_msgs, tools):
         nonlocal model
@@ -4165,6 +4218,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 log_event(task_id, "error", {"error": "模型返回了空回复（没有文字也没有工具调用）"})
                 final_status = "failed"
                 break
+            content = _take_ack(task_id, content, tool_calls)   # 快速确认：并进第一条工具调用消息，已经有文字就不要了
             if content:
                 answered = True
 
@@ -4349,6 +4403,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             print(f"perf record failed: {e}", flush=True)
         live_clear(task_id)
         try:
+            _flush_ack(task_id, session_id)
             if final_status != "cancelled":
                 _post_turn_card(task_id, session_id)    # 选项卡还没写出去（模型之后又说了话）：补上
         except Exception as e:
@@ -5652,7 +5707,7 @@ class Handler(BaseHTTPRequestHandler):
                              "median": {k: med(k) for k in ("ttft_ms", "first_text_ms", "total_ms", "queued_ms", "prompt_tokens", "completion_tokens", "cached_tokens", "tool_defs")},
                              "pool": dict(cloud_llm.POOL.stats),
                              "settings": {k: resource_settings().get(k) for k in ("stream", "lazy_tools", "parallel_tools", "prompt_cache", "context_trim_tokens",
-                                                                  "auto_title", "auto_model", "fast_model", "failover", "duty_until")}})
+                                                                  "auto_title", "auto_model", "quick_ack", "fast_model", "failover", "duty_until")}})
             return
 
         if path == "/v1/usage":

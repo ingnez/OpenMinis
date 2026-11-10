@@ -57,6 +57,7 @@ DEFAULTS = {
     "auto_title": True,                # 第一轮回答后给对话起一个短标题
     "duty_until": 0,                   # 值班模式到这个时间（UNIX 秒）为止；0 = 没在值班
     "auto_model": False,               # 简单的短问题自动用 fast_model 回答（失败回到主模型）
+    "quick_ack": True,                 # 主模型 1.5 秒还没出字时，用 fast_model 先回一句简短确认（没设 fast_model 就不做）
     "private_bots": [],                # 手机上用 Face ID 锁住的 Bot：推送里不显示它们的内容
     "fast_model": "",                  # 起标题 / 摘要用的小模型（与当前任务同一服务商），空 = 不调模型，只截取首句
     "failover": [],                    # 主模型连续失败（5xx / 超时 / 断连）时依次换用：[{"credential": 名称, "model": 模型}]，最多 3 个
@@ -186,9 +187,9 @@ def validate(patch, current):
             if not isinstance(v, list) or len(v) > 200 or not all(isinstance(x, str) and re.match(r"^[a-z0-9][a-z0-9_-]{0,31}$", x) for x in v):
                 raise SettingsError("private_bots 是 Bot id 列表")
             s[k] = sorted(set(v))
-        elif k == "auto_model":
+        elif k in ("auto_model", "quick_ack"):
             if not isinstance(v, bool):
-                raise SettingsError("auto_model 必须是布尔值")
+                raise SettingsError(f"{k} 必须是布尔值")
             s[k] = v
         elif k == "fast_model":
             if not isinstance(v, str) or len(v) > 120 or (v and not re.match(r"^[A-Za-z0-9._:/@+-]+$", v)):
