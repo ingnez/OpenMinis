@@ -82,7 +82,7 @@ private func cloudDate(_ ts: Double?) -> String {
     return f.string(from: Date(timeIntervalSince1970: ts))
 }
 
-private func cloudTokens(_ n: Int) -> String {
+func cloudTokens(_ n: Int) -> String {
     if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
     if n >= 10_000 { return String(format: "%.1f万", Double(n) / 10_000) }
     return "\(n)"
