@@ -70,7 +70,7 @@ jobs:
       - name: 纯逻辑 Swift 单测在 macOS 上也能编译（CoreGraphics 差异只在 Mac 上暴露）
         run: |
           set -e
-          grep -oE 'swiftc -swift-version 5 -parse-as-library [^|]*-o /tmp/[A-Za-z0-9_-]+' .github/workflows/build-ios.yml | sort -u > /tmp/swift-unit-cmds.txt
+          grep -oE 'swiftc -swift-version 5 (-parse-as-library |scripts/CloudChatTypecheckSupport\.swift )[^|]*-o /tmp/[A-Za-z0-9_-]+' .github/workflows/build-ios.yml | grep -v '^xcrun' | sort -u > /tmp/swift-unit-cmds.txt
           wc -l < /tmp/swift-unit-cmds.txt
           while read -r c; do xcrun $c || { echo "::error::$c"; exit 1; }; done < /tmp/swift-unit-cmds.txt
       - name: Apple Watch App 类型检查（watchOS SDK）
