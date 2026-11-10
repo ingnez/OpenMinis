@@ -67,7 +67,7 @@ struct CloudProactiveSection: View {
 
     private func load() async {
         defer { loaded = true }
-        guard let list = try? await CloudQuiet.retry({ try await CloudRoutineService.list() }) else { return }
+        guard let list = try? await CloudQuiet.retry(3, { try await CloudRoutineService.list() }) else { return }
         guard let r = list.first(where: { ($0["persona_id"] as? String) == botId && (($0["name"] as? String) ?? "").hasPrefix(CloudProactive.namePrefix) }) else { return }
         routineId = r["routine_id"] as? String
         enabled = r["enabled"] as? Bool ?? ((r["enabled"] as? Int) == 1)
