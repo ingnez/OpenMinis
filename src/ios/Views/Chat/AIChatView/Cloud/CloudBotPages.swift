@@ -120,7 +120,11 @@ enum CloudBotSpeaker {
 // MARK: - 编辑 Bot
 
 struct CloudBotEditSheet: View {
+    /// 点完成后立刻调用（本地先显示新名字 / 头像）；不要在这里等网络
     let onSaved: @MainActor (CloudBot) async -> Void
+    /// 改动真的同步到云电脑之后调用（这时再刷新列表）
+    var onSynced: (@MainActor () async -> Void)? = nil
+    private let original: CloudBot
     @Environment(\.dismiss) private var dismiss
     @State private var bot: CloudBot
     @State private var spec: CloudBotAvatarSpec
@@ -131,10 +135,16 @@ struct CloudBotEditSheet: View {
     @State private var saving = false
     @State private var errorText: String?
 
-    init(bot: CloudBot, onSaved: @escaping @MainActor (CloudBot) async -> Void) {
+    init(bot: CloudBot, onSaved: @escaping @MainActor (CloudBot) async -> Void, onSynced: (@MainActor () async -> Void)? = nil) {
         self.onSaved = onSaved
-        _bot = State(initialValue: bot)
-        _spec = State(initialValue: CloudBotAvatarSpec.of(bot))
+        self.onSynced = onSynced
+        // 头像用首页最新的那份资料（传进来的可能是打开资料页时的旧快照）
+        let fresh = CloudBotService.cachedList().first { $0.id == bot.id }
+        var start = bot
+        if let fresh, start.emoji.isEmpty { start.emoji = fresh.emoji }
+        self.original = start
+        _bot = State(initialValue: start)
+        _spec = State(initialValue: CloudBotAvatarSpec.of(start))
         _voice = State(initialValue: CloudBotVoiceSettings.load(bot.id))
     }
 
@@ -237,11 +247,11 @@ struct CloudBotEditSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { save() } label: {
-                        Text(saving ? "保存中" : "完成").font(.subheadline.bold()).foregroundStyle(Color(.systemBackground))
+                        Text("完成").font(.subheadline.bold()).foregroundStyle(Color(.systemBackground))
                             .padding(.horizontal, 14).padding(.vertical, 7)
                             .background(Capsule().fill(Color.primary))
                     }
-                    .disabled(saving || bot.name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(bot.name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
             .sheet(isPresented: $showModel) {
@@ -278,34 +288,33 @@ struct CloudBotEditSheet: View {
         return bot.model.isEmpty ? "跟随手机默认" : bot.model
     }
 
+    /// 乐观保存：本地立刻生效、马上关掉表单；只把变了的字段放到后台发（见 CloudBotSaveQueue）。
+    /// 以前这里依次等「重连 → 整个 Bot PUT → 头像上传 → 模型凭据上传 → 重新拉全部 Bot 和云电脑状态」都完成才关，
+    /// 隧道慢或云电脑忙时就一直停在「保存中」。
     private func save() {
-        saving = true
-        errorText = nil
         var updated = bot
         updated.name = bot.name.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.emoji = spec.encoded
         if updated.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             updated.instructions = "你是「\(updated.name)」，用户的私人助手。用中文简洁回答。"
         }
-        voice.save(bot.id)
-        Task {
-            do {
-                try await CloudBotService.save(updated)
-                try await CloudAvatarImages.uploadIfNeeded(spec, botId: bot.id)
-                if let modelPick {
-                    try await CloudBotService.setModelChoice(bot.id, option: modelPick.option, effort: modelPick.effort)
-                    updated.model = modelPick.option?.model ?? ""
-                    updated.reasoningEffort = modelPick.effort.rawValue
-                }
-                CloudHaptics.success()
-                await onSaved(updated)
-                dismiss()
-            } catch {
-                CloudHaptics.warning()
-                errorText = error.localizedDescription
-            }
-            saving = false
+        if let modelPick {
+            updated.model = modelPick.option?.model ?? ""
+            updated.reasoningEffort = modelPick.effort.rawValue
         }
+        voice.save(bot.id)
+        let patch = Self.fields(updated).patch(from: Self.fields(original))
+        if spec.pendingPhoto != nil { CloudAvatarImages.shared.store(spec.pendingPhoto!) }
+        CloudBotSaveQueue.shared.enqueue(.init(botId: bot.id, botName: updated.name, patch: patch,
+                                               avatar: spec.pendingPhoto != nil ? spec : nil, model: modelPick, onDone: onSynced))
+        CloudHaptics.success()
+        let saved = updated
+        Task { await onSaved(saved) }
+        dismiss()
+    }
+
+    static func fields(_ b: CloudBot) -> CloudBotEditFields {
+        CloudBotEditFields(name: b.name, emoji: b.emoji, summary: b.summary, instructions: b.instructions, fastMode: b.fastMode)
     }
 }
 
@@ -406,6 +415,7 @@ struct CloudBotDetailView: View {
             if let errorText { Section { Text(errorText).font(.footnote).foregroundStyle(.red) } }
         }
         .listStyle(.insetGrouped)
+        .cloudBotSaveToast()
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -438,7 +448,7 @@ struct CloudBotDetailView: View {
             CloudBotAdvancedView(bot: bot, onChanged: { await refresh(); await onChanged() })
         }
         .sheet(isPresented: $showEdit) {
-            CloudBotEditSheet(bot: bot, onSaved: { _ in await refresh(); await onChanged() })
+            CloudBotEditSheet(bot: bot, onSaved: { saved in bot = saved }, onSynced: { await refresh(); await onChanged() })
         }
         .confirmationDialog("删除“\(bot.name)”？", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("删除，保留其记忆", role: .destructive) { remove(purge: false) }

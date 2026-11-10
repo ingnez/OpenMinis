@@ -43,7 +43,7 @@ class E2EScenarios(CloudServerTestCase):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(report, f, ensure_ascii=False, indent=1)
         if LATENCY:
-            print("\n[e2e mock 延迟] " + "; ".join(f"{r['scenario']}: 首字 {r['first_text_ms']}ms / 总 {r['total_ms']}ms" for r in LATENCY))
+            print("\n[e2e mock 延迟] " + "; ".join(f"{r['scenario']}: " + (f"首字 {r['first_text_ms']}ms / " if r['first_text_ms'] is not None else "") + f"总 {r['total_ms']}ms" for r in LATENCY))
         super().tearDownClass()
 
     # —— 工具 ——
@@ -237,6 +237,22 @@ class E2EScenarios(CloudServerTestCase):
         self.assertEqual(self.request("POST", "/v1/proxy/import", {"text": link})[1]["added"], [], "重复导入不重复保存")
         for n in self.request("GET", "/v1/proxy")[1].get("nodes", []):
             self.request("DELETE", f"/v1/proxy/nodes/{n['id']}")
+
+    def test_12_bot_rename_is_cheap_and_partial(self):
+        long_instr = "很长的指令" * 400
+        self.request("PUT", "/v1/bots/e-edit", {"name": "旧名", "instructions": long_instr, "description": "简介", "model": "e-m", "credential": "e2e"})
+        times = []
+        for i in range(5):
+            t0 = time.time()
+            code, bot = self.request("PUT", "/v1/bots/e-edit", {"name": f"新名{i}"})      # App 只发变了的字段
+            times.append((time.time() - t0) * 1000)
+            self.assertEqual(code, 200, bot)
+        self.assertEqual(bot["name"], "新名4")
+        self.assertEqual((bot["instructions"], bot["description"], bot["model"]), (long_instr, "简介", "e-m"), "没带的字段保持不变")
+        times.sort()
+        LATENCY.append({"scenario": "Bot 改名保存（服务端 PUT）", "first_text_ms": None, "ttft_ms": None,
+                        "total_ms": round(times[len(times) // 2], 1), "client_total_ms": round(times[-1], 1), "source": "mock"})
+        self.assertLess(times[len(times) // 2], 300, "改名保存应很快")
 
 
 if __name__ == "__main__":

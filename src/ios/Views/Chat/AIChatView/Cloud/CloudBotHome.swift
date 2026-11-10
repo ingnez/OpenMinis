@@ -601,6 +601,7 @@ struct CloudBotHomeScreen: View {
         .sheet(isPresented: $showHub) {
             NavigationStack { CloudBotHubView(onDone: { showHub = false }) }
         }
+        .cloudBotSaveToast()
         .modifier(CloudBotHomeMenuSheets(model: model, showPrimaryPicker: $showPrimaryPicker,
                                          renaming: $renaming, renameText: $renameText, deleting: $deleting, shareURL: $shareURL,
                                          sectionFor: $sectionFor, sectionName: $sectionName))
