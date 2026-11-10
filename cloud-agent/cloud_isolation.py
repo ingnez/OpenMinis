@@ -43,6 +43,8 @@ DEFAULTS = {
     "group_tokens_per_min": 60000,     # 群聊每分钟 token 预算（按估算），0 = 不限
     "group_max_concurrent": 2,         # 群聊里同时在想 / 打字的 Bot 数，0 = 不限
     "group_activity": "normal",        # quiet 安静 / normal 正常 / lively 活跃
+    "daily_token_cap": 0,              # 每天所有 Bot 合计 token 上限，0 = 不限；达到后新任务暂停到第二天
+    "usage_alert_percent": 80,         # 用到上限的百分之多少时推送提醒，0 = 不提醒
 }
 
 RESERVED_PORTS = (18765, 18766, 5901)
@@ -140,6 +142,8 @@ def validate(patch, current):
             s[k] = _int(v, k, 1024, 64000)
         elif k == "port_range":
             s[k] = _int(v, k, 1, 1000)
+        elif k == "usage_alert_percent":
+            s[k] = _int(v, k, 0, 100)
         elif k == "delegation_max_hops":
             s[k] = _int(v, k, 0, 10)
         elif k == "group_activity":

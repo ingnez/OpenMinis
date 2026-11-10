@@ -50,6 +50,7 @@ import re
 import cloud_browser
 import cloud_delegation as deleg
 import cloud_groups
+import cloud_usage
 import cloud_desktop
 import cloud_secrets
 import cloud_policy
@@ -265,6 +266,7 @@ def init_db():
     cursor.execute(deleg.SCHEMA)
     conn.commit()
     cloud_groups.ensure_schema(conn)
+    cloud_usage.ensure_schema(conn)
     cloud_memory.ensure_schema(conn)
     cloud_skills.ensure_schema(conn)
     cloud_bots.ensure_schema(conn)
@@ -1044,8 +1046,11 @@ def tool_memory_write(task_id, session_id, args):
         return {"error": "Cancelled"}
     conn = get_db_connection()
     try:
+        bot = session_bot(session_id)
+        # 主 Bot 记下的内容所有 Bot 共享；其他 Bot 的记忆彼此隔离
+        persona = "" if (bot and bot.get("is_primary")) else (session_persona_id(session_id) or "")
         entry, created = cloud_memory.write(conn, args.get("content"), args.get("category"), source="cloud", session_id=session_id,
-                                            persona=session_persona_id(session_id) or "")
+                                            persona=persona)
     except ValueError as e:
         return {"error": str(e)}
     finally:
@@ -1286,6 +1291,173 @@ def tool_skill_load(task_id, session_id, args):
     finally:
         conn.close()
     return {"name": skill["name"], "description": skill["description"], "content": skill["content"]}
+
+def tool_skill_save(task_id, session_id, args):
+    """Bot 把做成功的多步流程存成技能，之后用 skill_load 复用。"""
+    if is_task_cancelled(task_id):
+        return {"error": "Cancelled"}
+    name, content = args.get("name"), args.get("content")
+    desc = args.get("description")
+    if isinstance(content, str) and desc and not content.lstrip().startswith("---"):
+        content = f"---\ndescription: {' '.join(str(desc).split())[:300]}\n---\n" + content
+    conn = get_db_connection()
+    try:
+        existing = cloud_skills.load(conn, name) if isinstance(name, str) else None
+        if existing and existing.get("source") not in (None, "bot") and not args.get("overwrite"):
+            return {"error": f"已有同名技能「{name}」（来自手机同步），换个名字或传 overwrite=true"}
+        result = cloud_skills.upsert(conn, name, content, desc, source="bot")
+        bot = session_bot(session_id)
+        if bot and bot.get("skills") is not None and name not in bot["skills"]:
+            conn.execute("UPDATE personas SET skills = ? WHERE persona_id = ?", (json.dumps(bot["skills"] + [name]), bot["persona_id"]))
+            conn.commit()
+    except ValueError as e:
+        return {"error": str(e)}
+    finally:
+        conn.close()
+    return {"status": result, "name": name, "note": "以后遇到同类任务先 skill_load 这个技能"}
+
+def search_everything(q, limit=60):
+    """在所有 Bot 对话与群聊里搜文字（不含工具输出）。"""
+    like = "%" + q.replace("%", r"\%").replace("_", r"\_") + "%"
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT m.session_id, m.role, m.content, m.timestamp, s.title, s.persona_id FROM messages m JOIN sessions s ON s.session_id = m.session_id "
+            "WHERE m.role IN ('user', 'assistant') AND m.content LIKE ? ESCAPE '\\' ORDER BY m.timestamp DESC LIMIT ?", (like, limit)).fetchall()
+        grows = conn.execute(
+            "SELECT gm.group_id, gm.id, gm.sender, gm.content, gm.timestamp, g.name FROM group_messages gm JOIN groups g ON g.group_id = gm.group_id "
+            "WHERE gm.kind IN ('text', 'task', 'task_result') AND gm.content LIKE ? ESCAPE '\\' ORDER BY gm.timestamp DESC LIMIT ?", (like, limit)).fetchall()
+    finally:
+        conn.close()
+
+    def snippet(text):
+        text = text or ""
+        if text.startswith("["):
+            text = CloudMessageText_plain(text)
+        i = text.lower().find(q.lower())
+        start = max(0, i - 30)
+        return ("…" if start else "") + text[start:start + 120].replace("\n", " ")
+
+    names = {p["persona_id"]: p["name"] for p in list_personas()}
+    items = [{"type": "bot", "session_id": r[0], "role": r[1], "snippet": snippet(r[2]), "timestamp": r[3], "title": r[4],
+              "bot_id": r[5] or "", "bot_name": names.get(r[5], "主助手")} for r in rows]
+    items += [{"type": "group", "group_id": r[0], "message_id": r[1], "sender": r[2], "snippet": snippet(r[3]), "timestamp": r[4],
+               "group_name": r[5], "bot_name": "我" if r[2] == "user" else names.get(r[2], r[2])} for r in grows]
+    items.sort(key=lambda x: -(x["timestamp"] or 0))
+    return items[:limit]
+
+def CloudMessageText_plain(raw):
+    try:
+        parts = json.loads(raw)
+        if isinstance(parts, list):
+            return " ".join(p.get("text", "") for p in parts if isinstance(p, dict) and p.get("type") == "text")
+    except (ValueError, TypeError):
+        pass
+    return raw
+
+BACKUP_FORMAT = "openminis-backup/1"
+
+def make_backup(include_messages=True):
+    """导出 Bot、对话、群聊、例行任务、记忆、技能（Bot 写的）与资源设置；不含任何密钥或凭据内容。"""
+    conn = get_db_connection()
+    try:
+        bots = [cloud_bots.export_bundle(conn, p["persona_id"], [], []) for p in list_personas()]
+        sessions = []
+        for r in conn.execute("SELECT session_id, title, instructions, created_at, persona_id FROM sessions ORDER BY created_at ASC").fetchall():
+            s = {"session_id": r[0], "title": r[1], "instructions": r[2], "created_at": r[3], "persona_id": r[4]}
+            if include_messages:
+                s["messages"] = [{"role": m[0], "content": m[1], "tool_calls": m[2], "tool_call_id": m[3], "timestamp": m[4]} for m in conn.execute(
+                    "SELECT role, content, tool_calls, tool_call_id, timestamp FROM messages WHERE session_id = ? ORDER BY id ASC", (r[0],)).fetchall()]
+            sessions.append(s)
+        groups = []
+        for g in cloud_groups.list_groups(conn):
+            g.pop("last_message", None)
+            g["messages"] = cloud_groups.messages_after(conn, g["group_id"], 0, 100000) if include_messages else []
+            groups.append(g)
+        memory = cloud_memory.list_entries(conn, limit=1000)
+        skills = [cloud_skills.load(conn, s["name"]) for s in cloud_skills.list_index(conn)]
+        skills = [{"name": s["name"], "description": s["description"], "content": s["content"]} for s in skills if s and s.get("source") == "bot"]
+    finally:
+        conn.close()
+    routines = [{k: v for k, v in r.items() if k not in ("credential",)} for r in list_routines()]
+    return {"format": BACKUP_FORMAT, "created_at": time.time(), "bots": bots, "sessions": sessions, "groups": groups,
+            "routines": routines, "memory": memory, "skills": skills, "settings": resource_settings()}
+
+def restore_backup(backup, include_settings=False):
+    """合并导入：已存在的 Bot / 会话 / 群聊保持不变（按 ID 跳过），记忆按内容去重。例行任务需要凭据，不自动导入。"""
+    if not isinstance(backup, dict) or backup.get("format") != BACKUP_FORMAT:
+        raise ValueError("不是 OpenMinis 备份文件（openminis-backup/1）")
+    stats = {"bots": 0, "sessions": 0, "messages": 0, "groups": 0, "memory": 0, "skills": 0, "skipped": 0}
+    conn = get_db_connection()
+    try:
+        for b in backup.get("bots") or []:
+            bid = (b or {}).get("bot_id")
+            if not isinstance(bid, str) or not cloud_bots.BOT_ID_RE.match(bid) or cloud_bots.get(conn, bid):
+                stats["skipped"] += 1
+                continue
+            body = {k: v for k, v in (b.get("bot") or {}).items() if k in ("name", "emoji", "description", "instructions", "skills", "plugins")}
+            try:
+                cloud_bots.upsert(conn, bid, body, credential_exists)
+                stats["bots"] += 1
+            except cloud_bots.BotError:
+                stats["skipped"] += 1
+        for s in backup.get("sessions") or []:
+            sid = (s or {}).get("session_id")
+            if not isinstance(sid, str) or not re.match(r"^[A-Za-z0-9_-]{1,64}$", sid) or conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (sid,)).fetchone():
+                stats["skipped"] += 1
+                continue
+            pid = s.get("persona_id") if s.get("persona_id") and cloud_bots.get(conn, s.get("persona_id")) else None
+            conn.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, NULL, ?, ?, ?, ?)",
+                         (sid, str(s.get("title") or "")[:200], str(s.get("instructions") or ""), float(s.get("created_at") or time.time()), pid))
+            for m in s.get("messages") or []:
+                if isinstance(m, dict) and m.get("role") in ("user", "assistant", "tool", "system"):
+                    conn.execute("INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                                 (sid, m["role"], m.get("content"), m.get("tool_calls"), m.get("tool_call_id"), float(m.get("timestamp") or 0)))
+                    stats["messages"] += 1
+            stats["sessions"] += 1
+        conn.commit()
+        for g in backup.get("groups") or []:
+            gid = (g or {}).get("group_id")
+            if not isinstance(gid, str) or not re.match(r"^grp_[a-f0-9]{10}$", gid) or cloud_groups.get_group(conn, gid):
+                stats["skipped"] += 1
+                continue
+            members = [m for m in (g.get("members") or []) if cloud_bots.get(conn, m)]
+            if not members:
+                stats["skipped"] += 1
+                continue
+            conn.execute("INSERT INTO groups (group_id, name, members, activity, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                         (gid, str(g.get("name") or "群聊")[:40], json.dumps(members), g.get("activity"), g.get("created_at") or time.time(), g.get("updated_at") or time.time()))
+            for m in g.get("messages") or []:
+                conn.execute("INSERT INTO group_messages (group_id, sender, kind, content, reply_to, meta, timestamp) VALUES (?, ?, ?, ?, NULL, ?, ?)",
+                             (gid, str(m.get("sender") or "user"), str(m.get("kind") or "text"), m.get("content"),
+                              json.dumps(m.get("meta")) if m.get("meta") else None, m.get("timestamp") or 0))
+            stats["groups"] += 1
+        conn.commit()
+        for e in backup.get("memory") or []:
+            try:
+                persona = e.get("persona") if e.get("persona") and cloud_bots.get(conn, e.get("persona")) else ""
+                _, created = cloud_memory.write(conn, e.get("content"), e.get("category"), source="import", entry_time=e.get("entry_time"),
+                                                commit=False, persona=persona)
+                stats["memory"] += 1 if created else 0
+            except (ValueError, AttributeError):
+                stats["skipped"] += 1
+        for sk in backup.get("skills") or []:
+            try:
+                if not cloud_skills.load(conn, sk.get("name")):
+                    cloud_skills.upsert(conn, sk.get("name"), sk.get("content"), sk.get("description"), source="bot", commit=False)
+                    stats["skills"] += 1
+            except (ValueError, AttributeError):
+                stats["skipped"] += 1
+        conn.commit()
+    finally:
+        conn.close()
+    if include_settings and isinstance(backup.get("settings"), dict):
+        try:
+            update_resource_settings({k: v for k, v in backup["settings"].items() if k != "bot_overrides"})
+            stats["settings"] = True
+        except iso.SettingsError as e:
+            stats["settings_error"] = str(e)
+    return stats
 
 def tool_page_write(task_id, session_id, args):
     if is_task_cancelled(task_id):
@@ -1606,12 +1778,47 @@ def _bot_provider(bot, fallback):
         return fallback
     raise RuntimeError("没有可用的模型：请给这个 Bot 选一个模型，或在手机上选好默认模型")
 
+USAGE_CAP = cloud_usage.CapState()
+
+def note_usage(bot_id, model, resp, request_messages=None):
+    """记一次模型调用的 token，并在接近 / 达到每日上限时推送一次提醒。"""
+    try:
+        msg = (((resp or {}).get("choices") or [{}])[0].get("message") or {})
+        p, c = cloud_usage.usage_from_response(resp, request_messages, msg.get("content"))
+        conn = get_db_connection()
+        try:
+            cloud_usage.record(conn, bot_id or "", model, p, c)
+            used = cloud_usage.total_for_day(conn)
+        finally:
+            conn.close()
+        rs = resource_settings()
+        _blocked, alert = USAGE_CAP.check(used, rs.get("daily_token_cap", 0), rs.get("usage_alert_percent", 80))
+        cfg = current_notify_config()
+        if alert and cfg:
+            cap = rs.get("daily_token_cap", 0)
+            title = "今日 token 用量已达上限" if alert == "cap" else "今日 token 用量接近上限"
+            cloud_notify.notify_async(cfg, "task_completed", title, f"已用 {used} / {cap}（{used * 100 // max(cap, 1)}%）")
+    except Exception as e:
+        print(f"usage record failed: {e}", flush=True)
+
+def usage_blocked():
+    cap = resource_settings().get("daily_token_cap", 0)
+    if not cap:
+        return None
+    conn = get_db_connection()
+    try:
+        used = cloud_usage.total_for_day(conn)
+    finally:
+        conn.close()
+    return f"今天的 token 用量已达上限（{used} / {cap}），新任务暂停到明天；可在 云电脑资源设置 › 用量 调高上限" if used >= cap else None
+
 def _group_llm(bot, messages, fallback):
     model, provider = _bot_provider(bot, fallback)
     url = f"{provider.get('base_url', 'https://api.openai.com/v1').rstrip('/')}/chat/completions"
     resp = call_llm_with_effort(url, {"Content-Type": "application/json", "Authorization": f"Bearer {provider.get('api_key', '')}"},
                                 {"model": model, "messages": messages, "stream": False, "max_tokens": 600},
                                 bot.get("reasoning_effort"))
+    note_usage(bot["persona_id"], model, resp, messages)
     msg = ((resp.get("choices") or [{}])[0].get("message") or {})
     text = msg.get("content") or ""
     if isinstance(text, list):
@@ -2029,6 +2236,16 @@ TOOL_DEFINITIONS.extend([
             "required": ["bot_id", "task"]}}},
 ])
 
+TOOL_DEFINITIONS.append({"type": "function", "function": {
+    "name": "skill_save",
+    "description": "Save a multi-step workflow that just worked as a reusable skill (Markdown steps, commands, pitfalls). Later load it with skill_load instead of rediscovering.",
+    "parameters": {"type": "object", "properties": {
+        "name": {"type": "string", "description": "Short kebab-case name, e.g. weekly-report"},
+        "description": {"type": "string", "description": "One line: when to use it"},
+        "content": {"type": "string", "description": "Markdown: steps, exact commands, checks, pitfalls"},
+        "overwrite": {"type": "boolean"}},
+        "required": ["name", "description", "content"]}}})
+
 DELEGATION_TOOLS = {"send_to_bot", "delegate_task"}
 
 def tools_for_depth(depth):
@@ -2087,6 +2304,17 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
     """顶层任务先排队：同一 Bot 的并发数、全局并发数、同时运行的 Bot 数都来自资源设置；子代理在父任务的名额里运行。"""
     if depth > 0:
         return _run_agent_task_inner(task_id, session_id, initial_content, model, provider_config, instructions, depth)
+    blocked = usage_blocked()
+    if blocked:
+        # 例行任务、Telegram、委托等后台入口也受每日上限约束
+        log_event(task_id, "error", {"error": blocked})
+        conn = get_db_connection()
+        try:
+            conn.execute("UPDATE tasks SET status = 'limit_reached' WHERE task_id = ? AND status IN ('running', 'waiting_user')", (task_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        return None
     lane = task_lane(session_id)
     bot_id = session_persona_id(session_id)
 
@@ -2189,6 +2417,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 final_status = "failed"
                 break
 
+            note_usage(session_persona_id(session_id), model, resp, messages)
             choices = resp.get("choices", [])
             if not choices:
                 log_event(task_id, "error", {"error": "Missing choices"})
@@ -2276,6 +2505,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     elif fn_name == "page_write": res = tool_page_write(task_id, session_id, fn_args)
                     elif fn_name == "subagent_task": res = tool_subagent_task(task_id, session_id, fn_args, model, provider_config, depth)
                     elif fn_name == "list_bots": res = tool_list_bots(task_id, session_id, fn_args)
+                    elif fn_name == "skill_save": res = tool_skill_save(task_id, session_id, fn_args)
                     elif fn_name == "send_to_bot" and depth == 0: res = tool_send_to_bot(task_id, session_id, fn_args, model, provider_config)
                     elif fn_name == "delegate_task" and depth == 0: res = tool_delegate_task(task_id, session_id, fn_args, model, provider_config)
                     elif fn_name == "image_generate": res = tool_image_generate(task_id, session_id, fn_args, provider_config)
@@ -3306,6 +3536,35 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"messages": msgs, "typing": typing})
             return
 
+        if path == "/v1/search":
+            q = ((query_params.get("q") or [""])[0]).strip()
+            if not q or len(q) > 100:
+                self._send(400, {"error": "q 必须是 1–100 个字符"})
+                return
+            self._send(200, {"results": search_everything(q)})
+            return
+
+        if path == "/v1/usage":
+            try:
+                days = max(1, min(int((query_params.get("days") or ["14"])[0]), 90))
+            except ValueError:
+                days = 14
+            conn = get_db_connection()
+            try:
+                s = cloud_usage.summary(conn, days)
+            finally:
+                conn.close()
+            rs = resource_settings()
+            s["daily_token_cap"] = rs.get("daily_token_cap", 0)
+            s["usage_alert_percent"] = rs.get("usage_alert_percent", 80)
+            s["bot_names"] = {p["persona_id"]: p["name"] for p in list_personas()}
+            self._send(200, s)
+            return
+
+        if path == "/v1/backup":
+            self._send(200, make_backup((query_params.get("messages") or ["1"])[0] != "0"))
+            return
+
         if path == "/v1/delegations":
             sid = (query_params.get("session_id") or [None])[0]
             items = list_delegations(sid)
@@ -3427,7 +3686,8 @@ class Handler(BaseHTTPRequestHandler):
                     entries = cloud_memory.search(conn, qp("query", ""), qp("category"), int(qp("limit", "20")), source=qp("source"), persona=qp("persona"))
                 else:
                     since = qp("since")
-                    entries = cloud_memory.list_entries(conn, since=float(since) if since else None, source=qp("source"), limit=int(qp("limit", "200")))
+                    entries = cloud_memory.list_entries(conn, since=float(since) if since else None, source=qp("source"), limit=int(qp("limit", "200")),
+                                                        persona=qp("bot"), include_shared=qp("shared", "1") != "0")
                 fts = cloud_memory.fts_enabled(conn)
             except ValueError as e:
                 self._send(400, {"error": str(e)})
@@ -3673,6 +3933,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, group_payload(conn, g, None))
             finally:
                 conn.close()
+            return
+
+        m_mem = re.match(r"^/v1/memory/(\d+)$", path)
+        if m_mem:
+            persona = req_json.get("bot_id")
+            if persona and not get_persona(persona):
+                self._send(400, {"error": "Bot 不存在"})
+                return
+            conn = get_db_connection()
+            try:
+                entry = cloud_memory.update(conn, int(m_mem.group(1)), req_json.get("content"), req_json.get("category"),
+                                            None if "bot_id" not in req_json else (persona or ""))
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            self._send(200 if entry else 404, entry or {"error": "Memory entry not found"})
             return
 
         if path == "/v1/resources":
@@ -3971,6 +4249,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_json = self._read_json_body()
         if req_json is None:
+            return
+
+        if path == "/v1/backup/import":
+            try:
+                stats = restore_backup(req_json.get("backup"), bool(req_json.get("include_settings")))
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            self._send(200, stats)
             return
 
         if path == "/v1/groups":
@@ -4348,6 +4635,10 @@ class Handler(BaseHTTPRequestHandler):
             if p_err:
                 self._send(p_status, {"error": p_err})
                 return
+            blocked = usage_blocked()
+            if blocked:
+                self._send(429, {"error": blocked, "error_kind": "daily_cap"})
+                return
 
             conn = get_db_connection()
             c = conn.cursor()
@@ -4454,9 +4745,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/memory":
+            persona = req_json.get("bot_id") or ""
+            if persona and not get_persona(persona):
+                self._send(400, {"error": "Bot 不存在"})
+                return
             conn = get_db_connection()
             try:
-                entry, created = cloud_memory.write(conn, req_json.get("content"), req_json.get("category"), source=req_json.get("source") if req_json.get("source") in ("phone", "cloud") else "phone")
+                entry, created = cloud_memory.write(conn, req_json.get("content"), req_json.get("category"), source=req_json.get("source") if req_json.get("source") in ("phone", "cloud") else "phone",
+                                                    persona=persona)
             except ValueError as e:
                 self._send(400, {"error": str(e)})
                 return

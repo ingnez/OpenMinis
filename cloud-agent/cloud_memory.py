@@ -177,6 +177,29 @@ def write(conn, content, category=None, source="cloud", session_id=None, entry_t
     return _row(r), created
 
 
+def update(conn, entry_id, content=None, category=None, persona=None):
+    """编辑一条记忆（内容 / 分类 / 归属的 Bot，persona '' = 所有 Bot 共享）。返回新 entry 或 None。"""
+    r = conn.execute("SELECT " + COLS + " FROM memory_entries WHERE id = ?", (entry_id,)).fetchone()
+    if not r:
+        return None
+    cur = _row(r)
+    content = cur["content"] if content is None else content
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("content must be a non-empty string")
+    if len(content) > MAX_CONTENT:
+        raise ValueError(f"content too long (max {MAX_CONTENT})")
+    category = cur["category"] if category is None else normalize_category(category)
+    persona = cur["persona"] if persona is None else (persona or "")
+    h = content_hash(category, content, persona)
+    dup = conn.execute("SELECT id FROM memory_entries WHERE content_hash = ? AND id != ?", (h, entry_id)).fetchone()
+    if dup:
+        raise ValueError("已有一条相同的记忆")
+    conn.execute("UPDATE memory_entries SET content = ?, category = ?, persona = ?, content_hash = ? WHERE id = ?",
+                 (content.strip(), category, persona, h, entry_id))
+    conn.commit()
+    return _row(conn.execute("SELECT " + COLS + " FROM memory_entries WHERE id = ?", (entry_id,)).fetchone())
+
+
 def delete(conn, entry_id):
     c = conn.cursor()
     c.execute("DELETE FROM memory_entries WHERE id = ?", (entry_id,))
@@ -263,8 +286,12 @@ def search(conn, query, category=None, limit=10, source=None, persona=None):
     return [dict(e, score=h) for h, _, _, e in scored[:limit]]
 
 
-def list_entries(conn, since=None, source=None, limit=200):
+def list_entries(conn, since=None, source=None, limit=200, persona=None, include_shared=True):
+    """persona 为 None 不过滤；否则该 Bot 自己的记忆（include_shared 时加上共享记忆）。"""
     where, params = [], []
+    if persona is not None:
+        where.append("(persona = ? OR persona = '')" if include_shared else "persona = ?")
+        params.append(persona)
     if since is not None:
         where.append("created_at > ?")
         params.append(float(since))

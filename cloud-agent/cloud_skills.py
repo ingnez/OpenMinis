@@ -132,10 +132,10 @@ def list_index(conn):
 
 
 def load(conn, name):
-    row = conn.execute("SELECT name, description, content, updated_at FROM skills WHERE name = ?", (name,)).fetchone()
+    row = conn.execute("SELECT name, description, content, updated_at, source FROM skills WHERE name = ?", (name,)).fetchone()
     if not row:
         return None
-    return {"name": row[0], "description": row[1], "content": row[2], "updated_at": row[3]}
+    return {"name": row[0], "description": row[1], "content": row[2], "updated_at": row[3], "source": row[4]}
 
 
 def index_text(conn, allowed=None):

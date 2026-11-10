@@ -23,7 +23,7 @@ import threading
 VALID_CATEGORIES = {"destructive", "package", "outbound", "purchase", "privilege", "custom"}
 KNOWN_TOOLS = {"*", "shell_execute", "file_read", "file_write", "file_edit", "browser_action", "desktop_action",
                "memory_write", "memory_search", "skill_load", "page_write", "subagent_task", "image_generate", "send_message",
-               "request_user_takeover", "list_bots", "send_to_bot", "delegate_task"}
+               "request_user_takeover", "list_bots", "send_to_bot", "delegate_task", "skill_save"}
 
 _SUBMIT_WORDS = (r"\b(send|submit|post|publish|tweet|reply|pay|purchase|buy|checkout|place\s*order|confirm\s*order|transfer|delete\s*account)\b"
                  r"|发送|提交|发布|回复|支付|付款|购买|下单|结算|转账|确认订单|删除账号")
@@ -35,6 +35,10 @@ DEFAULT_POLICY = {
         {"id": "rm_recursive_force", "tool": "shell_execute", "field": "command", "category": "destructive",
          "pattern": r"(^|[\s;&|(])rm\s+(-[A-Za-z]*[rRf][A-Za-z]*\s+|--recursive\s+|--force\s+)",
          "reason": "递归或强制删除文件 (rm -r / -f)"},
+        {"id": "rm_files", "tool": "shell_execute", "field": "command", "category": "destructive",
+         "pattern": r"(^|[\s;&|(])(rm|unlink)\s+\S", "reason": "删除文件"},
+        {"id": "python_delete", "tool": "shell_execute", "field": "command", "category": "destructive",
+         "pattern": r"\b(os\.(remove|unlink|rmdir)|shutil\.rmtree|Path\([^)]*\)\.unlink)\b", "reason": "用脚本删除文件"},
         {"id": "find_delete", "tool": "shell_execute", "field": "command", "category": "destructive",
          "pattern": r"\bfind\b[^\n]*\s-delete\b", "reason": "批量删除文件 (find -delete)"},
         {"id": "dd_write", "tool": "shell_execute", "field": "command", "category": "destructive",
