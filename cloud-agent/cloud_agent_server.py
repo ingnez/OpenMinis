@@ -169,7 +169,7 @@ def init_db():
 
     # 兼容build9/10已有数据库；CREATE IF NOT EXISTS不会为旧表添加列。
     migrations = {
-        'sessions': {'local_session_id': 'TEXT', 'instructions': 'TEXT', 'persona_id': 'TEXT'},
+        'sessions': {'local_session_id': 'TEXT', 'instructions': 'TEXT', 'persona_id': 'TEXT', 'incognito': 'INTEGER DEFAULT 0'},
         'messages': {'tool_calls': 'TEXT', 'tool_call_id': 'TEXT'},
         'tasks': {'client_nonce': 'TEXT'},
     }
@@ -1228,6 +1228,8 @@ def tool_desktop_action(task_id, session_id, args):
 def tool_memory_write(task_id, session_id, args):
     if is_task_cancelled(task_id):
         return {"error": "Cancelled"}
+    if session_incognito(session_id):
+        return {"saved": False, "skipped": "无痕对话不写入长期记忆"}
     conn = get_db_connection()
     try:
         bot = session_bot(session_id)
@@ -1294,6 +1296,39 @@ def plugin_tools_for_session(session_id, depth):
 
 PERSONA_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
+INCOGNITO_TTL = 24 * 3600
+
+
+def session_incognito(session_id):
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT incognito FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+        return bool(row and row[0])
+    finally:
+        conn.close()
+
+
+def purge_session(conn, sid):
+    """彻底删掉一条会话：消息、任务和任务事件一起删。"""
+    tids = [r[0] for r in conn.execute("SELECT task_id FROM tasks WHERE session_id = ?", (sid,)).fetchall()]
+    for tid in tids:
+        conn.execute("DELETE FROM task_events WHERE task_id = ?", (tid,))
+    conn.execute("DELETE FROM tasks WHERE session_id = ?", (sid,))
+    conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+    conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
+
+
+def purge_stale_incognito(conn, now=None):
+    """无痕对话最多留 24 小时（App 离开时会立刻删；这里兜底 App 被杀掉的情况）。正在跑的不删。"""
+    cutoff = (now or time.time()) - INCOGNITO_TTL
+    rows = conn.execute("SELECT s.session_id FROM sessions s WHERE s.incognito = 1 AND s.created_at < ? AND NOT EXISTS "
+                        "(SELECT 1 FROM tasks t WHERE t.session_id = s.session_id AND t.status IN ('running', 'queued', 'waiting_user'))",
+                        (cutoff,)).fetchall()
+    for (sid,) in rows:
+        purge_session(conn, sid)
+    return len(rows)
+
+
 def session_persona_id(session_id):
     conn = get_db_connection()
     try:
@@ -1325,11 +1360,11 @@ def bot_detail(bot):
         out["telegram"] = conn.execute("SELECT 1 FROM secure_settings WHERE name = ?", (telegram_setting_name(pid),)).fetchone() is not None
         # 首页 Bot 列表：最近会话、最后一条可见消息、运行中 / 待审批任务数
         latest = conn.execute("SELECT s.session_id, s.title FROM sessions s LEFT JOIN messages m ON m.session_id = s.session_id "
-                              "WHERE s.persona_id = ? GROUP BY s.session_id ORDER BY MAX(COALESCE(m.timestamp, s.created_at)) DESC LIMIT 1", (pid,)).fetchone()
+                              "WHERE s.persona_id = ? AND COALESCE(s.incognito, 0) = 0 GROUP BY s.session_id ORDER BY MAX(COALESCE(m.timestamp, s.created_at)) DESC LIMIT 1", (pid,)).fetchone()
         out["latest_session_id"] = latest[0] if latest else None
         out["latest_session_title"] = latest[1] if latest else None
         last = conn.execute("SELECT m.role, m.content, m.timestamp, m.session_id FROM messages m JOIN sessions s ON s.session_id = m.session_id "
-                            "WHERE s.persona_id = ? AND m.role IN ('user', 'assistant') AND m.content IS NOT NULL AND m.content != '' "
+                            "WHERE s.persona_id = ? AND COALESCE(s.incognito, 0) = 0 AND m.role IN ('user', 'assistant') AND m.content IS NOT NULL AND m.content != '' "
                             "ORDER BY m.timestamp DESC, m.id DESC LIMIT 1", (pid,)).fetchone()
         out["last_message"] = {"role": last[0], "preview": " ".join(str(last[1]).split())[:120], "at": last[2], "session_id": last[3]} if last else None
         counts = dict(conn.execute("SELECT t.status, COUNT(*) FROM tasks t JOIN sessions s ON s.session_id = t.session_id "
@@ -1507,7 +1542,7 @@ def search_everything(q, limit=60):
     try:
         rows = conn.execute(
             "SELECT m.session_id, m.role, m.content, m.timestamp, s.title, s.persona_id FROM messages m JOIN sessions s ON s.session_id = m.session_id "
-            "WHERE m.role IN ('user', 'assistant') AND m.content LIKE ? ESCAPE '\\' ORDER BY m.timestamp DESC LIMIT ?", (like, limit)).fetchall()
+            "WHERE m.role IN ('user', 'assistant') AND COALESCE(s.incognito, 0) = 0 AND m.content LIKE ? ESCAPE '\\' ORDER BY m.timestamp DESC LIMIT ?", (like, limit)).fetchall()
         grows = conn.execute(
             "SELECT gm.group_id, gm.id, gm.sender, gm.content, gm.timestamp, g.name FROM group_messages gm JOIN groups g ON g.group_id = gm.group_id "
             "WHERE gm.kind IN ('text', 'task', 'task_result') AND gm.content LIKE ? ESCAPE '\\' ORDER BY gm.timestamp DESC LIMIT ?", (like, limit)).fetchall()
@@ -2006,6 +2041,7 @@ def auto_title(session_id, provider_config, model):
 
 # ---------------- 提速：流式、连接复用、快速模式、性能记录 ----------------
 PARALLEL_SAFE_TOOLS = {"file_read", "memory_search", "skill_load", "list_bots", "background_jobs", "request_tools"}
+INCOGNITO_NOTE = "\n[无痕对话] 这次对话结束后会被删除：不要写入长期记忆，也不要把内容带到别的对话里。"
 DUTY_NOTE = ("\n[值班模式] 用户正在值班（临床一线，随时被打断）：回答极简，先给结论、数字和要做的动作，"
              "用短句或要点，不寒暄、不铺垫；涉及剂量 / 换算时写明单位并提醒核对医嘱与说明书。")
 
@@ -2768,6 +2804,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     if on_duty():
         # 放在本轮末尾而不是系统提示里：系统提示不变，前缀缓存照样命中
         dynamic_note = (dynamic_note or "") + DUTY_NOTE
+    if session_incognito(session_id):
+        dynamic_note = (dynamic_note or "") + INCOGNITO_NOTE
     messages = [{"role": "system", "content": system_text.lstrip()}]
     for r_role, r_content, r_tc, r_tcid in rows:
         m = {"role": r_role}
@@ -4349,9 +4387,9 @@ class Handler(BaseHTTPRequestHandler):
             c = conn.cursor()
             bot_filter = (query_params.get("bot") or [None])[0]
             if bot_filter:
-                c.execute("SELECT session_id, local_session_id, title, created_at, persona_id FROM sessions WHERE persona_id = ? ORDER BY created_at DESC", (bot_filter,))
+                c.execute("SELECT session_id, local_session_id, title, created_at, persona_id FROM sessions WHERE persona_id = ? AND COALESCE(incognito, 0) = 0 ORDER BY created_at DESC", (bot_filter,))
             else:
-                c.execute("SELECT session_id, local_session_id, title, created_at, persona_id FROM sessions ORDER BY created_at DESC")
+                c.execute("SELECT session_id, local_session_id, title, created_at, persona_id FROM sessions WHERE COALESCE(incognito, 0) = 0 ORDER BY created_at DESC")
             sessions = [{"session_id": r[0], "local_session_id": r[1], "title": r[2], "created_at": r[3], "persona_id": r[4]} for r in c.fetchall()]
             conn.close()
             self._send(200, {"sessions": sessions})
@@ -4821,6 +4859,32 @@ class Handler(BaseHTTPRequestHandler):
             ok = library_delete(m_lib.group(1), m_lib.group(2))
             self._send(200 if ok else 404, {"deleted": ok} if ok else {"error": "资料库里没有这一项"})
             return
+        m_sess = re.match(r"^/v1/sessions/(sess_[a-f0-9]{12})$", path)
+        if m_sess:
+            # 只允许删无痕对话（普通对话的历史保留，避免误删）
+            sid = m_sess.group(1)
+            conn = get_db_connection()
+            try:
+                row = conn.execute("SELECT incognito FROM sessions WHERE session_id = ?", (sid,)).fetchone()
+                if not row:
+                    self._send(404, {"error": "Session not found"})
+                    return
+                if not row[0]:
+                    self._send(400, {"error": "只能删除无痕对话"})
+                    return
+                active = conn.execute("SELECT task_id FROM tasks WHERE session_id = ? AND status IN ('running', 'queued', 'waiting_user')", (sid,)).fetchall()
+                if active:
+                    # 先停掉任务，App 稍后重试删除；App 没再来的话 24 小时后自动清掉
+                    for (tid,) in active:
+                        set_task_cancelled(tid)
+                    self._send(409, {"error": "正在停止任务，稍后再删"})
+                    return
+                purge_session(conn, sid)
+                conn.commit()
+            finally:
+                conn.close()
+            self._send(200, {"deleted": True})
+            return
         m_grp = re.match(r"^/v1/groups/(grp_[a-f0-9]{10})$", path)
         if m_grp:
             conn = get_db_connection()
@@ -5222,14 +5286,18 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._send(400, {"error": str(e)})
                 return
+            incognito = 1 if req_json.get("incognito") is True else 0
             sid = "sess_" + uuid.uuid4().hex[:12]
             created_at = time.time()
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("INSERT INTO sessions (session_id, title, created_at, persona_id) VALUES (?, ?, ?, ?)", (sid, title, created_at, persona_id))
+            if incognito:
+                purge_stale_incognito(conn, created_at)
+            c.execute("INSERT INTO sessions (session_id, title, created_at, persona_id, incognito) VALUES (?, ?, ?, ?, ?)",
+                      (sid, title, created_at, persona_id, incognito))
             conn.commit()
             conn.close()
-            self._send(201, {"session_id": sid, "title": title, "created_at": created_at, "persona_id": persona_id})
+            self._send(201, {"session_id": sid, "title": title, "created_at": created_at, "persona_id": persona_id, "incognito": bool(incognito)})
             return
 
         if path == "/v1/sessions/import":

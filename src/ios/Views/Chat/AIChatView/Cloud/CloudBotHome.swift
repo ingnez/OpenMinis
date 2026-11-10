@@ -559,6 +559,8 @@ struct CloudBotChatView: View {
     @State private var showComputer = false
 
     @ObservedObject private var lock = CloudBotLock.shared
+    /// 当前是无痕对话时记下它和之前的对话，结束后删掉并回到原来的对话
+    @State private var incognito: (id: String, previous: String?)?
 
     var body: some View {
         Group {
@@ -572,6 +574,18 @@ struct CloudBotChatView: View {
                                  mentionBots: model.bots.filter { $0.id != botId },
                                  theme: CloudBotChatTheme(bot: bot))
                     .id(sid)
+                    .safeAreaInset(edge: .top) {
+                        if incognito?.id == sid {
+                            HStack(spacing: 8) {
+                                Image(systemName: "eye.slash")
+                                Text("无痕对话 · 不写入记忆，离开后删除").font(.caption)
+                                Spacer()
+                                Button("结束") { endIncognito(restore: true) }.font(.caption.weight(.semibold))
+                            }
+                            .padding(.horizontal, 14).padding(.vertical, 7)
+                            .background(.regularMaterial)
+                        }
+                    }
             } else if let errorText {
                 VStack(spacing: 12) {
                     Text(errorText).font(.footnote).foregroundStyle(.red).multilineTextAlignment(.center)
@@ -604,6 +618,9 @@ struct CloudBotChatView: View {
                     .accessibilityLabel("\(bot.name) 资料")
                     .contextMenu {
                         Button { Task { await startNew() } } label: { Label("新对话", systemImage: "square.and.pencil") }
+                        if incognito == nil {
+                            Button { Task { await startIncognito() } } label: { Label("无痕对话", systemImage: "eye.slash") }
+                        }
                         if let sid = sessionId {
                             Button { speakLatest(sid) } label: { Label("朗读最新回复", systemImage: "speaker.wave.2") }
                             Button { showComputer = true } label: { Label("电脑", systemImage: "display") }
@@ -612,7 +629,7 @@ struct CloudBotChatView: View {
                             Section("历史对话") {
                                 ForEach(history.indices, id: \.self) { i in
                                     let sid = history[i]["session_id"] as? String ?? ""
-                                    Button(history[i]["title"] as? String ?? sid) { sessionId = sid }
+                                    Button(history[i]["title"] as? String ?? sid) { endIncognito(restore: false); sessionId = sid }
                                 }
                             }
                         }
@@ -635,7 +652,10 @@ struct CloudBotChatView: View {
             }
         }
         .task { await prepare() }
-        .onDisappear { model.markSeen(botId); CloudBotSpeaker.stop() }
+        .onDisappear { model.markSeen(botId); CloudBotSpeaker.stop()
+            // 推到电脑 / 资料页时也会触发 onDisappear：这时不结束无痕
+            if !showComputer && !showDetail { endIncognito(restore: true) }
+        }
     }
 
     private func speakLatest(_ sid: String) {
@@ -671,7 +691,27 @@ struct CloudBotChatView: View {
         }
     }
 
+    private func startIncognito() async {
+        guard let bot = model.bot(botId) else { return }
+        do {
+            let sid = try await CloudQuiet.retry(2) { try await CloudBotService.newIncognitoSession(bot) }
+            guard !sid.isEmpty else { return }
+            incognito = (sid, sessionId)
+            sessionId = sid
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
+    private func endIncognito(restore: Bool) {
+        guard let current = incognito else { return }
+        incognito = nil
+        if restore, sessionId == current.id { sessionId = current.previous }
+        Task { await CloudBotService.deleteIncognito(current.id) }
+    }
+
     private func startNew() async {
+        endIncognito(restore: false)
         guard let bot = model.bot(botId) else { return }
         do {
             sessionId = try await CloudBotService.newSession(bot)

@@ -113,5 +113,31 @@ class FeedTests(CloudServerTestCase):
         self.assertTrue(items[1]["proactive"])
 
 
+
+class IncognitoTests(CloudServerTestCase):
+    def test_01_incognito_session_hidden_no_memory_and_deletable(self):
+        sid = self.request("POST", "/v1/sessions", {"title": "无痕", "incognito": True})[1]["session_id"]
+        normal = self.request("POST", "/v1/sessions", {"title": "普通"})[1]["session_id"]
+        listed = [x["session_id"] for x in self.request("GET", "/v1/sessions")[1]["sessions"]]
+        self.assertIn(normal, listed)
+        self.assertNotIn(sid, listed)
+        res = self.srv.tool_memory_write("t_x", sid, {"content": "不该被记住", "category": "fact"})
+        self.assertFalse(res["saved"])
+        self.assertEqual(self.request("DELETE", "/v1/sessions/" + normal)[0], 400)
+        self.assertEqual(self.request("DELETE", "/v1/sessions/" + sid)[0], 200)
+        self.assertEqual(self.request("GET", "/v1/sessions/" + sid)[0], 404)
+
+    def test_02_stale_incognito_purged(self):
+        import time
+        sid = self.request("POST", "/v1/sessions", {"title": "旧", "incognito": True})[1]["session_id"]
+        conn = self.srv.get_db_connection()
+        try:
+            self.assertEqual(self.srv.purge_stale_incognito(conn, time.time() + 2 * 86400), 1)
+            conn.commit()
+            self.assertIsNone(conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (sid,)).fetchone())
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

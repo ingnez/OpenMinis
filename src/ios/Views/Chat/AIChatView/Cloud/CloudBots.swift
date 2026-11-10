@@ -213,6 +213,21 @@ enum CloudBotService {
         return resp["session_id"] as? String ?? ""
     }
 
+    /// 无痕对话：不出现在历史和搜索里、不写长期记忆，离开时删除（服务器 24 小时兜底清理）
+    static func newIncognitoSession(_ bot: CloudBot) async throws -> String {
+        let resp = try await connected().request(method: "POST", path: "/v1/sessions",
+                                                 body: ["title": bot.label + " · 无痕", "persona_id": bot.id, "incognito": true])
+        return resp["session_id"] as? String ?? ""
+    }
+
+    static func deleteIncognito(_ sid: String) async {
+        // 任务还在停的时候服务器回 409：多等几次；实在删不掉就交给服务器 24 小时后清理
+        for attempt in 0..<5 {
+            if (try? await connected().request(method: "DELETE", path: "/v1/sessions/\(sid)", body: nil)) != nil { return }
+            try? await Task.sleep(nanoseconds: UInt64(1 + attempt) * 1_500_000_000)
+        }
+    }
+
     static func exportFile(_ id: String) async throws -> URL {
         let bundle = try await connected().request(method: "GET", path: "/v1/bots/\(id)/export", body: nil)
         let data = try JSONSerialization.data(withJSONObject: bundle, options: [.prettyPrinted, .sortedKeys])
