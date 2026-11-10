@@ -12,10 +12,11 @@ import UniformTypeIdentifiers
 
 @MainActor
 enum CloudHaptics {
-    static func tap() { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-    static func success() { UINotificationFeedbackGenerator().notificationOccurred(.success) }
-    static func warning() { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
-    static func selection() { UISelectionFeedbackGenerator().selectionChanged() }
+    // 夜班模式下全部静默
+    static func tap() { if !CloudNightMode.hapticsMuted { UIImpactFeedbackGenerator(style: .light).impactOccurred() } }
+    static func success() { if !CloudNightMode.hapticsMuted { UINotificationFeedbackGenerator().notificationOccurred(.success) } }
+    static func warning() { if !CloudNightMode.hapticsMuted { UINotificationFeedbackGenerator().notificationOccurred(.warning) } }
+    static func selection() { if !CloudNightMode.hapticsMuted { UISelectionFeedbackGenerator().selectionChanged() } }
 }
 
 enum CloudQuery {

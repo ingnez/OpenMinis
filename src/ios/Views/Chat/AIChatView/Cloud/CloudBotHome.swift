@@ -665,6 +665,8 @@ struct CloudBotHomeScreen: View {
                             if model.dutyUntil != nil {
                                 Button("结束值班", role: .destructive) { Task { await model.setDuty(hours: nil) } }
                             }
+                            Divider()
+                            CloudNightModeMenu()
                         } label: { Label(model.dutyUntil == nil ? "值班模式" : "值班中…", systemImage: "cross.case") }
                     } label: { Image(systemName: "plus") }
                     .accessibilityLabel("新建")
@@ -713,6 +715,7 @@ struct CloudBotHomeScreen: View {
             CloudShareBotPicker(prompt: model.pendingPrompt, bots: model.bots) { model.deliverShare(to: $0) }
                 .presentationDetents([.medium, .large])
         }
+        .modifier(CloudNightModeModifier(dutyUntil: model.dutyUntil))
         .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
         .sheet(isPresented: $showWorkbench) { CloudWorkbenchSheet() }
         .sheet(isPresented: $showHub) {

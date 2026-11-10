@@ -234,6 +234,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOutbox.swift scripts/CloudOutboxTests.swift -o /tmp//tmp/cloud_outbox_tests
           /tmp//tmp/cloud_outbox_tests
+      - name: 夜班模式规则单测
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNightMode.swift scripts/CloudNightModeTests.swift -o /tmp//tmp/cloud_nightmode_tests
+          /tmp//tmp/cloud_nightmode_tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -394,6 +399,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNightMode.swift scripts/CloudNightModeTests.swift -o /tmp//tmp/cloud_nightmode_tests
+          /tmp//tmp/cloud_nightmode_tests | tee /tmp/cloud_nightmode_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOutbox.swift scripts/CloudOutboxTests.swift -o /tmp//tmp/cloud_outbox_tests
           /tmp//tmp/cloud_outbox_tests | tee /tmp/cloud_outbox_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOneLine.swift scripts/CloudOneLineTests.swift -o /tmp//tmp/cloud_oneline_tests
@@ -715,6 +722,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNightMode.swift scripts/CloudNightModeTests.swift -o /tmp//tmp/cloud_nightmode_tests
+          /tmp//tmp/cloud_nightmode_tests | tee /tmp/cloud_nightmode_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOutbox.swift scripts/CloudOutboxTests.swift -o /tmp//tmp/cloud_outbox_tests
           /tmp//tmp/cloud_outbox_tests | tee /tmp/cloud_outbox_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOneLine.swift scripts/CloudOneLineTests.swift -o /tmp//tmp/cloud_oneline_tests
