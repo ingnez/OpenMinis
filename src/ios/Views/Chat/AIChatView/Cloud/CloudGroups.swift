@@ -347,6 +347,8 @@ struct CloudGroupChatView: View {
     @FocusState private var focused: Bool
     /// 群里的语音消息：说完自动转成文字发出（带 🎤 标记），Bot 的回复可以长按朗读
     @StateObject private var voice = CloudDictation()
+    /// 群聊语音：轮流说（你说完发进群，各 Bot 用自己的声音念回复）
+    @StateObject private var groupVoice = CloudGroupVoiceCall()
     @ObservedObject private var lock = CloudBotLock.shared
 
     init(groupId: String) {
@@ -401,7 +403,13 @@ struct CloudGroupChatView: View {
                 .accessibilityLabel("群设置")
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showSettings = true } label: { Image(systemName: "ellipsis") }.accessibilityLabel("群设置")
+                HStack(spacing: 14) {
+                    Button {
+                        if groupVoice.active { groupVoice.stop(dictation: voice) } else { groupVoice.start(model: model, dictation: voice) }
+                    } label: { Image(systemName: groupVoice.active ? "phone.down.fill" : "phone") }
+                    .accessibilityLabel(groupVoice.active ? "挂断群聊语音" : "群聊语音")
+                    Button { showSettings = true } label: { Image(systemName: "ellipsis") }.accessibilityLabel("群设置")
+                }
             }
         }
         .sheet(isPresented: $showSettings) {
@@ -611,7 +619,12 @@ struct CloudGroupChatView: View {
                     .padding(.horizontal, 14)
                 }
             }
-            if voice.isRecording {
+            if groupVoice.active {
+                CloudGroupVoiceBar(call: groupVoice, dictation: voice,
+                                   botName: { id in home.bots.first { $0.id == id }?.name ?? id },
+                                   onInterrupt: { groupVoice.interrupt(model: model) },
+                                   onHangUp: { groupVoice.stop(dictation: voice) })
+            } else if voice.isRecording {
                 HStack(spacing: 10) {
                     Image(systemName: "waveform").foregroundStyle(.red)
                     Text(voice.transcript.isEmpty ? "正在听…" : voice.transcript).font(.subheadline).lineLimit(2)
@@ -657,7 +670,7 @@ struct CloudGroupChatView: View {
         }
         .padding(.top, 6)
         .background(.bar)
-        .onDisappear { voice.stop() }
+        .onDisappear { groupVoice.stop(dictation: voice); voice.stop() }
     }
 
     private func finishVoice() {
