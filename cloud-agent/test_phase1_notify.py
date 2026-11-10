@@ -25,6 +25,25 @@ class NotifyUnitTests(unittest.TestCase):
         self.assertEqual(json.loads(req.data)["topic"], "topic")
         self.assertEqual(cloud_notify.masked(cfg)["url"], "https://ntfy.sh/…opic")
 
+    def test_bark_url_normalization(self):
+        key = "AbCdEfGhIjKlMnOpQrStUv"
+        cases = {
+            f"https://api.day.app/{key}/这里改成你自己的推送内容": f"https://api.day.app/{key}",
+            f"https://api.day.app/{key}/推送标题/推送内容?group=example&ttl=600": f"https://api.day.app/{key}",
+            f"  示例：https://api.day.app/{key}/title/body?icon=https://x.y/z.png  ": f"https://api.day.app/{key}",
+            key: f"https://api.day.app/{key}",
+            f"https://bark.example.com:8443/{key}/": f"https://bark.example.com:8443/{key}",
+            f"http://10.0.0.2:8080/bark/{key}/hello": f"http://10.0.0.2:8080/bark/{key}",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(cloud_notify.validate({"provider": "bark", "url": text})["url"], expected, text)
+        self.assertEqual(cloud_notify.validate({"provider": "bark", "url": f"https://api.day.app/{key}/t/b?group=example"})["group"], "example")
+        for bad, hint in [("https://api.day.app/", "设备 Key"), (f"https://u:p@api.day.app/{key}", "账号密码"), ("", "请填写"), ("not a url", "Bark 地址无效")]:
+            with self.assertRaises(cloud_notify.NotifyConfigError) as ctx:
+                cloud_notify.validate({"provider": "bark", "url": bad})
+            self.assertIn(hint, str(ctx.exception))
+        self.assertEqual(cloud_notify.validate({"provider": "ntfy", "url": "https://ntfy.sh/topic?x=1"})["url"], "https://ntfy.sh/topic")
+
 
 class NotifyServerTests(CloudServerTestCase):
     DEVICE_KEY = "barkDeviceKey9876"

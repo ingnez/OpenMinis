@@ -12,13 +12,19 @@ import json
 import os
 import platform
 import shutil
+import re
 import tarfile
 import threading
+import zipfile
 import time
+import urllib.parse
 import urllib.request
 
 NODE_DIST = os.environ.get("OPENMINIS_NODE_DIST", "https://nodejs.org/dist/latest-v22.x")
 UV_DIST = os.environ.get("OPENMINIS_UV_DIST", "https://github.com/astral-sh/uv/releases/latest/download")
+# 国内 VPS 常无法访问 nodejs.org / GitHub：官方源失败后依次尝试国内镜像（同样校验 SHA-256）
+NODE_MIRRORS = ["https://cdn.npmmirror.com/binaries/node/latest-v22.x"]
+PYPI_INDEXES = ["https://pypi.org/simple", "https://mirrors.aliyun.com/pypi/simple", "https://pypi.tuna.tsinghua.edu.cn/simple"]
 PREFIX = os.path.expanduser(os.environ.get("OPENMINIS_DEPS_PREFIX", "~/.local"))
 MAX_DOWNLOAD = 200 * 1024 * 1024
 
@@ -111,15 +117,32 @@ def _link(src, name):
     os.symlink(src, dst)
 
 
+def _try_sources(log, attempts):
+    """依次尝试 [(说明, 函数)]，返回第一个成功的结果；全部失败时汇总报错。校验和不匹配不换源重试以外的处理。"""
+    errors = []
+    for label, fn in attempts:
+        try:
+            return fn()
+        except Exception as e:
+            msg = f"{label}：{type(e).__name__}: {e}"[:300]
+            errors.append(msg)
+            log("失败，换下一个下载源 — " + msg)
+    raise DepsError("所有下载源都失败：" + "；".join(errors))
+
+
 def install_node(log):
+    return _try_sources(log, [(base, (lambda b=base: _install_node_from(b, log))) for base in [NODE_DIST] + NODE_MIRRORS])
+
+
+def _install_node_from(dist, log):
     arch = _arch("node")
-    sums = _fetch(f"{NODE_DIST}/SHASUMS256.txt", 1024 * 1024).decode()
+    sums = _fetch(f"{dist}/SHASUMS256.txt", 1024 * 1024).decode()
     entry = next((line.split() for line in sums.splitlines() if line.endswith(f"-linux-{arch}.tar.gz")), None)
     if not entry:
         raise DepsError("SHASUMS256.txt 中找不到适用于本机的 Node.js 包")
     expected, fname = entry[0], entry[-1]
-    log(f"下载 {fname}")
-    data = _fetch(f"{NODE_DIST}/{fname}")
+    log(f"下载 {dist}/{fname}")
+    data = _fetch(f"{dist}/{fname}")
     _verify(data, expected, fname)
     dest = os.path.join(PREFIX, "lib", "openminis-node")
     _extract(data, dest, "r:gz")
@@ -132,6 +155,47 @@ def install_node(log):
 
 
 def install_uv(log):
+    attempts = [(UV_DIST, lambda: _install_uv_github(log))]
+    attempts += [(idx, (lambda i=idx: _install_uv_wheel(i, log))) for idx in PYPI_INDEXES]
+    return _try_sources(log, attempts)
+
+
+def _version_key(v):
+    return tuple(int(x) for x in v.split("."))
+
+
+def _install_uv_wheel(index, log):
+    """从 PyPI（或国内镜像）的 simple 索引取 uv 的 manylinux wheel；索引链接自带 sha256。"""
+    arch = _arch("uv")
+    page = _fetch(f"{index.rstrip('/')}/uv/", 8 * 1024 * 1024).decode("utf-8", "replace")
+    pat = re.compile(r'href="([^"]*/uv-(\d+\.\d+\.\d+)-py3-none-[^"]*manylinux[^"]*_' + arch + r'\.whl)#sha256=([0-9a-f]{64})"')
+    found = [(m.group(2), m.group(1), m.group(3)) for m in pat.finditer(page)]
+    if not found:
+        raise DepsError("索引中找不到适用于本机的 uv wheel")
+    version, href, expected = max(found, key=lambda f: _version_key(f[0]))
+    url = urllib.parse.urljoin(f"{index.rstrip('/')}/uv/", href)
+    log(f"下载 uv {version} wheel（{index}）")
+    data = _fetch(url)
+    _verify(data, expected, f"uv-{version}.whl")
+    dest = os.path.join(PREFIX, "lib", "openminis-uv")
+    if os.path.exists(dest):
+        shutil.rmtree(dest)
+    os.makedirs(dest)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        for e in TOOLS["uv"]["provides"]:
+            member = f"uv-{version}.data/scripts/{e}"
+            try:
+                body = zf.read(member)
+            except KeyError:
+                raise DepsError(f"uv wheel 缺少 {member}")
+            p = os.path.join(dest, e)
+            with open(p, "wb") as f:
+                f.write(body)
+            os.chmod(p, 0o755)
+            _link(p, e)
+
+
+def _install_uv_github(log):
     arch = _arch("uv")
     fname = f"uv-{arch}-unknown-linux-gnu.tar.gz"
     expected = _fetch(f"{UV_DIST}/{fname}.sha256", 4096).decode().split()[0]

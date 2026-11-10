@@ -8,6 +8,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+import zipfile
 import unittest
 from http.server import BaseHTTPRequestHandler
 
@@ -58,15 +59,34 @@ def build_dist(bad_uv=False):
         FakeDist.files[f"/uv/{root}.tar.gz.sha256"] = f"{digest}  {root}.tar.gz".encode()
 
 
+def build_wheel_index():
+    links = []
+    for ver in ("0.9.9", "0.10.2"):
+        for arch in ("x86_64", "aarch64"):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr(f"uv-{ver}.data/scripts/uv", SCRIPT)
+                zf.writestr(f"uv-{ver}.data/scripts/uvx", SCRIPT)
+            data = buf.getvalue()
+            name = f"uv-{ver}-py3-none-manylinux_2_17_{arch}.manylinux2014_{arch}.whl"
+            FakeDist.files[f"/packages/{name}"] = data
+            links.append(f'<a href="../../packages/{name}#sha256={hashlib.sha256(data).hexdigest()}">{name}</a>')
+    FakeDist.files["/pypi/uv/"] = ("<html><body>" + "".join(links) + "</body></html>").encode()
+
+
 class DepsTests(CloudServerTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         cls.dist, port = _serve(FakeDist)
         cls.prefix = tempfile.mkdtemp(prefix="deps-")
-        cls.saved = (cloud_deps.NODE_DIST, cloud_deps.UV_DIST, cloud_deps.PREFIX, os.environ.get("PATH", ""))
+        cls.saved = (cloud_deps.NODE_DIST, cloud_deps.UV_DIST, cloud_deps.PREFIX, os.environ.get("PATH", ""),
+                     cloud_deps.NODE_MIRRORS, cloud_deps.PYPI_INDEXES)
+        cls.port = port
         cloud_deps.NODE_DIST = f"http://127.0.0.1:{port}/node"
         cloud_deps.UV_DIST = f"http://127.0.0.1:{port}/uv"
+        cloud_deps.NODE_MIRRORS = []
+        cloud_deps.PYPI_INDEXES = []
         cloud_deps.PREFIX = cls.prefix
         # 测试环境中隐藏真实的 npx/uvx，确保状态由本次安装决定
         os.environ["PATH"] = os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep)
@@ -74,7 +94,7 @@ class DepsTests(CloudServerTestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cloud_deps.NODE_DIST, cloud_deps.UV_DIST, cloud_deps.PREFIX, path = cls.saved
+        cloud_deps.NODE_DIST, cloud_deps.UV_DIST, cloud_deps.PREFIX, path, cloud_deps.NODE_MIRRORS, cloud_deps.PYPI_INDEXES = cls.saved
         os.environ["PATH"] = path
         shutil.rmtree(cls.prefix, ignore_errors=True)
         cls.dist.shutdown()
@@ -103,9 +123,14 @@ class DepsTests(CloudServerTestCase):
         self.assertIn("校验和不匹配", job["error"])
         self.assertFalse(os.path.exists(os.path.join(self.prefix, "bin", "uvx")))
 
-        build_dist()
+        # GitHub 校验仍失败时回退到 PyPI 索引的 wheel（国内镜像同理），wheel 的 sha256 来自索引
+        build_wheel_index()
+        cloud_deps.PYPI_INDEXES = ["http://127.0.0.1:1/dead", f"http://127.0.0.1:{self.port}/pypi"]
         self.request("POST", "/v1/plugins/deps/install", {"tool": "uvx", "confirm": True})
-        self.assertEqual(self.wait_job("uv")["status"], "succeeded")
+        job = self.wait_job("uv")
+        self.assertEqual(job["status"], "succeeded", job)
+        self.assertTrue(any("wheel" in line for line in job["log"]), job["log"])
+        build_dist()
         self.request("POST", "/v1/plugins/deps/install", {"tool": "npx", "confirm": True})
         self.assertEqual(self.wait_job("node")["status"], "succeeded")
         tools = self.request("GET", "/v1/plugins/deps")[1]["tools"]

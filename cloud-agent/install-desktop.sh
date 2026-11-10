@@ -34,8 +34,9 @@ fi
 
 echo "[+] 检查并安装系统级桌面、VNC、novnc 与 x11-utils 依赖包..."
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y \
+APT_OPTS="-o Acquire::Retries=2 -o Acquire::http::Timeout=25 -o Acquire::https::Timeout=25 -o DPkg::Lock::Timeout=120"
+timeout 300 apt-get $APT_OPTS update || echo "[-] 警告: apt-get update 未完成（网络慢或软件源不可达），继续使用本地缓存"
+timeout 1500 apt-get $APT_OPTS install -y \
     python3 \
     python3-pip \
     python3-venv \
@@ -76,13 +77,39 @@ if [ ! -d "$VENV_DIR" ]; then
     python3 -m venv "$VENV_DIR"
 fi
 
-"$VENV_DIR/bin/pip" install --upgrade pip
-"$VENV_DIR/bin/pip" install playwright==1.49.0
+# pip 依次尝试官方 PyPI 与国内镜像（清华 / 阿里云），每个源带超时，避免国内 VPS 卡死
+PIP_INDEXES="${OPENMINIS_PIP_INDEX:-} https://pypi.org/simple https://pypi.tuna.tsinghua.edu.cn/simple https://mirrors.aliyun.com/pypi/simple"
+pip_install() {
+    for idx in $PIP_INDEXES; do
+        echo "[+] pip install $* （源: $idx）"
+        if timeout 900 "$VENV_DIR/bin/pip" install --disable-pip-version-check --timeout 30 --retries 2 -i "$idx" "$@"; then
+            return 0
+        fi
+        echo "[-] 该源安装失败，尝试下一个源…"
+    done
+    return 1
+}
+pip_install --upgrade pip || echo "[-] 警告: pip 升级失败，继续使用现有版本"
+pip_install playwright==1.49.0
 # 凭据加密 (AES-256-GCM)；服务以 venv 解释器运行，系统包对其不可见
-"$VENV_DIR/bin/pip" install "cryptography>=41,<46"
+pip_install "cryptography>=41,<46"
 
 echo "[+] 正在通过 playwright install --with-deps chromium 安装浏览器及依赖..."
-env HOME="$VAR_LIB_DIR" PLAYWRIGHT_BROWSERS_PATH="$PW_BROWSERS" "$VENV_DIR/bin/python3" -m playwright install --with-deps chromium
+# 浏览器下载依次尝试官方 CDN 与 npmmirror 国内镜像
+PW_OK=0
+for host in "${OPENMINIS_PLAYWRIGHT_HOST:-}" "" "https://cdn.npmmirror.com/binaries/playwright"; do
+    if [ -n "$host" ]; then echo "[+] 使用浏览器下载镜像: $host"; fi
+    if timeout 1500 env HOME="$VAR_LIB_DIR" PLAYWRIGHT_BROWSERS_PATH="$PW_BROWSERS" ${host:+PLAYWRIGHT_DOWNLOAD_HOST="$host"} \
+        "$VENV_DIR/bin/python3" -m playwright install --with-deps chromium; then
+        PW_OK=1
+        break
+    fi
+    echo "[-] Chromium 下载失败，尝试下一个下载源…"
+done
+if [ "$PW_OK" != 1 ]; then
+    echo "[-] 错误: 无法下载 Playwright Chromium（官方与国内镜像均失败）"
+    exit 1
+fi
 
 echo "=== [Desktop] 4. 配置独立 Systemd 服务 (Display :99, x11vnc, novnc, agent) ==="
 AUTH_FILE="$VAR_LIB_DIR/.Xauthority"
@@ -218,7 +245,15 @@ systemctl restart openminis-vnc
 systemctl restart openminis-novnc
 systemctl restart openminis-cloud-agent
 
-sleep 3
+# 服务启动可能需要十几秒（迁移、插件注册表、定时任务）：轮询最长 45 秒，而不是固定 sleep
+for i in $(seq 1 45); do
+    if curl -fsS --max-time 3 http://127.0.0.1:18765/health >/dev/null 2>&1 \
+       && curl -fsS --max-time 3 http://127.0.0.1:18766/vnc.html >/dev/null 2>&1; then
+        break
+    fi
+    if [ $((i % 10)) -eq 0 ]; then echo "[.] 等待 Agent 与 noVNC 就绪… ${i}s"; fi
+    sleep 1
+done
 
 echo "=== [Desktop] 6. 严格健康与功能检查 ==="
 env XAUTHORITY="$AUTH_FILE" python3 -c '
@@ -254,4 +289,14 @@ except Exception as e:
     sys.exit(1)
 
 print("[+] 所有桌面服务与健康检查 100% 通过！")
-'
+' || {
+    echo "----- 服务状态 -----"
+    for u in openminis-cloud-agent openminis-display openminis-vnc openminis-novnc; do
+        echo "$u: $(systemctl is-active $u 2>&1)"
+    done
+    echo "----- journalctl -u openminis-cloud-agent（最近 40 行）-----"
+    journalctl -u openminis-cloud-agent --no-pager -n 40 2>&1 || true
+    echo "----- journalctl -u openminis-novnc（最近 15 行）-----"
+    journalctl -u openminis-novnc --no-pager -n 15 2>&1 || true
+    exit 1
+}

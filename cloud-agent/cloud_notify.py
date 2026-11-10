@@ -8,6 +8,7 @@ OpenMinis Cloud Agent — 完成推送（Bark / ntfy）。
 """
 
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -45,6 +46,53 @@ def ensure_schema(conn):
     conn.commit()
 
 
+BARK_KEY_RE = re.compile(r"^[A-Za-z0-9]{8,64}$")
+DEFAULT_BARK_SERVER = "https://api.day.app"
+
+
+def _extract_url(text):
+    """从粘贴的文字里取出第一个 http(s) 地址（允许前后有说明文字或空白）。"""
+    m = re.search(r"https?://[^\s<>\"'，。]+", text)
+    return m.group(0) if m else text
+
+
+def normalize_bark(text):
+    """接受 Bark App 里的示例地址（含标题 / 内容 / 查询参数）、只有设备 Key、或自建 Bark 服务器地址，
+    统一为 https://<主机>[/<前缀>]/<Key>。返回 (url, group)。"""
+    raw = (text or "").strip()
+    if BARK_KEY_RE.match(raw):
+        return f"{DEFAULT_BARK_SERVER}/{raw}", None
+    p = urllib.parse.urlparse(_extract_url(raw))
+    if p.scheme not in ("http", "https") or not p.hostname:
+        raise NotifyConfigError("Bark 地址无效：请粘贴 Bark App 里的地址（如 https://api.day.app/你的Key/…），或只填设备 Key")
+    if p.username or p.password:
+        raise NotifyConfigError("推送地址里不能包含账号密码（主机名前的 user:pass@ 部分）")
+    segments = [urllib.parse.unquote(s) for s in p.path.split("/") if s]
+    idx = next((i for i, s in enumerate(segments) if BARK_KEY_RE.match(s) and s.lower() not in ("push", "ping", "healthz", "register")), None)
+    if idx is None and len(segments) == 1 and re.match(r"^[A-Za-z0-9_-]{1,64}$", segments[0]):
+        idx = 0  # 自建服务器可能使用较短的自定义 Key：只有一段路径时就把它当作 Key
+    if idx is None:
+        raise NotifyConfigError("Bark 地址里没有找到设备 Key：请复制 Bark App 首页的地址，形如 https://api.day.app/你的Key/")
+    prefix = "/".join(segments[:idx])
+    netloc = p.hostname + (f":{p.port}" if p.port else "")
+    if ":" in p.hostname:
+        netloc = f"[{p.hostname}]" + (f":{p.port}" if p.port else "")
+    group = (urllib.parse.parse_qs(p.query).get("group") or [None])[0]
+    return f"{p.scheme}://{netloc}/{prefix + '/' if prefix else ''}{segments[idx]}", group
+
+
+def normalize_ntfy(text):
+    raw = (text or "").strip()
+    p = urllib.parse.urlparse(_extract_url(raw))
+    if p.scheme not in ("http", "https") or not p.hostname:
+        raise NotifyConfigError("ntfy 地址无效：应为 https://ntfy.sh/<主题> 或自建服务器地址")
+    if p.username or p.password:
+        raise NotifyConfigError("推送地址里不能包含账号密码；ntfy 访问令牌请填在“令牌”一栏")
+    if not p.path.strip("/"):
+        raise NotifyConfigError("ntfy 地址缺少主题，例如 https://ntfy.sh/my-topic")
+    return f"{p.scheme}://{p.netloc}{p.path}".rstrip("/")
+
+
 def validate(cfg):
     if not isinstance(cfg, dict):
         raise NotifyConfigError("config must be an object")
@@ -52,13 +100,13 @@ def validate(cfg):
     if provider not in ("bark", "ntfy"):
         raise NotifyConfigError("provider must be bark or ntfy")
     url = cfg.get("url")
-    if not isinstance(url, str) or len(url) > 2048:
-        raise NotifyConfigError("url is required")
-    p = urllib.parse.urlparse(url.strip())
-    if p.scheme not in ("http", "https") or not p.netloc or p.username or p.password:
-        raise NotifyConfigError("url must be http(s) without embedded credentials")
-    if not p.path.strip("/"):
-        raise NotifyConfigError("url must include the Bark device key or the ntfy topic, e.g. https://api.day.app/<key> or https://ntfy.sh/<topic>")
+    if not isinstance(url, str) or not url.strip() or len(url) > 2048:
+        raise NotifyConfigError("请填写推送地址" + ("（Bark App 里的地址或设备 Key）" if provider == "bark" else "（如 https://ntfy.sh/<主题>）"))
+    url_group = None
+    if provider == "bark":
+        url, url_group = normalize_bark(url)
+    else:
+        url = normalize_ntfy(url)
     events = dict(DEFAULT_EVENTS)
     if "events" in cfg:
         if not isinstance(cfg["events"], dict):
@@ -74,6 +122,8 @@ def validate(cfg):
     if token:
         out["token"] = token
     group = cfg.get("group")
+    if group is None and url_group and len(url_group) <= 64:
+        group = url_group
     if group is not None:
         if not isinstance(group, str) or len(group) > 64:
             raise NotifyConfigError("group must be a short string")

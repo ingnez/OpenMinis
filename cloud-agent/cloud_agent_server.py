@@ -3438,9 +3438,17 @@ def run_server():
     if not SERVER_TOKEN:
         SERVER_TOKEN = validate_and_load_token()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    start_scheduler()
-    start_telegram()
-    print(f"OpenMinis Cloud Computer & Agent running on {HOST}:{PORT}")
+
+    def start_background():
+        # 后台服务（定时任务、Telegram 长轮询）放在独立线程启动：任何一项出错或网络不通都不影响 /health 与 API 立即可用
+        for name, fn in (("scheduler", start_scheduler), ("telegram", start_telegram)):
+            try:
+                fn()
+            except Exception as e:
+                print(f"[startup] {name} failed to start: {type(e).__name__}: {e}", flush=True)
+
+    threading.Thread(target=start_background, name="startup-background", daemon=True).start()
+    print(f"OpenMinis Cloud Computer & Agent running on {HOST}:{PORT}", flush=True)
     server.serve_forever()
 
 if __name__ == "__main__":

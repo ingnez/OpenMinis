@@ -377,3 +377,6 @@
 - `POST /v1/plugins/deps/install {"tool": "npx"|"node"|"uvx"|"uv", "confirm": true}`：不带 `confirm` 时返回 428 `confirm_install`（含来源与安装目录，供手机弹窗确认）；确认后 202 后台安装。只从官方地址（nodejs.org / astral-sh/uv GitHub Releases）下载，SHA-256 校验不一致即放弃；安装到 `~/.local/bin`，无需 root。
 - Telegram 配置（`/v1/telegram` 与 `/v1/bots/{id}/telegram`）新增可选 `proxy`：`http://`、`https://`、`socks5://`（本地解析域名）或 `socks5h://`（代理解析域名），可带 `user:pass@`，必须写端口。随整份配置加密保存，GET 只返回掩码（`proxy`: `socks5://***@host:port`、`has_proxy`）。PUT 不带 `proxy` 字段时沿用旧值，传空字符串清除。所有 Bot API 调用（校验、长轮询、发消息）都走该代理。`api_base` 可填反向代理或自建 Bot API 地址。
 - 校验失败返回 `error_kind`：Token 为空或格式错 → 400；`unauthorized`（Telegram 拒绝 Token）→ 400；`network`（连不上、超时、代理失败）→ 502，提示填写代理或自建 API 地址；`other` → 502。
+- `PUT /v1/notify`（Bark）：`url` 可直接粘贴 Bark App 的示例链接（如 `https://api.day.app/<Key>/标题/内容?group=x&ttl=600`）、只填设备 Key，或自建 Bark 服务器地址；服务器归一为 `https://<主机>[/<前缀>]/<Key>`，示例链接里的 `group` 会沿用。错误提示为中文且区分「缺少 Key」「含账号密码」「地址无效」。
+- 依赖安装下载源：Node.js 依次尝试 nodejs.org → npmmirror；uv 依次尝试 GitHub Releases → PyPI / 阿里云 / 清华镜像的 wheel（sha256 取自索引）。
+- 服务启动时定时任务与 Telegram 轮询在后台线程启动，网络不通不影响 `/health`。安装脚本健康检查改为最长 45 秒轮询，失败时输出 `systemctl status` 与 journalctl；apt / pip / Playwright 下载均带超时并回退国内镜像。手机端以 nohup + setsid 在服务器后台运行安装脚本并轮询日志，SSH 中断不会打断安装。

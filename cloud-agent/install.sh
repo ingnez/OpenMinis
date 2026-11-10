@@ -33,21 +33,27 @@ if ! command -v systemctl &> /dev/null; then
   exit 1
 fi
 
+# apt 带超时与重试：国内 VPS 访问官方源可能很慢或不通，避免安装无限期挂起
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS="-o Acquire::Retries=2 -o Acquire::http::Timeout=25 -o Acquire::https::Timeout=25 -o DPkg::Lock::Timeout=120"
+apt_update() { timeout 300 apt-get $APT_OPTS update || echo "[-] 警告: apt-get update 未完成（网络慢或软件源不可达），继续使用本地缓存"; }
+apt_install() { timeout 900 apt-get $APT_OPTS install -y "$@"; }
+
 echo "[+] 检查 Python3 环境..."
 if ! command -v python3 &> /dev/null; then
     echo "[-] 未检测到 python3，正在通过 apt 安装..."
-    apt-get update && apt-get install -y python3 curl
+    apt_update; apt_install python3 curl
 fi
 
 if ! command -v curl &> /dev/null; then
     echo "[+] 安装 curl 用于健康状态校验..."
-    apt-get update && apt-get install -y curl
+    apt_update; apt_install curl || echo "[-] 警告: curl 安装失败（健康检查使用 python，不受影响）"
 fi
 
 # 凭据加密 (AES-256-GCM) 依赖系统 cryptography 包；缺失时服务仍可运行，但拒绝保存凭据
 if ! python3 -c "import cryptography.hazmat.primitives.ciphers.aead" &> /dev/null; then
     echo "[+] 安装 python3-cryptography 用于加密保存服务商凭据..."
-    apt-get update && apt-get install -y python3-cryptography || echo "[-] 警告: python3-cryptography 安装失败，云端将无法保存凭据"
+    { apt_update; apt_install python3-cryptography; } || echo "[-] 警告: python3-cryptography 安装失败，云端将无法保存凭据"
 fi
 
 echo "=== 2. 创建专用服务用户 ($SERVICE_USER) ==="
@@ -140,39 +146,45 @@ systemctl daemon-reload
 systemctl enable openminis-cloud-agent
 systemctl restart openminis-cloud-agent
 
-echo "=== 7. 使用 Python 严格校验健康状态与 JSON 响应 ==="
-sleep 2
-
-if ! systemctl is-active --quiet openminis-cloud-agent; then
-  echo "[-] 错误: openminis-cloud-agent 服务未能成功启动！"
-  journalctl -u openminis-cloud-agent --no-pager -n 30
-  exit 1
-fi
-
-# 使用 python 进行严格的 HTTP 请求与 JSON 结构验证（不依赖 grep，使用 curl -f 及 JSON 解析）
-HEALTH_CHECK_OK=$(python3 -c '
+echo "=== 7. 使用 Python 严格校验健康状态与 JSON 响应（最长等待 ${HEALTH_WAIT_SECONDS:-45} 秒）==="
+# 服务启动时要做数据库迁移、加载插件注册表与定时任务，首次可能需要十几秒：轮询而不是固定 sleep
+HEALTH_WAIT_SECONDS="${HEALTH_WAIT_SECONDS:-45}"
+HEALTH_CHECK_OK="FAIL"
+LAST_HEALTH_ERROR=""
+for i in $(seq 1 "$HEALTH_WAIT_SECONDS"); do
+  if systemctl is-failed --quiet openminis-cloud-agent; then
+    LAST_HEALTH_ERROR="systemd 报告服务启动失败"
+  fi
+  if systemctl is-active --quiet openminis-cloud-agent; then
+    if LAST_HEALTH_ERROR=$(python3 -c '
 import urllib.request, json, sys
 try:
-    req = urllib.request.Request("http://127.0.0.1:18765/health", method="GET")
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        if resp.status != 200:
-            sys.exit(1)
+    with urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:18765/health", method="GET"), timeout=3) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-        if data.get("status") == "ok" and data.get("service") == "openminis-cloud-agent":
-            print("OK")
-            sys.exit(0)
-        else:
-            sys.exit(1)
+    if resp.status == 200 and data.get("status") == "ok" and data.get("service") == "openminis-cloud-agent":
+        sys.exit(0)
+    print("unexpected /health response: " + json.dumps(data)[:200])
 except Exception as e:
-    sys.stderr.write(str(e))
-    sys.exit(1)
-' || echo "FAIL")
+    print(type(e).__name__ + ": " + str(e)[:200])
+sys.exit(1)
+' 2>&1); then
+      HEALTH_CHECK_OK="OK"
+      break
+    fi
+  else
+    LAST_HEALTH_ERROR="服务尚未处于 active 状态"
+  fi
+  if [ $((i % 10)) -eq 0 ]; then echo "[.] 等待服务就绪… ${i}s（${LAST_HEALTH_ERROR}）"; fi
+  sleep 1
+done
 
 if [ "$HEALTH_CHECK_OK" = "OK" ]; then
   echo "[+] 健康检查成功 (HTTP 200 OK, JSON status == ok)"
 else
-  echo "[-] 错误: 健康检查 JSON 校验失败！"
-  journalctl -u openminis-cloud-agent --no-pager -n 30
+  echo "[-] 错误: ${HEALTH_WAIT_SECONDS} 秒内服务未通过健康检查：${LAST_HEALTH_ERROR}"
+  systemctl status openminis-cloud-agent --no-pager -l 2>&1 | tail -n 15 || true
+  echo "----- journalctl -u openminis-cloud-agent（最近 40 行）-----"
+  journalctl -u openminis-cloud-agent --no-pager -n 40 2>&1 || true
   exit 1
 fi
 
