@@ -74,10 +74,13 @@ class SysnapServerTests(CloudServerTestCase):
             return {"role": "assistant", "content": "好了"}
         FakeModelHandler.scripts["m-sysnap"] = script
         sid = self.new_session()
-        res = self.wait_status(self.submit(sid, "装个包", "m-sysnap")[1]["task_id"], ("completed", "failed", "waiting_approval"), timeout=60)
+        tid = self.submit(sid, "装个包", "m-sysnap")[1]["task_id"]
+        res = self.wait_status(tid, ("completed", "failed", "waiting_user"), timeout=60)
+        if res["status"] == "waiting_user":     # 前面的测试把审批模式改成了「先问我」：批准后继续
+            appr = next(e["payload"] for e in res["events"] if e["type"] == "approval_required")
+            self.request("POST", f"/v1/tasks/{tid}/approvals/{appr['approval_id']}", {"decision": "approve"})
+            res = self.wait_status(tid, ("completed", "failed"), timeout=60)
         msgs = [e["payload"].get("message", "") for e in res["events"] if e["type"] == "status"]
-        if res["status"] == "waiting_approval":
-            self.skipTest("这个环境要求系统命令审批")
         self.assertTrue(any("改系统之前已拍快照" in m for m in msgs), msgs)
         st, r = self.request("GET", "/v1/system-snapshots")
         self.assertEqual(st, 200)
