@@ -32,6 +32,7 @@ import uuid
 import signal
 import subprocess
 import threading
+import collections
 import tempfile
 import mimetypes
 import urllib.request
@@ -531,7 +532,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.4.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.5.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -4019,6 +4020,63 @@ def telegram_view(channel):
     return {"configured": cfg is not None, "config": cloud_telegram.masked(cfg), "channel": channel or "shared",
             "status": dict(_tg_status(channel), running=telegram_running(channel))}
 
+TRANSCRIPT_MAX_LINES = 400
+TRANSCRIPT_MAX_CHARS = 8000
+
+
+_transcript_nonces = collections.OrderedDict()
+_transcript_lock = threading.Lock()
+
+
+def session_append_transcript(sid, lines, nonce=None):
+    """把实时语音通话的文字记录追加到会话（不触发 Agent 运行）。
+    返回写入条数；会话不存在返回 None；格式不对抛 ValueError。"""
+    if not isinstance(lines, list) or not lines:
+        raise ValueError("lines must be a non-empty list")
+    if len(lines) > TRANSCRIPT_MAX_LINES:
+        raise ValueError(f"too many lines (max {TRANSCRIPT_MAX_LINES})")
+    rows = []
+    for item in lines:
+        if not isinstance(item, dict):
+            raise ValueError("each line must be an object")
+        role = item.get("role")
+        text = item.get("text")
+        if role not in ("user", "assistant") or not isinstance(text, str):
+            raise ValueError("line needs role user/assistant and string text")
+        text = text.strip()[:TRANSCRIPT_MAX_CHARS]
+        if not text:
+            continue
+        if item.get("interrupted") is True:
+            text += "（被打断）"
+        rows.append((role, text))
+    key = (sid, nonce) if isinstance(nonce, str) and nonce else None
+    if key:
+        with _transcript_lock:
+            if key in _transcript_nonces:
+                return 0   # 重试：上一次已经写入
+            _transcript_nonces[key] = True
+            while len(_transcript_nonces) > 500:
+                _transcript_nonces.popitem(last=False)
+    ok = False
+    conn = get_db_connection()
+    try:
+        if not conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (sid,)).fetchone():
+            return None
+        now = time.time()
+        # 同一时刻写入的多条用递增的微小间隔保持顺序
+        for i, (role, text) in enumerate(rows):
+            conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                         (sid, role, text, now + i * 0.001))
+        conn.commit()
+        ok = True
+        return len(rows)
+    finally:
+        conn.close()
+        if key and not ok:
+            with _transcript_lock:
+                _transcript_nonces.pop(key, None)
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, data):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -5669,6 +5727,19 @@ class Handler(BaseHTTPRequestHandler):
                 "skills_indexed": skills_indexed,
                 "created_at": created_at
             })
+            return
+
+        if re.fullmatch(r"/v1/sessions/[A-Za-z0-9_-]{1,80}/transcript", path):
+            sid = path.split("/")[3]
+            try:
+                n = session_append_transcript(sid, req_json.get("lines"), req_json.get("nonce"))
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            if n is None:
+                self._send(404, {"error": "Session not found"})
+                return
+            self._send(200, {"ok": True, "saved": n})
             return
 
         if path.startswith("/v1/sessions/") and path.endswith("/messages"):

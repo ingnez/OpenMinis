@@ -338,5 +338,43 @@ class IncognitoLeakTests(CloudServerTestCase):
         self.assertIsNone(bot.get("last_message"))
 
 
+
+class RealtimeTranscriptTests(CloudServerTestCase):
+    def _messages(self, sid):
+        return self.request("GET", f"/v1/sessions/{sid}")[1].get("messages", [])
+
+    def test_01_append_in_order_without_running(self):
+        sid = self.request("POST", "/v1/sessions", {"title": "实时通话"})[1]["session_id"]
+        lines = [{"role": "user", "text": "你好"}, {"role": "assistant", "text": "在的", "interrupted": True},
+                 {"role": "user", "text": "  "}, {"role": "assistant", "text": "好的"}]
+        st, body = self.request("POST", f"/v1/sessions/{sid}/transcript", {"lines": lines, "nonce": "n1"})
+        self.assertEqual(st, 200)
+        self.assertEqual(body["saved"], 3)
+        msgs = [(m["role"], m["content"]) for m in self._messages(sid)]
+        self.assertEqual(msgs, [("user", "你好"), ("assistant", "在的（被打断）"), ("assistant", "好的")])
+        # 同一个 nonce 重试不会重复写入
+        st, body = self.request("POST", f"/v1/sessions/{sid}/transcript", {"lines": lines, "nonce": "n1"})
+        self.assertEqual((st, body["saved"]), (200, 0))
+        self.assertEqual(len(self._messages(sid)), 3)
+        # 没有任务被创建
+        conn = self.srv.get_db_connection()
+        try:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM tasks WHERE session_id = ?", (sid,)).fetchone()[0], 0)
+        finally:
+            conn.close()
+
+    def test_02_validation(self):
+        sid = self.request("POST", "/v1/sessions", {"title": "x"})[1]["session_id"]
+        for bad in ([], [{"role": "system", "text": "x"}], [{"role": "user", "text": 3}], "x",
+                    [{"role": "user", "text": "a"}] * 401):
+            st, _ = self.request("POST", f"/v1/sessions/{sid}/transcript", {"lines": bad})
+            self.assertEqual(st, 400, bad if not isinstance(bad, list) or len(bad) < 5 else "too many")
+        st, _ = self.request("POST", "/v1/sessions/nope123/transcript", {"lines": [{"role": "user", "text": "a"}], "nonce": "n2"})
+        self.assertEqual(st, 404)
+        # 会话不存在时 nonce 不占用：之后同 nonce 写真实会话仍然生效
+        st, body = self.request("POST", f"/v1/sessions/{sid}/transcript", {"lines": [{"role": "user", "text": "a"}], "nonce": "n2"})
+        self.assertEqual(body.get("saved"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
