@@ -139,8 +139,9 @@ struct CloudResourceSettingsView: View {
 
             Section {
                 NavigationLink { CloudPerfView() } label: { Label("性能", systemImage: "speedometer") }
+                NavigationLink { CloudProxyView() } label: { Label("代理", systemImage: "network.badge.shield.half.filled") }
             } footer: {
-                Text("首字时间、任务耗时、token 用量，以及流式输出、按需工具等提速开关。")
+                Text("首字时间、任务耗时、token 用量，以及流式输出、按需工具等提速开关。代理：国内服务器访问 GitHub 慢时，导入节点让 Bot 的终端和浏览器经代理访问。")
             }
 
             Section("当前使用") {
