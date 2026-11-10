@@ -50,9 +50,10 @@ final class RealtimeCloudBotHost: RealtimeVoiceHost {
     var toolsAvailable: Bool { true }
 
     func instructions(toolsEnabled: Bool) -> String {
-        var text = "你是「\(botName)」，正在和用户实时语音通话。默认中文，回答简洁口语化，先说结论。"
+        var text = "你是「\(botName)」，正在和用户实时语音通话。没有另外要求时用中文，回答简洁口语化，先说结论。"
         let persona = self.persona.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !persona.isEmpty { text += "\n\n你的设定：\n" + String(persona.prefix(4000)) }
+        // 设定里含灵魂设定（风格、人格、禁止事项、语言）和语音设置，优先于上面的默认说法
+        if !persona.isEmpty { text += "\n\n你的设定（严格遵守）：\n" + String(persona.prefix(6000)) }
         if toolsEnabled {
             text += "\n\n需要真实执行的事（查资料、上网、跑代码、处理文件、操作电脑等）用 cloud_task_start 交给云端的你自己完成：它在同一个对话里，能用你的记忆、技能和工具，但听不到这次通话，所以 prompt 要写完整。交出去后先口头告诉用户已经开始做；收到“云电脑任务完成通知”后用一两句话转述结果。用户问进度时调用 cloud_task_status；cloud_routine_run 可运行已保存的例行任务。没有工具结果之前不得声称已完成。"
         } else {

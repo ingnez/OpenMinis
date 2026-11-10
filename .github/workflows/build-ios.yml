@@ -99,6 +99,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudChatCache.swift scripts/CloudChatCacheTests.swift -o /tmp/cloud-chatcache-tests
           /tmp/cloud-chatcache-tests
+      - name: 实时通话灵魂设定与语音设置测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
+          /tmp/cloud-rtpersona-tests
       - name: 首页 Bot 状态测试
         run: |
           set -o pipefail
@@ -229,6 +234,8 @@ jobs:
           /tmp/cloud-handoff-tests | tee cloud-handoff-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotPresence.swift scripts/CloudBotPresenceTests.swift -o /tmp/cloud-presence-tests
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
+          /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudChatCache.swift scripts/CloudChatCacheTests.swift -o /tmp/cloud-chatcache-tests
           /tmp/cloud-chatcache-tests | tee cloud-chatcache-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotThreads.swift scripts/CloudBotThreadsTests.swift -o /tmp/cloud-threads-tests

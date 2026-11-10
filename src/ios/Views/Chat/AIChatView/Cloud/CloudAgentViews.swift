@@ -1434,8 +1434,12 @@ struct CloudSessionView: View {
         }
     }
 
+    /// 实时通话用的完整设定：灵魂设定 + 指令 + 这个 Bot 的语音设置（语速、语言）
     private func botPersona(_ botId: String) -> String {
-        CloudBotHomeModel.shared.bots.first(where: { $0.id == botId })?.instructions ?? ""
+        guard let bot = CloudBotHomeModel.shared.bots.first(where: { $0.id == botId }) else { return "" }
+        let voice = CloudBotVoiceSettings.load(botId)
+        return CloudRealtimePersona.compose(botName: bot.name, instructions: bot.instructions, soul: bot.soul,
+                                            speed: voice.speed, language: voice.language)
     }
 
     /// 卡片用的动作：选项卡点选后作为下一条消息发出（带 choice_answer，服务器标记卡片已答）
