@@ -640,6 +640,7 @@ struct CloudSessionView: View {
     @State private var privacyHits: [CloudPrivacyScan.Hit] = []
     @State private var privacyConfirmed = false
     @State private var showPins = false
+    @State private var retractable: CloudRetract? = nil
     @State private var outboxTask: Task<Void, Never>? = nil
     @State private var memoryOutbox: [String: (String, [String: Any])] = [:]
     @State private var showComputer = false
@@ -804,6 +805,7 @@ struct CloudSessionView: View {
             }
         }
         .animation(.spring(response: 0.45, dampingFraction: 0.78), value: call.active)
+        .modifier(CloudRetractToast(item: $retractable, onUndo: undoSend))
         .sheet(isPresented: $showPins) { if let theme { CloudPinsSheet(botId: theme.botId, botName: theme.name) } }
         .modifier(CloudSessionExtras(followUp: $followUpNotice, outboxCount: outboxCount, privacyHits: $privacyHits,
                                      onDiscard: discardOutbox, onRedact: sendRedacted, onSend: sendAnyway,
@@ -1655,6 +1657,27 @@ struct CloudSessionView: View {
         sendTask()
     }
 
+    /// 撤回刚发的消息：服务器停任务并删掉这条，文字放回输入框
+    private func undoSend(_ r: CloudRetract) {
+        Task { @MainActor in
+            do {
+                _ = try await connection.request(method: "POST", path: "/v1/tasks/\(r.taskId)/retract", body: [:])
+                if let i = messages.lastIndex(where: { ($0["role"] as? String) == "user" && ($0["content"] as? String) == r.content }) {
+                    messages.remove(at: i)
+                }
+                if let i = turns.lastIndex(where: { $0.message.role == .user && $0.message.content == r.content }) {
+                    turns.removeSubrange(i...)
+                }
+                activeTaskStatus = "cancelled"
+                liveText = ""
+                inputPrompt = r.content
+                CloudHaptics.success()
+            } catch {
+                errorMessage = "撤回失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
     /// 快捷回复 / 翻译：直接发（Bot 正在跑时不发，免得打断）
     private func quickSend(_ text: String) {
         guard activeTaskStatus != "running", !isSubmitting else { return }
@@ -1772,6 +1795,7 @@ struct CloudSessionView: View {
             self.messages.append(row)
             self.turns.append(CloudHistoryAdapter.Turn(message: ChatMessage(role: .user, content: content), raw: row))
         }
+        await MainActor.run { self.retractable = CloudRetract(taskId: tid, content: content) }
         let botId = theme?.botId, sid = sessionId
         Task { @MainActor in
             let locked = botId.map { CloudBotLock.isLockedStored($0) } ?? false

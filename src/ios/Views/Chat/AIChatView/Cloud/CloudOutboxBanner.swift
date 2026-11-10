@@ -72,3 +72,32 @@ struct CloudDraftKeeper: ViewModifier {
             .onChange(of: text) { CloudDrafts.save(sessionId, text: $0) }
     }
 }
+
+/// 刚发出的一条：5 秒内可撤回
+struct CloudRetract: Equatable {
+    let taskId: String
+    let content: String
+}
+
+struct CloudRetractToast: ViewModifier {
+    @Binding var item: CloudRetract?
+    let onUndo: (CloudRetract) -> Void
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .bottomTrailing) {
+            if let r = item {
+                Button { item = nil; onUndo(r) } label: {
+                    Label("撤回", systemImage: "arrow.uturn.backward").font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(.thinMaterial, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 16).padding(.bottom, 92)
+                .task(id: r.taskId) {
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    if item == r { item = nil }
+                }
+            }
+        }
+    }
+}

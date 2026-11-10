@@ -624,6 +624,11 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 每项可选 `allowed_bots: [bot_id]`（`[]` 或 `null` = 所有 Bot）。不在名单的 Bot 调用会被拒并记一条失败使用记录；`vault_list` 的 `allowed` 按调用的 Bot 计算。
 - `GET /v1/vault`（只给 App）每项多出提示：卡片 `expiry_hint`（MM/YY）、联系信息 `address_hint`（默认地址一行）、登录 `pw_weak` / `pw_reused`（布尔）。服务端解密后只算提示，密码、卡号、CVV 原值不外传；模型看到的 `for_model` 不含这些提示。`?q=` 搜索也覆盖两个提示字段。
 
+## 撤回发送（2.39.0）
+
+- `POST /v1/tasks/<id>/retract`：任务创建 15 秒内（`RETRACT_WINDOW_S`）可撤回：停掉任务，删掉这条用户消息及其后写入该对话的消息，
+  返回 `{"task_id","status":"retracted","deleted_messages"}`；超时或之后又发了新消息返回 409。App 只在发出后 5 秒内显示「撤回」。
+
 ## 出处与把握度（2.38.0）
 
 - 回复风格提示：医学类回答最后一行写 `依据：…｜把握度：高/中/低`，说不出出处写 `依据：无明确出处｜把握度：低`，禁止编造。

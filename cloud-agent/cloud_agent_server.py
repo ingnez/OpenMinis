@@ -634,7 +634,8 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.38.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
+AGENT_VERSION = "2.39.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -8612,6 +8613,35 @@ class Handler(BaseHTTPRequestHandler):
                 if p_err:
                     provider = None     # 没有可用的模型：快照退回如实摘录，不影响重置
             self._send(200, reset_session(sid, provider, model))
+            return
+
+        if path.startswith("/v1/tasks/") and path.endswith("/retract"):
+            # 撤回发送（App 发出后 5 秒内）：停掉任务，并删掉这条用户消息和它之后写进对话的内容
+            parts = path.split("/")
+            tid = parts[3] if len(parts) == 5 else ""
+            conn = get_db_connection()
+            try:
+                row = conn.execute("SELECT session_id, created_at, status FROM tasks WHERE task_id = ?", (tid,)).fetchone()
+                if not row:
+                    self._send(404, {"error": "Task not found"})
+                    return
+                sid, created, status = row
+                if time.time() - (created or 0) > RETRACT_WINDOW_S:
+                    self._send(409, {"error": "超过撤回时间", "window_s": RETRACT_WINDOW_S})
+                    return
+                newer = conn.execute("SELECT 1 FROM tasks WHERE session_id = ? AND created_at > ? LIMIT 1", (sid, created)).fetchone()
+                if newer:
+                    self._send(409, {"error": "之后又发了消息，不能撤回这条"})
+                    return
+                if status in ("running", "waiting_user"):
+                    set_task_cancelled(tid)
+                    conn.execute("UPDATE tasks SET status = 'cancelled' WHERE task_id = ?", (tid,))
+                n = conn.execute("DELETE FROM messages WHERE session_id = ? AND timestamp >= ?", (sid, created)).rowcount
+                conn.commit()
+            finally:
+                conn.close()
+            log_event(tid, "cancelled", {"message": "Retracted by user", "retracted": True})
+            self._send(200, {"task_id": tid, "status": "retracted", "deleted_messages": n})
             return
 
         if path.startswith("/v1/tasks/") and path.endswith("/cancel"):
