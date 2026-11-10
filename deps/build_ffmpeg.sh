@@ -151,23 +151,53 @@ check_prerequisites() {
 fetch_ffmpeg_source() {
     local version="6.1.2"
     local tarball="ffmpeg-${version}.tar.xz"
-    local url="https://ffmpeg.org/releases/${tarball}"
+    # Official release tarball checksum; the cached / downloaded file must match.
+    local sha256="3b624649725ecdc565c903ca6643d41f33bd49239922e45c9b1442c63dca4e38"
+    local cache_dir="${FFMPEG_DOWNLOAD_CACHE:-$SCRIPT_DIR/.cache}"
+    local cached="$cache_dir/$tarball"
+    local curl_opts=(-fL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30)
     local tmp
     tmp="$(mktemp -d)"
+    mkdir -p "$cache_dir"
 
-    log_info "FFmpeg source not present — downloading ${version}..."
-    if ! curl -fL# "$url" -o "$tmp/$tarball"; then
-        rm -rf "$tmp"
-        log_error "Failed to download $url — check your network, or place the source at $FFMPEG_DIR manually."
+    sha_ok() { [ -f "$1" ] && [ "$(shasum -a 256 "$1" | awk '{print $1}')" = "$sha256" ]; }
+
+    if sha_ok "$cached"; then
+        log_info "Using cached FFmpeg ${version} tarball"
+    else
+        rm -f "$cached"
+        log_info "FFmpeg source not present — downloading ${version}..."
+        local url
+        for url in "https://ffmpeg.org/releases/${tarball}" "https://www.ffmpeg.org/releases/${tarball}"; do
+            if curl "${curl_opts[@]}" "$url" -o "$cached.part" && sha_ok "$cached.part"; then
+                mv "$cached.part" "$cached"
+                break
+            fi
+            log_warning "Download from $url failed or checksum mismatch; trying next source"
+            rm -f "$cached.part"
+        done
     fi
 
-    log_info "Extracting..."
-    if ! tar -xf "$tmp/$tarball" -C "$tmp"; then
-        rm -rf "$tmp"
-        log_error "Failed to extract $tarball"
+    if sha_ok "$cached"; then
+        log_info "Extracting..."
+        if ! tar -xf "$cached" -C "$tmp"; then
+            rm -rf "$tmp"
+            log_error "Failed to extract $tarball"
+        fi
+        mv "$tmp/ffmpeg-${version}" "$PATCH_SOURCE_DIR"
+    else
+        # Fallback: the GitHub mirror tag. Same tree as the release tarball except the
+        # VERSION file (written below) and .git* metadata (removed).
+        local gh="https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${version}.tar.gz"
+        log_warning "Official tarball unavailable — falling back to GitHub mirror $gh"
+        if ! curl "${curl_opts[@]}" "$gh" -o "$tmp/gh.tar.gz" || ! tar -xzf "$tmp/gh.tar.gz" -C "$tmp"; then
+            rm -rf "$tmp"
+            log_error "Failed to download FFmpeg ${version} from ffmpeg.org and GitHub — check your network, or place the source at $FFMPEG_DIR manually."
+        fi
+        find "$tmp/FFmpeg-n${version}" -name '.git*' -prune -exec rm -rf {} +
+        echo "$version" > "$tmp/FFmpeg-n${version}/VERSION"
+        mv "$tmp/FFmpeg-n${version}" "$PATCH_SOURCE_DIR"
     fi
-
-    mv "$tmp/ffmpeg-${version}" "$PATCH_SOURCE_DIR"
     rm -rf "$tmp"
     log_success "FFmpeg ${version} source ready at $PATCH_SOURCE_DIR"
 }
