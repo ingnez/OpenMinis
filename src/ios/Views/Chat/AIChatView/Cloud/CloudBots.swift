@@ -18,6 +18,9 @@ struct CloudBot: Identifiable, Hashable {
     var model: String
     var credential: String
     var plugins: [String]
+    /// nil 表示可用全部技能；否则只允许列表中的技能
+    var skills: [String]?
+    var hasTelegram: Bool
     var isPrimary: Bool
     var sessionCount: Int
     var routineCount: Int
@@ -32,6 +35,8 @@ struct CloudBot: Identifiable, Hashable {
         self.model = ""
         self.credential = ""
         self.plugins = []
+        self.skills = nil
+        self.hasTelegram = false
         self.isPrimary = isPrimary
         self.sessionCount = 0
         self.routineCount = 0
@@ -48,6 +53,8 @@ struct CloudBot: Identifiable, Hashable {
         model = d["model"] as? String ?? ""
         credential = d["credential"] as? String ?? ""
         plugins = d["plugins"] as? [String] ?? []
+        skills = d["skills"] as? [String]
+        hasTelegram = d["telegram"] as? Bool ?? false
         isPrimary = d["is_primary"] as? Bool ?? false
         sessionCount = d["session_count"] as? Int ?? 0
         routineCount = d["routine_count"] as? Int ?? 0
@@ -371,6 +378,7 @@ struct CloudBotDetailView: View {
     @State private var sessions: [[String: Any]] = []
     @State private var routines: [[String: Any]] = []
     @State private var plugins: [CloudPlugin] = []
+    @State private var allSkills: [String] = []
     @State private var exportURL: URL?
     @State private var showEditor = false
     @State private var confirmDelete = false
@@ -451,6 +459,27 @@ struct CloudBotDetailView: View {
             }
 
             Section {
+                Toggle("可用全部技能", isOn: Binding(get: { bot.skills == nil }, set: { setAllSkills($0) }))
+                    .disabled(busy)
+                if let allowed = bot.skills {
+                    if allSkills.isEmpty {
+                        Text("云电脑上还没有技能。").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    ForEach(allSkills, id: \.self) { name in
+                        Toggle(name, isOn: Binding(get: { allowed.contains(name) }, set: { toggleSkill(name, $0) }))
+                            .disabled(busy)
+                    }
+                }
+            } header: {
+                Text("技能")
+            } footer: {
+                Text("关闭“可用全部技能”后，这个 Bot 只能看到并调用勾选的技能。")
+            }
+
+            CloudTelegramSection(selectedInstanceId: currentInstance(), path: "/v1/bots/\(bot.id)/telegram",
+                                 title: bot.hasTelegram ? "专属 Telegram Bot（已连接）" : "专属 Telegram Bot")
+
+            Section {
                 LabeledContent("模型", value: bot.model.isEmpty ? "跟随手机当前选择" : bot.model)
                 Button("固定使用当前服务商与模型") { setModel(true) }.disabled(busy)
                 if !bot.model.isEmpty {
@@ -501,6 +530,10 @@ struct CloudBotDetailView: View {
             sessions = try await CloudBotService.sessions(bot.id)
             routines = try await CloudBotService.routines(bot.id)
             plugins = (try? await CloudPluginService.list()) ?? []
+            if let resp = try? await CloudBotService.connected().request(method: "GET", path: "/v1/skills", body: nil) {
+                let items = resp["skills"] as? [[String: Any]] ?? []
+                allSkills = items.compactMap { $0["name"] as? String }
+            }
             errorText = nil
         } catch {
             errorText = error.localizedDescription
@@ -530,6 +563,24 @@ struct CloudBotDetailView: View {
         if on { list.append(id) }
         let botId = bot.id
         run { try await CloudBotService.update(botId, ["plugins": list]) }
+    }
+
+    private func setAllSkills(_ all: Bool) {
+        let botId = bot.id
+        let body: [String: Any]
+        if all {
+            body = ["skills": NSNull()]
+        } else {
+            body = ["skills": [String]()]
+        }
+        run { try await CloudBotService.update(botId, body) }
+    }
+
+    private func toggleSkill(_ name: String, _ on: Bool) {
+        var list = (bot.skills ?? []).filter { $0 != name }
+        if on { list.append(name) }
+        let botId = bot.id
+        run { try await CloudBotService.update(botId, ["skills": list]) }
     }
 
     private func setModel(_ useCurrent: Bool) {

@@ -23,9 +23,11 @@ enum CloudMemorySync {
         let root = AIChatViewModel.minisMemoryPersistentDir
         let fm = FileManager.default
         try? fm.createDirectory(at: root, withIntermediateDirectories: true)
-        let fallback = DateFormatter()
-        fallback.locale = Locale(identifier: "en_US_POSIX")
-        fallback.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        // 统一用手机当前时区按 created_at 生成时间戳（与手机本地写入的日志一致），不信任 VPS 的本地时区
+        let local = DateFormatter()
+        local.locale = Locale(identifier: "en_US_POSIX")
+        local.timeZone = TimeZone.current
+        local.dateFormat = "yyyy-MM-dd HH:mm:ss"
 
         var newest = since
         var written = 0
@@ -36,7 +38,7 @@ enum CloudMemorySync {
             newest = max(newest, created)
             let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !content.isEmpty else { continue }
-            let ts = (e["entry_time"] as? String) ?? fallback.string(from: Date(timeIntervalSince1970: created))
+            let ts = local.string(from: Date(timeIntervalSince1970: created))
             let day = String(ts.prefix(10))
             guard day.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else { continue }
             let category = (e["category"] as? String) ?? "note"
@@ -49,6 +51,9 @@ enum CloudMemorySync {
                 try (entry + existing).write(to: file, atomically: true, encoding: .utf8)
                 written += 1
                 touchedDays.insert(day)
+                // 登记到 iSH fakefs，让内置文件视图与 shell 能看到这个文件
+                RootfsManager.shared.ensureFakefsMetadata(for: AIChatViewModel.minisMemoryLinuxDir, isDirectory: true)
+                RootfsManager.shared.ensureFakefsMetadata(for: "\(AIChatViewModel.minisMemoryLinuxDir)/\(day).md", isDirectory: false)
             } catch {
                 continue
             }

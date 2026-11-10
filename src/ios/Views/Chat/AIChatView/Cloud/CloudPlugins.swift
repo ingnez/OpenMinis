@@ -28,6 +28,7 @@ struct CloudPlugin: Identifiable, Hashable {
     let secrets: [CloudPluginSecret]
     let installed: Bool
     let homepage: String
+    let missingDependencies: [String]
 
     init?(_ d: [String: Any], installed: Bool) {
         guard let pid = (d["plugin_id"] as? String) ?? (d["id"] as? String) else { return nil }
@@ -49,13 +50,16 @@ struct CloudPlugin: Identifiable, Hashable {
         self.installed = installed
         let manifest = d["manifest"] as? [String: Any] ?? d
         homepage = manifest["homepage"] as? String ?? ""
+        missingDependencies = d["missing_dependencies"] as? [String] ?? []
     }
 
     var statusText: String {
         switch status {
         case "ready": return kind == "skill" ? "技能包 · 已启用" : "可用"
         case "needs_auth": return "需要授权：填写密钥"
-        case "missing_dependency": return "云电脑缺少依赖（uvx / npx），请重新安装服务器 Agent 或手动安装"
+        case "missing_dependency":
+            let names = missingDependencies.isEmpty ? "uvx / npx" : missingDependencies.joined(separator: " / ")
+            return "云电脑缺少 \(names)：在“插件市场 › 运行依赖”一键安装"
         case "disabled": return "已停用"
         case "error": return "出错：" + String(lastError.prefix(80))
         default: return status
@@ -99,6 +103,24 @@ enum CloudPluginService {
         return tools.compactMap { $0["name"] as? String }
     }
 
+    /// 运行依赖（node / uv）安装状态：[(工具, 说明, 是否已装, 任务状态, 错误)]
+    static func deps() async throws -> [CloudPluginDep] {
+        let resp = try await CloudBotService.connected().request(method: "GET", path: "/v1/plugins/deps", body: nil)
+        let tools = resp["tools"] as? [String: Any] ?? [:]
+        return tools.keys.sorted().compactMap { key -> CloudPluginDep? in
+            guard let t = tools[key] as? [String: Any] else { return nil }
+            let job = t["job"] as? [String: Any]
+            return CloudPluginDep(id: key, label: t["label"] as? String ?? key, source: t["source"] as? String ?? "",
+                                  installed: t["installed"] as? Bool ?? false, jobStatus: job?["status"] as? String,
+                                  jobError: job?["error"] as? String)
+        }
+    }
+
+    static func installDep(_ tool: String) async throws {
+        _ = try await CloudBotService.connected().request(method: "POST", path: "/v1/plugins/deps/install",
+                                                          body: ["tool": tool, "confirm": true])
+    }
+
     /// 复用手机已配置的 MCP 服务器（请求头 / 环境变量作为密钥加密上传）。
     static func importPhoneServers() async throws -> String {
         let servers: [[String: Any]] = MCPStore.shared.servers.filter { $0.enabled }.map { s -> [String: Any] in
@@ -123,8 +145,26 @@ enum CloudPluginService {
     }
 }
 
+struct CloudPluginDep: Identifiable, Hashable {
+    let id: String
+    let label: String
+    let source: String
+    let installed: Bool
+    let jobStatus: String?
+    let jobError: String?
+
+    var statusText: String {
+        if jobStatus == "running" { return "正在安装…" }
+        if installed { return "已安装" }
+        if jobStatus == "failed" { return "安装失败：" + String((jobError ?? "").prefix(120)) }
+        return "未安装"
+    }
+}
+
 struct CloudPluginsView: View {
     @State private var installed: [CloudPlugin] = []
+    @State private var deps: [CloudPluginDep] = []
+    @State private var pendingDep: CloudPluginDep?
     @State private var catalog: [CloudPlugin] = []
     @State private var loading = false
     @State private var busy = false
@@ -148,6 +188,32 @@ struct CloudPluginsView: View {
                 Text("已安装")
             } footer: {
                 Text("MCP 插件需在“我的 Bot”详情页授权给具体 Bot；不属于任何 Bot 的对话使用“默认授权”的插件。")
+            }
+
+            if !deps.isEmpty {
+                Section {
+                    ForEach(deps) { d in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(d.label)
+                                Text(d.statusText).font(.caption2)
+                                    .foregroundStyle(d.installed ? Color.green : (d.jobStatus == "failed" ? Color.red : Color.orange))
+                            }
+                            Spacer()
+                            if !d.installed && d.jobStatus != "running" {
+                                Button("安装") { pendingDep = d }
+                                    .buttonStyle(.borderless)
+                                    .disabled(busy)
+                            } else if d.jobStatus == "running" {
+                                ProgressView()
+                            }
+                        }
+                    }
+                } header: {
+                    Text("运行依赖")
+                } footer: {
+                    Text("不少 MCP 插件通过 npx（Node.js）或 uvx（uv）运行。安装时从官方地址下载并校验 SHA-256，装到云电脑用户目录 ~/.local/bin，不需要 root。")
+                }
             }
 
             Section("插件目录") {
@@ -192,8 +258,36 @@ struct CloudPluginsView: View {
         } message: {
             Text("第三方插件清单可能让云电脑运行它指定的命令。只安装你信任的来源。")
         }
+        .alert("在云电脑上安装依赖？", isPresented: Binding(get: { pendingDep != nil }, set: { if !$0 { pendingDep = nil } })) {
+            Button("安装") {
+                if let d = pendingDep { installDep(d.id) }
+                pendingDep = nil
+            }
+            Button("取消", role: .cancel) { pendingDep = nil }
+        } message: {
+            Text("将从 \(pendingDep?.source ?? "官方地址") 下载 \(pendingDep?.label ?? "")，校验 SHA-256 后安装到云电脑的 ~/.local/bin。")
+        }
         .task { await reload() }
         .refreshable { await reload() }
+    }
+
+    private func installDep(_ tool: String) {
+        busy = true
+        Task {
+            do {
+                try await CloudPluginService.installDep(tool)
+                // 后台安装：轮询至结束（最多约 5 分钟）
+                for _ in 0..<100 {
+                    try await Task.sleep(nanoseconds: 3_000_000_000)
+                    deps = try await CloudPluginService.deps()
+                    if deps.first(where: { $0.id == tool })?.jobStatus != "running" { break }
+                }
+                await reload()
+            } catch {
+                errorText = error.localizedDescription
+            }
+            busy = false
+        }
     }
 
     private func pluginRow(_ p: CloudPlugin) -> some View {
@@ -229,6 +323,7 @@ struct CloudPluginsView: View {
             let all = try await CloudPluginService.listAll()
             installed = all.installed
             catalog = all.catalog
+            deps = (try? await CloudPluginService.deps()) ?? []
             errorText = nil
         } catch {
             errorText = error.localizedDescription

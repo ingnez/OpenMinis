@@ -50,6 +50,7 @@ struct ModelEntry { let providerInstanceId: String; let model: LLMModel }
 @MainActor
 final class AIChatViewModel: ObservableObject {
  nonisolated static var minisSkillsPersistentDir: URL { FileManager.default.temporaryDirectory.appendingPathComponent("skills") }
+ nonisolated static let minisMemoryLinuxDir = "/var/minis/memory"
  nonisolated static var minisMemoryPersistentDir: URL { FileManager.default.temporaryDirectory.appendingPathComponent("memory") }
  var sessionId: String?
  var isRetiredByReset = false

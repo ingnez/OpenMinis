@@ -24,6 +24,7 @@ final class RootfsManager {
  var didResetWhileBooted: Bool { false }
  func installIfNeeded() throws {}
  func applyDefaultMountOverlay() {}
+ func ensureFakefsMetadata(for linuxPath: String, isDirectory: Bool, mode: UInt32? = nil) {}
 }
 func installSessionFileChangeTracker(kernel: ISHKernel) {}
 final class MinisFsRouter {

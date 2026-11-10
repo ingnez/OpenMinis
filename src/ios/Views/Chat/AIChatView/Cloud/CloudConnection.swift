@@ -209,6 +209,8 @@ public final class CloudConnection: ObservableObject {
             _ = try await requestRaw(method: "GET", path: "/v1/sessions", body: nil)
             guard generation == expected else { throw failure("连接已取消") }
             isConnected = true; status = .connected
+            // 上报手机时区，云端记忆时间与手机日志一致；旧版服务没有该接口，忽略失败
+            _ = try? await requestRaw(method: "PUT", path: "/v1/settings", body: ["timezone": TimeZone.current.identifier])
         } catch {
             await cleanup(password)
             _ = try? await shell("ssh -S \(quote(control)) -O exit \(destination) >/dev/null 2>&1", timeout: 10)
