@@ -16,6 +16,13 @@ struct CloudAssistantTurnView: View {
     var showHeader = true
     /// 正在生成、还没写进事件的文字
     var liveText = ""
+    /// 已完成的长回复先折叠（正在生成的不折叠）
+    var collapsible = false
+    @State private var expanded = false
+
+    private var isLong: Bool {
+        message.blocks.reduce(0) { $0 + (($1.kind == .text) ? $1.content.count : 0) } > 1800
+    }
 
     private enum Segment {
         case text(AssistantBlock)
@@ -44,7 +51,7 @@ struct CloudAssistantTurnView: View {
         VStack(alignment: .leading, spacing: 8) {
             if showHeader {
                 HStack(spacing: 8) {
-                    CloudBotAvatarView(spec: spec, size: 22)
+                    CloudBotWatchingAvatar(spec: spec, size: 22)
                     Text(name).font(.subheadline.bold())
                 }
             }
@@ -67,6 +74,42 @@ struct CloudAssistantTurnView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(CloudCollapse(active: collapsible && isLong, expanded: $expanded))
+    }
+}
+
+/// 长回复折叠：最多显示约 480pt，底部渐隐 +「展开全部」；展开后可「收起」
+struct CloudCollapse: ViewModifier {
+    let active: Bool
+    @Binding var expanded: Bool
+
+    func body(content: Content) -> some View {
+        if !active {
+            content
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                content
+                    .frame(maxHeight: expanded ? nil : 480, alignment: .top)
+                    .clipped()
+                    .overlay(alignment: .bottom) {
+                        if !expanded {
+                            LinearGradient(colors: [Color(.systemBackground).opacity(0), Color(.systemBackground)],
+                                           startPoint: .top, endPoint: .bottom)
+                                .frame(height: 60)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                Button {
+                    CloudHaptics.tap()
+                    withAnimation(.easeInOut(duration: 0.25)) { expanded.toggle() }
+                } label: {
+                    Label(expanded ? "收起" : "展开全部", systemImage: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 

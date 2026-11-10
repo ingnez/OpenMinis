@@ -145,9 +145,21 @@ struct CloudDelegationCard: View {
                 .font(.callout)
                 .lineLimit(expanded ? nil : 6)
                 .textSelection(.enabled)
-            if mark.shownBody.count > 240 {
-                Button(expanded ? "收起" : "展开全部") { withAnimation { expanded.toggle() } }
-                    .font(.caption).foregroundStyle(accent)
+            HStack {
+                if mark.shownBody.count > 240 {
+                    Button(expanded ? "收起" : "展开全部") { withAnimation { expanded.toggle() } }
+                        .font(.caption).foregroundStyle(accent)
+                }
+                Spacer()
+                if let other {
+                    // 点一下进入被委托 Bot 的对话（同一个导航栈，返回回到这里）
+                    NavigationLink(value: other.id) {
+                        Label("打开 \(other.name) 的对话", systemImage: "arrow.up.right.circle")
+                            .font(.caption.weight(.medium))
+                    }
+                    .simultaneousGesture(TapGesture().onEnded { CloudHaptics.tap() })
+                    .foregroundStyle(accent)
+                }
             }
         }
         .padding(12)
@@ -258,6 +270,7 @@ struct CloudBotLivelyAvatar: View {
                 .offset(y: reduceMotion ? 0 : -3 * abs(sin(t * 3.2)))
         }
         .frame(width: size, height: size + 4)
+        .modifier(CloudFollowTouch(gaze: $gaze, enabled: !reduceMotion))
         .task(id: reduceMotion) { await animateEyes() }
         .accessibilityHidden(true)
     }
@@ -271,7 +284,7 @@ struct CloudBotLivelyAvatar: View {
                 try? await Task.sleep(nanoseconds: 120_000_000)
                 withAnimation(.easeInOut(duration: 0.1)) { eyeOpen = 1 }
             }
-            if !reduceMotion {
+            if !reduceMotion && CloudTouchTracker.shared.point == nil {
                 let looks = [CGSize(width: -1, height: 0), CGSize(width: 1, height: 0), CGSize(width: 0, height: -1),
                              CGSize(width: 0.6, height: -0.6), .zero, .zero]
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) { gaze = looks.randomElement() ?? .zero }

@@ -54,6 +54,8 @@ final class CloudBotHomeModel: ObservableObject {
     @Published private(set) var loaded = false
     @Published private(set) var connecting = false
     @Published var bannerText: String?
+    /// 外部入口（小组件、Siri、分享、委托卡片）要打开的 Bot id 或 "group:<id>"；首页收到后进入对话
+    @Published var pendingOpen: String?
     private var seen: [String: Double]
 
     private init() {
@@ -312,7 +314,14 @@ struct CloudBotHomeScreen: View {
             CloudConnectAppsSheet(onClose: { showConnectApps = false })
                 .presentationDetents([.large])
         }
+        .onChange(of: model.pendingOpen) { target in
+            guard let target else { return }
+            model.pendingOpen = nil
+            path = [target]
+        }
         .task {
+            CloudTouchTracker.shared.install()
+            if let target = model.pendingOpen { model.pendingOpen = nil; path = [target] }
             // 进入多 Bot 模式即后台连接并定期刷新（列表的运行 / 待审批 / 未读状态）
             while !Task.isCancelled {
                 await model.refresh()

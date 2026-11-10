@@ -20,7 +20,7 @@ struct CloudProseAssistant: View {
         VStack(alignment: .leading, spacing: 8) {
             if showHeader {
                 HStack(spacing: 8) {
-                    CloudBotAvatarView(spec: spec, size: 22)
+                    CloudBotWatchingAvatar(spec: spec, size: 22)
                     Text(name).font(.subheadline.bold())
                 }
             }

@@ -336,6 +336,7 @@ struct CloudBotAliveAvatar: View {
                     withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) { gaze = .zero }
                 }
         )
+        .modifier(CloudFollowTouch(gaze: $gaze, enabled: !reduceMotion && !touching))
         .onChange(of: spec) { _ in
             guard !reduceMotion else { return }
             bounce = 1.12
@@ -360,7 +361,7 @@ struct CloudBotAliveAvatar: View {
                     withAnimation(.easeInOut(duration: 0.1)) { eyeOpen = 1 }
                 }
             }
-            if !reduceMotion && !touching {
+            if !reduceMotion && !touching && CloudTouchTracker.shared.point == nil {
                 let looks = [CGSize(width: -0.9, height: 0), CGSize(width: 0.9, height: 0), CGSize(width: 0, height: -0.8),
                              CGSize(width: 0.6, height: 0.5), CGSize(width: -0.5, height: -0.6), .zero, .zero]
                 withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) { gaze = looks.randomElement() ?? .zero }

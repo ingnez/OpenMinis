@@ -614,6 +614,7 @@ struct CloudSessionView: View {
     /// 连续几次取不到进度时的一行温和提示（不是红色横幅），恢复后自动清除
     @State private var streamNotice: String?
     @State private var sendStartedAt: Date?
+    @State private var autoOpenedComputer: Set<String> = []
     @State private var isPolling = false
     @State private var loadedTaskId: String? = nil
     @State private var errorMessage: String? = nil
@@ -689,7 +690,7 @@ struct CloudSessionView: View {
                                 } else {
                                     let prevAssistant = idx > 0 && turns[idx - 1].message.role == .assistant
                                     CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
-                                                           showHeader: !prevAssistant)
+                                                           showHeader: !prevAssistant, collapsible: true)
                                     HStack(spacing: 12) {
                                         Button { UIPasteboard.general.string = msg.content; CloudHaptics.success() } label: {
                                             Image(systemName: "doc.on.doc").font(.caption2)
@@ -1012,7 +1013,7 @@ struct CloudSessionView: View {
         if running && (!liveMessage.blocks.isEmpty || !liveText.isEmpty) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    CloudBotAvatarView(spec: theme.spec, size: 22)
+                    CloudBotWatchingAvatar(spec: theme.spec, size: 22)
                     Text(theme.name).font(.subheadline.bold())
                 }
                 // 与本地模式同一条管线：事件 → liveMessage 的消息块，正在生成的文字接在后面
@@ -1386,6 +1387,12 @@ struct CloudSessionView: View {
                         self.taskEvents.append(contentsOf: batch.events)
                         for ev in batch.events {
                             CloudEventApplier.apply(self.liveMessage, type: ev["type"] as? String ?? "", payload: ev["payload"] as? [String: Any] ?? [:])
+                        }
+                        // Bot 需要你登录 / 接管：自动打开这个 Bot 的「电脑」页（每个任务只自动打开一次）
+                        if batch.events.contains(where: { $0["type"] as? String == "takeover_request" }), !self.autoOpenedComputer.contains(taskId) {
+                            self.autoOpenedComputer.insert(taskId)
+                            CloudHaptics.warning()
+                            self.showComputer = true
                         }
                         // 一段话写进了事件或模型开始调用工具：正在生成的那段文字已经结束
                         if batch.events.contains(where: { ["tool_call", "thought"].contains($0["type"] as? String ?? "") }) { self.liveText = "" }
