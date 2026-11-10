@@ -30,8 +30,16 @@ extension ContentView {
             case .inlineText:
                 texts.append(item.value)
             case .attachment:
-                guard let dir = SharedContainerStore.sharedFileDirectory,
-                      let data = try? Data(contentsOf: dir.appendingPathComponent(item.value)) else { continue }
+                // 大文件（视频等）整块读进内存可能被系统杀掉：超过 25 MB 的跳过，并在文字里说明
+                guard let dir = SharedContainerStore.sharedFileDirectory else { continue }
+                let url = dir.appendingPathComponent((item.value as NSString).lastPathComponent)
+                let attrs = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
+                let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+                if size > 25 * 1024 * 1024 {
+                    texts.append("（\(item.value) 太大，没有附上）")
+                    continue
+                }
+                guard let data = try? Data(contentsOf: url) else { continue }
                 if let img = UIImage(data: data), let a = CloudAttachmentKit.image(img, name: item.value) {
                     files.append(a)
                 } else {
