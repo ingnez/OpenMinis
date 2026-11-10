@@ -484,6 +484,9 @@ struct ScheduledTaskDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var promptExpanded = false
     @State private var confirmCancel = false
+    @State private var confirmMoveToCloud = false
+    @State private var movingToCloud = false
+    @State private var moveToCloudError: String?
     @State private var copiedToast: String?
     @State private var now = Date()
 
@@ -531,6 +534,17 @@ struct ScheduledTaskDetailView: View {
             Button(AppLocalized("Keep"), role: .cancel) {}
         } message: {
             Text("It won't run again.", comment: "Scheduled task detail: cancel confirmation message")
+        }
+        .alert("移到云端运行？", isPresented: $confirmMoveToCloud) {
+            Button("移到云端") { moveToCloud() }
+            Button(AppLocalized("Keep"), role: .cancel) {}
+        } message: {
+            Text("将在 VPS 创建同样计划的例行任务（使用云电脑设置中的服务商与模型，Key 加密保存在 VPS），并取消本机定时任务。手机离线也会运行，结果在“云端例行任务”中查看。")
+        }
+        .alert("移到云端失败", isPresented: Binding(get: { moveToCloudError != nil }, set: { if !$0 { moveToCloudError = nil } })) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(moveToCloudError ?? "")
         }
     }
 
@@ -761,6 +775,15 @@ struct ScheduledTaskDetailView: View {
 
     private var actions: some View {
         VStack(spacing: 10) {
+            if AgentJobRegistry.shared.isLiveScheduled(jobId: store.callback.jobId), cloudSchedule() != nil {
+                Button { confirmMoveToCloud = true } label: {
+                    Label(movingToCloud ? "正在移到云端…" : "移到云端运行", systemImage: "icloud.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(cardBackground)
+                }
+                .disabled(movingToCloud)
+            }
             if AgentJobRegistry.shared.isLiveScheduled(jobId: store.callback.jobId) {
                 Button(role: .destructive) { confirmCancel = true } label: {
                     Label(AppLocalized("Cancel scheduled task"), systemImage: "calendar.badge.minus")
@@ -779,6 +802,46 @@ struct ScheduledTaskDetailView: View {
                     .background(cardBackground)
             }
             .foregroundStyle(.primary)
+        }
+    }
+
+    // MARK: Run on cloud
+
+    /// 本机触发器 → 云端例行任务计划；预置命令、立即执行、链式触发不支持迁移。
+    /// cron 的 days 为 Calendar weekday（1=周日…7=周六），cron 周字段为 0=周日，故减 1。
+    /// cron 的起止日期云端暂不支持，迁移后忽略。
+    private func cloudSchedule() -> (schedule: [String: Any], maxRuns: Int?)? {
+        guard let job = store.job, job.presetToolCall == nil, !store.prompt.isEmpty else { return nil }
+        switch job.trigger {
+        case .cron(let hour, let minute, let days, _, _):
+            let dow = days.isEmpty ? "*" : days.sorted().map { String($0 - 1) }.joined(separator: ",")
+            return (["kind": "cron", "expr": "\(minute) \(hour) * * \(dow)", "timezone": TimeZone.current.identifier], nil)
+        case .loop(let interval, let count):
+            let remaining = job.remaining ?? count
+            return (["kind": "interval", "seconds": max(60, Int(interval))], remaining)
+        case .once:
+            guard let at = job.nextFireAt else { return nil }
+            return (["kind": "once", "at": at.timeIntervalSince1970], nil)
+        case .immediate, .onCompletion:
+            return nil
+        }
+    }
+
+    private func moveToCloud() {
+        guard let plan = cloudSchedule() else { return }
+        movingToCloud = true
+        let jobId = store.callback.jobId
+        let name = store.name
+        let prompt = store.prompt
+        Task {
+            do {
+                try await CloudRoutineService.create(name: name, prompt: prompt, schedule: plan.schedule, maxRuns: plan.maxRuns)
+                AgentJobRegistry.shared.cancel(jobId: jobId, reason: "moved to cloud routine", silent: true)
+                flash("已移到云端")
+            } catch {
+                moveToCloudError = error.localizedDescription
+            }
+            movingToCloud = false
         }
     }
 

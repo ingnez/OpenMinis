@@ -14,6 +14,7 @@ OpenMinis Cloud Computer & Agent Service (cloud_agent_server.py) v2.0
 - Workspace attachments endpoint with Bearer auth (/v1/sessions/{id}/attachments/{filename})
 - Encrypted provider credential store (AES-256-GCM, /v1/credentials; names only are ever listed)
 - Approval cards: risky tool calls pause the task in waiting_user until the user approves or denies
+- Routines: cron / interval / once saved prompts run by a scheduler thread with stored encrypted credentials
 """
 
 import os
@@ -42,6 +43,7 @@ import cloud_browser
 import cloud_desktop
 import cloud_secrets
 import cloud_policy
+import cloud_cron
 
 HOST = os.environ.get("OPENMINIS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
@@ -186,9 +188,47 @@ def init_db():
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_approvals_task ON approvals(task_id, created_at)")
 
+    # 云端例行任务与运行记录
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS routines (
+        routine_id TEXT PRIMARY KEY,
+        name TEXT,
+        prompt TEXT,
+        schedule TEXT,
+        credential TEXT,
+        model TEXT,
+        instructions TEXT,
+        enabled INTEGER,
+        max_runs INTEGER,
+        run_count INTEGER DEFAULT 0,
+        next_run_at REAL,
+        last_run_at REAL,
+        last_status TEXT,
+        notify INTEGER DEFAULT 1,
+        created_at REAL,
+        updated_at REAL
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS routine_runs (
+        run_id TEXT PRIMARY KEY,
+        routine_id TEXT,
+        task_id TEXT,
+        session_id TEXT,
+        trigger TEXT,
+        status TEXT,
+        result TEXT,
+        error TEXT,
+        started_at REAL,
+        finished_at REAL
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_routine_runs ON routine_runs(routine_id, started_at)")
+
     # Server restart: mark interrupted
     cursor.execute("UPDATE tasks SET status = 'interrupted' WHERE status IN ('running', 'queued', 'waiting_user')")
     cursor.execute("UPDATE approvals SET status = 'expired', decided_at = ? WHERE status = 'pending'", (time.time(),))
+    cursor.execute("UPDATE routine_runs SET status = 'interrupted', finished_at = ? WHERE status IN ('running', 'waiting_user')", (time.time(),))
     conn.commit()
     conn.close()
 
@@ -870,6 +910,336 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
         with active_tasks_lock:
             active_tasks.pop(task_id, None)
 
+# ======================= 云端例行任务 (Routines) =======================
+ROUTINE_ID_RE = re.compile(r'^rtn_[a-f0-9]{12}$')
+SCHEDULER_TICK = float(os.environ.get("OPENMINIS_SCHEDULER_TICK", "15"))
+MIN_INTERVAL_SECONDS = int(os.environ.get("OPENMINIS_MIN_INTERVAL", "60"))
+ROUTINE_DEFAULT_INSTRUCTIONS = (
+    "你是 OpenMinis 云端 Agent，正在用户的 Linux 云电脑上执行一个无人值守的例行任务。"
+    "用户此时可能不在线：不要等待对话回复，独立完成任务并以简洁中文给出最终结果摘要。"
+    "风险操作会触发审批，用户批准前任务暂停；被拒绝或超时时换用安全做法或说明无法完成。"
+    "只能调用本次实际提供的工具，所有结论以工具真实输出为准，不要声称未执行的操作已经完成。"
+)
+_scheduler_stop = threading.Event()
+_scheduler_thread = None
+
+def _routine_row_to_dict(r):
+    keys = ["routine_id", "name", "prompt", "schedule", "credential", "model", "instructions", "enabled",
+            "max_runs", "run_count", "next_run_at", "last_run_at", "last_status", "notify", "created_at", "updated_at"]
+    d = dict(zip(keys, r))
+    try: d["schedule"] = json.loads(d["schedule"])
+    except Exception: d["schedule"] = {}
+    d["enabled"] = bool(d["enabled"])
+    d["notify"] = bool(d["notify"])
+    return d
+
+ROUTINE_COLUMNS = "routine_id, name, prompt, schedule, credential, model, instructions, enabled, max_runs, run_count, next_run_at, last_run_at, last_status, notify, created_at, updated_at"
+
+def validate_schedule(schedule):
+    """返回规范化的 schedule dict，非法抛 ValueError。"""
+    if not isinstance(schedule, dict):
+        raise ValueError("schedule must be an object")
+    kind = schedule.get("kind")
+    if kind == "cron":
+        expr = schedule.get("expr")
+        tz = schedule.get("timezone") or "UTC"
+        try:
+            spec = cloud_cron.CronSpec(expr)
+            cloud_cron.validate_timezone(tz)
+        except cloud_cron.CronError as e:
+            raise ValueError(str(e))
+        if spec.next_after(time.time(), tz) is None:
+            raise ValueError("cron expression never fires")
+        return {"kind": "cron", "expr": spec.expr, "timezone": tz}
+    if kind == "interval":
+        seconds = schedule.get("seconds")
+        if not isinstance(seconds, int) or isinstance(seconds, bool) or seconds < MIN_INTERVAL_SECONDS or seconds > 366 * 86400:
+            raise ValueError(f"interval seconds must be an integer between {MIN_INTERVAL_SECONDS} and {366 * 86400}")
+        return {"kind": "interval", "seconds": seconds}
+    if kind == "once":
+        at = schedule.get("at")
+        if not isinstance(at, (int, float)) or isinstance(at, bool):
+            raise ValueError("once.at must be a UNIX timestamp")
+        return {"kind": "once", "at": float(at)}
+    raise ValueError("schedule.kind must be cron, interval or once")
+
+def compute_next_run(schedule, after_ts, first=False):
+    kind = schedule["kind"]
+    if kind == "cron":
+        return cloud_cron.CronSpec(schedule["expr"]).next_after(after_ts, schedule.get("timezone", "UTC"))
+    if kind == "interval":
+        return after_ts + schedule["seconds"]
+    if kind == "once":
+        return schedule["at"] if first else None
+    return None
+
+def get_routine(routine_id):
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT " + ROUTINE_COLUMNS + " FROM routines WHERE routine_id = ?", (routine_id,))
+        r = c.fetchone()
+    finally:
+        conn.close()
+    return _routine_row_to_dict(r) if r else None
+
+def list_routines():
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT " + ROUTINE_COLUMNS + " FROM routines ORDER BY created_at ASC")
+        return [_routine_row_to_dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+def list_routine_runs(routine_id, limit=20):
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT run_id, task_id, session_id, trigger, status, result, error, started_at, finished_at FROM routine_runs WHERE routine_id = ? ORDER BY started_at DESC LIMIT ?",
+                  (routine_id, limit))
+        keys = ["run_id", "task_id", "session_id", "trigger", "status", "result", "error", "started_at", "finished_at"]
+        return [dict(zip(keys, r)) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+def validate_routine_fields(req, existing=None):
+    """返回待写入字段 dict；非法抛 ValueError。existing 为 None 时为新建（必填项校验）。"""
+    out = {}
+    def text(key, max_len, required):
+        if key in req:
+            v = req[key]
+            if not isinstance(v, str) or not v.strip() or len(v) > max_len:
+                raise ValueError(f"{key} must be a non-empty string (max {max_len})")
+            out[key] = v.strip() if key != "prompt" else v
+        elif required and existing is None:
+            raise ValueError(f"{key} is required")
+    text("name", 120, True)
+    text("prompt", 20000, True)
+    text("model", 200, True)
+    text("credential", 64, True)
+    if "credential" in out and not CREDENTIAL_NAME_RE.match(out["credential"]):
+        raise ValueError("Invalid credential name")
+    if "instructions" in req:
+        v = req["instructions"]
+        if v is not None and (not isinstance(v, str) or len(v) > 50000):
+            raise ValueError("instructions must be a string (max 50000)")
+        out["instructions"] = v
+    if "schedule" in req:
+        out["schedule"] = validate_schedule(req["schedule"])
+    elif existing is None:
+        raise ValueError("schedule is required")
+    for key in ("enabled", "notify"):
+        if key in req:
+            if not isinstance(req[key], bool):
+                raise ValueError(f"{key} must be a boolean")
+            out[key] = req[key]
+    if "max_runs" in req:
+        v = req["max_runs"]
+        if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v < 1):
+            raise ValueError("max_runs must be a positive integer or null")
+        out["max_runs"] = v
+    return out
+
+def create_routine(fields):
+    now = time.time()
+    rid = "rtn_" + uuid.uuid4().hex[:12]
+    schedule = fields["schedule"]
+    enabled = fields.get("enabled", True)
+    next_run = compute_next_run(schedule, now, first=True) if enabled else None
+    conn = get_db_connection()
+    try:
+        conn.execute("INSERT INTO routines (" + ROUTINE_COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?)",
+                     (rid, fields["name"], fields["prompt"], json.dumps(schedule), fields["credential"], fields["model"],
+                      fields.get("instructions"), 1 if enabled else 0, fields.get("max_runs"), next_run,
+                      1 if fields.get("notify", True) else 0, now, now))
+        conn.commit()
+    finally:
+        conn.close()
+    return get_routine(rid)
+
+def update_routine(routine_id, fields):
+    current = get_routine(routine_id)
+    if not current:
+        return None
+    merged = dict(current)
+    merged.update(fields)
+    now = time.time()
+    if "schedule" in fields or "enabled" in fields:
+        merged["next_run_at"] = compute_next_run(merged["schedule"], now, first=True) if merged["enabled"] else None
+        if merged["schedule"]["kind"] == "once" and merged["enabled"] and merged["next_run_at"] is None:
+            merged["enabled"] = False
+    conn = get_db_connection()
+    try:
+        conn.execute("UPDATE routines SET name = ?, prompt = ?, schedule = ?, credential = ?, model = ?, instructions = ?, enabled = ?, max_runs = ?, next_run_at = ?, notify = ?, updated_at = ? WHERE routine_id = ?",
+                     (merged["name"], merged["prompt"], json.dumps(merged["schedule"]), merged["credential"], merged["model"],
+                      merged.get("instructions"), 1 if merged["enabled"] else 0, merged.get("max_runs"), merged["next_run_at"],
+                      1 if merged["notify"] else 0, now, routine_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return get_routine(routine_id)
+
+def delete_routine(routine_id):
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM routines WHERE routine_id = ?", (routine_id,))
+        deleted = c.rowcount > 0
+        conn.commit()
+        return deleted
+    finally:
+        conn.close()
+
+def _finish_routine_run(run_id, routine_id, status, result=None, error=None):
+    now = time.time()
+    conn = get_db_connection()
+    try:
+        conn.execute("UPDATE routine_runs SET status = ?, result = ?, error = ?, finished_at = ? WHERE run_id = ?",
+                     (status, result, error, now, run_id))
+        conn.execute("UPDATE routines SET last_status = ? WHERE routine_id = ?", (status, routine_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+def on_routine_finished(routine, run):
+    """例行任务结束的扩展钩子（推送通知等），异常不影响调度。"""
+    return None
+
+def launch_routine_run(routine, trigger="schedule"):
+    """启动一次例行任务。返回 run dict（含 run_id / task_id / status）。"""
+    run_id = "run_" + uuid.uuid4().hex[:12]
+    now = time.time()
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT run_id FROM routine_runs WHERE routine_id = ? AND status IN ('running', 'waiting_user')", (routine["routine_id"],))
+        active = c.fetchone()
+        status = "skipped" if active else "running"
+        c.execute("INSERT INTO routine_runs (run_id, routine_id, task_id, session_id, trigger, status, result, error, started_at, finished_at) VALUES (?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?)",
+                  (run_id, routine["routine_id"], trigger, status, "上一次运行尚未结束，本次跳过" if active else None, now, now if active else None))
+        c.execute("UPDATE routines SET last_run_at = ?, run_count = run_count + ? WHERE routine_id = ?", (now, 0 if active else 1, routine["routine_id"]))
+        conn.commit()
+    finally:
+        conn.close()
+    if active:
+        return {"run_id": run_id, "status": "skipped", "task_id": None}
+
+    provider, p_status, p_err = resolve_provider({"credential": routine["credential"]})
+    if p_err:
+        err = f"凭据不可用（{p_status}）：{p_err}"
+        _finish_routine_run(run_id, routine["routine_id"], "failed", error=err)
+        run = {"run_id": run_id, "status": "failed", "task_id": None, "error": err, "trigger": trigger}
+        try: on_routine_finished(routine, run)
+        except Exception: pass
+        return run
+
+    sid = "sess_" + uuid.uuid4().hex[:12]
+    tid = "task_" + uuid.uuid4().hex[:12]
+    instructions = routine.get("instructions") or ROUTINE_DEFAULT_INSTRUCTIONS
+    fired = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(now))
+    content = f"[例行任务「{routine['name']}」于 {fired} 触发（{'手动运行' if trigger == 'manual' else '按计划'}）]\n{routine['prompt']}"
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at) VALUES (?, NULL, ?, ?, ?)",
+                  (sid, "例行任务：" + routine["name"], instructions, now))
+        c.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
+                  (tid, sid, routine["model"], now))
+        c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (sid, content, now))
+        c.execute("UPDATE routine_runs SET task_id = ?, session_id = ? WHERE run_id = ?", (tid, sid, run_id))
+        conn.commit()
+    finally:
+        conn.close()
+    with active_tasks_lock:
+        active_tasks[tid] = {"process": None, "cancelled": False, "pid": None}
+
+    def worker():
+        try:
+            run_agent_task(tid, sid, content, routine["model"], provider, instructions)
+        finally:
+            conn2 = get_db_connection()
+            try:
+                c2 = conn2.cursor()
+                c2.execute("SELECT status FROM tasks WHERE task_id = ?", (tid,))
+                row = c2.fetchone()
+                final = row[0] if row else "failed"
+                c2.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL ORDER BY id DESC LIMIT 1", (sid,))
+                last = c2.fetchone()
+                c2.execute("SELECT payload FROM task_events WHERE task_id = ? AND event_type = 'error' ORDER BY id DESC LIMIT 1", (tid,))
+                err_row = c2.fetchone()
+            finally:
+                conn2.close()
+            err = None
+            if err_row:
+                try: err = json.loads(err_row[0]).get("error")
+                except Exception: err = err_row[0]
+            result = last[0][:20000] if last else None
+            _finish_routine_run(run_id, routine["routine_id"], final, result=result, error=err)
+            try:
+                on_routine_finished(routine, {"run_id": run_id, "task_id": tid, "session_id": sid, "status": final,
+                                              "result": result, "error": err, "trigger": trigger})
+            except Exception:
+                pass
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"run_id": run_id, "status": "running", "task_id": tid, "session_id": sid}
+
+def scheduler_tick(now=None):
+    """认领到期的例行任务并启动；返回启动的 run 列表。"""
+    now = time.time() if now is None else now
+    claimed = []
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("BEGIN IMMEDIATE")
+        c.execute("SELECT " + ROUTINE_COLUMNS + " FROM routines WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?", (now,))
+        for row in c.fetchall():
+            routine = _routine_row_to_dict(row)
+            # 停机期间错过的多次触发只补跑一次，下一次从现在起算
+            next_run = compute_next_run(routine["schedule"], now)
+            enabled = 1
+            if next_run is None:
+                enabled = 0
+            if routine.get("max_runs") is not None and routine["run_count"] + 1 >= routine["max_runs"]:
+                enabled, next_run = 0, None
+            c.execute("UPDATE routines SET next_run_at = ?, enabled = ? WHERE routine_id = ?", (next_run, enabled, routine["routine_id"]))
+            claimed.append(routine)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    runs = []
+    for routine in claimed:
+        try:
+            runs.append(launch_routine_run(routine, "schedule"))
+        except Exception as e:
+            sys.stderr.write(f"[routine] launch failed {routine['routine_id']}: {sanitize_err(e)}\n")
+    return runs
+
+def _scheduler_main():
+    while not _scheduler_stop.wait(SCHEDULER_TICK):
+        try:
+            scheduler_tick()
+        except Exception as e:
+            sys.stderr.write(f"[routine] scheduler error: {sanitize_err(e)}\n")
+
+def start_scheduler():
+    global _scheduler_thread
+    if _scheduler_thread and _scheduler_thread.is_alive():
+        return
+    _scheduler_stop.clear()
+    _scheduler_thread = threading.Thread(target=_scheduler_main, name="routine-scheduler", daemon=True)
+    _scheduler_thread.start()
+
+def stop_scheduler():
+    _scheduler_stop.set()
+    t = _scheduler_thread
+    if t:
+        t.join(timeout=5)
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, data):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -899,7 +1269,8 @@ class Handler(BaseHTTPRequestHandler):
                     "vnc_port": 5901,
                     "novnc_port": 18766,
                     "credential_store": cloud_secrets.status()[0],
-                    "approvals": True
+                    "approvals": True,
+                    "routines": True
                 },
                 "timestamp": time.time()
             })
@@ -990,6 +1361,27 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
                 self._send(200, {"session_id": s[0], "local_session_id": s[1], "title": s[2], "instructions": s[3], "created_at": s[4], "messages": msgs, "tasks": tasks})
                 return
+
+        if path == "/v1/routines":
+            self._send(200, {"routines": list_routines(), "server_time": time.time()})
+            return
+
+        if path.startswith("/v1/routines/"):
+            parts = path.split("/")
+            rid = parts[3] if len(parts) >= 4 else ""
+            routine = get_routine(rid) if ROUTINE_ID_RE.match(rid) else None
+            if not routine:
+                self._send(404, {"error": "Routine not found"})
+                return
+            if len(parts) == 4:
+                routine["runs"] = list_routine_runs(rid)
+                self._send(200, routine)
+                return
+            if len(parts) == 5 and parts[4] == "runs":
+                self._send(200, {"routine_id": rid, "runs": list_routine_runs(rid, 100)})
+                return
+            self._send(404, {"error": "Not found"})
+            return
 
         if path == "/v1/approval-policy":
             self._send(200, {"policy": current_approval_policy(), "default": cloud_policy.DEFAULT_POLICY,
@@ -1152,6 +1544,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(201 if created else 200, {"name": name, "base_url": base_url, "key_hint": credential_hint(api_key.strip()), "stored": True})
             return
 
+        if path.startswith("/v1/routines/"):
+            rid = path[len("/v1/routines/"):]
+            if not ROUTINE_ID_RE.match(rid) or not get_routine(rid):
+                self._send(404, {"error": "Routine not found"})
+                return
+            try:
+                fields = validate_routine_fields(req_json, existing=get_routine(rid))
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            self._send(200, update_routine(rid, fields))
+            return
+
         if path == "/v1/approval-policy":
             try:
                 saved = cloud_policy.save_policy(approval_policy_path(), req_json.get("policy", req_json))
@@ -1177,6 +1582,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"name": name, "deleted": True})
             else:
                 self._send(404, {"error": "Credential not found"})
+            return
+
+        if path.startswith("/v1/routines/"):
+            rid = path[len("/v1/routines/"):]
+            if ROUTINE_ID_RE.match(rid) and delete_routine(rid):
+                self._send(200, {"routine_id": rid, "deleted": True})
+            else:
+                self._send(404, {"error": "Routine not found"})
             return
 
         if path == "/v1/approval-policy":
@@ -1421,6 +1834,26 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return
 
+        if path == "/v1/routines":
+            try:
+                fields = validate_routine_fields(req_json)
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            self._send(201, create_routine(fields))
+            return
+
+        if path.startswith("/v1/routines/") and path.endswith("/run"):
+            parts = path.split("/")
+            rid = parts[3] if len(parts) == 5 else ""
+            routine = get_routine(rid) if ROUTINE_ID_RE.match(rid) else None
+            if not routine:
+                self._send(404, {"error": "Routine not found"})
+                return
+            run = launch_routine_run(routine, "manual")
+            self._send(202 if run["status"] == "running" else 200, run)
+            return
+
         if path.startswith("/v1/tasks/") and "/approvals/" in path:
             parts = path.split("/")
             if len(parts) != 6 or parts[4] != "approvals":
@@ -1474,6 +1907,7 @@ def run_server():
     if not SERVER_TOKEN:
         SERVER_TOKEN = validate_and_load_token()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
+    start_scheduler()
     print(f"OpenMinis Cloud Computer & Agent running on {HOST}:{PORT}")
     server.serve_forever()
 

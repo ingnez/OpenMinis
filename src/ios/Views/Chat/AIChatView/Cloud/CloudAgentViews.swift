@@ -235,6 +235,12 @@ struct CloudAgentSettingsView: View {
                             .foregroundColor(.accentColor)
                     }.disabled(manualModel.isEmpty || selectedProviderInstanceId.isEmpty)
 
+                    NavigationLink(destination: CloudRoutinesView()) {
+                        Label("云端例行任务", systemImage: "calendar.badge.clock")
+                            .font(.headline)
+                            .foregroundColor(.accentColor)
+                    }
+
                     NavigationLink(destination: CloudDesktopView()) {
                         Label("查看 / 接管云电脑桌面", systemImage: "display")
                             .font(.headline)

@@ -279,3 +279,17 @@
   - 默认规则覆盖：`rm -r/-f`、`find -delete`、`dd of=`、`mkfs`/分区工具、`shred`、关机重启、fork 炸弹、递归改根目录权限、`sudo`、系统与语言包安装、`curl | sh`、HTTP 写请求、发邮件、`scp/rsync` 到远端、`git push`、浏览器上的发送/提交/支付点击与结算页、桌面输入发送/付款内容。
   - 这是“暂停并询问”的护栏，不是安全沙箱；匹配是保守的文本匹配，可能多问（如 `echo rm -rf`）。
 - **iOS**: 事件流中仍未结束的审批以 `UserAskCenter` 确认卡（高风险样式，App 在后台时发本地通知）呈现；卡片 `toolUseId` 为 `cloud-approval-<approval_id>`，本地恢复流程跳过此类卡片，重连后由事件重放重新挂出。
+
+### 4.3 云端例行任务 (Routines)
+- **作用**: 保存的提示词由 VPS 调度线程按计划运行，使用 §4.1 加密凭据，手机离线也执行；每次运行新建一个会话与任务，结果写入运行记录。`capabilities.routines = true`。
+- **计划 `schedule`**:
+  - `{"kind": "cron", "expr": "30 8 * * 1-5", "timezone": "Asia/Shanghai"}`：5 段 cron（分 时 日 月 周；周 0/7 = 周日；支持 `*`、`,`、`-`、`/`）。日与周同时受限时取“或”（Vixie 语义）。时区为 IANA 名称，默认 `UTC`；夏令时跳过的时刻当天不触发。
+  - `{"kind": "interval", "seconds": 3600}`：最小 60 秒（`OPENMINIS_MIN_INTERVAL` 可调）。
+  - `{"kind": "once", "at": <unix 秒>}`：运行一次后自动停用。
+- **POST /v1/routines**: `{"name", "prompt", "model", "credential", "schedule", "instructions"?, "enabled"?, "max_runs"?, "notify"?}`，返回 `201` 与完整记录（含 `routine_id`、`next_run_at`）。字段非法 `400`。
+- **GET /v1/routines**: `{"routines": [...], "server_time"}`；**GET /v1/routines/{id}**: 记录及最近 20 次 `runs`；**GET /v1/routines/{id}/runs**: 最近 100 次。
+- **PUT /v1/routines/{id}**: 局部更新上述字段；修改计划或重新启用会重新计算 `next_run_at`，停用时为 `null`。**DELETE /v1/routines/{id}**: 删除记录与运行历史（正在运行的任务不受影响）。
+- **POST /v1/routines/{id}/run**: 立即手动运行，`202` + run；若上一次仍在运行则 `200` 且 `status = "skipped"`；凭据不可用时 `status = "failed"`，`error` 说明原因。
+- **运行记录**: `{"run_id", "routine_id", "task_id", "session_id", "trigger": "schedule|manual", "status", "result", "error", "started_at", "finished_at"}`。`status` 与任务状态一致（`running` / `waiting_user` / `completed` / `failed` / `cancelled` / `limit_reached`），另有 `skipped` 与 `interrupted`（服务重启时未结束的运行）。`result` 为最后一条助手消息。
+- **调度规则**: 每 `OPENMINIS_SCHEDULER_TICK` 秒（默认 15）检查一次到期任务；服务停机错过的多次触发只补跑一次；达到 `max_runs` 自动停用。运行中命中 §4.2 审批规则时同样挂起，可在会话列表中打开该会话审批。
+- **iOS**: 云电脑设置 → “云端例行任务”可新建、启停、立即运行、删除与查看结果；本机定时任务详情页“移到云端运行”把 cron / loop / once 触发器转换为对应计划（Calendar weekday 1–7 → cron 周 0–6，loop 剩余次数 → `max_runs`），创建成功后取消本机任务。
