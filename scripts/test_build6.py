@@ -69,8 +69,14 @@ assert '.fullScreenCover(isPresented: $showRealtimeVoice)' in view
 assert 'RealtimeVoiceView(chat: cached.vm)' in view
 assert '|| showRealtimeVoice' in view
 row=block(controls,'var inputBottomRow: AnyView {','return AnyView(row)')
-assert 'phone.circle.fill' in row and 'showRealtimeVoice = true' in row
-assert 'accessibilityIdentifier("realtimeVoiceButton")' in row
-assert 'voiceInputActive = false' in row
-assert '34 * 5 + 12 * 5' in controls
-print('PASS：实际编译的拆分聊天页状态、全屏通话和输入栏电话按钮连接完整')
+# 本地模式和 Bot 模式同一个输入框：单独的电话按钮并进右侧变形圆按钮（没字 = 声波开实时语音，有字 = 原发送 / 排队）
+assert 'phone.circle.fill' not in row
+assert 'LocalMorphTrailing(call: CloudLocalCall.controller' in row and 'fallback: sendButton' in row
+assert 'showsCall: !canSend && !canEnqueue && !vm.isProcessing' in row
+start=block(controls,'func startLocalCall(pushToTalk: Bool) async {','await CloudLocalCall.controller.start')
+assert 'voiceInputActive = false' in start and 'showRealtimeVoice = true' in start and 'RealtimeLocalChatHost(chat: vm)' in start
+assert 'LocalCallOverlay(call: CloudLocalCall.controller' in view
+local=read(active+'Cloud/CloudLocalComposer.swift')
+assert 'accessibilityIdentifier("realtimeVoiceButton")' in local and 'CloudMorphButton(action: .call' in local
+assert '34 * 3 + 38 + 12 * 4' in controls
+print('PASS：实际编译的拆分聊天页状态、全屏通话兜底、本地变形按钮和浮动胶囊连接完整')

@@ -85,31 +85,39 @@ extension AIChatView {
                 readAloudToolbarToggle
                 Spacer()
             }
-            Button {
-                voiceVM.stopListening()
-                voiceVM.cancelTranscription()
-                voiceInputActive = false
-                vm.stopSpeechForThisSession()
-                inputFocused = false
-                showRealtimeVoice = true
-            } label: {
-                Image(systemName: "phone.circle.fill")
-                    .font(.system(size: 25)).frame(width: 34, height: 34)
-            }
-            .accessibilityLabel("实时语音对聊")
-            .accessibilityIdentifier("realtimeVoiceButton")
-            .disabled(vm.isProcessing || vm.isCompacting)
             micButtonContainer
-            sendButton
+            // 和 Bot 模式同一个变形圆按钮：没字 = 声波（顶部浮动胶囊实时语音，长按按住说话），有字 / 生成中 = 原来的发送 / 排队按钮
+            LocalMorphTrailing(call: CloudLocalCall.controller,
+                               showsCall: !canSend && !canEnqueue && !vm.isProcessing && !vm.isCompacting && !isWaitingToSendVoice,
+                               tint: Color.accentColor,
+                               onCall: { ptt in await startLocalCall(pushToTalk: ptt) },
+                               fallback: sendButton)
         }
         return AnyView(row)
+    }
+
+    /// 本地实时语音：配好了就在对话页顶部开浮动胶囊（对话留在下面，切后台不挂断）；没配好打开原来的全屏页去设置
+    func startLocalCall(pushToTalk: Bool) async {
+        voiceVM.stopListening()
+        voiceVM.cancelTranscription()
+        voiceInputActive = false
+        vm.stopSpeechForThisSession()
+        inputFocused = false
+        guard CloudBotCallController.isConfigured else {
+            if !pushToTalk { showRealtimeVoice = true }
+            return
+        }
+        let host = RealtimeLocalChatHost(chat: vm)
+        if let reason = host.blockReason { vm.errorMessage = reason; return }
+        await CloudLocalCall.controller.start(host: host, name: soulName, pushToTalk: pushToTalk)
     }
 
     /// [T-ios-de-voice-toolbar] Fixed controls in `inputBottomRow`: two 34pt
     /// leading buttons, the 34pt mic and the 34pt send button, plus the four
     /// 12pt HStack gaps between them. Everything left over is what the
     /// read-aloud capsule may use.
-    private static let readAloudRowFixedWidth: CGFloat = 34 * 5 + 12 * 5
+    /// 通话按钮并进了右侧 38pt 变形圆按钮：现在是 3 个 34pt + 1 个 38pt + 4 个间距
+    private static let readAloudRowFixedWidth: CGFloat = 34 * 3 + 38 + 12 * 4
 
     /// Free width below which the toggle drops its text and becomes icon-only.
     ///

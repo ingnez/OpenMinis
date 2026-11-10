@@ -1125,6 +1125,10 @@ struct AIChatView: View {
         .fullScreenCover(isPresented: $showRealtimeVoice) {
             RealtimeVoiceView(chat: cached.vm)
         }
+        // 本地实时语音的顶部浮动胶囊（和 Bot 模式同一套），对话留在下面
+        .overlay(alignment: .top) {
+            LocalCallOverlay(call: CloudLocalCall.controller, name: soulName, tint: Color.accentColor)
+        }
         .sheet(isPresented: $showTokenUsage) {
             TokenUsageSheet(vm: cached.vm)
                 .presentationDetents([.fraction(0.8), .large])
