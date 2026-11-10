@@ -636,6 +636,7 @@ struct CloudSessionView: View {
     @State private var showPhotos = false
     @State private var showCamera = false
     @State private var showScanner = false
+    @State private var showCaseNote = false
     @State private var showFiles = false
     @State private var showVoiceCall = false
     /// 通话方式：realtime = 实时双向（需在实时语音设置里选好服务商）；turns = 听完 → 发送 → 朗读
@@ -885,6 +886,7 @@ struct CloudSessionView: View {
         .sheet(isPresented: $showPhotos) { CloudPhotoPicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showCamera) { CloudCameraPicker { attachments.append($0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showScanner) { CloudDocumentScanner { attachments.append($0) }.ignoresSafeArea() }
+        .sheet(isPresented: $showCaseNote) { CloudCaseNoteSheet { inputPrompt = $0 } }
         .sheet(isPresented: $showFiles) { CloudFilePicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showVoiceCall) {
             if let theme {
@@ -1245,6 +1247,7 @@ struct CloudSessionView: View {
                         Button { showScanner = true } label: { Label("扫描文档", systemImage: "doc.viewfinder") }
                     }
                     Button { showFiles = true } label: { Label("选择文件", systemImage: "folder") }
+                    Button { showCaseNote = true } label: { Label("口述病例（脱敏后复盘）", systemImage: "stethoscope") }
                 } label: {
                     Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).foregroundStyle(.primary)
                         .frame(width: 40, height: 40).background(Circle().fill(Color(.systemGray6)))

@@ -141,6 +141,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReplay.swift scripts/CloudReplayTests.swift -o /tmp/cloud-replay-tests
           /tmp/cloud-replay-tests
+      - name: 病例脱敏测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudCaseRedactor.swift scripts/CloudCaseRedactorTests.swift -o /tmp/cloud-caseredact-tests
+          /tmp/cloud-caseredact-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -286,6 +291,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudCaseRedactor.swift scripts/CloudCaseRedactorTests.swift -o /tmp/cloud-caseredact-tests
+          /tmp/cloud-caseredact-tests | tee cloud-caseredact-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReplay.swift scripts/CloudReplayTests.swift -o /tmp/cloud-replay-tests
           /tmp/cloud-replay-tests | tee cloud-replay-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudLiveStats.swift scripts/CloudLiveStatsTests.swift -o /tmp/cloud-livestats-tests
