@@ -632,7 +632,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.34.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.34.1"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -8019,8 +8019,14 @@ class Handler(BaseHTTPRequestHandler):
                 args = {"action": "key", "key": key}
             elif action in ("clipboard_get", "vault"):
                 args = None
+            elif action == "clipboard_set":
+                text = req_json.get("text")
+                if not isinstance(text, str) or len(text) > cloud_desktop.CLIPBOARD_MAX:
+                    self._send(400, {"error": "text must be a string (max 10000)"})
+                    return
+                args = None
             else:
-                self._send(400, {"error": "action must be type, key, clipboard_get or vault"})
+                self._send(400, {"error": "action must be type, key, clipboard_get, clipboard_set or vault"})
                 return
             if not cloud_desktop.is_desktop_available():
                 self._send(503, {"error": "云电脑桌面未运行：请先安装 / 更新云电脑桌面环境"})
@@ -8034,6 +8040,11 @@ class Handler(BaseHTTPRequestHandler):
                 # 云电脑 → 手机：读远端剪贴板文字（xclip）
                 text, err = cloud_desktop.read_clipboard(display or cloud_displays.MAIN_DISPLAY)
                 self._send(200 if err is None else 500, {"text": text} if err is None else {"error": err})
+                return
+            if action == "clipboard_set":
+                # 手机 → 云电脑剪贴板（UTF-8，中文不乱码；RFB 自带的剪贴板只支持 Latin-1）
+                err = cloud_desktop.write_clipboard(display or cloud_displays.MAIN_DISPLAY, req_json["text"])
+                self._send(200 if err is None else 500, {"status": "ok"} if err is None else {"error": err})
                 return
             if action == "vault":
                 self._send(*phone_vault_type(req_json, display))

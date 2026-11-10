@@ -94,6 +94,15 @@ class DesktopControlServerTests(CloudServerTestCase):
         st, r = self.request("POST", "/v1/desktop/input", {"action": "clipboard_get"})
         self.assertEqual((st, r["text"]), (200, "远端剪贴板 fake text"))
         self.assertEqual(self.request("POST", "/v1/desktop/input", {"action": "click"})[0], 400)
+        wrote = []
+        orig = self.srv.cloud_desktop.write_clipboard
+        self.srv.cloud_desktop.write_clipboard = lambda display, text: wrote.append(text)
+        try:
+            self.assertEqual(self.request("POST", "/v1/desktop/input", {"action": "clipboard_set", "text": "手机里的假文字"})[0], 200)
+            self.assertEqual(self.request("POST", "/v1/desktop/input", {"action": "clipboard_set", "text": 3})[0], 400)
+        finally:
+            self.srv.cloud_desktop.write_clipboard = orig
+        self.assertEqual(wrote, ["手机里的假文字"])
 
     def test_03_vault_paste_never_returns_secret(self):
         st, item = self.request("POST", "/v1/vault", {"kind": "login", "title": "假站点", "site": "https://login.example.com",

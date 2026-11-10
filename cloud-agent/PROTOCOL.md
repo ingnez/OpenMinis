@@ -633,6 +633,7 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - `GET /v1/desktop/health` 多一个 `user_control`（这块屏幕现在是否被手机接管）。
 - `POST /v1/desktop/input`：
   - `{"action":"clipboard_get"}` → `{"text"}`：读云电脑剪贴板（xclip），手机「取回剪贴板」。
+  - （2.34.1）`{"action":"clipboard_set","text"}`：手机 → 云电脑剪贴板（UTF-8，中文不乱码；RFB 自带剪贴板只有 Latin-1）。
   - `{"action":"vault","item_id","field":"password|username|totp"}`：服务器解密登录项后直接在桌面焦点处输入；
     响应只有 `{"status","item","field"}`，值不回到手机、不进对话和模型，使用记录 actor=`phone`、action=`phone_desktop_paste`。
   - 中文等非 ASCII 的 `type` 照旧走 xclip + ctrl+v（输入法组字由手机端处理，只发已上屏的文字）。

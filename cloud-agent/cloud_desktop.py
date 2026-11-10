@@ -244,16 +244,32 @@ def thumbnail(display, width=480, max_age=2.5):
 CLIPBOARD_MAX = 10000
 
 
-def read_clipboard(display):
-    """读远端剪贴板文字（手机「取回剪贴板」）。返回 (文字, 错误)。"""
-    if not shutil.which("xclip"):
-        return None, "云电脑没有安装 xclip"
+def _x_env(display):
     env = os.environ.copy()
     env["DISPLAY"] = display
     if "XAUTHORITY" not in env and os.path.exists("/var/lib/openminis-cloud-agent/.Xauthority"):
         env["XAUTHORITY"] = "/var/lib/openminis-cloud-agent/.Xauthority"
+    return env
+
+
+def write_clipboard(display, text):
+    """手机 → 云电脑剪贴板。返回错误文字或 None。文字经 stdin 交给 xclip，不出现在进程参数里。"""
+    if not shutil.which("xclip"):
+        return "云电脑没有安装 xclip"
     try:
-        r = subprocess.run(["xclip", "-o", "-selection", "clipboard"], env=env, capture_output=True, timeout=5)
+        r = subprocess.run(["xclip", "-selection", "clipboard", "-i"], input=text.encode("utf-8"), env=_x_env(display),
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=5)
+    except Exception as e:
+        return f"写入剪贴板失败：{type(e).__name__}"
+    return None if r.returncode == 0 else "写入剪贴板失败"
+
+
+def read_clipboard(display):
+    """读远端剪贴板文字（手机「取回剪贴板」）。返回 (文字, 错误)。"""
+    if not shutil.which("xclip"):
+        return None, "云电脑没有安装 xclip"
+    try:
+        r = subprocess.run(["xclip", "-o", "-selection", "clipboard"], env=_x_env(display), capture_output=True, timeout=5)
     except Exception as e:
         return None, f"读取剪贴板失败：{type(e).__name__}"
     if r.returncode != 0:
