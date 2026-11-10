@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchConnectivity
+import WatchKit
 
 @main
 struct MinisWatchApp: App {
@@ -13,6 +14,8 @@ struct MinisWatchApp: App {
 final class WatchModel: NSObject, ObservableObject, WCSessionDelegate {
     @Published private(set) var rows: [WatchBotRow] = []
     @Published private(set) var sentAt: Date?
+    /// 最近一次「干完了」的 Bot 名字（列表顶上显示几秒）
+    @Published private(set) var doneName: String?
 
     override init() {
         super.init()
@@ -34,6 +37,21 @@ final class WatchModel: NSObject, ObservableObject, WCSessionDelegate {
         apply(session.receivedApplicationContext)
     }
 
+    func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        guard let tap = WatchTap(message) else { return }
+        DispatchQueue.main.async { self.play(tap) }
+    }
+
+    private func play(_ tap: WatchTap) {
+        let device = WKInterfaceDevice.current()
+        for (i, t) in WatchTap.schedule(beats: WatchTap.beats(for: tap.botId), light: tap.light).enumerated() {
+            let kind: WKHapticType = (!tap.light && i == 0) ? .notification : .click
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { device.play(kind) }
+        }
+        doneName = tap.name
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { if self.doneName == tap.name { self.doneName = nil } }
+    }
+
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         apply(applicationContext)
     }
@@ -45,6 +63,10 @@ struct WatchHomeView: View {
     var body: some View {
         NavigationStack {
             List {
+                if let done = model.doneName {
+                    Label("\(done.isEmpty ? "Bot" : done) 干完了", systemImage: "checkmark.circle.fill")
+                        .font(.footnote).foregroundStyle(.green)
+                }
                 if model.rows.isEmpty {
                     Text("打开 iPhone 上的 Minis 多 Bot 首页后，这里会显示你的 Bot").font(.footnote).foregroundStyle(.secondary)
                 }

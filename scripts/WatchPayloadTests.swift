@@ -20,6 +20,26 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(WatchBotRow.decode([:]).isEmpty && WatchBotRow.decode(["bots": [["name": "没 id"]]]).isEmpty, "坏数据")
         // applicationContext 只能放属性列表类型
         check(PropertyListSerialization.propertyList(ctx, isValidFor: .binary), "能放进 applicationContext")
-        print("PASS：手表数据的编码、排序、截断、上限、坏数据、属性列表合法")
+        // 干完轻触（假 id）
+        let tap = WatchTap(botId: "fake-bot-1", name: "测试", light: true)
+        check(WatchTap(tap.dict) == tap, "轻触往返")
+        check(WatchTap(["kind": "other", "id": "x"]) == nil && WatchTap(["kind": "bot_done", "id": ""]) == nil, "轻触坏数据")
+        check(PropertyListSerialization.propertyList(tap.dict, isValidFor: .binary), "轻触能 sendMessage")
+        for id in ["a", "fake-bot-1", "长名字的 Bot", ""] {
+            let n = WatchTap.beats(for: id)
+            check((1...3).contains(n) && n == WatchTap.beats(for: id), "节奏 1–3 且稳定 \(id)")
+        }
+        check(Set(["a", "b", "c", "d", "e", "f"].map(WatchTap.beats)).count > 1, "不同 Bot 节奏不全一样")
+        check(WatchTap.schedule(beats: 2, light: true) == [0, 0.28], "夜班只轻点")
+        check(WatchTap.schedule(beats: 2, light: false).count == 3 && WatchTap.schedule(beats: 9, light: true).count == 3, "提示 + 节奏、上限 3")
+        let before = [WatchBotRow(id: "a", name: "", working: "干", preview: "", at: 0),
+                      WatchBotRow(id: "b", name: "", working: nil, preview: "", at: 0),
+                      WatchBotRow(id: "c", name: "", working: "干", preview: "", at: 0)]
+        let after = [WatchBotRow(id: "a", name: "", working: nil, preview: "", at: 0),
+                     WatchBotRow(id: "b", name: "", working: nil, preview: "", at: 0),
+                     WatchBotRow(id: "c", name: "", working: "干", preview: "", at: 0),
+                     WatchBotRow(id: "d", name: "", working: nil, preview: "", at: 0)]
+        check(WatchTap.finished(previous: before, current: after).map(\.id) == ["a"], "只有干完的那个")
+        print("PASS：手表数据的编码、排序、截断、上限、坏数据、属性列表合法；干完轻触的编码、节奏、夜班轻点、干完判断")
     }
 }
