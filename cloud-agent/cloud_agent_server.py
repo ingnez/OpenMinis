@@ -71,6 +71,7 @@ import cloud_handoff
 import cloud_botstatus
 import cloud_botthreads
 import cloud_duty
+import cloud_exams
 import cloud_sysnap
 import cloud_secrets
 import cloud_policy
@@ -324,6 +325,7 @@ def init_db():
     cloud_vision.ensure_schema(conn)
     cloud_botthreads.ensure_schema(conn)
     cloud_duty.ensure_schema(conn)
+    cloud_exams.ensure_schema(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS feed_feedback (run_id TEXT PRIMARY KEY, liked INTEGER NOT NULL DEFAULT 0, "
                  "comment TEXT NOT NULL DEFAULT '', at REAL NOT NULL, memory_id INTEGER)")
     cloud_vault.set_loader(get_db_connection)
@@ -621,7 +623,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.24.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.25.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -4328,6 +4330,16 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 _pc.close()
     system_text += cloud_bots.language_tail(get_persona(session_persona_id(session_id)))   # 灵魂设定的回复语言：结尾再强调一次
     dynamic_note = mention_note(session_id, initial_content)
+    try:
+        _ec = get_db_connection()
+        try:
+            _exam = cloud_exams.note(_ec)
+        finally:
+            _ec.close()
+        if _exam:
+            dynamic_note = (dynamic_note or "") + _exam
+    except Exception as e:
+        print(f"exam note failed: {type(e).__name__}", flush=True)
     if front_session:
         # 前台只看每个后台任务的一行摘要，不看完整过程（省 token）
         _wc = get_db_connection()
@@ -6070,6 +6082,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(500, {"error": f"读取代理设置失败：{type(e).__name__}"})
             return
+        if path == "/v1/exams":
+            conn = get_db_connection()
+            try:
+                self._send(200, {"exams": cloud_exams.list_all(conn)})
+            finally:
+                conn.close()
+            return
         if path == "/v1/logs/errors":
             self._send(200, {"version": AGENT_VERSION, "errors": error_log()})
             return
@@ -6780,6 +6799,18 @@ class Handler(BaseHTTPRequestHandler):
         if req_json is None:
             return
 
+        m_ex = re.match(r"^/v1/exams/(exam_[0-9a-f]{10})$", path)
+        if m_ex:
+            conn = get_db_connection()
+            try:
+                e = cloud_exams.update(conn, m_ex.group(1), req_json)
+                self._send(200 if e else 404, {"exam": e} if e else {"error": "没有这场考试"})
+            except ValueError as err:
+                self._send(400, {"error": str(err)})
+            finally:
+                conn.close()
+            return
+
         m_av = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/avatar$", path)
         if m_av:
             if not get_persona(m_av.group(1)):
@@ -7109,6 +7140,15 @@ class Handler(BaseHTTPRequestHandler):
         query_params = parse_qs(urlparse(self.path).query)
         if not self._authorized():
             return
+        m_ex = re.match(r"^/v1/exams/(exam_[0-9a-f]{10})$", path)
+        if m_ex:
+            conn = get_db_connection()
+            try:
+                ok = cloud_exams.delete(conn, m_ex.group(1))
+            finally:
+                conn.close()
+            self._send(200 if ok else 404, {"deleted": ok})
+            return
         m_px = re.match(r"^/v1/proxy/(nodes|subscriptions)/([0-9a-f]{6,64})$", path)
         if m_px:
             if m_px.group(1) == "nodes":
@@ -7388,6 +7428,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": str(e)})
                 return
             self._send(200, stats)
+            return
+
+        if path == "/v1/exams":
+            conn = get_db_connection()
+            try:
+                self._send(200, {"exam": cloud_exams.add(conn, req_json)})
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+            finally:
+                conn.close()
             return
 
         m = re.match(r"^/v1/feed/(run_[A-Za-z0-9_-]{4,40})/feedback$", path)

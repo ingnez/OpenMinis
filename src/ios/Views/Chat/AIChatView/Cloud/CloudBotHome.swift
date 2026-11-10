@@ -73,6 +73,8 @@ final class CloudBotHomeModel: ObservableObject {
         dutyDigest = nil
     }
 
+    /// 考试倒计时（服务器 /v1/exams）
+    @Published var exams: [CloudExam] = []
     /// 「今日」：最近 24 小时例行任务和主动消息的结果（服务器 /v1/feed）
     @Published private(set) var feed: [CloudFeedItem] = []
 
@@ -376,6 +378,7 @@ final class CloudBotHomeModel: ObservableObject {
                     Task { await lock.syncToServer() }
                 }
             }
+            exams = await CloudExamService.list() ?? exams
             // 旧服务器没有 /v1/feed：保持空
             if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/feed"),
                let items = r["items"] as? [[String: Any]] {
@@ -553,6 +556,9 @@ struct CloudBotHomeScreen: View {
                         }
                         if search.isEmpty {
                             CloudBotTopRow(model: model, actions: menuActions, open: open)
+                        }
+                        if search.isEmpty && !model.exams.isEmpty {
+                            CloudExamBoard(exams: model.exams)
                         }
                         if search.isEmpty && model.feed.contains(where: { !CloudBotLock.shared.isLocked($0.botId) }) {
                             CloudTodayFeed(items: model.feed.filter { !CloudBotLock.shared.isLocked($0.botId) }, bots: model.bots)
@@ -845,6 +851,7 @@ struct CloudBotHubView: View {
                 NavigationLink(destination: CloudUsageView()) { Label("用量与每日上限", systemImage: "chart.bar") }
                 NavigationLink(destination: CloudBackupView()) { Label("备份与恢复", systemImage: "externaldrive") }
                 NavigationLink(destination: FaceIDProtectionSettingsView()) { Label("Face ID 锁（打开 App 先验证）", systemImage: "faceid") }
+                NavigationLink(destination: CloudExamListView()) { Label("考试倒计时", systemImage: "calendar.badge.clock") }
                 NavigationLink(destination: CloudErrorLogView()) { Label("导出错误日志", systemImage: "ladybug") }
                 NavigationLink(destination: CloudSystemSnapshotsView()) { Label("系统快照（装软件前自动拍）", systemImage: "camera.metering.matrix") }
             }

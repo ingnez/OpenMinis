@@ -546,3 +546,8 @@
 
 `GET /v1/feed` 每条多 `liked`（1 / -1 / 0）和 `comment`。
 `POST /v1/feed/<run_id>/feedback {"liked": -1|0|1, "comment": "最多 500 字"}`：写成这个 Bot 的一条 `rules` 类记忆（source = feedback），改反馈会替换旧的那条，`liked: 0` 且没有评论时删掉。
+
+## 考试倒计时（2.25.0）
+
+`GET /v1/exams` → `{"exams": [{id, name, day: "YYYY-MM-DD", notes, days_left}]}`（结束超过 3 天的不返回）。`POST /v1/exams {name, day, notes?}`、`PUT /v1/exams/<id>`（部分字段）、`DELETE /v1/exams/<id>`。
+30 天内的考试会以「[考试倒计时] …」加在每一轮末尾（不进系统提示）。
