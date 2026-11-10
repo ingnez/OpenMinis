@@ -77,6 +77,7 @@ import cloud_telegram
 import cloud_bots
 import cloud_admin
 import cloud_vault
+import cloud_workers
 import cloud_plugins
 import cloud_oauth
 import cloud_mcp
@@ -306,6 +307,7 @@ def init_db():
     cloud_bots.ensure_schema(conn)
     cloud_admin.ensure_schema(conn)
     cloud_vault.ensure_schema(conn)
+    cloud_workers.ensure_schema(conn)
     cloud_vault.set_loader(get_db_connection)
     cloud_plugins.ensure_schema(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS app_settings (name TEXT PRIMARY KEY, value TEXT)")
@@ -336,6 +338,7 @@ def init_db():
     cursor.execute("UPDATE approvals SET status = 'expired', decided_at = ? WHERE status = 'pending'", (time.time(),))
     cursor.execute("UPDATE routine_runs SET status = 'interrupted', finished_at = ? WHERE status IN ('running', 'waiting_user')", (time.time(),))
     conn.commit()
+    cloud_workers.recover(conn)      # 后台任务：重启前没做完的如实标记中断，并在前台对话里说一声
     conn.close()
 
 init_db()
@@ -555,7 +558,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.8.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.9.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1326,6 +1329,8 @@ def slot_index(key):
 
 def task_lane(session_id):
     pid = session_persona_id(session_id)
+    if session_is_worker(session_id):
+        return "worker:" + (pid or session_id)
     return ("bot:" + pid) if pid else ("session:" + session_id)
 
 def display_key(session_id):
@@ -1855,11 +1860,13 @@ def bot_detail(bot):
         out["telegram"] = conn.execute("SELECT 1 FROM secure_settings WHERE name = ?", (telegram_setting_name(pid),)).fetchone() is not None
         # 首页 Bot 列表：最近会话、最后一条可见消息、运行中 / 待审批任务数
         latest = conn.execute("SELECT s.session_id, s.title FROM sessions s LEFT JOIN messages m ON m.session_id = s.session_id "
-                              "WHERE s.persona_id = ? AND COALESCE(s.incognito, 0) = 0 GROUP BY s.session_id ORDER BY MAX(COALESCE(m.timestamp, s.created_at)) DESC LIMIT 1", (pid,)).fetchone()
+                              "WHERE s.persona_id = ? AND COALESCE(s.incognito, 0) = 0 AND s.session_id NOT IN (SELECT worker_session FROM bot_workers) GROUP BY s.session_id ORDER BY MAX(COALESCE(m.timestamp, s.created_at)) DESC LIMIT 1", (pid,)).fetchone()
         out["latest_session_id"] = latest[0] if latest else None
+        out["running_workers"] = conn.execute("SELECT COUNT(*) FROM bot_workers WHERE COALESCE(bot_id, '') = ? AND status IN ('queued', 'running')",
+                                              (pid or "",)).fetchone()[0]
         out["latest_session_title"] = latest[1] if latest else None
         last = conn.execute("SELECT m.role, m.content, m.timestamp, m.session_id FROM messages m JOIN sessions s ON s.session_id = m.session_id "
-                            "WHERE s.persona_id = ? AND COALESCE(s.incognito, 0) = 0 AND m.role IN ('user', 'assistant') AND m.content IS NOT NULL AND m.content != '' "
+                            "WHERE s.persona_id = ? AND COALESCE(s.incognito, 0) = 0 AND s.session_id NOT IN (SELECT worker_session FROM bot_workers) AND m.role IN ('user', 'assistant') AND m.content IS NOT NULL AND m.content != '' "
                             "ORDER BY m.timestamp DESC, m.id DESC LIMIT 1", (pid,)).fetchone()
         out["last_message"] = {"role": last[0], "preview": " ".join(str(last[1]).split())[:120], "at": last[2], "session_id": last[3]} if last else None
         counts = dict(conn.execute("SELECT t.status, COUNT(*) FROM tasks t JOIN sessions s ON s.session_id = t.session_id "
@@ -2413,6 +2420,202 @@ def _post_when_idle(session_id, text, timeout=1800):
             conn.close()
         time.sleep(1.0)
 
+# ---------- 后台任务（worker）：前台聊天，后台干活 ----------
+WORKER_RUNTIME = {}          # worker_id -> (model, provider)：排队的任务开跑时用；重启后丢失（中断的任务由前台 task_resume 带上新的）
+WORKER_LOCK = threading.Lock()
+
+def worker_view(w):
+    """给前台 / App 看的任务状态：进行中的任务补上最近一步（取 worker 会话最后一个工具调用的标题）。"""
+    if not w:
+        return None
+    w = dict(w)
+    if w["status"] == "running" and w.get("task_id"):
+        conn = get_db_connection()
+        try:
+            r = conn.execute("SELECT payload FROM task_events WHERE task_id = ? AND event_type = 'tool_call' ORDER BY id DESC LIMIT 1",
+                             (w["task_id"],)).fetchone()
+            steps = conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id = ? AND event_type = 'tool_call'", (w["task_id"],)).fetchone()[0]
+        finally:
+            conn.close()
+        try:
+            d = json.loads(r[0]) if r else {}
+            a = d.get("arguments") if isinstance(d.get("arguments"), dict) else {}
+            w["last_step"] = a.get("title") or d.get("tool") or w.get("last_step")
+        except Exception:
+            pass
+        w["steps"] = steps
+    w.pop("context", None)
+    return w
+
+def _worker_launch(wid):
+    """名额够就开跑（同一 Bot 最多 SOFT_CAP 个），不够就留在队列里，等前面的任务结束再开。返回是否开跑。"""
+    with WORKER_LOCK:
+        conn = get_db_connection()
+        try:
+            w = cloud_workers.get(conn, wid)
+            if not w or w["status"] != "queued" or cloud_workers.running_count(conn, w["bot_id"]) >= cloud_workers.SOFT_CAP:
+                return False
+            runtime = WORKER_RUNTIME.get(wid)
+            if not runtime:
+                return False
+            model, provider, note = runtime
+            tid = "task_" + uuid.uuid4().hex[:12]
+            now = time.time()
+            conn.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
+                         (tid, w["worker_session"], model, now))
+            has_user = conn.execute("SELECT 1 FROM messages WHERE session_id = ? AND role = 'user'", (w["worker_session"],)).fetchone()
+            prompt = cloud_workers.worker_prompt(w) if not has_user else "继续完成这个任务（上次没做完）。" + ("\n补充：" + note if note else "")
+            conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (w["worker_session"], prompt, now))
+            conn.commit()
+            cloud_workers.set_status(conn, wid, "running", task_id=tid, started_at=now, finished_at=None)
+        finally:
+            conn.close()
+    with active_tasks_lock:
+        active_tasks[tid] = {"process": None, "cancelled": False, "pid": None}
+    threading.Thread(target=_worker_run, args=(wid, tid, w["worker_session"], prompt, model, provider), daemon=True).start()
+    return True
+
+def _worker_run(wid, tid, sid, prompt, model, provider):
+    started = time.time()
+    try:
+        run_agent_task(tid, sid, prompt, model, provider, WORKER_INSTRUCTIONS)
+    except Exception as e:
+        print(f"worker {wid} crashed: {type(e).__name__}", flush=True)
+    finally:
+        _worker_finish(wid, tid, started)
+
+def _worker_finish(wid, tid, started):
+    conn = get_db_connection()
+    try:
+        st = (conn.execute("SELECT status FROM tasks WHERE task_id = ?", (tid,)).fetchone() or ["failed"])[0]
+        status = st if st in ("completed", "failed", "cancelled", "limit_reached", "interrupted") else "failed"
+        w = cloud_workers.get(conn, wid)
+        if w and w["status"] == "running":
+            result = cloud_workers.last_answer(conn, w["worker_session"], started) if status != "cancelled" else None
+            cloud_workers.set_status(conn, wid, status, result=result, finished_at=time.time())
+            w = cloud_workers.get(conn, wid)
+            _worker_post(conn, w)
+        bot_id = w["bot_id"] if w else None
+        queued = [r[0] for r in conn.execute("SELECT worker_id FROM bot_workers WHERE COALESCE(bot_id, '') = ? AND status = 'queued' "
+                                             "ORDER BY created_at", (bot_id or "",)).fetchall()]
+    finally:
+        conn.close()
+    for q in queued:
+        if not _worker_launch(q):
+            break
+    WORKER_RUNTIME.pop(wid, None)
+
+def _worker_post(_conn, w):
+    """结果作为 Bot 的消息发回前台（台账去重：只发一次），并走通知路由。前台正在回话时等它说完再写，不插在工具调用中间（另开线程等）。"""
+    threading.Thread(target=_worker_post_wait, args=(w,), daemon=True).start()
+
+def _worker_post_wait(w):
+    deadline = time.time() + 600
+    while True:
+        conn = get_db_connection()
+        try:
+            busy = conn.execute("SELECT 1 FROM tasks WHERE session_id = ? AND status IN ('running', 'waiting_user')", (w["front_session"],)).fetchone()
+            if not busy or time.time() > deadline:
+                posted = cloud_workers.post_result(conn, w)
+                break
+        finally:
+            conn.close()
+        time.sleep(0.5)
+    if posted:
+        try:
+            user_notify(current_notify_config(), "task_completed", f"后台任务：{w['title']}"[:120],
+                        cloud_workers.result_text(w)[:600], session_id=w["front_session"])
+        except Exception as e:
+            print(f"worker notify failed: {type(e).__name__}", flush=True)
+
+def worker_stop(wid):
+    conn = get_db_connection()
+    try:
+        w = cloud_workers.get(conn, wid)
+        if not w:
+            return None
+        if w["status"] == "queued":
+            cloud_workers.set_status(conn, wid, "cancelled", finished_at=time.time())
+            _worker_post(conn, cloud_workers.get(conn, wid))
+        elif w["status"] == "running" and w.get("task_id"):
+            set_task_cancelled(w["task_id"])
+            conn.execute("UPDATE tasks SET status = 'cancelled' WHERE task_id = ? AND status IN ('running', 'waiting_user')", (w["task_id"],))
+            conn.commit()
+            log_event(w["task_id"], "cancelled", {"message": "后台任务已停止"})
+        return cloud_workers.get(conn, wid)
+    finally:
+        conn.close()
+
+def worker_message(wid, text):
+    conn = get_db_connection()
+    try:
+        w = cloud_workers.get(conn, wid)
+        if not w:
+            return 404, {"error": "没有这个后台任务"}
+        if not isinstance(text, str) or not text.strip():
+            return 400, {"error": "text 不能为空"}
+        if w["status"] == "queued":
+            ctx = ((w.get("context") or "") + "\n用户补充：" + text.strip())[:20000]
+            conn.execute("UPDATE bot_workers SET context = ? WHERE worker_id = ?", (ctx, wid))
+            conn.commit()
+            return 200, {"worker_id": wid, "delivered": "queued_context"}
+    finally:
+        conn.close()
+    if w["status"] != "running" or not w.get("task_id"):
+        return 409, {"error": f"任务已经{w['status']}，要继续请用 task_resume", "status": w["status"]}
+    code, res = inbox_push(w["task_id"], text.strip(), "wkmsg_" + uuid.uuid4().hex[:10])
+    if code >= 300:
+        return code, res
+    return 200, {"worker_id": wid, "delivered": "running"}
+
+def tool_worker(task_id, session_id, name, args, model, provider_config):
+    args = args if isinstance(args, dict) else {}
+    if name == "spawn_task":
+        conn = get_db_connection()
+        try:
+            try:
+                w = cloud_workers.create(conn, session_persona_id(session_id), session_id, args.get("goal"), args.get("context"), args.get("title"))
+            except cloud_workers.WorkerError as e:
+                return {"error": str(e)}
+        finally:
+            conn.close()
+        WORKER_RUNTIME[w["worker_id"]] = (model, provider_config, "")
+        started = _worker_launch(w["worker_id"])
+        log_event(task_id, "worker_spawned", {"worker_id": w["worker_id"], "title": w["title"], "status": "running" if started else "queued"})
+        return {"id": w["worker_id"], "title": w["title"], "status": "running" if started else "queued",
+                "note": "已在后台开始。现在只回用户一句简短确认，结果做完会自动发到这个对话。"}
+    wid = args.get("id")
+    conn = get_db_connection()
+    try:
+        if name == "task_status" and not wid:
+            return {"tasks": [worker_view(w) for w in cloud_workers.list_for(conn, front_session=session_id, limit=10)]}
+        w = cloud_workers.get(conn, wid)
+    finally:
+        conn.close()
+    if not w or w["front_session"] != session_id:
+        return {"error": "这个对话里没有这个后台任务"}
+    if name == "task_status":
+        return worker_view(w)
+    if name == "task_message":
+        code, res = worker_message(wid, args.get("text"))
+        return res if code < 300 else {"error": res.get("error"), "status": res.get("status")}
+    if name == "task_stop":
+        return {"id": wid, "status": (worker_view(worker_stop(wid)) or {}).get("status")}
+    if name == "task_resume":
+        if w["status"] in cloud_workers.ACTIVE:
+            return {"error": "任务还在进行，不需要继续", "status": w["status"]}
+        conn = get_db_connection()
+        try:
+            note = args.get("note") if isinstance(args.get("note"), str) else ""
+            conn.execute("UPDATE bot_workers SET status = 'queued', reported = 0, result = NULL, finished_at = NULL WHERE worker_id = ?", (wid,))
+            conn.commit()
+        finally:
+            conn.close()
+        WORKER_RUNTIME[wid] = (model, provider_config, note)
+        started = _worker_launch(wid)
+        return {"id": wid, "status": "running" if started else "queued"}
+    return {"error": "unknown tool"}
+
 def start_delegation(task_id, session_id, kind, target_id, body, priority="normal", report_back=True,
                      model=None, provider_config=None, waiting=False):
     """创建并启动一次 Bot 间消息 / 委托；返回 (delegation_id, worker 线程) 或抛 deleg.LimitError / ValueError。"""
@@ -2453,7 +2656,8 @@ def start_delegation(task_id, session_id, kind, target_id, body, priority="norma
         if kind == "message":
             # 普通消息进目标 Bot 最近的空闲会话，没有就新开
             r = c.execute("SELECT s.session_id FROM sessions s WHERE s.persona_id = ? AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.session_id = s.session_id "
-                          "AND t.status IN ('running', 'waiting_user')) AND s.title NOT LIKE '例行任务：%' ORDER BY s.created_at DESC LIMIT 1", (target_id,)).fetchone()
+                          "AND t.status IN ('running', 'waiting_user')) AND s.title NOT LIKE '例行任务：%' "
+                          "AND s.session_id NOT IN (SELECT worker_session FROM bot_workers) ORDER BY s.created_at DESC LIMIT 1", (target_id,)).fetchone()
             sid = r[0] if r else None
         if not sid:
             sid = "sess_" + uuid.uuid4().hex[:12]
@@ -3296,6 +3500,43 @@ TOOL_DEFINITIONS.extend([
 ])
 
 VAULT_TOOLS = {"vault_list", "vault_fill", "vault_totp"}
+
+TOOL_DEFINITIONS.extend([
+    {"type": "function", "function": {
+        "name": "spawn_task",
+        "description": "Hand substantial work (multi-step, tool-heavy, takes more than a minute: research, coding, browsing, file work) to a "
+                       "background worker so this conversation stays responsive. The worker gets its own clean context: put everything it needs "
+                       "in goal + context (it cannot see this chat). After calling it, reply to the user with ONE short sentence; the result is "
+                       "posted into this chat automatically when done. Do not use it for quick questions or chit-chat.",
+        "parameters": {"type": "object", "properties": {
+            "goal": {"type": "string", "description": "What to achieve and what the final deliverable is."},
+            "context": {"type": "string", "description": "Relevant facts from the conversation: paths, links, preferences, constraints."},
+            "title": {"type": "string", "description": "4-12 word title shown on the task card."}},
+            "required": ["goal"]}}},
+    {"type": "function", "function": {
+        "name": "task_status",
+        "description": "Status of this chat's background tasks (or one by id): status, elapsed time, latest step, result summary.",
+        "parameters": {"type": "object", "properties": {"id": {"type": "string"}}}}},
+    {"type": "function", "function": {
+        "name": "task_message",
+        "description": "Send the user's follow-up, correction or extra requirement into a running background task (it sees it at its next step).",
+        "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "text": {"type": "string"}}, "required": ["id", "text"]}}},
+    {"type": "function", "function": {
+        "name": "task_stop",
+        "description": "Stop a background task when the user asks to stop / cancel it.",
+        "parameters": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}}},
+    {"type": "function", "function": {
+        "name": "task_resume",
+        "description": "Continue an interrupted, failed or stopped background task in its own context (optionally with an extra note).",
+        "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "note": {"type": "string"}}, "required": ["id"]}}},
+])
+WORKER_FRONT_TOOLS = {"spawn_task", "task_status", "task_message", "task_stop", "task_resume"}
+WORKER_INSTRUCTIONS = (
+    "\n\n[后台任务] 你是这个 Bot 的后台工作者，独立完成下面的任务（看不到前台聊天）。用户发来的补充要求会作为新消息出现，照着调整。"
+    "不要逐步汇报；做完后最后一条消息写清楚结果（结论在前，必要的链接 / 路径 / 数字），它会原样发给用户。")
+FRONT_NOTE = (
+    "\n\n[前台对话] 先回话：简单的问题和闲聊直接回答。需要多步操作、大量工具调用、耗时超过一分钟的事，用 spawn_task 交给后台任务，"
+    "然后只回一句简短的确认（比如「好，我去查，做完告诉你」），不要在这里自己一步步做。用户补充或修改进行中的任务用 task_message，要停用 task_stop。")
 DELEGATION_TOOLS = {"send_to_bot", "delegate_task"}
 ADMIN_TOOLS = {"create_bot", "update_bot", "delete_bot", "restore_bot", "set_primary_bot", "admin_api"}
 
@@ -3310,6 +3551,33 @@ TOOL_TITLE_PARAM = {"type": "string", "description": "A concise 4-12 word summar
 for _t in TOOL_DEFINITIONS:
     _props = _t["function"].setdefault("parameters", {"type": "object"}).setdefault("properties", {})
     _props.setdefault("tool_title", TOOL_TITLE_PARAM)
+
+def session_tools(session_id, depth):
+    """这个会话能用的工具：后台任务（worker）自己的会话和子任务里不能再派后台任务。"""
+    tools = tools_for_depth(depth, is_admin_session(session_id, depth))
+    if depth >= 1 or not session_is_front(session_id):
+        tools = [t for t in tools if t["function"]["name"] not in WORKER_FRONT_TOOLS]
+    return tools
+
+def session_is_worker(session_id):
+    conn = get_db_connection()
+    try:
+        return cloud_workers.is_worker_session(conn, session_id)
+    finally:
+        conn.close()
+
+def session_is_front(session_id):
+    """用户直接聊天的对话（App / Telegram）才分前台和后台；后台任务自己、别的 Bot 交来的委托、例行任务都不算。"""
+    conn = get_db_connection()
+    try:
+        if cloud_workers.is_worker_session(conn, session_id):
+            return False
+        if conn.execute("SELECT 1 FROM bot_delegations WHERE to_session = ?", (session_id,)).fetchone():
+            return False
+        row = conn.execute("SELECT title FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+        return not (row and (row[0] or "").startswith("例行任务："))
+    finally:
+        conn.close()
 
 def tools_for_depth(depth, admin=False):
     """admin：主 Bot 的顶层任务才拿到管理工具（执行时会再查一次角色）。"""
@@ -3499,8 +3767,20 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         system_text += snapshot_pointer(session_id)
     if _bot_fast(session_id):
         system_text += FAST_MODE_NOTE
+    front_session = depth == 0 and session_is_front(session_id)
+    if front_session:
+        system_text += FRONT_NOTE
     system_text += cloud_bots.language_tail(get_persona(session_persona_id(session_id)))   # 灵魂设定的回复语言：结尾再强调一次
     dynamic_note = mention_note(session_id, initial_content)
+    if front_session:
+        # 前台只看每个后台任务的一行摘要，不看完整过程（省 token）
+        _wc = get_db_connection()
+        try:
+            _wnote = cloud_workers.summary_note(cloud_workers.list_for(_wc, front_session=session_id, limit=10))
+        finally:
+            _wc.close()
+        if _wnote:
+            dynamic_note = (dynamic_note or "") + _wnote
     if on_duty():
         # 放在本轮末尾而不是系统提示里：系统提示不变，前缀缓存照样命中
         dynamic_note = (dynamic_note or "") + DUTY_NOTE
@@ -3623,7 +3903,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     log_event(task_id, "status", {"message": "对话较长，已自动精简较早的内容"})
                 if dynamic_note:
                     send_msgs = _append_note(send_msgs, dynamic_note)
-                tools, _omitted = cloud_llm.select_tools(tools_for_depth(depth, is_admin_session(session_id, depth)) + plugin_defs, send_msgs, extra_tools,
+                tools, _omitted = cloud_llm.select_tools(session_tools(session_id, depth) + plugin_defs, send_msgs, extra_tools,
                                                           always_all=not rs_perf.get("lazy_tools", True))
                 perf["tool_defs"] = max(perf["tool_defs"], len(tools))
                 live_update(task_id, "", reasoning="", tool=None)
@@ -3755,11 +4035,14 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     elif fn_name == "subagent_task": res = tool_subagent_task(task_id, session_id, fn_args, model, provider_config, depth)
                     elif fn_name == "list_bots": res = tool_list_bots(task_id, session_id, fn_args)
                     elif fn_name in VAULT_TOOLS: res = tool_vault(task_id, session_id, fn_name, fn_args)
+                    elif fn_name in WORKER_FRONT_TOOLS:
+                        res = tool_worker(task_id, session_id, fn_name, fn_args, model, provider_config) \
+                            if depth == 0 and session_is_front(session_id) else {"error": "这里不能派后台任务，直接完成"}
                     elif fn_name in ADMIN_TOOLS:
                         res = tool_admin(task_id, session_id, fn_name, fn_args) if is_admin_session(session_id, depth) \
                             else {"error": "只有主 Bot 能管理 Bot 和系统设置；请让用户在主 Bot 里操作"}
                     elif fn_name == "request_tools":
-                        known = {d["function"]["name"] for d in tools_for_depth(depth, is_admin_session(session_id, depth))}
+                        known = {d["function"]["name"] for d in session_tools(session_id, depth)}
                         want = [n for n in (fn_args.get("names") or []) if n in known]
                         res = {"enabled": want, "note": "下一步可以使用这些工具"} if want else {"error": "没有这些工具", "available": sorted(known)}
                     elif fn_name == "skill_save": res = tool_skill_save(task_id, session_id, fn_args)
@@ -4897,6 +5180,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/vault" or path.startswith("/v1/vault/"):
             self._vault("GET", path, query_params, None)
             return
+        if path == "/v1/workers" or path.startswith("/v1/workers/"):
+            self._workers("GET", path, query_params, None)
+            return
         if path == "/v1/bot_sections":
             conn = get_db_connection()
             try:
@@ -5301,9 +5587,11 @@ class Handler(BaseHTTPRequestHandler):
             c = conn.cursor()
             bot_filter = (query_params.get("bot") or [None])[0]
             if bot_filter:
-                c.execute("SELECT session_id, local_session_id, title, created_at, persona_id FROM sessions WHERE persona_id = ? AND COALESCE(incognito, 0) = 0 ORDER BY created_at DESC", (bot_filter,))
+                c.execute("SELECT session_id, local_session_id, title, created_at, persona_id FROM sessions WHERE persona_id = ? AND COALESCE(incognito, 0) = 0 "
+                          "AND session_id NOT IN (SELECT worker_session FROM bot_workers) ORDER BY created_at DESC", (bot_filter,))
             else:
-                c.execute("SELECT session_id, local_session_id, title, created_at, persona_id FROM sessions WHERE COALESCE(incognito, 0) = 0 ORDER BY created_at DESC")
+                c.execute("SELECT session_id, local_session_id, title, created_at, persona_id FROM sessions WHERE COALESCE(incognito, 0) = 0 "
+                          "AND session_id NOT IN (SELECT worker_session FROM bot_workers) ORDER BY created_at DESC")
             sessions = [{"session_id": r[0], "local_session_id": r[1], "title": r[2], "created_at": r[3], "persona_id": r[4]} for r in c.fetchall()]
             conn.close()
             self._send(200, {"sessions": sessions})
@@ -5564,6 +5852,36 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, {"error": "Unauthorized"})
             return False
         return True
+
+    def _workers(self, method, path, query, body):
+        """后台任务：GET /v1/workers?session_id=|bot=、GET /v1/workers/<id>（含过程事件）、POST /v1/workers/<id>/stop|message。"""
+        parts = path.strip("/").split("/")
+        conn = get_db_connection()
+        try:
+            if method == "GET" and len(parts) == 2:
+                sid = (query.get("session_id") or [None])[0]
+                bot = (query.get("bot") or [None])[0]
+                rows = cloud_workers.list_for(conn, bot_id=bot if sid is None else None, front_session=sid,
+                                              limit=int((query.get("limit") or ["50"])[0] or 50))
+                self._send(200, {"workers": [worker_view(w) for w in rows]})
+                return
+            w = cloud_workers.get(conn, parts[2]) if len(parts) >= 3 else None
+        finally:
+            conn.close()
+        if not w:
+            self._send(404, {"error": "没有这个后台任务"})
+            return
+        if method == "GET" and len(parts) == 3:
+            self._send(200, {"worker": worker_view(w)})
+            return
+        if method == "POST" and len(parts) == 4 and parts[3] == "stop":
+            self._send(200, {"worker": worker_view(worker_stop(w["worker_id"]))})
+            return
+        if method == "POST" and len(parts) == 4 and parts[3] == "message":
+            code, res = worker_message(w["worker_id"], (body or {}).get("text"))
+            self._send(code, res)
+            return
+        self._send(404, {"error": "Not found"})
 
     def _vault(self, method, path, query, body):
         """保管库接口（只给 App 用；admin_api 不能访问）。列表只有元数据；reveal 返回机密，App 先过 Face ID。"""
@@ -6159,6 +6477,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/v1/vault" or path.startswith("/v1/vault/"):
             self._vault("POST", path, {}, req_json)
+            return
+        if path.startswith("/v1/workers/"):
+            self._workers("POST", path, {}, req_json)
             return
         m_share = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/library/([A-Za-z0-9_-]{1,64})/share$", path)
         if m_share:

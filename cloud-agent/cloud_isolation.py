@@ -380,7 +380,9 @@ class TaskGate:
         self.high = set()    # 高优先级任务（Bot 间 priority=high 的消息）排在普通任务前
         self.parked = {}     # 正在等待被委托 Bot 结果的任务：暂时不占名额，避免委托链互相等待卡死
 
-    def _lane_limit(self, s, bot_id):
+    def _lane_limit(self, s, bot_id, lane=""):
+        if lane.startswith("worker:"):
+            return 10 ** 9      # 后台任务单独一条道，数量由 cloud_workers.SOFT_CAP 管；不占前台对话的名额，前台随时能回话
         return bot_settings(s, bot_id)["max_tasks_per_bot"]
 
     def check_capacity(self, lane, bot_id):
@@ -403,9 +405,10 @@ class TaskGate:
         for tid, lane, bot_id, _t in self.queue:
             if free <= 0:
                 break
-            if lane_running.get(lane, 0) >= self._lane_limit(s, bot_id):
+            if lane_running.get(lane, 0) >= self._lane_limit(s, bot_id, lane):
                 continue
-            if lane not in lane_running and len(lane_running) >= bots_cap:
+            owners = {ln.split(":", 1)[-1] for ln in lane_running}     # 同一个 Bot 的前台和后台任务算一个 Bot
+            if lane.split(":", 1)[-1] not in owners and len(owners) >= bots_cap:
                 continue
             out.add(tid)
             lane_running[lane] = lane_running.get(lane, 0) + 1

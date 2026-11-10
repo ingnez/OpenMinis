@@ -441,3 +441,15 @@
 ## 11. 灵魂设定（服务器 2.8.0+）
 - 每个 Bot 的 `soul`：`{style?, language?, persona?, forbidden?}`（风格 / 语气 ≤500、回复语言 ≤40、人格提示词 ≤8000、禁止事项 ≤2000）。`PUT /v1/bots/<id>` `{soul: {...}}` 整体替换，`{soul: null}` 或 `{}` 清除；`GET /v1/bots` 每个 Bot 带 `soul`。和其他设置一样进设置历史版本、导出包，主 Bot 的 `update_bot(soul=…)` 可改别的 Bot 并可撤销。
 - 每次调用模型都把它放在系统提示最前面（Bot 指令之前）；设置了回复语言时系统提示结尾再强调一次。/reset 之后、子任务（subagent_task 指定这个 Bot）、群聊都一样。
+
+## 后台任务（2.9.0）
+
+前台对话（用户直接聊天的会话）多了五个工具：`spawn_task(goal, context, title)`、`task_status(id?)`、`task_message(id, text)`、`task_stop(id)`、`task_resume(id, note?)`。
+实质性的多步任务交给后台 worker：worker 有自己的会话（独立上下文，只拿到 goal + context，看不到前台聊天），在单独的并发道上运行，不占前台名额；每个 Bot 同时最多 4 个，多出的排队。
+前台上下文只带每个任务一行摘要。worker 结束后，结果作为 Bot 的一条消息写进前台对话（`meta.worker_id` / `meta.worker_status`，台账去重只写一次）并走通知路由。
+服务器重启时，进行中的任务如实标记 `interrupted` 并在前台说明，可用 `task_resume` 接着做。worker 会话不出现在 `/v1/sessions` 和首页最近会话里。
+
+- `GET /v1/workers?session_id=…` 或 `?bot=…` → `{"workers": [{worker_id, bot_id, front_session, worker_session, task_id, title, goal, status, result, last_step, steps, elapsed_s, created_at, started_at, finished_at}]}`
+- `GET /v1/workers/<id>` → `{"worker": …}`；过程用 `/v1/tasks/<task_id>/events`
+- `POST /v1/workers/<id>/stop`、`POST /v1/workers/<id>/message {"text"}`（补充要求，送进运行中的 worker）
+- `/v1/bots` 每个 Bot 多 `running_workers`

@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Phase 24：前台聊天、后台干活（spawn_task / task_status / task_message / task_stop / task_resume）。"""
+
+import json
+import threading
+import time
+import unittest
+
+import cloud_workers
+from test_phase1_support import CloudServerTestCase, FakeModelHandler, tool_call, tool_turns
+
+
+def system_of(req):
+    return req["messages"][0]["content"]
+
+
+def is_worker(req):
+    return "[后台任务]" in system_of(req)
+
+
+def last_user(req):
+    return [m for m in req["messages"] if m.get("role") == "user"][-1]["content"]
+
+
+def fresh_tools(req):
+    """本轮（最后一条用户消息之后）的工具结果；历史里之前几轮的不算。"""
+    msgs = req["messages"]
+    last = max(i for i, m in enumerate(msgs) if m.get("role") == "user")
+    return [m for m in msgs[last:] if m.get("role") == "tool"]
+
+
+def tool_names(req):
+    return {t["function"]["name"] for t in req.get("tools") or []}
+
+
+class WorkerTests(CloudServerTestCase):
+    def setUp(self):
+        self.request("PUT", "/v1/bots/boss", {"name": "总管", "instructions": "你是总管", "is_primary": True})
+        self.request("PUT", "/v1/bots/helper", {"name": "助手", "instructions": "你是助手"})
+        self.gate = threading.Event()
+
+    def tearDown(self):
+        self.gate.set()
+
+    def _front_script(self, worker_reply, spawn_args=None, extra=None):
+        def script(d):
+            if is_worker(d):
+                return worker_reply(d)
+            if extra:
+                r = extra(d)
+                if r:
+                    return r
+            if "查一下" in last_user(d) and not fresh_tools(d):
+                return tool_call("c0", "spawn_task", spawn_args or {"goal": "查一下 FAKE 价格并写结论", "context": "用户在上海", "title": "查价格"})
+            return {"role": "assistant", "content": "好，我在后台做，做完告诉你。" if fresh_tools(d) else "随便聊：今天天气不错"}
+        return script
+
+    def _say(self, sid, text, model):
+        tid = self.submit(sid, text, model)[1]["task_id"]
+        self.wait_status(tid, {"completed"}, timeout=30)
+
+    def _wait_worker(self, wid, statuses, timeout=30):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            w = self.request("GET", f"/v1/workers/{wid}")[1].get("worker") or {}
+            if w.get("status") in statuses:
+                return w
+            time.sleep(0.1)
+        self.fail(f"worker {wid} not {statuses}: {w}")
+
+    def _workers(self, sid):
+        return self.request("GET", f"/v1/workers?session_id={sid}")[1]["workers"]
+
+    def _results(self, sid):
+        msgs = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
+        return [m for m in msgs if m["role"] == "assistant" and "后台任务" in (m.get("content") or "")]
+
+    def _wait_results(self, sid, n=1, timeout=20):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            r = self._results(sid)
+            if len(r) >= n:
+                return r
+            time.sleep(0.1)
+        self.fail("结果没有发回前台")
+
+    def test_01_spawn_ack_chat_isolated_and_result_posted_once(self):
+        def worker(d):
+            self.gate.wait(20)
+            return {"role": "assistant", "content": "FAKE 价格是 42 元"}
+        FakeModelHandler.scripts["m-w1"] = self._front_script(worker)
+        sid = self.request("POST", "/v1/sessions", {"title": "t", "persona_id": "boss"})[1]["session_id"]
+        self._say(sid, "帮我查一下价格", "m-w1")
+        msgs = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
+        self.assertEqual(msgs[-1]["content"], "好，我在后台做，做完告诉你。")
+        ws = self._workers(sid)
+        self.assertEqual(len(ws), 1)
+        w = ws[0]
+        self.assertEqual(w["status"], "running")
+        self.assertEqual(w["title"], "查价格")
+        self.assertNotIn("context", w)
+        before = self.request("GET", f"/v1/sessions/{w['worker_session']}")[1]["messages"]
+        self.assertIn("用户在上海", before[0]["content"])
+        self.assertNotIn("帮我查一下价格", json.dumps(before, ensure_ascii=False))   # worker 看不到前台聊天
+        # 任务在跑的时候闲聊：前台直接回答，worker 历史不变；前台上下文里只有一行摘要
+        self._say(sid, "随便聊两句", "m-w1")
+        front_req = [r for r in FakeModelHandler.requests if not is_worker(r) and "随便聊两句" in json.dumps(r, ensure_ascii=False)][-1]
+        self.assertIn("「查价格」进行中", json.dumps(front_req, ensure_ascii=False))
+        self.assertIn("spawn_task", tool_names(front_req))
+        self.assertEqual(self.request("GET", f"/v1/sessions/{w['worker_session']}")[1]["messages"], before)
+        self.gate.set()
+        done = self._wait_worker(w["worker_id"], {"completed"})
+        self.assertEqual(done["result"], "FAKE 价格是 42 元")
+        res = self._wait_results(sid)
+        self.assertIn("FAKE 价格是 42 元", res[0]["content"])
+        time.sleep(0.5)
+        conn = self.srv.get_db_connection()
+        try:
+            self.assertFalse(cloud_workers.post_result(conn, cloud_workers.get(conn, w["worker_id"])))   # 台账：只发一次
+        finally:
+            conn.close()
+        self.assertEqual(len(self._results(sid)), 1)
+        # worker 会话不出现在 Bot 的对话列表里，也不能再派后台任务
+        listed = [s["session_id"] for s in self.request("GET", "/v1/sessions?bot=boss")[1]["sessions"]]
+        self.assertIn(sid, listed)
+        self.assertNotIn(w["worker_session"], listed)
+        wreq = [r for r in FakeModelHandler.requests if is_worker(r)][-1]
+        self.assertFalse(tool_names(wreq) & self.srv.WORKER_FRONT_TOOLS)
+        self.assertNotIn("[前台对话]", system_of(wreq))
+
+    def test_02_task_message_reaches_worker(self):
+        def worker(d):
+            if "改成蓝色" in json.dumps(d["messages"], ensure_ascii=False):
+                return {"role": "assistant", "content": "final: blue"}
+            self.gate.wait(20)
+            return {"role": "assistant", "content": "draft: red"}
+
+        def extra(d):
+            if "改成蓝色" in last_user(d) and not fresh_tools(d):
+                wid = self._workers(self.sid)[0]["worker_id"]
+                return tool_call("c1", "task_message", {"id": wid, "text": "改成蓝色"})
+            return None
+        FakeModelHandler.scripts["m-w2"] = self._front_script(worker, extra=extra)
+        self.sid = sid = self.request("POST", "/v1/sessions", {"title": "t", "persona_id": "boss"})[1]["session_id"]
+        self._say(sid, "帮我查一下颜色", "m-w2")
+        wid = self._workers(sid)[0]["worker_id"]
+        self._say(sid, "对了，改成蓝色", "m-w2")
+        tr = [m for m in self.request("GET", f"/v1/sessions/{sid}")[1]["messages"] if m["role"] == "tool"]
+        self.assertIn('"delivered": "running"', tr[-1]["content"])
+        self.gate.set()
+        w = self._wait_worker(wid, {"completed"})
+        self.assertEqual(w["result"], "final: blue")
+
+    def test_03_stop(self):
+        def worker(d):
+            self.gate.wait(20)
+            return {"role": "assistant", "content": "should not matter"}
+
+        def extra(d):
+            if "停" in last_user(d) and not fresh_tools(d):
+                return tool_call("c1", "task_stop", {"id": self._workers(self.sid)[0]["worker_id"]})
+            return None
+        FakeModelHandler.scripts["m-w3"] = self._front_script(worker, extra=extra)
+        self.sid = sid = self.request("POST", "/v1/sessions", {"title": "t", "persona_id": "boss"})[1]["session_id"]
+        self._say(sid, "帮我查一下天气", "m-w3")
+        wid = self._workers(sid)[0]["worker_id"]
+        self._say(sid, "算了，停下", "m-w3")
+        self.gate.set()
+        w = self._wait_worker(wid, {"cancelled"})
+        self.assertIsNone(w["result"])
+        self.assertIn("已停止", self._wait_results(sid)[0]["content"])
+        # App 里的停止按钮：对已结束的任务也安全
+        self.assertEqual(self.request("POST", f"/v1/workers/{wid}/stop", {})[1]["worker"]["status"], "cancelled")
+
+    def test_04_restart_marks_interrupted_honestly_and_resume(self):
+        sid = self.request("POST", "/v1/sessions", {"title": "t", "persona_id": "boss"})[1]["session_id"]
+        conn = self.srv.get_db_connection()
+        try:
+            w = cloud_workers.create(conn, "boss", sid, "整理 FAKE 报告", title="整理报告")
+            conn.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES ('task_fakerestart', ?, NULL, 'running', 'm', ?)",
+                         (w["worker_session"], time.time()))
+            conn.commit()
+            cloud_workers.set_status(conn, w["worker_id"], "running", task_id="task_fakerestart", started_at=time.time())
+        finally:
+            conn.close()
+        self.srv.init_db()       # 模拟重启
+        self.srv.init_db()       # 再重启一次也不会重复发
+        got = self.request("GET", f"/v1/workers/{w['worker_id']}")[1]["worker"]
+        self.assertEqual(got["status"], "interrupted")
+        res = self._results(sid)
+        self.assertEqual(len(res), 1)
+        self.assertIn("中断", res[0]["content"])
+
+        def worker(d):
+            return {"role": "assistant", "content": "报告整理好了"}
+
+        def extra(d):
+            if "继续" in last_user(d) and not fresh_tools(d):
+                return tool_call("c1", "task_resume", {"id": w["worker_id"]})
+            return None
+        FakeModelHandler.scripts["m-w4"] = self._front_script(worker, extra=extra)
+        self._say(sid, "继续", "m-w4")
+        done = self._wait_worker(w["worker_id"], {"completed"})
+        self.assertEqual(done["result"], "报告整理好了")
+        self.assertEqual(len(self._wait_results(sid, 2)), 2)
+
+    def test_05_soft_cap_queues(self):
+        old = cloud_workers.SOFT_CAP
+        cloud_workers.SOFT_CAP = 1
+        try:
+            def worker(d):
+                self.gate.wait(20)
+                return {"role": "assistant", "content": "done " + last_user(d)[:12]}
+            FakeModelHandler.scripts["m-w5"] = self._front_script(worker)
+            sid = self.request("POST", "/v1/sessions", {"title": "t", "persona_id": "helper"})[1]["session_id"]
+            self._say(sid, "查一下 A", "m-w5")
+            self._say(sid, "查一下 B", "m-w5")
+            ws = sorted(self._workers(sid), key=lambda w: w["created_at"])
+            self.assertEqual([w["status"] for w in ws], ["running", "queued"])
+            bots = self.request("GET", "/v1/bots")[1]["bots"]
+            self.assertEqual(next(b for b in bots if b["bot_id"] == "helper").get("running_workers"), 2)
+            self.gate.set()
+            for w in ws:
+                self._wait_worker(w["worker_id"], {"completed"})
+            self.assertEqual(len(self._wait_results(sid, 2)), 2)
+        finally:
+            cloud_workers.SOFT_CAP = old
+
+
+if __name__ == "__main__":
+    unittest.main()
