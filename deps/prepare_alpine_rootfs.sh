@@ -141,12 +141,20 @@ build_fakefsify() {
         # host-side tool that runs on this Mac and never ships to a device, so
         # a failed assert is a loud build failure rather than a user crash —
         # which is what we want while generating a rootfs.
+        # fakefsify 只链接 libfakefs + libarchive，与客体架构无关；但 meson 配置时会检查模拟器的
+        # 宿主汇编文件，ARM64 客体只有 aarch64 宿主的版本。Intel Mac（macos-15-intel 机器池）上
+        # 改用 x86 客体配置，只为编出这个宿主工具，不影响打进 App 的 iSH（那个由 build_ish.sh 交叉编译）。
+        HOST_GUEST_ARCH=arm64
+        if [ "$(uname -m)" = "x86_64" ]; then
+            HOST_GUEST_ARCH=x86
+            log_info "Intel host: configuring fakefsify with guest_arch=x86 (host tool only)"
+        fi
         meson setup "$BUILD_DIR" \
             --buildtype=release \
             -Dlog="" \
             -Dkernel=ish \
             -Dengine=asbestos \
-            -Dguest_arch=arm64
+            -Dguest_arch=$HOST_GUEST_ARCH
     fi
 
     # Build only fakefsify
