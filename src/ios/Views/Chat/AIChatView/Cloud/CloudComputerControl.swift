@@ -46,7 +46,8 @@ final class CloudDesktopController: ObservableObject {
         CloudLowBandwidth.active(setting: UserDefaults.standard.string(forKey: CloudLowBandwidth.key) ?? "auto", expensive: expensiveNetwork)
     }
 
-    weak var web: WKWebView?
+    weak var web: WKWebView? { didSet { if let web { directGestures.attach(to: web) } } }
+    private(set) lazy var directGestures = CloudDirectGestures(controller: self)
     var viewport: CGSize = .zero
     var onClipboard: ((String) -> Void)?
     var onNotice: ((String) -> Void)?
@@ -479,4 +480,41 @@ struct CloudIMEField: UIViewRepresentable {
             DispatchQueue.main.async { if self.parent.focused { self.parent.focused = false } }
         }
     }
+}
+
+/// 直接触控模式也能用手势快捷键：三指左 / 右 / 上滑、左边缘右滑。挂在网页视图上，只在「接管 + 直接触控」时生效
+/// （触控板模式由 CloudTrackpadSurface 自己处理；没接管时只看不动）。单指点按和拖动照常交给 noVNC。
+@MainActor
+final class CloudDirectGestures: NSObject, UIGestureRecognizerDelegate {
+    weak var controller: CloudDesktopController?
+    private static let tag = "om-direct-gesture"
+
+    init(controller: CloudDesktopController) { self.controller = controller }
+
+    func attach(to view: UIView) {
+        guard !(view.gestureRecognizers ?? []).contains(where: { $0.name == Self.tag }) else { return }
+        for (dir, sel) in [(UISwipeGestureRecognizer.Direction.left, #selector(left)), (.right, #selector(right)), (.up, #selector(up))] {
+            let sw = UISwipeGestureRecognizer(target: self, action: sel)
+            sw.direction = dir
+            sw.numberOfTouchesRequired = 3
+            sw.name = Self.tag
+            sw.delegate = self
+            view.addGestureRecognizer(sw)
+        }
+        let edge = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(edge(_:)))
+        edge.edges = .left
+        edge.name = Self.tag
+        edge.delegate = self
+        view.addGestureRecognizer(edge)
+    }
+
+    private var active: Bool { controller.map { $0.controlling && $0.mode == .direct } ?? false }
+
+    func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool { active }
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+    @objc private func left() { controller?.combo(.forGesture(.threeLeft)) }
+    @objc private func right() { controller?.combo(.forGesture(.threeRight)) }
+    @objc private func up() { controller?.combo(.forGesture(.threeUp)) }
+    @objc private func edge(_ g: UIScreenEdgePanGestureRecognizer) { if g.state == .ended { controller?.combo(.forGesture(.edgeBack)) } }
 }
