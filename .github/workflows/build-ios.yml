@@ -44,6 +44,12 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReconnectPolicy.swift scripts/CloudReconnectTests.swift -o /tmp/cloud-reconnect-tests
           /tmp/cloud-reconnect-tests
+      - name: 云端 API 路径规则测试
+        run: |
+          set -o pipefail
+          python3 scripts/check_cloud_query_paths.py
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPathPolicy.swift scripts/CloudPathPolicyTests.swift -o /tmp/cloud-path-tests
+          /tmp/cloud-path-tests
 
   cloud-computer-linux:
     if: ${{ !inputs.quick }}
