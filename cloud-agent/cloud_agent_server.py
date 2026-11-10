@@ -721,6 +721,7 @@ SERVER_TOOL_NOTES = (
     "用户可在手机“云端页面库”中打开；更新同一页面时传回 page_id。"
     "\n[子代理] 可拆分、互不依赖的子任务可用 subagent_task 交给独立会话的子代理执行，它返回最终结论；子代理不能再派生子代理。"
     "\n[生成图片] 用户要图片时调用 image_generate，图片保存在工作区 attachments/。"
+    "\n[发消息] send_message 可经 Telegram 或推送给用户发消息；每次都会先作为草稿请用户确认，被拒绝时不要重试同一内容。"
 )
 
 def server_tool_notes(session_id):
@@ -816,6 +817,42 @@ def tool_subagent_task(task_id, session_id, args, model, provider_config, depth)
     if status != "completed":
         out["error"] = f"子代理结束状态：{status}"
     return out
+
+# 对外发消息：先以草稿形式挂起审批，用户确认后才发送（不受自定义策略影响）
+ALWAYS_CONFIRM_TOOLS = {
+    "send_message": {"id": "send_message_draft", "tool": "send_message", "field": "*", "pattern": ".",
+                     "category": "outbound", "reason": "对外发送消息（草稿，确认后发送）"},
+}
+
+def tool_send_message(task_id, session_id, args):
+    if is_task_cancelled(task_id):
+        return {"error": "Cancelled"}
+    channel = args.get("channel")
+    text = args.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return {"error": "text must be a non-empty string"}
+    if channel == "telegram":
+        cfg = telegram_config()
+        if not cfg:
+            return {"error": "Telegram 渠道未配置"}
+        chat_id = args.get("chat_id")
+        allowed = cfg.get("allowed_chat_ids", [])
+        if chat_id is None:
+            chat_id = telegram_chat_for_task(task_id) or (allowed[0] if allowed else None)
+        if not isinstance(chat_id, int) or chat_id not in allowed:
+            return {"error": "chat_id 不在 Telegram 允许列表中"}
+        try:
+            cloud_telegram.send_text(cfg, chat_id, text)
+        except cloud_telegram.TelegramAPIError as e:
+            return {"error": "Telegram 发送失败：" + str(e)}
+        return {"status": "sent", "channel": "telegram", "chat_id": chat_id}
+    if channel == "push":
+        cfg = current_notify_config()
+        if not cfg:
+            return {"error": "推送未配置"}
+        ok, err = cloud_notify.send_now(cfg, (args.get("title") or "OpenMinis 云电脑")[:120], text, event="send_message")
+        return {"status": "sent", "channel": "push"} if ok else {"error": "推送失败：" + str(err)}
+    return {"error": "channel must be telegram or push"}
 
 IMAGE_MODEL_DEFAULT = os.environ.get("OPENMINIS_IMAGE_MODEL", "gpt-image-1")
 IMAGE_SIZES = ("1024x1024", "1024x1536", "1536x1024", "512x512", "auto")
@@ -1048,6 +1085,24 @@ TOOL_DEFINITIONS = [
     }
 ]
 
+TOOL_DEFINITIONS.append({
+    "type": "function",
+    "function": {
+        "name": "send_message",
+        "description": "Send a message to the user through Telegram or their push service. Every call is shown to the user as a draft and only sent after they approve it.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "channel": {"type": "string", "enum": ["telegram", "push"]},
+                "text": {"type": "string"},
+                "title": {"type": "string", "description": "Push title (push only)."},
+                "chat_id": {"type": "integer", "description": "Telegram chat id from the allow list (default: the chat this task came from, else the first allowed chat)."}
+            },
+            "required": ["channel", "text"]
+        }
+    }
+})
+
 def tools_for_depth(depth):
     if depth >= 1:
         return [t for t in TOOL_DEFINITIONS if t["function"]["name"] != "subagent_task"]
@@ -1179,6 +1234,8 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
 
                     policy = current_approval_policy()
                     hit = cloud_policy.evaluate(fn_name, fn_args, policy)
+                    if not hit and fn_name in ALWAYS_CONFIRM_TOOLS:
+                        hit = ALWAYS_CONFIRM_TOOLS[fn_name]
                     decision = None
                     if hit:
                         decision = request_approval(task_id, session_id, tc_id, fn_name, fn_args, hit, policy.get("timeout_seconds", 1800))
@@ -1201,6 +1258,7 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
                     elif fn_name == "page_write": res = tool_page_write(task_id, session_id, fn_args)
                     elif fn_name == "subagent_task": res = tool_subagent_task(task_id, session_id, fn_args, model, provider_config, depth)
                     elif fn_name == "image_generate": res = tool_image_generate(task_id, session_id, fn_args, provider_config)
+                    elif fn_name == "send_message": res = tool_send_message(task_id, session_id, fn_args)
                     else: res = {"error": f"Unknown tool {fn_name}"}
 
                     log_event(task_id, "tool_result", {"id": tc_id, "tool": fn_name, "result": res})

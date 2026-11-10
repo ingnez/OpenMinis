@@ -338,3 +338,7 @@
 - **PUT /v1/telegram**: `{"config": {"bot_token", "allowed_chat_ids": [int], "credential", "model", "instructions"?, "api_base"?, "enabled"?}}`。`credential` 必须是 §4.1 已保存的凭据；保存前调用 `getMe` 校验（失败 `502`）。更新时可省略 `bot_token` 沿用已保存值。配置加密保存（AAD `setting:telegram`），保存后立即启动轮询线程。
 - **GET /v1/telegram**: `{"configured", "config": {"bot_id", "bot_username", "allowed_chat_ids", "credential", "model", "enabled", "api_base", "has_instructions"}, "status": {"running", "last_poll_at", "last_error", "handled"}}`，不返回 Token。**DELETE /v1/telegram** 删除配置与轮询位置。
 - **iOS**: 云电脑设置 → “Telegram 渠道”：填写 Bot Token 与允许的 chat id，使用当前服务商（自动加密上传 Key）与模型。
+
+### 5.5 发消息草稿 (send_message)
+- **工具** `send_message {channel: "telegram" | "push", text, title?, chat_id?}`：经 §5.4 Telegram（`chat_id` 必须在允许列表，默认取发起任务的 chat，否则第一个允许的 chat）或 §4.6 推送发消息。
+- **草稿确认**: 每次调用都会以内置规则 `send_message_draft`（类别 `outbound`）挂起为 §4.2 审批，用户在 iOS 审批卡、Telegram 按钮或 REST 中看到完整草稿后批准才发送；该规则不受自定义策略或 `enabled: false` 影响。拒绝时模型收到 `{"error": "用户拒绝，未执行…", "approval": "denied"}`。
