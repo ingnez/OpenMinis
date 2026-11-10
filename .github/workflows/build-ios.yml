@@ -64,6 +64,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudAvatarPalette.swift scripts/CloudAvatarPaletteTests.swift -o /tmp/cloud-avatar-tests
           /tmp/cloud-avatar-tests
+      - name: 首页 Bot 状态测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotPresence.swift scripts/CloudBotPresenceTests.swift -o /tmp/cloud-presence-tests
+          /tmp/cloud-presence-tests
       - name: 本地交接给 Bot 测试
         run: |
           set -o pipefail
@@ -181,6 +186,8 @@ jobs:
           /tmp/cloud-step-tests | tee cloud-step-test.log
           swiftc -swift-version 5 -parse-as-library scripts/CloudHandoffTestSupport.swift src/ios/Views/Chat/AIChatView/Cloud/CloudLocalHandoff.swift scripts/CloudLocalHandoffTests.swift -o /tmp/cloud-handoff-tests
           /tmp/cloud-handoff-tests | tee cloud-handoff-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotPresence.swift scripts/CloudBotPresenceTests.swift -o /tmp/cloud-presence-tests
+          /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudAvatarPalette.swift scripts/CloudAvatarPaletteTests.swift -o /tmp/cloud-avatar-tests
           /tmp/cloud-avatar-tests | tee cloud-avatar-test.log
           swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTaskPump.swift src/ios/Views/Chat/AIChatView/Cloud/CloudEventLedger.swift src/ios/Views/Chat/AIChatView/Cloud/CloudStepFeed.swift -o /tmp/cloud-chat-tests

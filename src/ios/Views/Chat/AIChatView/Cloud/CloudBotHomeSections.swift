@@ -32,7 +32,7 @@ struct CloudBotTopRow: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: items.count == 1 ? 0 : 18) {
                     ForEach(items) { bot in
-                        CloudBotTopAvatar(bot: bot, unread: model.isUnread(bot), size: items.count == 1 ? 96 : 72) { open(bot.id) }
+                        CloudBotTopAvatar(bot: bot, unread: model.isUnread(bot), presence: model.presence(bot), size: items.count == 1 ? 96 : 72) { open(bot.id) }
                             .cloudBotMenu(bot, model: model, actions: actions)
                     }
                 }
@@ -47,6 +47,7 @@ struct CloudBotTopRow: View {
 struct CloudBotTopAvatar: View {
     let bot: CloudBot
     let unread: Bool
+    var presence = CloudBotPresence(state: .idle, unread: 0, routine: .none, muted: false)
     let size: CGFloat
     let onTap: () -> Void
 
@@ -56,18 +57,23 @@ struct CloudBotTopAvatar: View {
                 CloudBotAliveAvatar(spec: CloudBotAvatarSpec.of(bot), size: size, interactive: false)
                     .allowsHitTesting(false)
                     .overlay(alignment: .bottomTrailing) { badge }
-                    .overlay(alignment: .topTrailing) {
-                        if unread { Circle().fill(Color.blue).frame(width: 12, height: 12) }
+                    // 状态圆点：主 Bot 的星标在右下，状态点放到左下，两个都看得见
+                    .overlay(alignment: bot.isPrimary ? .bottomLeading : .bottomTrailing) {
+                        CloudPresenceBadge(presence: presence, size: max(12, size * 0.16))
                     }
-                Text(bot.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
-                    .frame(maxWidth: size + 20)
+                HStack(spacing: 5) {
+                    Text(bot.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
+                    CloudPresenceFlags(presence: presence)
+                    CloudUnreadMark(presence: presence)
+                }
+                .frame(maxWidth: size + 40)
                 let status = CloudBotStatus.of(bot)
                 if status.busy { CloudBotStatusChip(status: status) }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("打开 \(bot.name)")
+        .accessibilityLabel("打开 \(bot.name)，\(presence.accessibilityText)")
     }
 
     @ViewBuilder
@@ -79,9 +85,6 @@ struct CloudBotTopAvatar: View {
                 Image(systemName: "star.fill").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
             }
             .offset(x: 4, y: 4)
-        } else if CloudBotStatus.of(bot).busy {
-            Circle().fill(Color.green).frame(width: 14, height: 14)
-                .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
         }
     }
 }
@@ -123,7 +126,7 @@ struct CloudBotSectionedList: View {
                       onPin: { model.setPrefs(bot.id, ["pinned": !bot.pinned]) },
                       onHide: { model.setPrefs(bot.id, ["hidden": true]) }) {
             Button { open(bot.id) } label: {
-                CloudBotHomeRow(bot: bot, unread: model.isUnread(bot))
+                CloudBotHomeRow(bot: bot, unread: model.isUnread(bot), presence: model.presence(bot))
             }
             .buttonStyle(.plain)
             .cloudBotMenu(bot, model: model, actions: actions)

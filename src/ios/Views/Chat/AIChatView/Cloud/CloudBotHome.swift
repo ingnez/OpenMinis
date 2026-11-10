@@ -196,6 +196,16 @@ final class CloudBotHomeModel: ObservableObject {
         }
     }
 
+    /// 首页状态：服务器真实状态 + 手机这边的已读 + 连接状态（见 CloudBotPresence）
+    func presence(_ bot: CloudBot) -> CloudBotPresence {
+        var connected = true
+        if case .offline = CloudLinkSupervisor.shared.state { connected = false }
+        return CloudBotPresence.derive(.init(connected: connected, waitingApprovals: bot.waitingApprovals, pendingCards: bot.pendingCards,
+                                             lastTaskStatus: bot.lastTaskStatus, runningTasks: bot.runningTasks, queuedTasks: bot.queuedTasks,
+                                             runningWorkers: bot.runningWorkers, unreadCount: bot.unreadCount, locallyUnread: isUnread(bot),
+                                             routinesEnabled: bot.routinesEnabled, routineRunning: bot.routineRunning, notify: bot.notify))
+    }
+
     func isUnread(_ bot: CloudBot) -> Bool {
         bot.markedUnread || (bot.lastRole == "assistant" && bot.lastAt > max(seen[bot.id] ?? 0, bot.seenAt) + 0.5)
     }
@@ -362,6 +372,7 @@ struct CloudBotBlobAvatar: View {
 struct CloudBotHomeRow: View {
     let bot: CloudBot
     let unread: Bool
+    var presence = CloudBotPresence(state: .idle, unread: 0, routine: .none, muted: false)
 
     var body: some View {
         let status = CloudBotStatus.of(bot)
@@ -375,17 +386,13 @@ struct CloudBotHomeRow: View {
                 }
             }
             .frame(width: 46, height: 50)
-            .accessibilityLabel(bot.name)
-                .overlay(alignment: .bottomTrailing) {
-                    if status.busy {
-                        Circle().fill(status.color)
-                            .frame(width: 12, height: 12)
-                            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
-                    }
-                }
+            .overlay(alignment: .bottomTrailing) { CloudPresenceBadge(presence: presence, size: 13) }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(bot.name)，\(presence.accessibilityText)")
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(bot.name).font(.system(size: 17, weight: .semibold)).lineLimit(1)
+                    CloudPresenceFlags(presence: presence)
                     Spacer(minLength: 8)
                     Text(CloudBotHome.timeText(bot.lastAt)).font(.footnote).foregroundStyle(.tertiary)
                 }
@@ -398,9 +405,7 @@ struct CloudBotHomeRow: View {
                     }
                     Text(previewText).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     Spacer(minLength: 0)
-                    if unread {
-                        Circle().fill(Color.blue).frame(width: 9, height: 9)
-                    }
+                    CloudUnreadMark(presence: presence)
                 }
             }
         }

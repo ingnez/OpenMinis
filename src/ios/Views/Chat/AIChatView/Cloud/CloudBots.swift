@@ -34,6 +34,11 @@ struct CloudBot: Identifiable, Hashable {
     /// 进行中 / 排队的后台任务数（服务器 running_workers）
     var runningWorkers = 0
     var waitingApprovals: Int
+    /// 首页状态用（服务器 2.15.0+）：未读条数、待回答的选项卡片、最近一次结束的任务状态、运行中的例行任务
+    var unreadCount = 0
+    var pendingCards = 0
+    var lastTaskStatus: String?
+    var routineRunning = 0
     var notify: Bool
     var routinesEnabled: Int
     var reasoningEffort: String
@@ -101,6 +106,10 @@ struct CloudBot: Identifiable, Hashable {
         queuedTasks = d["queued_tasks"] as? Int ?? 0
         runningWorkers = d["running_workers"] as? Int ?? 0
         waitingApprovals = d["waiting_approvals"] as? Int ?? 0
+        unreadCount = d["unread_count"] as? Int ?? 0
+        pendingCards = d["pending_cards"] as? Int ?? 0
+        lastTaskStatus = d["last_task_status"] as? String
+        routineRunning = d["routine_running"] as? Int ?? 0
         notify = d["notify"] as? Bool ?? true
         routinesEnabled = d["routines_enabled"] as? Int ?? 0
         reasoningEffort = d["reasoning_effort"] as? String ?? ""
