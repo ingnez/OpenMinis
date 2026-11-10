@@ -23,10 +23,13 @@ struct CloudVaultEditor: View {
             case .login: CloudVaultLoginFields(f: $f)
             case .card: CloudVaultCardFields(f: $f)
             case .contact: CloudVaultContactFields(f: $f)
+            case .note: CloudVaultNoteFields(f: $f)
             }
             Section {
-                TextField("备注（可选）", text: $f.notes, axis: .vertical).lineLimit(2...6)
-                Toggle("允许 Bot 使用", isOn: $f.allowBots)
+                if kind != .note {
+                    TextField("备注（可选）", text: $f.notes, axis: .vertical).lineLimit(2...6)
+                    Toggle("允许 Bot 使用", isOn: $f.allowBots)
+                }
             }
             if let e = errorText {
                 Text(e).font(.footnote).foregroundStyle(.red)
@@ -90,6 +93,7 @@ struct CloudVaultDraft {
     var title = "", site = "", username = "", password = "", totp = ""
     var name = "", number = "", expiry = "", cvv = ""
     var phone = "", email = "", notes = ""
+    var billing = "", hint = "", noteBody = ""
     var addresses: [CloudVaultAddress] = []
     var isDefault = false
     var allowBots = true
@@ -104,6 +108,7 @@ struct CloudVaultDraft {
         allowBots = item?.allowBots ?? true
         password = s("password"); totp = s("totp"); number = s("number"); expiry = s("expiry"); cvv = s("cvv")
         phone = s("phone"); email = s("email"); notes = s("notes")
+        billing = s("billing"); hint = s("hint"); noteBody = s("body")
         addresses = (secret["addresses"] as? [[String: Any]] ?? []).map(CloudVaultAddress.init)
     }
 
@@ -112,19 +117,23 @@ struct CloudVaultDraft {
         case .login: return !(site.isEmpty && username.isEmpty) && !password.isEmpty
         case .card: return number.filter(\.isNumber).count >= 12
         case .contact: return !name.trimmingCharacters(in: .whitespaces).isEmpty
+        case .note: return !noteBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 
     func body(_ kind: CloudVaultItem.Kind) -> [String: Any] {
-        var b: [String: Any] = ["kind": kind.rawValue, "title": title, "notes": notes, "allow_bots": allowBots]
+        var b: [String: Any] = ["kind": kind.rawValue, "title": title]
+        if kind != .note { b["notes"] = notes; b["allow_bots"] = allowBots }
         switch kind {
         case .login:
             b.merge(["site": site, "username": username, "password": password, "totp": totp]) { $1 }
         case .card:
-            b.merge(["name": name, "number": number, "expiry": expiry, "cvv": cvv]) { $1 }
+            b.merge(["name": name, "number": number, "expiry": expiry, "cvv": cvv, "billing": billing, "hint": hint]) { $1 }
         case .contact:
             b.merge(["name": name, "phone": phone, "email": email, "is_default": isDefault,
                      "addresses": addresses.filter { !$0.line1.isEmpty }.map(\.dict)]) { $1 }
+        case .note:
+            b["body"] = noteBody
         }
         return b
     }
@@ -137,7 +146,7 @@ private struct CloudVaultLoginFields: View {
         Section {
             TextField("网站或域名，如 github.com", text: $f.site).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
             TextField("用户名 / 邮箱 / 手机号", text: $f.username).textInputAutocapitalization(.never).autocorrectionDisabled()
-            SecureField("密码", text: $f.password)
+            CloudVaultPasswordField(password: $f.password)
             TextField("名称（可选）", text: $f.title)
         } footer: {
             Text("Bot 只会在网址的主域名和这里一致时填写，防止填进仿冒网站。")
@@ -158,10 +167,14 @@ private struct CloudVaultCardFields: View {
             TextField("持卡人姓名", text: $f.name).textInputAutocapitalization(.characters)
             SecureField("卡号", text: $f.number).keyboardType(.numberPad)
             TextField("有效期 MM/YY", text: $f.expiry).keyboardType(.numbersAndPunctuation)
-            SecureField("CVV", text: $f.cvv).keyboardType(.numberPad)
+            SecureField("安全码（CVV）", text: $f.cvv).keyboardType(.numberPad)
             TextField("名称（可选）", text: $f.title)
         } footer: {
-            Text("列表里只显示卡号后四位。")
+            Text("列表里只显示卡号后四位。卡号和安全码 Bot 永远看不到。")
+        }
+        Section {
+            TextField("账单地址（可选）", text: $f.billing, axis: .vertical).lineLimit(1...3)
+            TextField("提示（可选，如「工资卡」）", text: $f.hint)
         }
     }
 }
@@ -196,4 +209,50 @@ private struct CloudVaultContactFields: View {
             Button { f.addresses.append(CloudVaultAddress()) } label: { Label("添加地址", systemImage: "plus.circle") }
         }
     }
+}
+
+private struct CloudVaultNoteFields: View {
+    @Binding var f: CloudVaultDraft
+
+    var body: some View {
+        Section {
+            TextField("标题", text: $f.title)
+            TextField("内容", text: $f.noteBody, axis: .vertical).lineLimit(4...12)
+        } footer: {
+            Text("安全备注加密存在云电脑上，只在这台手机 Face ID 后显示；Bot 读不到，也不会拿去填写。")
+        }
+    }
+}
+
+/// 密码输入 + 强度条 + 一键生成随机密码
+struct CloudVaultPasswordField: View {
+    @Binding var password: String
+    @State private var visible = false
+
+    var body: some View {
+        HStack {
+            Group {
+                if visible { TextField("密码", text: $password).font(.body.monospaced()) } else { SecureField("密码", text: $password) }
+            }
+            .textInputAutocapitalization(.never).autocorrectionDisabled()
+            Button { visible.toggle() } label: { Image(systemName: visible ? "eye.slash" : "eye") }.buttonStyle(.borderless)
+                .accessibilityLabel(visible ? "隐藏密码" : "显示密码")
+            Button { password = CloudPasswordTools.generate(); visible = true } label: { Image(systemName: "wand.and.stars") }
+                .buttonStyle(.borderless).accessibilityLabel("生成随机密码")
+        }
+        if !password.isEmpty {
+            let score = CloudPasswordTools.strength(password)
+            HStack(spacing: 8) {
+                HStack(spacing: 3) {
+                    ForEach(0..<4, id: \.self) { i in
+                        Capsule().fill(i < max(score, 1) ? color(score) : Color.secondary.opacity(0.2)).frame(height: 4)
+                    }
+                }
+                Text(CloudPasswordTools.label(score)).font(.caption).foregroundStyle(color(score))
+            }
+            .accessibilityElement(children: .ignore).accessibilityLabel("密码强度：\(CloudPasswordTools.label(score))")
+        }
+    }
+
+    private func color(_ s: Int) -> Color { s <= 1 ? .red : (s == 2 ? .orange : .green) }
 }

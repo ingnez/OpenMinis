@@ -1,53 +1,48 @@
 import SwiftUI
 
-/// 一项的详情：机密默认遮住，Face ID 后显示 / 复制 / 编辑；可开关「允许 Bot 使用」，看这一项的使用记录
+/// 一项的详情（照 Grok Bot）：居中图标方块，分组字段，右上「编辑」，最底下红色「移除」。
+/// 机密默认遮住；Face ID 后显示，30 秒自动遮回；复制的机密 60 秒后从剪贴板清除。
 struct CloudVaultDetailView: View {
     @State var item: CloudVaultItem
     let onChanged: () async -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var secret: [String: Any] = [:]
-    @State private var unlocked = false
+    @State private var revealedAt: Date?
     @State private var editing = false
     @State private var confirmDelete = false
     @State private var uses: [CloudVaultUse] = []
     @State private var errorText: String?
 
+    private var unlocked: Bool { revealedAt != nil }
+
     var body: some View {
         List {
+            CloudVaultDetailHeader(item: item)
             Section {
                 CloudVaultFieldRows(item: item, secret: secret, unlocked: unlocked, unlock: unlock)
             } header: {
-                HStack {
-                    Text(item.kind.label)
-                    Spacer()
-                    if !unlocked {
-                        Button { Task { await unlock() } } label: { Label("显示", systemImage: "faceid") }
-                            .font(.caption).textCase(nil)
-                    }
+                if !unlocked && item.kind != .contact {
+                    HStack { Spacer(); Button { Task { await unlock() } } label: { Label("用面容 ID 显示", systemImage: "faceid") }.font(.caption).textCase(nil) }
                 }
-            }
-            Section {
-                Toggle("允许 Bot 使用", isOn: Binding(get: { item.allowBots }, set: { v in Task { await setAllow(v) } }))
             } footer: {
-                Text(item.allowBots ? "Bot 需要时会直接用它填写网页（不会看到原值），每次使用都记在下面。"
-                                    : "Bot 看得到这一项，但不能使用；需要时会请你亲自填写。")
+                if unlocked { Text("\(Int(CloudVaultRevealPolicy.revealSeconds)) 秒后自动遮住；复制的密码 \(Int(CloudVaultRevealPolicy.clipboardSeconds)) 秒后从剪贴板清除。") }
+            }
+            if item.kind != .note {
+                CloudVaultBotAccessSection(item: $item, onChanged: onChanged, errorText: $errorText)
             }
             if !uses.isEmpty {
                 Section("最近使用") { CloudVaultUsesRows(uses: Array(uses.prefix(10)), showItem: false) }
             }
             Section {
-                Button(role: .destructive) { confirmDelete = true } label: { Label("删除", systemImage: "trash") }
+                Button(role: .destructive) { confirmDelete = true } label: { Text("移除").frame(maxWidth: .infinity) }
             }
-            if let e = errorText {
-                Text(e).font(.footnote).foregroundStyle(.orange)
-            }
+            if let e = errorText { Text(e).font(.footnote).foregroundStyle(.orange) }
         }
-        .navigationTitle(item.title)
+        .listStyle(.insetGrouped)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("编辑") { Task { if await unlock() { editing = true } } }
-            }
+            ToolbarItem(placement: .primaryAction) { Button("编辑") { Task { if await unlock() { editing = true } } } }
         }
         .sheet(isPresented: $editing) {
             NavigationStack {
@@ -57,14 +52,20 @@ struct CloudVaultDetailView: View {
                 }
             }
         }
-        .confirmationDialog("删除「\(item.title)」？", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("删除", role: .destructive) { Task { await delete() } }
-        } message: {
-            Text("删除后 Bot 也不能再使用它，无法恢复。")
-        }
+        .confirmationDialog("移除「\(item.title)」？", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("移除", role: .destructive) { Task { await delete() } }
+        } message: { Text("移除后 Bot 也不能再使用它，无法恢复。") }
         .task { uses = (try? await CloudVaultService.uses(itemId: item.id)) ?? [] }
-        .onDisappear { secret = [:]; unlocked = false }
+        .task(id: revealedAt) {
+            // 显示 30 秒后自动遮回
+            guard revealedAt != nil else { return }
+            try? await Task.sleep(nanoseconds: UInt64(CloudVaultRevealPolicy.revealSeconds * 1_000_000_000))
+            if CloudVaultRevealPolicy.shouldHide(revealedAt: revealedAt, now: Date()) { hide() }
+        }
+        .onDisappear { hide() }
     }
+
+    private func hide() { secret = [:]; revealedAt = nil }
 
     @discardableResult
     private func unlock() async -> Bool {
@@ -75,7 +76,7 @@ struct CloudVaultDetailView: View {
         }
         do {
             secret = try await CloudVaultService.reveal(item.id)
-            unlocked = true
+            revealedAt = Date()
             errorText = nil
             return true
         } catch {
@@ -84,21 +85,9 @@ struct CloudVaultDetailView: View {
         }
     }
 
-    private func setAllow(_ v: Bool) async {
-        let old = item.allowBots
-        item.allowBots = v
-        do {
-            if let updated = try await CloudVaultService.save(id: item.id, body: ["allow_bots": v]) { item = updated }
-            await onChanged()
-        } catch {
-            item.allowBots = old
-            errorText = "保存失败：\(error.localizedDescription)"
-        }
-    }
-
     private func refreshItem() async {
         if let fresh = try? await CloudVaultService.list().items.first(where: { $0.id == item.id }) { item = fresh }
-        if unlocked, let s = try? await CloudVaultService.reveal(item.id) { secret = s }
+        if unlocked, let s = try? await CloudVaultService.reveal(item.id) { secret = s; revealedAt = Date() }
     }
 
     private func delete() async {
@@ -107,12 +96,104 @@ struct CloudVaultDetailView: View {
             await onChanged()
             dismiss()
         } catch {
-            errorText = "删除失败：\(error.localizedDescription)"
+            errorText = "移除失败：\(error.localizedDescription)"
         }
     }
 }
 
-/// 字段行：普通字段直接显示可复制；机密字段遮住，复制前要先过 Face ID
+/// 详情页顶部：居中的大图标方块 + 标题 + 副标题
+struct CloudVaultDetailHeader: View {
+    let item: CloudVaultItem
+
+    var body: some View {
+        Section {
+            VStack(spacing: 10) {
+                CloudVaultIconTile(item: item, size: 72)
+                Text(item.title).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
+                if !item.subtitle.isEmpty { Text(item.subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
+                if item.pwWeak || item.pwReused {
+                    Label(item.pwWeak ? "弱密码，建议更换" : "这个密码在别的登录里也用了", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 8)
+            .listRowBackground(Color.clear)
+        }
+    }
+}
+
+/// 「允许 Bot 使用」总开关 + 只允许哪些 Bot
+struct CloudVaultBotAccessSection: View {
+    @Binding var item: CloudVaultItem
+    let onChanged: () async -> Void
+    @Binding var errorText: String?
+    @ObservedObject private var home = CloudBotHomeModel.shared
+
+    var body: some View {
+        Section {
+            Toggle("允许 Bot 使用", isOn: Binding(get: { item.allowBots }, set: { v in Task { await save(["allow_bots": v]) } }))
+            if item.allowBots {
+                NavigationLink {
+                    CloudVaultBotPicker(bots: home.bots, selected: Set(item.allowedBots ?? [])) { ids in
+                        Task { await save(["allowed_bots": ids.sorted()]) }
+                    }
+                } label: {
+                    LabeledContent("哪些 Bot 可以用", value: allowedText)
+                }
+            }
+        } footer: {
+            Text(item.allowBots ? "Bot 需要时会直接用它填写网页（不会看到原值），每次使用都记在下面。"
+                                : "Bot 看得到这一项，但不能使用；需要时会请你亲自填写。")
+        }
+    }
+
+    private var allowedText: String {
+        guard let ids = item.allowedBots, !ids.isEmpty else { return "所有 Bot" }
+        let names = ids.compactMap { id in home.bots.first { $0.id == id }?.name }
+        return names.isEmpty ? "\(ids.count) 个 Bot" : names.joined(separator: "、")
+    }
+
+    private func save(_ body: [String: Any]) async {
+        do {
+            if let updated = try await CloudVaultService.save(id: item.id, body: body) { item = updated }
+            await onChanged()
+        } catch {
+            errorText = "保存失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+struct CloudVaultBotPicker: View {
+    let bots: [CloudBot]
+    @State var selected: Set<String>
+    let onDone: (Set<String>) -> Void
+
+    var body: some View {
+        List {
+            Section {
+                Button { selected = [] } label: {
+                    HStack { Text("所有 Bot"); Spacer(); if selected.isEmpty { Image(systemName: "checkmark") } }
+                }
+            }
+            Section("只允许") {
+                ForEach(bots, id: \.id) { b in
+                    Button {
+                        if selected.contains(b.id) { selected.remove(b.id) } else { selected.insert(b.id) }
+                    } label: {
+                        HStack { Text(b.name); Spacer(); if selected.contains(b.id) { Image(systemName: "checkmark") } }
+                    }
+                }
+            }
+        }
+        .tint(.primary)
+        .navigationTitle("哪些 Bot 可以用")
+        .navigationBarTitleDisplayMode(.inline)
+        .onDisappear { onDone(selected) }
+    }
+}
+
+/// 字段行（分组）：登录 = 网站 / 用户名 / 密码 / 验证码；卡 = 卡号 / 持卡人 / 有效期 / 安全码 / 账单地址 / 提示；
+/// 联系信息 = 姓名 / 电话 / 邮箱 / 地址；备注 = 内容。机密遮住，复制前先过 Face ID。
 struct CloudVaultFieldRows: View {
     let item: CloudVaultItem
     let secret: [String: Any]
@@ -122,32 +203,37 @@ struct CloudVaultFieldRows: View {
     var body: some View {
         switch item.kind {
         case .login:
-            CloudVaultField(title: "网站", value: item.site, masked: nil, isSecret: false, unlock: unlock)
-            CloudVaultField(title: "用户名", value: item.username, masked: nil, isSecret: false, unlock: unlock)
-            CloudVaultField(title: "密码", value: str("password"), masked: "••••••••", isSecret: true, unlock: unlock)
-            if item.hasTotp {
-                CloudVaultTOTPRow(secret: unlocked ? str("totp") : nil, unlock: unlock)
-            }
+            field("网站", item.site, nil, false)
+            field("用户名", item.username, nil, false)
+            field("密码", str("password"), CloudVaultCatalog.maskedPassword, true)
+            if item.hasTotp { CloudVaultTOTPRow(secret: unlocked ? str("totp") : nil, unlock: unlock) }
         case .card:
-            CloudVaultField(title: "持卡人", value: item.name, masked: nil, isSecret: false, unlock: unlock)
-            CloudVaultField(title: "卡号", value: str("number"), masked: "•••• " + (item.last4 ?? ""), isSecret: true, unlock: unlock)
-            CloudVaultField(title: "有效期", value: str("expiry"), masked: "••/••", isSecret: true, unlock: unlock)
-            CloudVaultField(title: "CVV", value: str("cvv"), masked: "•••", isSecret: true, unlock: unlock)
+            field("卡号", str("number"), CloudVaultCatalog.maskCard(last4: item.last4), true)
+            field("持卡人", item.name, nil, false)
+            field("有效期", str("expiry") ?? item.expiryHint, "••/••", false)
+            field("安全码", str("cvv"), "•••", true)
+            field("账单地址", str("billing"), unlocked ? nil : "•••", false)
+            field("提示", str("hint"), nil, false)
         case .contact:
-            CloudVaultField(title: "姓名", value: item.name, masked: nil, isSecret: false, unlock: unlock)
-            CloudVaultField(title: "电话", value: str("phone"), masked: "•••", isSecret: true, unlock: unlock)
-            CloudVaultField(title: "邮箱", value: str("email"), masked: "•••", isSecret: true, unlock: unlock)
-            ForEach(Array(addresses.enumerated()), id: \.offset) { _, a in
-                CloudVaultField(title: (a["label"] as? String ?? "地址") + ((a["default"] as? Bool ?? false) ? "（默认）" : ""),
-                                value: CloudVaultFieldRows.addressText(a), masked: nil, isSecret: false, unlock: unlock)
+            field("姓名", item.name, nil, false)
+            field("电话", str("phone"), "•••", true)
+            field("邮箱", str("email"), "•••", true)
+            if unlocked {
+                ForEach(Array(addresses.enumerated()), id: \.offset) { _, a in
+                    field((a["label"] as? String ?? "地址") + ((a["default"] as? Bool ?? false) ? "（默认）" : ""),
+                          CloudVaultFieldRows.addressText(a), nil, false)
+                }
+            } else {
+                field("地址", item.addressHint, "•••", false)
             }
-            if !unlocked {
-                CloudVaultField(title: "地址", value: nil, masked: "•••", isSecret: true, unlock: unlock)
-            }
+        case .note:
+            field("内容", str("body"), "••••••", true)
         }
-        if unlocked, let notes = str("notes") {
-            CloudVaultField(title: "备注", value: notes, masked: nil, isSecret: false, unlock: unlock)
-        }
+        if unlocked, let notes = str("notes") { field("备注", notes, nil, false) }
+    }
+
+    private func field(_ title: String, _ value: String?, _ masked: String?, _ isSecret: Bool) -> some View {
+        CloudVaultField(title: title, value: value, masked: masked, isSecret: isSecret, unlock: unlock)
     }
 
     private func str(_ k: String) -> String? {
@@ -155,7 +241,7 @@ struct CloudVaultFieldRows: View {
         return v
     }
 
-    private var addresses: [[String: Any]] { unlocked ? (secret["addresses"] as? [[String: Any]] ?? []) : [] }
+    private var addresses: [[String: Any]] { secret["addresses"] as? [[String: Any]] ?? [] }
 
     static func addressText(_ a: [String: Any]) -> String {
         ["line1", "line2", "city", "region", "postal", "country"].compactMap { a[$0] as? String }.filter { !$0.isEmpty }.joined(separator: " ")
@@ -175,11 +261,12 @@ struct CloudVaultField: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(.caption).foregroundStyle(.secondary)
-                    Text(value ?? masked ?? "").font(isSecret && value != nil ? .body.monospaced() : .body).textSelection(.enabled)
+                    Text(value ?? masked ?? "").font(isSecret && value != nil ? .body.monospaced() : .body)
+                        .privacySensitive(isSecret)
                 }
                 Spacer()
                 Button { Task { await copy() } } label: {
-                    Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.footnote)
+                    Image(systemName: copied ? "checkmark" : (value == nil && isSecret ? "faceid" : "doc.on.doc")).font(.footnote)
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("复制\(title)")
@@ -199,7 +286,7 @@ struct CloudVaultField: View {
     }
 }
 
-/// 当前两步验证码，每秒刷新
+/// 当前两步验证码 + 倒计时圆环，每秒刷新
 struct CloudVaultTOTPRow: View {
     let secret: String?
     let unlock: () async -> Bool
@@ -207,8 +294,28 @@ struct CloudVaultTOTPRow: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { ctx in
             let now = secret.flatMap { CloudVaultTOTP.code($0, at: ctx.date) }
-            CloudVaultField(title: now.map { "验证码（\($0.secondsLeft) 秒）" } ?? "验证码",
-                            value: now.map { $0.code }, masked: "••• •••", isSecret: true, unlock: unlock)
+            HStack {
+                CloudVaultField(title: "验证码", value: now.map { String($0.code.prefix(3)) + " " + String($0.code.suffix(3)) },
+                                masked: "••• •••", isSecret: true, unlock: unlock)
+                if let left = now?.secondsLeft { CloudVaultCountdownRing(secondsLeft: left) }
+            }
         }
+    }
+}
+
+struct CloudVaultCountdownRing: View {
+    let secondsLeft: Int
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.secondary.opacity(0.2), lineWidth: 3)
+            Circle().trim(from: 0, to: CGFloat(secondsLeft) / 30)
+                .stroke(secondsLeft <= 5 ? Color.red : Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            Text("\(secondsLeft)").font(.system(size: 10, weight: .semibold).monospacedDigit())
+        }
+        .frame(width: 26, height: 26)
+        .animation(.linear(duration: 1), value: secondsLeft)
+        .accessibilityLabel("还剩 \(secondsLeft) 秒")
     }
 }

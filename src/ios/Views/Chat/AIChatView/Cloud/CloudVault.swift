@@ -2,72 +2,7 @@ import Foundation
 import LocalAuthentication
 import UIKit
 
-/// 保管库的一项（只有元数据；密码、卡号等机密要 reveal 才拿到，见 CloudVaultService.reveal）。
-struct CloudVaultItem: Identifiable, Equatable {
-    enum Kind: String, CaseIterable { case login, card, contact }
-
-    let id: String
-    let kind: Kind
-    var title: String
-    var site: String?
-    var username: String?
-    var name: String?
-    var last4: String?
-    var brand: String?
-    var isDefault: Bool
-    var hasTotp: Bool
-    var allowBots: Bool
-    var lastUsedAt: Date?
-
-    init?(_ d: [String: Any]) {
-        guard let id = d["id"] as? String, let k = (d["kind"] as? String).flatMap(Kind.init(rawValue:)) else { return nil }
-        self.id = id
-        kind = k
-        title = d["title"] as? String ?? ""
-        site = d["site"] as? String
-        username = d["username"] as? String
-        name = d["name"] as? String
-        last4 = d["last4"] as? String
-        brand = d["brand"] as? String
-        isDefault = d["is_default"] as? Bool ?? false
-        hasTotp = d["has_totp"] as? Bool ?? false
-        allowBots = d["allow_bots"] as? Bool ?? true
-        lastUsedAt = (d["last_used_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
-    }
-
-    /// 列表第二行：登录显示用户名，卡片显示 •••• 后四位，联系信息显示「默认」
-    var subtitle: String {
-        switch kind {
-        case .login: return [username, site].compactMap { $0 }.joined(separator: " · ")
-        case .card: return [brand, last4.map { "•••• " + $0 }, name].compactMap { $0 }.joined(separator: " · ")
-        case .contact: return isDefault ? "默认" : ""
-        }
-    }
-
-    var symbol: String {
-        switch kind {
-        case .login: return "key.fill"
-        case .card: return "creditcard.fill"
-        case .contact: return "person.crop.circle.fill"
-        }
-    }
-
-    func matches(_ q: String) -> Bool {
-        let q = q.trimmingCharacters(in: .whitespaces).lowercased()
-        if q.isEmpty { return true }
-        return [title, site, username, name, last4, brand].compactMap { $0?.lowercased() }.contains { $0.contains(q) }
-    }
-}
-
-extension CloudVaultItem.Kind {
-    var label: String {
-        switch self {
-        case .login: return "登录"
-        case .card: return "卡片"
-        case .contact: return "联系信息"
-        }
-    }
-}
+// CloudVaultItem 和列表分组、计数、遮挡等纯逻辑在 CloudVaultModel.swift（可在 Linux 上测试）
 
 /// 一条使用记录：哪个 Bot 在什么时候用了哪一项、填到了哪里
 struct CloudVaultUse: Identifiable {
@@ -151,11 +86,11 @@ enum CloudVaultAuth {
         }
     }
 
-    /// 复制机密：只留在本机剪贴板，60 秒后自动清除
+    /// 复制机密：只留在本机剪贴板（不同步到其他设备），60 秒后自动清除
     static func copy(_ text: String, secret: Bool) {
         if secret {
             UIPasteboard.general.setItems([[UIPasteboard.typeAutomatic: text]],
-                                          options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(60)])
+                                          options: [.localOnly: true, .expirationDate: CloudVaultRevealPolicy.clipboardExpiry(from: Date())])
         } else {
             UIPasteboard.general.string = text
         }

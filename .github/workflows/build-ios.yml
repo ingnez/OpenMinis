@@ -153,6 +153,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotComposerAction.swift src/ios/Views/Chat/AIChatView/Realtime/RealtimeLevelMeter.swift scripts/CloudBotComposerTests.swift -o /tmp/cloud-composer-tests
           /tmp/cloud-composer-tests
+      - name: 保管库界面逻辑测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudVaultModel.swift scripts/CloudVaultModelTests.swift -o /tmp/cloud-vault-model-tests
+          /tmp/cloud-vault-model-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -299,6 +304,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudVaultModel.swift scripts/CloudVaultModelTests.swift -o /tmp/cloud-vault-model-tests
+          /tmp/cloud-vault-model-tests | tee cloud-vault-model-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotComposerAction.swift src/ios/Views/Chat/AIChatView/Realtime/RealtimeLevelMeter.swift scripts/CloudBotComposerTests.swift -o /tmp/cloud-composer-tests
           /tmp/cloud-composer-tests | tee cloud-composer-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudCaseRedactor.swift scripts/CloudCaseRedactorTests.swift -o /tmp/cloud-caseredact-tests
