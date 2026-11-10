@@ -171,8 +171,7 @@ struct CloudTextBlockView: View {
         } else {
             let shown = CloudMessageText.display(block.content)
             if shown.images > 0 {
-                Label(shown.images == 1 ? "图片" : "\(shown.images) 张图片", systemImage: "photo")
-                    .font(.caption).foregroundStyle(.secondary)
+                CloudMessageImages(content: block.content, alignment: .leading)
             }
             if !shown.text.isEmpty {
                 SelectableMarkdownView(markdown: shown.text)

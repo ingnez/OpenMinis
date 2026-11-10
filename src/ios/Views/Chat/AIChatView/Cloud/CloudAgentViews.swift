@@ -631,6 +631,8 @@ struct CloudSessionView: View {
     @State private var errorMessage: String? = nil
     @State private var showComputer = false
     @State private var attachments: [CloudPendingAttachment] = []
+    /// 每个附件的上传状态（托盘卡片上的进度圈 / 重试）
+    @State private var uploadStates: [UUID: ImageStackSource.Upload] = [:]
     /// 点了哪个拍照识别要求（用来找更对口的 Bot）
     @State private var photoKind: String?
     @State private var showPhotos = false
@@ -803,6 +805,11 @@ struct CloudSessionView: View {
                 .onAppear {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
                 }
+            }
+            // 看图页「问问这张图」：图片放回附件，输入框起个头
+            .environment(\.cloudAskImage) { img in
+                if let a = CloudAttachmentKit.image(img, name: "引用的图片.jpg") { attachments.append(a) }
+                if inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { inputPrompt = "关于这张图片：" }
             }
 
             Divider()
@@ -1178,25 +1185,7 @@ struct CloudSessionView: View {
                 CloudReplyBanner(excerpt: r.excerpt) { replyTarget = nil }
             }
             if !attachments.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(attachments) { a in
-                            HStack(spacing: 6) {
-                                if let thumb = a.thumbnail {
-                                    Image(uiImage: thumb).resizable().scaledToFill().frame(width: 28, height: 28).clipShape(RoundedRectangle(cornerRadius: 6))
-                                } else {
-                                    Image(systemName: "doc").frame(width: 28, height: 28)
-                                }
-                                Text(a.filename).font(.caption).lineLimit(1).frame(maxWidth: 120)
-                                Button { attachments.removeAll { $0.id == a.id } } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                                    .accessibilityLabel("移除 \(a.filename)")
-                            }
-                            .padding(6)
-                            .background(RoundedRectangle(cornerRadius: 10).fill(Color(.systemGray6)))
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                }
+                CloudAttachmentTray(attachments: $attachments, states: uploadStates, onRetry: { sendTask() })
                 if let kind = photoKind, attachments.contains(where: { $0.isImage }), let target = photoTarget(kind) {
                     // 识别后分给对应的 Bot：比如药品图交给药师 Bot，带着图片和要求过去
                     Button { handPhoto(to: target.id) } label: {
@@ -1571,7 +1560,7 @@ struct CloudSessionView: View {
         isSubmitting = true
         Task {
             do {
-                let lines = try await CloudAttachmentKit.upload(items, sessionId: sessionId)
+                let lines = try await CloudAttachmentKit.upload(items, sessionId: sessionId) { id, state in uploadStates[id] = state }
                 let text = (content.isEmpty ? "请查看附件。" : content) + "\n\n" + lines.joined(separator: "\n")
                 var newBody = body
                 newBody["content"] = text
@@ -1585,11 +1574,12 @@ struct CloudSessionView: View {
                     newBody["message_parts"] = parts
                 }
                 attachments.removeAll()
+                uploadStates = [:]
                 isSubmitting = false
                 submit(content: text, body: newBody)
             } catch {
                 isSubmitting = false
-                errorMessage = "附件上传失败：\(error.localizedDescription)"
+                errorMessage = "附件上传失败：\(error.localizedDescription)。点卡片上的「重试」再发一次"
             }
         }
     }
@@ -1838,7 +1828,9 @@ struct CloudMessageBubble: View {
                 Text(role == "user" ? "我" : "云端 Agent")
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                Text(content)
+                let shown = CloudMessageText.display(content)
+                if shown.images > 0 { CloudMessageImages(content: content, alignment: role == "user" ? .trailing : .leading) }
+                Text(shown.text)
                     .padding(10)
                     .background(role == "user" ? Color.accentColor.opacity(0.2) : Color(.secondarySystemBackground))
                     .cornerRadius(10)

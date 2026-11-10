@@ -32,8 +32,7 @@ struct CloudProseAssistant: View {
             } else {
                 let shown = CloudMessageText.display(content)
                 if shown.images > 0 {
-                    Label(shown.images == 1 ? "图片" : "\(shown.images) 张图片", systemImage: "photo")
-                        .font(.caption).foregroundStyle(.secondary)
+                    CloudMessageImages(content: content, alignment: .leading)
                 }
                 if !shown.text.isEmpty {
                     SelectableMarkdownView(markdown: shown.text)
@@ -55,19 +54,19 @@ struct CloudProseUser: View {
         let shown = CloudMessageText.display(content)
         HStack {
             Spacer(minLength: 56)
-            VStack(alignment: .trailing, spacing: 4) {
+            VStack(alignment: .trailing, spacing: 6) {
+                // 图片叠在气泡上方（不放进彩色气泡里）
                 if shown.images > 0 {
-                    Label(shown.images == 1 ? "图片" : "\(shown.images) 张图片", systemImage: "photo")
-                        .font(.caption).foregroundStyle(.white.opacity(0.9))
+                    CloudMessageImages(content: content, alignment: .trailing)
                 }
                 if !shown.text.isEmpty {
                     Text(shown.text).textSelection(.enabled)
+                        .font(.body)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(accent))
                 }
             }
-            .font(.body)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 16).padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(accent))
         }
     }
 }

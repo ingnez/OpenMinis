@@ -69,20 +69,19 @@ struct CloudThemedBubble: View {
         let shown = CloudMessageText.display(content)
         return HStack {
             if role == "user" { Spacer(minLength: 48) }
-            VStack(alignment: role == "user" ? .trailing : .leading, spacing: 4) {
+            VStack(alignment: role == "user" ? .trailing : .leading, spacing: 6) {
                 if shown.images > 0 {
-                    Label(shown.images == 1 ? "图片" : "\(shown.images) 张图片", systemImage: "photo")
-                        .font(.caption).foregroundStyle(role == "user" ? Color.white.opacity(0.9) : Color.secondary)
+                    CloudMessageImages(content: content, alignment: role == "user" ? .trailing : .leading)
                 }
                 if !shown.text.isEmpty {
                     Text(shown.text).textSelection(.enabled)
+                        .font(.body)
+                        .foregroundStyle(role == "user" ? Color.white : Color.primary)
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .background(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .fill(role == "user" ? accent : Color(.systemGray6)))
                 }
             }
-            .font(.body)
-            .foregroundStyle(role == "user" ? Color.white : Color.primary)
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(role == "user" ? accent : Color(.systemGray6)))
             if role != "user" { Spacer(minLength: 24) }
         }
     }
@@ -356,15 +355,17 @@ struct CloudPendingAttachment: Identifiable {
 enum CloudAttachmentKit {
     /// 图片压成 ≤1600px 的 JPEG，控制上传体积
     static func image(_ image: UIImage, name: String) -> CloudPendingAttachment? {
-        let maxSide: CGFloat = 1600
-        let scale = min(1, maxSide / max(image.size.width, image.size.height))
-        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        // 「保留原图」：原尺寸、高质量 JPEG 上传到工作区；发给模型的那份仍由 visionData 压到预算内
+        let keep = ImageSendPolicy.keepOriginal
+        let pixel = CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale)
+        let size = ImageSendPolicy.targetSize(for: pixel, keepOriginal: keep)
         // 按像素画（scale = 1）：默认按屏幕倍数画，1600pt 的图会变成 4800px，超过发给模型的大小上限后图片被丢掉
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
         let resized = UIGraphicsImageRenderer(size: size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
-        guard let data = CloudImageBudget.fit(resized) else { return nil }
-        return CloudPendingAttachment(filename: name, data: data, isImage: true, thumbnail: resized)
+        let jpgName = (name as NSString).deletingPathExtension + ".jpg"   // HEIC 等一律转 JPEG
+        guard let data = keep ? resized.jpegData(compressionQuality: 0.92) : CloudImageBudget.fit(resized) else { return nil }
+        return CloudPendingAttachment(filename: jpgName, data: data, isImage: true, thumbnail: resized)
     }
 
     /// 发给模型看的图片：拍照 / 相册的直接用；从「文件」里选的图片解码后同样压缩；不是图片返回 nil
@@ -392,11 +393,20 @@ enum CloudAttachmentKit {
     }
 
     /// 上传非图片附件（以及图片的原件，便于在资料库里找到），返回给 Agent 的说明行
-    static func upload(_ items: [CloudPendingAttachment], sessionId: String) async throws -> [String] {
+    static func upload(_ items: [CloudPendingAttachment], sessionId: String,
+                       progress: (@MainActor (UUID, ImageStackSource.Upload) -> Void)? = nil) async throws -> [String] {
         var lines: [String] = []
         for item in items {
-            let resp = try await CloudConnection.shared.request(method: "POST", path: "/v1/sessions/\(sessionId)/upload",
+            await progress?(item.id, .uploading(nil))
+            let resp: [String: Any]
+            do {
+                resp = try await CloudConnection.shared.request(method: "POST", path: "/v1/sessions/\(sessionId)/upload",
                                                                 body: ["filename": item.filename, "data_base64": item.data.base64EncodedString()])
+            } catch {
+                await progress?(item.id, .failed)
+                throw error
+            }
+            await progress?(item.id, .done)
             let path = resp["file_path"] as? String ?? item.filename
             lines.append("[附件] \(item.filename) → 工作区 \(path)")
         }
