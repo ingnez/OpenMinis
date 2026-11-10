@@ -576,3 +576,16 @@ GitHub 和邮件每 5 分钟轮询一次；第一次只记位置。新事件（�
 - `/投票 问题 | 选项A | 选项B …`（或 `/vote`，2～8 个选项，`|` 或 `｜` 分隔）：每个成员回「选 N」加一句理由。
 - 结束时系统发一条 `kind: "system"`、meta `{"vote":"result"}` 的计票结果（胜出 / 平票 / 无有效票，以及弃权名单）。
 - 新的用户消息会中止进行中的辩论。
+
+## 实时资源面板（2.29.0）
+
+`GET /v1/live-stats`：手机打开面板时约 2 秒轮询一次；用和上一次读数的差算 CPU 占用和网速，所以第一次的 `now.cpu` / `rx_bps` / `tx_bps` 是 `null`。
+
+```json
+{"now": {"t": 1762790000.0, "cpu": 12.5, "mem_used_mb": 900, "rx_bps": 2048, "tx_bps": 512},
+ "memory_total_mb": 2000, "disk": {"used_mb": 4096, "total_mb": 10240}, "load": [0.3, 0.2, 0.1], "cores": 2,
+ "running_tasks": 1, "queued_tasks": 0, "top": [{"pid": 1, "name": "python3", "rss_mb": 80.0}],
+ "history": [{"t": 1762790000.0, "cpu": 12.5, "mem_used_mb": 900, "rx_bps": 2048, "tx_bps": 512}]}
+```
+
+`history` 只保留最近 90 个点，只在有人看面板时才采样。

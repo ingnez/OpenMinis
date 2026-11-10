@@ -74,6 +74,7 @@ import cloud_duty
 import cloud_events
 import cloud_exams
 import cloud_sysnap
+import cloud_livestats
 import cloud_secrets
 import cloud_policy
 import cloud_cron
@@ -625,7 +626,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.28.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.29.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1542,6 +1543,7 @@ def _close_browser_for_display(key):
         pass
 
 GATE = iso.TaskGate(resource_settings)
+LIVE_STATS = cloud_livestats.LiveStats()
 DISPLAYS = cloud_displays.DisplayManager(resource_settings, slot_index, on_stop=_close_browser_for_display)
 BG_JOBS = iso.BackgroundJobs()
 
@@ -6273,6 +6275,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"settings": resource_settings(), "defaults": iso.DEFAULTS, "specs": specs,
                              "recommended": iso.recommend(specs), "usage": resource_usage(),
                              "per_bot_display": cloud_displays.DisplayManager.available()})
+            return
+
+        if path == "/v1/live-stats":
+            self._send(200, LIVE_STATS.sample(GLOBAL_WORKSPACE, GATE.status()))
             return
 
         if path == "/v1/queue":
