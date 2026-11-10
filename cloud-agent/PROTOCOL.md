@@ -375,3 +375,5 @@
 - `POST /v1/sessions/import` 新增可选 `persona_id`；省略时会话归主 Bot。
 - `GET /v1/plugins/deps`：`{"tools": {"node": {...}, "uv": {...}}}`，每项含 `installed`、`paths`（npx/uvx 等可执行文件位置）与最近一次安装任务 `job`（`running` / `succeeded` / `failed`，含 `log`、`error`）。插件对象新增 `missing_dependencies`。
 - `POST /v1/plugins/deps/install {"tool": "npx"|"node"|"uvx"|"uv", "confirm": true}`：不带 `confirm` 时返回 428 `confirm_install`（含来源与安装目录，供手机弹窗确认）；确认后 202 后台安装。只从官方地址（nodejs.org / astral-sh/uv GitHub Releases）下载，SHA-256 校验不一致即放弃；安装到 `~/.local/bin`，无需 root。
+- Telegram 配置（`/v1/telegram` 与 `/v1/bots/{id}/telegram`）新增可选 `proxy`：`http://`、`https://`、`socks5://`（本地解析域名）或 `socks5h://`（代理解析域名），可带 `user:pass@`，必须写端口。随整份配置加密保存，GET 只返回掩码（`proxy`: `socks5://***@host:port`、`has_proxy`）。PUT 不带 `proxy` 字段时沿用旧值，传空字符串清除。所有 Bot API 调用（校验、长轮询、发消息）都走该代理。`api_base` 可填反向代理或自建 Bot API 地址。
+- 校验失败返回 `error_kind`：Token 为空或格式错 → 400；`unauthorized`（Telegram 拒绝 Token）→ 400；`network`（连不上、超时、代理失败）→ 502，提示填写代理或自建 API 地址；`other` → 502。

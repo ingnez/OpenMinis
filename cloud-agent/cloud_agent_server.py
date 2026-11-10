@@ -2183,6 +2183,8 @@ def telegram_save(channel, req_json):
     existing = telegram_config(channel)
     if isinstance(body, dict) and existing and not body.get("bot_token"):
         body = dict(body, bot_token=existing["bot_token"])  # 只改允许列表等字段时沿用已存 Token
+    if isinstance(body, dict) and existing and "proxy" not in body and existing.get("proxy"):
+        body = dict(body, proxy=existing["proxy"])  # 未提交 proxy 字段时沿用；提交空字符串表示清除
     try:
         cfg = cloud_telegram.validate(body, lambda n: bool(CREDENTIAL_NAME_RE.match(n)) and any(c["name"] == n for c in list_credentials()))
         if channel:
@@ -2203,7 +2205,14 @@ def telegram_save(channel, req_json):
     except cloud_telegram.TelegramConfigError as e:
         return 400, {"error": str(e)}
     except cloud_telegram.TelegramAPIError as e:
-        return 502, {"error": "Telegram 校验失败：" + str(e)}
+        if e.kind == "unauthorized":
+            return 400, {"error": "Bot Token 无效（Telegram 返回 401 Unauthorized）：请在 @BotFather 重新复制完整 Token", "error_kind": "unauthorized"}
+        if e.kind == "network":
+            via = "代理" if cfg.get("proxy") else ("自定义 API 地址" if cfg.get("api_base") != "https://api.telegram.org" else "api.telegram.org")
+            hint = ("请检查代理地址与端口是否可用" if cfg.get("proxy")
+                    else "云电脑可能无法直连 Telegram（例如中国大陆的 VPS）：请在 Telegram 设置里填写代理（http / https / socks5）或自建 Bot API 地址后重试")
+            return 502, {"error": f"云电脑连不上 Telegram（经 {via}：{e}）。{hint}", "error_kind": "network"}
+        return 502, {"error": "Telegram 校验失败：" + str(e), "error_kind": "other"}
     conn = get_db_connection()
     try:
         cloud_notify.save_setting(conn, telegram_setting_name(channel), cfg)
