@@ -11,7 +11,7 @@ import BackgroundTasks
 final class CloudLinkSupervisor: ObservableObject {
     static let shared = CloudLinkSupervisor()
     /// App 内置的服务器 Agent 版本（与 cloud_agent_server.AGENT_VERSION 一致，测试会核对）
-    static let bundledAgentVersion = "2.9.0"
+    static let bundledAgentVersion = "2.10.0"
     nonisolated static let refreshTaskId = "com.openminis.app.cloud-refresh"
     nonisolated static let barkFallbackKey = "OpenMinisCloud_barkFallback"   // "auto" / "on" / "off"
 

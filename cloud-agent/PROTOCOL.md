@@ -453,3 +453,11 @@
 - `GET /v1/workers/<id>` → `{"worker": …}`；过程用 `/v1/tasks/<task_id>/events`
 - `POST /v1/workers/<id>/stop`、`POST /v1/workers/<id>/message {"text"}`（补充要求，送进运行中的 worker）
 - `/v1/bots` 每个 Bot 多 `running_workers`
+
+## 对话行为（2.10.0）
+
+- 消息列表每条多 `id`；有回应时带 `reactions: [{actor: bot|user, emoji}]`；元数据字段：`choice`（选项卡）、`reply_to {id, role, excerpt}`、`page {page_id, title}`（本轮写的页面卡片）、`milestone`（后台任务里程碑，值是 worker_id）、`worker_id` / `worker_status`（后台任务结果）。
+- 新工具：`react(emoji, message_id?)` 给用户消息回一个表情（可以代替文字回复）；`ask_choice(question, options, multi, allow_custom)` 显示选项卡并结束本轮；`report_progress(text)` 后台任务往聊天里发里程碑（每个任务最多 3 条）；`routine_create / routine_list / routine_delete` 管这个 Bot 自己的例行任务（cron 按用户时区，`once.at` 可写用户时区的 ISO 时间，`window_minutes` 灵活时间窗，`monitor=true` 没变化时回 [SKIP] 不打扰）。`memory_write` 多 `scope: bot|shared`。
+- `POST /v1/sessions/<sid>/messages` 可带 `reply_to: <message_id>`（引用回复，模型看到被引用的那句）和 `choice_answer: {message_id, selected: ["1"], custom, dismissed}`（服务器把选择写成「我选：…」并标记卡片已答，只能答一次）。
+- `POST /v1/sessions/<sid>/messages/<id>/reaction {"emoji"}`：用户给 Bot 的消息点表情（空 = 取消）。
+- 系统提示：回复风格（先答案、简洁、Markdown 链接、`---` 分气泡）、记忆习惯、常驻档案（共用用户档案 + 这个 Bot 自己的 profile/rules，各最多 1500 字；日记不常驻，用 memory_search 查）。例行 / 监控结果只有「无变化」时不通知。

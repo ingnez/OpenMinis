@@ -291,6 +291,9 @@ TOOL_TRIGGERS = {
     "vault_list": r"保管库|vault|账号|帐号|密码|登录|登陆|log ?in|sign ?in|password|信用卡|银行卡|卡号|付款|支付|结账|checkout|地址|收货|填写|表单|验证码|两步|2fa|totp|otp",
     "vault_fill": r"保管库|vault|账号|帐号|密码|登录|登陆|log ?in|sign ?in|password|信用卡|银行卡|卡号|付款|支付|结账|checkout|地址|收货|填写|表单",
     "vault_totp": r"保管库|vault|验证码|两步|2fa|totp|otp|登录|登陆|log ?in",
+    "routine_create": r"每天|每周|每月|每年|每隔|工作日|周末|定时|提醒|到点|闹钟|例行|routine|remind|every|cron|有变化|变了|告诉我.{0,6}(时|的时候)|monitor|盯着|监控|降价|到货",
+    "routine_list": r"每天|每周|每月|每年|每隔|工作日|周末|定时|提醒|到点|闹钟|例行|routine|remind|every|cron|有变化|变了|告诉我.{0,6}(时|的时候)|monitor|盯着|监控|降价|到货|取消|停掉|删",
+    "routine_delete": r"每天|每周|每月|每年|每隔|工作日|周末|定时|提醒|到点|闹钟|例行|routine|remind|every|cron|有变化|变了|告诉我.{0,6}(时|的时候)|monitor|盯着|监控|降价|到货|取消|停掉|删",
 }
 REQUEST_TOOLS_DEF = {"type": "function", "function": {
     "name": "request_tools",

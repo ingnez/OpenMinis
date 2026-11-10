@@ -78,6 +78,7 @@ import cloud_bots
 import cloud_admin
 import cloud_vault
 import cloud_workers
+import cloud_runmodel
 import cloud_plugins
 import cloud_oauth
 import cloud_mcp
@@ -308,6 +309,7 @@ def init_db():
     cloud_admin.ensure_schema(conn)
     cloud_vault.ensure_schema(conn)
     cloud_workers.ensure_schema(conn)
+    cloud_runmodel.ensure_schema(conn)
     cloud_vault.set_loader(get_db_connection)
     cloud_plugins.ensure_schema(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS app_settings (name TEXT PRIMARY KEY, value TEXT)")
@@ -558,7 +560,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.9.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.10.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1560,8 +1562,9 @@ def tool_memory_write(task_id, session_id, args):
     conn = get_db_connection()
     try:
         bot = session_bot(session_id)
-        # 主 Bot 记下的内容所有 Bot 共享；其他 Bot 的记忆彼此隔离
-        persona = "" if (bot and bot.get("is_primary")) else (session_persona_id(session_id) or "")
+        # 主 Bot 记下的、或 scope=shared 的内容所有 Bot 共享（用户档案）；其他 Bot 的记忆彼此隔离
+        shared = args.get("scope") == "shared" or (bot and bot.get("is_primary") and args.get("scope") != "bot")
+        persona = "" if shared else (session_persona_id(session_id) or "")
         entry, created = cloud_memory.write(conn, args.get("content"), args.get("category"), source="cloud", session_id=session_id,
                                             persona=persona)
     except ValueError as e:
@@ -1994,6 +1997,9 @@ def server_tool_notes(session_id):
     if others:
         personas_note += ("\n[Bot 协作] 需要别的 Bot 动手做事时用 delegate_task（在对方工作区执行，结果交回给你），只是通知用 send_to_bot；"
                           "收到以「【来自 …】」开头的消息说明是别的 Bot 交给你的，完成后最后一条回复写清结果。list_bots 查看所有 Bot。")
+        if (session_bot(session_id) or {}).get("is_primary"):
+            personas_note += ("\n[主 Bot 分派] 你是主 Bot：用户的请求明显属于某个 Bot 的专长（看 list_bots 的描述）时，用 delegate_task 交给它，"
+                              "并告诉用户交给了谁；回复里提到别的 Bot 时写成 @名字，手机会显示成可点开它对话的标签。")
         personas_note += "\n[其他人格] 需要其他人格的专长或它们的私有记忆时，用 subagent_task 并传 persona 询问：" + "；".join(
             f"{p['persona_id']}（{p['name']}）" for p in others[:20])
     return SERVER_TOOL_NOTES + personas_note + isolation_note(session_id) + skills_index
@@ -2194,7 +2200,9 @@ def tool_page_write(task_id, session_id, args):
         return {"error": f"page_id 不存在：{args.get('page_id')}"}
     finally:
         conn.close()
-    return {"status": "ok", "page_id": page["page_id"], "title": page["title"], "version": page["version"], "size": page["size"]}
+    TURN_FLAGS.setdefault(task_id, {}).setdefault("pages", []).append({"page_id": page["page_id"], "title": page["title"]})
+    return {"status": "ok", "page_id": page["page_id"], "title": page["title"], "version": page["version"], "size": page["size"],
+            "note": "页面已保存，聊天里会显示成页面卡片；回复只写一两句结论，不要把页面内容再贴一遍。"}
 
 SUBAGENT_MAX_PER_TASK = int(os.environ.get("OPENMINIS_SUBAGENT_MAX", "8"))
 SUBAGENT_INSTRUCTIONS = (
@@ -2567,6 +2575,144 @@ def worker_message(wid, text):
     if code >= 300:
         return code, res
     return 200, {"worker_id": wid, "delivered": "running"}
+
+def user_tz():
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT value FROM app_settings WHERE name = 'timezone'").fetchone()
+    except Exception:
+        row = None
+    finally:
+        conn.close()
+    return (row[0] if row and row[0] else None) or "UTC"
+
+def _parse_at(at, tz):
+    """once.at：UNIX 秒，或用户时区里的 ISO 时间（带时区偏移的按偏移）。"""
+    if isinstance(at, (int, float)) and not isinstance(at, bool):
+        return float(at)
+    if not isinstance(at, str):
+        raise ValueError("once.at 必须是时间")
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
+        dt = datetime.fromisoformat(at.strip().replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("once.at 格式应为 2026-11-11T08:00")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo(tz))
+    return dt.timestamp()
+
+def _turn_meta(task_id, meta):
+    """最终回复上挂本轮写的页面（App 显示页面卡片）。"""
+    pages = (TURN_FLAGS.get(task_id) or {}).pop("pages", None)
+    if not pages:
+        return meta
+    meta = dict(meta or {})
+    meta["page"] = pages[-1]
+    return meta
+
+def _post_turn_card(task_id, session_id):
+    """把选项卡作为 Bot 的一条消息写进对话（内容是问题本身，模型下一轮也看得到问的是什么）。"""
+    tf = TURN_FLAGS.get(task_id) or {}
+    choice = tf.pop("choice", None)
+    tf.pop("end", None)
+    if not choice:
+        return
+    meta = _turn_meta(task_id, {"choice": choice})
+    text = choice["question"] + "\n" + "\n".join(f"{o['id']}. {o['label']}" for o in choice["options"])
+    insert_message(session_id, "assistant", text, meta=meta)
+
+def tool_runmodel(task_id, session_id, name, args, model, provider_config, depth):
+    args = args if isinstance(args, dict) else {}
+    flags = TURN_FLAGS.setdefault(task_id, {})
+    conn = get_db_connection()
+    try:
+        if name == "react":
+            mid = args.get("message_id") or cloud_runmodel.last_user_message_id(conn, session_id)
+            if not mid:
+                return {"error": "没有可以回应的消息"}
+            try:
+                r = cloud_runmodel.set_reaction(conn, session_id, int(mid), "bot", args.get("emoji"))
+            except (cloud_runmodel.RunModelError, ValueError) as e:
+                return {"error": str(e)}
+            flags["answered"] = True
+            log_event(task_id, "reaction", {"message_id": int(mid), "emoji": args.get("emoji")})
+            return {"reacted": True, "reactions": r, "note": "已回应。如果表情已经够了，本轮不用再写字。"}
+        if name == "ask_choice":
+            try:
+                choice = cloud_runmodel.validate_choice(args)
+            except cloud_runmodel.RunModelError as e:
+                return {"error": str(e)}
+            flags.update(answered=True, end=True, choice=choice)
+            log_event(task_id, "choice", choice)
+            return {"shown": True, "note": "选项卡已显示给用户，本轮到此结束，等用户点选。"}
+        if name == "report_progress":
+            w = cloud_workers.by_session(conn, session_id)
+            if not w:
+                return {"error": "只有后台任务能发里程碑；前台直接回复用户"}
+            text = args.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return {"error": "text 不能为空"}
+            n = conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ? AND meta LIKE ?",
+                             (w["front_session"], f'%"milestone": "{w["worker_id"]}"%')).fetchone()[0]
+            cloud_workers.set_status(conn, w["worker_id"], w["status"], last_step=text.strip()[:200])
+            if n >= cloud_runmodel.MILESTONE_MAX:
+                return {"posted": False, "note": "里程碑已经发够了，专心做完，最后给结果"}
+            conn.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'assistant', ?, ?, ?)",
+                         (w["front_session"], f"⏳ {w['title']}：{text.strip()[:300]}", time.time(),
+                          json.dumps({"milestone": w["worker_id"]}, ensure_ascii=False)))
+            conn.commit()
+            return {"posted": True}
+    finally:
+        conn.close()
+    bot_id = session_persona_id(session_id)
+    if name == "routine_list":
+        return {"routines": [{"id": r["routine_id"], "name": r["name"], "schedule": r["schedule"], "enabled": r["enabled"],
+                              "next_run_at": r.get("next_run_at"), "run_count": r.get("run_count")}
+                             for r in list_routines() if (r.get("persona_id") or None) == (bot_id or None)]}
+    if name == "routine_delete":
+        r = get_routine(args.get("id")) if isinstance(args.get("id"), str) else None
+        if not r or (r.get("persona_id") or None) != (bot_id or None):
+            return {"error": "这个 Bot 没有这个例行任务"}
+        if args.get("enabled") is False:
+            update_routine(r["routine_id"], {"enabled": False})
+            return {"id": r["routine_id"], "paused": True}
+        conn = get_db_connection()
+        try:
+            conn.execute("DELETE FROM routines WHERE routine_id = ?", (r["routine_id"],))
+            conn.commit()
+        finally:
+            conn.close()
+        audit(session_id, "routine_delete", r["routine_id"], "删除例行任务：" + r["name"])
+        return {"id": r["routine_id"], "deleted": True}
+    if name == "routine_create":
+        bot = get_persona(bot_id) if bot_id else None
+        cred = (bot or {}).get("credential") or (provider_config or {}).get("credential")
+        if not cred:
+            return {"error": "需要已保存的模型凭据才能定时运行：请在 App 里给这个 Bot 选一个保存的服务商"}
+        sch = args.get("schedule") if isinstance(args.get("schedule"), dict) else {}
+        sch = dict(sch)
+        tz = user_tz()
+        try:
+            if sch.get("kind") == "cron":
+                sch.setdefault("timezone", tz)
+            if sch.get("kind") == "once":
+                sch["at"] = _parse_at(sch.get("at"), tz)
+                if sch["at"] < time.time() - 60:
+                    return {"error": "提醒时间已经过了"}
+            prompt = args.get("prompt")
+            if args.get("monitor") and isinstance(prompt, str):
+                prompt += "\n\n（监控：和上次相比没有值得告诉用户的变化时，只回复 [SKIP]。）"
+            fields = validate_routine_fields({"name": args.get("name"), "prompt": prompt, "schedule": sch,
+                                              "model": (bot or {}).get("model") or model, "credential": cred,
+                                              "persona_id": bot_id, "max_runs": args.get("max_runs") or (1 if sch.get("kind") == "once" else None)})
+        except ValueError as e:
+            return {"error": str(e)}
+        r = create_routine(fields)
+        audit(session_id, "routine_create", r["routine_id"], "新建例行任务：" + r["name"])
+        return {"id": r["routine_id"], "name": r["name"], "schedule": r["schedule"], "next_run_at": r.get("next_run_at"),
+                "timezone": tz, "note": "已创建。回复里用一句话告诉用户什么时候会运行。"}
+    return {"error": "unknown tool"}
 
 def tool_worker(task_id, session_id, name, args, model, provider_config):
     args = args if isinstance(args, dict) else {}
@@ -3285,7 +3431,8 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {
                     "content": {"type": "string", "description": "Concise Markdown, ideally with a short '## Topic' heading."},
-                    "category": {"type": "string", "enum": list(cloud_memory.CATEGORIES), "description": "profile / rules / people / workstreams / note (default note)."}
+                    "category": {"type": "string", "enum": list(cloud_memory.CATEGORIES), "description": "profile / rules / people / workstreams / note (default note)."},
+                    "scope": {"type": "string", "enum": ["bot", "shared"], "description": "bot (default): your own profile/journal; shared: the user profile all bots see."}
                 },
                 "required": ["content"]
             }
@@ -3531,11 +3678,59 @@ TOOL_DEFINITIONS.extend([
         "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "note": {"type": "string"}}, "required": ["id"]}}},
 ])
 WORKER_FRONT_TOOLS = {"spawn_task", "task_status", "task_message", "task_stop", "task_resume"}
+
+_SCHEDULE_SCHEMA = {"type": "object", "description": "kind=cron {expr:'0 9 * * 1-5'}（按用户时区）｜once {at:'2026-11-11T08:00'（用户时区）或 UNIX 秒}｜interval {seconds}；"
+                    "window_minutes 可选：在这之后的若干分钟内随机挑一个时间（不用卡准点）",
+                    "properties": {"kind": {"type": "string", "enum": ["cron", "once", "interval"]}, "expr": {"type": "string"},
+                                   "at": {"type": ["string", "number"]}, "seconds": {"type": "integer"},
+                                   "window_minutes": {"type": "integer"}}, "required": ["kind"]}
+TOOL_DEFINITIONS.extend([
+    {"type": "function", "function": {
+        "name": "react",
+        "description": "Tapback-react to the user's latest message (or message_id) with one emoji, e.g. 👍 ❤️ 😂 🎉 🙏 👀. Use it INSTEAD of a text reply "
+                       "when a reaction says it all (thanks, ok, acknowledgements); then end your turn without text.",
+        "parameters": {"type": "object", "properties": {"emoji": {"type": "string"}, "message_id": {"type": "integer"}}, "required": ["emoji"]}}},
+    {"type": "function", "function": {
+        "name": "ask_choice",
+        "description": "When you truly need the user to decide, show a tappable options card instead of asking in prose. Ends your turn; "
+                       "the user's pick arrives as their next message (dismissing the card means they decline).",
+        "parameters": {"type": "object", "properties": {
+            "question": {"type": "string"},
+            "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "detail": {"type": "string"}},
+                                                   "required": ["label"]}, "description": "2-8 options"},
+            "multi": {"type": "boolean", "description": "Allow picking several."},
+            "allow_custom": {"type": "boolean", "description": "Offer a free-text answer (default true)."}},
+            "required": ["question", "options"]}}},
+    {"type": "function", "function": {
+        "name": "report_progress",
+        "description": "Background tasks only: post a brief milestone into the user's chat (max 3 per task; e.g. 'found 12 candidates, comparing now'). "
+                       "Not for step-by-step narration.",
+        "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}},
+    {"type": "function", "function": {
+        "name": "routine_create",
+        "description": "Create a routine for this bot: a scheduled prompt (daily digest, weekly check), a one-off reminder, or a monitor "
+                       "('tell me when X'). The prompt runs later in a fresh chat; monitors should reply [SKIP] when nothing changed.",
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string"}, "prompt": {"type": "string", "description": "What to do each run, self-contained."},
+            "schedule": _SCHEDULE_SCHEMA, "monitor": {"type": "boolean", "description": "Only message the user when something changed."},
+            "max_runs": {"type": "integer"}}, "required": ["name", "prompt", "schedule"]}}},
+    {"type": "function", "function": {
+        "name": "routine_list",
+        "description": "List this bot's routines (id, name, schedule, next run, enabled).",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "routine_delete",
+        "description": "Delete (or with enabled=false just pause) one of this bot's routines.",
+        "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "enabled": {"type": "boolean"}}, "required": ["id"]}}},
+])
+RUNMODEL_TOOLS = {"react", "ask_choice", "report_progress", "routine_create", "routine_list", "routine_delete"}
+TURN_FLAGS = {}              # task_id -> {"answered", "end", "pages"}：表情 / 选项卡算回答；选项卡结束本轮；本轮写的页面挂在最终回复上
 WORKER_INSTRUCTIONS = (
     "\n\n[后台任务] 你是这个 Bot 的后台工作者，独立完成下面的任务（看不到前台聊天）。用户发来的补充要求会作为新消息出现，照着调整。"
     "不要逐步汇报；做完后最后一条消息写清楚结果（结论在前，必要的链接 / 路径 / 数字），它会原样发给用户。")
 FRONT_NOTE = (
-    "\n\n[前台对话] 先回话：简单的问题和闲聊直接回答。需要多步操作、大量工具调用、耗时超过一分钟的事，用 spawn_task 交给后台任务，"
+    "\n\n[前台对话] 先回话：每条消息先马上给一句简短回应或直接答案；要调用工具时，在同一条回复的文字里先写这句回应再调工具。"
+    "简单的问题和闲聊直接回答。需要多步操作、大量工具调用、耗时超过一分钟的事，用 spawn_task 交给后台任务，"
     "然后只回一句简短的确认（比如「好，我去查，做完告诉你」），不要在这里自己一步步做。用户补充或修改进行中的任务用 task_message，要停用 task_stop。")
 DELEGATION_TOOLS = {"send_to_bot", "delegate_task"}
 ADMIN_TOOLS = {"create_bot", "update_bot", "delete_bot", "restore_bot", "set_primary_bot", "admin_api"}
@@ -3755,7 +3950,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
 
     # Retrieve all session messages for LLM context
     last_reset = c.execute("SELECT MAX(id) FROM messages WHERE session_id = ? AND role = 'context_reset'", (session_id,)).fetchone()[0] or 0
-    c.execute("SELECT role, content, tool_calls, tool_call_id FROM messages WHERE session_id = ? AND id > ? "
+    c.execute("SELECT role, content, tool_calls, tool_call_id, meta FROM messages WHERE session_id = ? AND id > ? "
               "AND role != 'context_reset' ORDER BY id ASC", (session_id, last_reset))
     rows = c.fetchall()
     conn.close()
@@ -3770,6 +3965,17 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     front_session = depth == 0 and session_is_front(session_id)
     if front_session:
         system_text += FRONT_NOTE
+    if depth == 0:
+        system_text += cloud_runmodel.REPLY_STYLE_NOTE + cloud_runmodel.MEMORY_NOTE
+        if not session_incognito(session_id):
+            _pc = get_db_connection()
+            try:
+                _pid = session_persona_id(session_id)
+                system_text += cloud_runmodel.profile_block(_pc, _pid, (get_persona(_pid) or {}).get("name") if _pid else None)
+            except Exception as e:
+                print(f"profile block failed: {type(e).__name__}", flush=True)
+            finally:
+                _pc.close()
     system_text += cloud_bots.language_tail(get_persona(session_persona_id(session_id)))   # 灵魂设定的回复语言：结尾再强调一次
     dynamic_note = mention_note(session_id, initial_content)
     if front_session:
@@ -3787,10 +3993,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     if session_incognito(session_id):
         dynamic_note = (dynamic_note or "") + INCOGNITO_NOTE
     messages = [{"role": "system", "content": system_text.lstrip()}]
-    for r_role, r_content, r_tc, r_tcid in rows:
+    for r_role, r_content, r_tc, r_tcid, r_meta in rows:
         m = {"role": r_role}
         if r_content is not None:
-            decoded_content = r_content
+            decoded_content = cloud_runmodel.model_content(r_role, r_content, r_meta)
             if r_role in ('user', 'assistant') and isinstance(r_content, str) and r_content.startswith('['):
                 try:
                     candidate = json.loads(r_content)
@@ -3965,6 +4171,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             if content and not tool_calls:
                 log_event(task_id, "thought", {"content": content})
                 messages.append({"role": "assistant", "content": content})
+                row_meta = _turn_meta(task_id, row_meta)
                 insert_message(session_id, "assistant", content, meta=row_meta)
 
             if tool_calls:
@@ -4035,6 +4242,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     elif fn_name == "subagent_task": res = tool_subagent_task(task_id, session_id, fn_args, model, provider_config, depth)
                     elif fn_name == "list_bots": res = tool_list_bots(task_id, session_id, fn_args)
                     elif fn_name in VAULT_TOOLS: res = tool_vault(task_id, session_id, fn_name, fn_args)
+                    elif fn_name in RUNMODEL_TOOLS: res = tool_runmodel(task_id, session_id, fn_name, fn_args, model, provider_config, depth)
                     elif fn_name in WORKER_FRONT_TOOLS:
                         res = tool_worker(task_id, session_id, fn_name, fn_args, model, provider_config) \
                             if depth == 0 and session_is_front(session_id) else {"error": "这里不能派后台任务，直接完成"}
@@ -4113,6 +4321,12 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
 
                 if final_status == "cancelled":
                     break
+                tf = TURN_FLAGS.get(task_id) or {}
+                if tf.get("answered"):
+                    answered = True
+                if tf.get("end") and not inbox_close(task_id):
+                    _post_turn_card(task_id, session_id)    # 选项卡：本轮到此结束，等用户点选
+                    break
             elif inbox_close(task_id):
                 continue                # 回答完了但用户刚插了话：接着处理新消息
             else:
@@ -4134,6 +4348,12 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         except Exception as e:
             print(f"perf record failed: {e}", flush=True)
         live_clear(task_id)
+        try:
+            if final_status != "cancelled":
+                _post_turn_card(task_id, session_id)    # 选项卡还没写出去（模型之后又说了话）：补上
+        except Exception as e:
+            print(f"choice card post failed: {type(e).__name__}", flush=True)
+        TURN_FLAGS.pop(task_id, None)
         conn = get_db_connection()
         c = conn.cursor()
         c.execute("UPDATE tasks SET status = ? WHERE task_id = ? AND status IN ('running', 'waiting_user')", (final_status, task_id))
@@ -4177,7 +4397,7 @@ def _routine_row_to_dict(r):
 
 ROUTINE_COLUMNS = "routine_id, name, prompt, schedule, credential, model, instructions, enabled, max_runs, run_count, next_run_at, last_run_at, last_status, notify, created_at, updated_at, persona_id, reasoning_effort"
 
-def validate_schedule(schedule):
+def _validate_schedule_core(schedule):
     """返回规范化的 schedule dict，非法抛 ValueError。"""
     if not isinstance(schedule, dict):
         raise ValueError("schedule must be an object")
@@ -4216,7 +4436,25 @@ def validate_schedule(schedule):
         return {"kind": "after", "routine_id": rid, "on": on}
     raise ValueError("schedule.kind must be cron, interval, once or after")
 
+def validate_schedule(schedule):
+    out = _validate_schedule_core(schedule)
+    w = schedule.get("window_minutes") if isinstance(schedule, dict) else None
+    if w not in (None, 0):
+        if not isinstance(w, int) or isinstance(w, bool) or not (0 < w <= 180) or out["kind"] == "after":
+            raise ValueError("window_minutes must be an integer between 1 and 180 (not for after)")
+        out["window_minutes"] = w
+    return out
+
 def compute_next_run(schedule, after_ts, first=False):
+    """灵活时间窗：在准点之后 window_minutes 分钟内随机挑一个时间（不用每次都卡在 9:00 整）。"""
+    t = _compute_next_run_exact(schedule, after_ts, first)
+    w = schedule.get("window_minutes")
+    if t is not None and w:
+        import random
+        t += random.uniform(0, w * 60)
+    return t
+
+def _compute_next_run_exact(schedule, after_ts, first=False):
     kind = schedule["kind"]
     if kind == "cron":
         return cloud_cron.CronSpec(schedule["expr"]).next_after(after_ts, schedule.get("timezone", "UTC"))
@@ -4364,8 +4602,13 @@ def _finish_routine_run(run_id, routine_id, status, result=None, error=None):
 
 PROACTIVE_SKIP_MARKERS = ("[SKIP]", "[静默]", "[无需打扰]")
 
+QUIET_WHOLE = {"无变化", "没有变化", "暂无变化", "没有新变化", "一切照旧", "no change", "no changes", "(no change)", "（无变化）", "nothing new"}
+
 def is_quiet_result(text):
+    """后台唤醒（例行 / 监控）没有值得说的就不发消息：[SKIP] 标记，或整条回复只是「无变化」之类。"""
     t = (text or "").strip()
+    if t.strip("。.!！ ").lower() in QUIET_WHOLE or t.lower() in QUIET_WHOLE:
+        return True
     return any(t.startswith(m) or t.endswith(m) for m in PROACTIVE_SKIP_MARKERS)
 
 DESKTOP_STREAM_MAX_SECONDS = 15 * 60
@@ -5611,16 +5854,20 @@ class Handler(BaseHTTPRequestHandler):
                     conn.close()
                     self._send(404, {"error": "Session not found"})
                     return
-                c.execute("SELECT role, content, tool_calls, tool_call_id, timestamp, meta FROM messages WHERE session_id = ? ORDER BY id ASC", (sid,))
+                c.execute("SELECT role, content, tool_calls, tool_call_id, timestamp, meta, id FROM messages WHERE session_id = ? ORDER BY id ASC", (sid,))
+                reactions = cloud_runmodel.reactions_for(conn, sid)
                 msgs = []
                 for mr in c.fetchall():
-                    m = {"role": mr[0], "content": mr[1], "timestamp": mr[4]}
+                    m = {"id": mr[6], "role": mr[0], "content": mr[1], "timestamp": mr[4]}
+                    if mr[6] in reactions:
+                        m["reactions"] = reactions[mr[6]]
                     if mr[5]:
                         try:
                             meta = json.loads(mr[5])
                             for k in ("reasoning", "duration_ms", "injected", "snapshot_id", "title"):
                                 if k in meta:
                                     m[k] = meta[k]
+                            m.update(cloud_runmodel.public_meta(meta))
                         except ValueError:
                             pass
                     if mr[2]:
@@ -6481,6 +6728,19 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/v1/workers/"):
             self._workers("POST", path, {}, req_json)
             return
+        m_react = re.match(r"^/v1/sessions/(sess_[a-f0-9]{12})/messages/(\d{1,12})/reaction$", path)
+        if m_react:
+            # 用户给 Bot 的消息点表情（emoji 为空 = 取消）
+            conn = get_db_connection()
+            try:
+                r = cloud_runmodel.set_reaction(conn, m_react.group(1), int(m_react.group(2)), "user", req_json.get("emoji"))
+            except cloud_runmodel.RunModelError as e:
+                self._send(400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            self._send(200, {"message_id": int(m_react.group(2)), "reactions": r})
+            return
         m_share = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/library/([A-Za-z0-9_-]{1,64})/share$", path)
         if m_share:
             on = req_json.get("shared", True)
@@ -7033,6 +7293,25 @@ class Handler(BaseHTTPRequestHandler):
             if blocked:
                 self._send(429, {"error": blocked, "error_kind": "daily_cap"})
                 return
+            # 引用回复 / 选项卡的回答
+            user_meta = {}
+            rconn = get_db_connection()
+            try:
+                if req_json.get("reply_to") is not None:
+                    user_meta["reply_to"] = cloud_runmodel.reply_ref(rconn, sid, req_json.get("reply_to"))
+                ca = req_json.get("choice_answer")
+                if ca is not None:
+                    if not isinstance(ca, dict) or not isinstance(ca.get("message_id"), int):
+                        raise cloud_runmodel.RunModelError("choice_answer 需要 message_id")
+                    content = cloud_runmodel.mark_choice(rconn, sid, ca["message_id"], ca.get("selected") or [],
+                                                         ca.get("custom") if isinstance(ca.get("custom"), str) else None, bool(ca.get("dismissed")))
+                    db_user_content = content
+                    user_meta["choice_answer"] = ca["message_id"]
+            except cloud_runmodel.RunModelError as e:
+                self._send(400, {"error": str(e)})
+                return
+            finally:
+                rconn.close()
 
             conn = get_db_connection()
             c = conn.cursor()
@@ -7079,7 +7358,8 @@ class Handler(BaseHTTPRequestHandler):
                     "INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, ?, 'running', ?, ?)",
                     (tid, sid, client_nonce, model, created_at)
                 )
-                c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (sid, db_user_content, created_at))
+                c.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'user', ?, ?, ?)",
+                          (sid, db_user_content, created_at, json.dumps(user_meta, ensure_ascii=False) if user_meta else None))
                 conn.commit()
             except sqlite3.IntegrityError:
                 conn.rollback()
