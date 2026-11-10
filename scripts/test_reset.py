@@ -96,6 +96,8 @@ struct Detector { mutating func reset() {} }
  }
  func clearEditingState() {}
  func stopSpeechForThisSession() { speechStopped = true }
+ var snapshotSaved = 0
+ func saveResetSnapshot() { precondition(!messages.isEmpty, "快照要在清空前存"); snapshotSaved += 1 }
 '''
 tests=r'''
 }
@@ -115,6 +117,7 @@ tests=r'''
    precondition(vm.messages.isEmpty && vm.agentHistory.isEmpty && vm.cachedLatestMarker == nil)
    precondition(vm.inputText.isEmpty && vm.attachments.isEmpty && vm.pastedTexts.isEmpty)
    precondition(vm.cancelled && vm.askCancelled && vm.speechStopped)
+   precondition(vm.snapshotSaved == 1, "reset 前要存对话快照")
    precondition(!vm.canResume && vm.pendingSendText == nil && vm.contextUsage == nil)
    vm.resetCurrentSession() // 重复执行无副作用
    try? await Task.sleep(nanoseconds: 120_000_000)
