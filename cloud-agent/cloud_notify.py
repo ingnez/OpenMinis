@@ -81,28 +81,41 @@ def validate(cfg):
     return out
 
 
-def save(conn, cfg):
-    cfg = validate(cfg)
-    blob = cloud_secrets.get_box().encrypt(json.dumps(cfg), "setting:" + SETTING_NAME)
+def save_setting(conn, name, obj):
+    """加密保存一份 JSON 配置（AAD = setting:<name>）。"""
+    blob = cloud_secrets.get_box().encrypt(json.dumps(obj), "setting:" + name)
     conn.execute("INSERT INTO secure_settings (name, ciphertext, updated_at) VALUES (?, ?, ?) "
                  "ON CONFLICT(name) DO UPDATE SET ciphertext = excluded.ciphertext, updated_at = excluded.updated_at",
-                 (SETTING_NAME, blob, time.time()))
+                 (name, blob, time.time()))
     conn.commit()
+
+
+def load_setting(conn, name):
+    """返回配置或 None。主密钥缺失 / 密文损坏时抛 cloud_secrets 的异常。"""
+    row = conn.execute("SELECT ciphertext FROM secure_settings WHERE name = ?", (name,)).fetchone()
+    if not row:
+        return None
+    return json.loads(cloud_secrets.get_box().decrypt(bytes(row[0]), "setting:" + name))
+
+
+def delete_setting(conn, name):
+    cur = conn.execute("DELETE FROM secure_settings WHERE name = ?", (name,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def save(conn, cfg):
+    cfg = validate(cfg)
+    save_setting(conn, SETTING_NAME, cfg)
     return cfg
 
 
 def load(conn):
-    """返回配置或 None。主密钥缺失 / 密文损坏时抛 cloud_secrets 的异常。"""
-    row = conn.execute("SELECT ciphertext FROM secure_settings WHERE name = ?", (SETTING_NAME,)).fetchone()
-    if not row:
-        return None
-    return json.loads(cloud_secrets.get_box().decrypt(bytes(row[0]), "setting:" + SETTING_NAME))
+    return load_setting(conn, SETTING_NAME)
 
 
 def delete(conn):
-    cur = conn.execute("DELETE FROM secure_settings WHERE name = ?", (SETTING_NAME,))
-    conn.commit()
-    return cur.rowcount > 0
+    return delete_setting(conn, SETTING_NAME)
 
 
 def masked(cfg):

@@ -19,6 +19,7 @@ OpenMinis Cloud Computer & Agent Service (cloud_agent_server.py) v2.0
 - Skills lazy-load: only a name + description index goes into the prompt; skill_load reads the full SKILL.md
 - Push: Bark / ntfy notifications on task completion, approvals and routine runs (config stored encrypted)
 - Pages library (page_write), cloud sub agents (subagent_task) and image generation (image_generate)
+- Telegram channel: Bot API long polling, per-chat sessions, inline approve/deny buttons
 """
 
 import os
@@ -52,6 +53,7 @@ import cloud_memory
 import cloud_skills
 import cloud_notify
 import cloud_pages
+import cloud_telegram
 
 HOST = os.environ.get("OPENMINIS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
@@ -239,6 +241,9 @@ def init_db():
     cloud_skills.ensure_schema(conn)
     cloud_notify.ensure_schema(conn)
     cloud_pages.ensure_schema(conn)
+    cursor.execute("CREATE TABLE IF NOT EXISTS telegram_chats (chat_id INTEGER PRIMARY KEY, session_id TEXT, updated_at REAL)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS telegram_tasks (task_id TEXT PRIMARY KEY, chat_id INTEGER, created_at REAL)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS telegram_state (key TEXT PRIMARY KEY, value TEXT)")
 
     # Server restart: mark interrupted
     cursor.execute("UPDATE tasks SET status = 'interrupted' WHERE status IN ('running', 'queued', 'waiting_user')")
@@ -446,7 +451,11 @@ def _session_title(session_id):
         conn.close()
 
 def on_approval_required(task_id, session_id, approval):
-    """审批挂起时推送提醒，异常不影响任务。"""
+    """审批挂起时推送提醒（Telegram 发起的任务另发带按钮的审批消息），异常不影响任务。"""
+    try:
+        telegram_notify_approval(task_id, approval)
+    except Exception as e:
+        print(f"telegram approval notify failed: {type(e).__name__}")
     cfg = current_notify_config()
     if not cfg:
         return None
@@ -1594,6 +1603,265 @@ def stop_scheduler():
     if t:
         t.join(timeout=5)
 
+# ======================= Telegram 渠道 =======================
+TELEGRAM_POLL_TIMEOUT = int(os.environ.get("OPENMINIS_TELEGRAM_POLL_TIMEOUT", "25"))
+TELEGRAM_DEFAULT_INSTRUCTIONS = (
+    "你是 OpenMinis 云端 Agent，用户正通过 Telegram 与你对话，你运行在用户的 Linux 云电脑上。"
+    "回复会以纯文本发到 Telegram：用简洁中文，少用 Markdown 表格；长结果可用 page_write 保存为页面后告诉用户标题。"
+)
+TELEGRAM_HELP = ("OpenMinis 云电脑已连接。直接发消息即可让云端 Agent 干活。\n"
+                 "/new 开始新会话\n/stop 停止当前任务\n/status 查看当前任务状态")
+_telegram_stop = threading.Event()
+_telegram_thread = None
+_telegram_status = {"running": False, "last_poll_at": None, "last_error": None, "handled": 0}
+_telegram_warned_chats = set()
+
+def telegram_config():
+    conn = get_db_connection()
+    try:
+        return cloud_notify.load_setting(conn, cloud_telegram.SETTING_NAME)
+    except Exception as e:
+        _telegram_status["last_error"] = "config: " + type(e).__name__
+        return None
+    finally:
+        conn.close()
+
+def _telegram_state(key, value=None):
+    conn = get_db_connection()
+    try:
+        if value is None:
+            row = conn.execute("SELECT value FROM telegram_state WHERE key = ?", (key,)).fetchone()
+            return row[0] if row else None
+        conn.execute("INSERT INTO telegram_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, str(value)))
+        conn.commit()
+    finally:
+        conn.close()
+
+def telegram_session_for(cfg, chat_id, title_hint, new=False):
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        row = c.execute("SELECT session_id FROM telegram_chats WHERE chat_id = ?", (chat_id,)).fetchone()
+        if row and not new:
+            return row[0]
+        sid = "sess_" + uuid.uuid4().hex[:12]
+        now = time.time()
+        c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at) VALUES (?, NULL, ?, ?, ?)",
+                  (sid, ("Telegram：" + title_hint)[:80], cfg.get("instructions") or TELEGRAM_DEFAULT_INSTRUCTIONS, now))
+        c.execute("INSERT INTO telegram_chats (chat_id, session_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at",
+                  (chat_id, sid, now))
+        conn.commit()
+        return sid
+    finally:
+        conn.close()
+
+def _active_task_for_session(sid):
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT task_id, status FROM tasks WHERE session_id = ? AND status IN ('running', 'waiting_user') ORDER BY created_at DESC LIMIT 1", (sid,)).fetchone()
+        return row
+    finally:
+        conn.close()
+
+def telegram_chat_for_task(task_id):
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT chat_id FROM telegram_tasks WHERE task_id = ?", (task_id,)).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+def _telegram_safe_send(cfg, chat_id, text, reply_markup=None):
+    try:
+        cloud_telegram.send_text(cfg, chat_id, text, reply_markup)
+        return True
+    except cloud_telegram.TelegramAPIError as e:
+        _telegram_status["last_error"] = str(e)
+        return False
+
+def telegram_start_task(cfg, chat_id, sid, text):
+    provider, p_status, p_err = resolve_provider({"credential": cfg["credential"]})
+    if p_err:
+        _telegram_safe_send(cfg, chat_id, f"云端凭据不可用（{p_status}）：{p_err}")
+        return None
+    instructions = cfg.get("instructions") or TELEGRAM_DEFAULT_INSTRUCTIONS
+    tid = "task_" + uuid.uuid4().hex[:12]
+    now = time.time()
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (sid, text, now))
+        c.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
+                  (tid, sid, cfg["model"], now))
+        c.execute("INSERT INTO telegram_tasks (task_id, chat_id, created_at) VALUES (?, ?, ?)", (tid, chat_id, now))
+        conn.commit()
+    finally:
+        conn.close()
+    with active_tasks_lock:
+        active_tasks[tid] = {"process": None, "cancelled": False, "pid": None}
+    try:
+        cloud_telegram.call(cfg, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=10)
+    except cloud_telegram.TelegramAPIError:
+        pass
+
+    def worker():
+        try:
+            run_agent_task(tid, sid, text, cfg["model"], provider, instructions)
+        finally:
+            conn2 = get_db_connection()
+            try:
+                status = (conn2.execute("SELECT status FROM tasks WHERE task_id = ?", (tid,)).fetchone() or ["failed"])[0]
+                last = conn2.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL AND timestamp >= ? ORDER BY id DESC LIMIT 1",
+                                     (sid, now)).fetchone()
+                err = conn2.execute("SELECT payload FROM task_events WHERE task_id = ? AND event_type = 'error' ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+            finally:
+                conn2.close()
+            if status == "completed":
+                reply = (last[0] if last else "") or "（完成，无文字回复）"
+            elif status == "cancelled":
+                reply = "任务已停止。"
+            else:
+                detail = ""
+                if err:
+                    try: detail = json.loads(err[0]).get("error", "")
+                    except Exception: detail = ""
+                reply = f"任务结束（{status}）。{detail}".strip()
+                if last and last[0]:
+                    reply += "\n\n" + last[0]
+            _telegram_safe_send(cfg, chat_id, reply)
+
+    threading.Thread(target=worker, daemon=True, name="telegram-task").start()
+    return tid
+
+def telegram_handle_message(cfg, msg):
+    chat = msg.get("chat") or {}
+    chat_id = chat.get("id")
+    if not isinstance(chat_id, int):
+        return
+    if chat_id not in cfg.get("allowed_chat_ids", []):
+        if chat_id not in _telegram_warned_chats:
+            _telegram_warned_chats.add(chat_id)
+            _telegram_safe_send(cfg, chat_id, f"这个会话尚未授权。chat id：{chat_id}\n请在 OpenMinis 云电脑设置 → Telegram 中把它加入允许列表。")
+        return
+    text = (msg.get("text") or msg.get("caption") or "").strip()
+    if not text:
+        _telegram_safe_send(cfg, chat_id, "目前只支持文字消息。")
+        return
+    title_hint = chat.get("title") or chat.get("username") or chat.get("first_name") or str(chat_id)
+    command = text.split()[0].split("@")[0].lower() if text.startswith("/") else None
+    if command in ("/start", "/help"):
+        _telegram_safe_send(cfg, chat_id, TELEGRAM_HELP)
+        return
+    sid = telegram_session_for(cfg, chat_id, title_hint, new=(command == "/new"))
+    active = _active_task_for_session(sid)
+    if command == "/new":
+        _telegram_safe_send(cfg, chat_id, "已开始新会话。")
+        return
+    if command == "/stop":
+        if active:
+            with active_tasks_lock:
+                if active[0] in active_tasks:
+                    active_tasks[active[0]]["cancelled"] = True
+            _telegram_safe_send(cfg, chat_id, "正在停止当前任务…")
+        else:
+            _telegram_safe_send(cfg, chat_id, "当前没有运行中的任务。")
+        return
+    if command == "/status":
+        _telegram_safe_send(cfg, chat_id, f"当前任务：{active[1]}" if active else "当前没有运行中的任务。")
+        return
+    if active:
+        _telegram_safe_send(cfg, chat_id, "上一个任务还在运行（" + ("等待审批" if active[1] == "waiting_user" else "运行中") + "），完成后再发，或发送 /stop 停止。")
+        return
+    telegram_start_task(cfg, chat_id, sid, text)
+
+def telegram_handle_callback(cfg, cq):
+    data = cq.get("data") or ""
+    chat_id = ((cq.get("message") or {}).get("chat") or {}).get("id")
+    answer = "无效操作"
+    if chat_id in cfg.get("allowed_chat_ids", []) and re.match(r"^ap:(appr_[a-f0-9]{12}):(y|n)$", data):
+        _, aid, yn = data.split(":")
+        conn = get_db_connection()
+        try:
+            row = conn.execute("SELECT task_id FROM approvals WHERE approval_id = ?", (aid,)).fetchone()
+        finally:
+            conn.close()
+        if row and telegram_chat_for_task(row[0]) == chat_id:
+            code, body = resolve_approval(row[0], aid, "approved" if yn == "y" else "denied", "via Telegram")
+            answer = ("已批准" if yn == "y" else "已拒绝") if code == 200 else "该审批已处理或已过期"
+    try:
+        cloud_telegram.call(cfg, "answerCallbackQuery", {"callback_query_id": cq.get("id"), "text": answer}, timeout=10)
+    except cloud_telegram.TelegramAPIError:
+        pass
+    if answer in ("已批准", "已拒绝"):
+        _telegram_safe_send(cfg, chat_id, answer + "。")
+
+def telegram_notify_approval(task_id, approval):
+    chat_id = telegram_chat_for_task(task_id)
+    if chat_id is None:
+        return False
+    cfg = telegram_config()
+    if not cfg:
+        return False
+    args = json.dumps(approval.get("arguments"), ensure_ascii=False)
+    text = f"⚠️ 需要你的审批：{approval.get('reason')}\n工具：{approval.get('tool')}\n参数：{args[:800]}"
+    markup = {"inline_keyboard": [[{"text": "批准", "callback_data": f"ap:{approval['approval_id']}:y"},
+                                   {"text": "拒绝", "callback_data": f"ap:{approval['approval_id']}:n"}]]}
+    return _telegram_safe_send(cfg, chat_id, text, markup)
+
+def telegram_poll_once(cfg):
+    offset = int(_telegram_state("offset") or 0)
+    updates = cloud_telegram.call(cfg, "getUpdates", {"offset": offset, "timeout": TELEGRAM_POLL_TIMEOUT,
+                                                      "allowed_updates": ["message", "callback_query"]},
+                                  timeout=TELEGRAM_POLL_TIMEOUT + 15)
+    _telegram_status["last_poll_at"] = time.time()
+    for u in updates or []:
+        uid = u.get("update_id")
+        if isinstance(uid, int):
+            _telegram_state("offset", uid + 1)
+        try:
+            if "message" in u:
+                telegram_handle_message(cfg, u["message"])
+            elif "callback_query" in u:
+                telegram_handle_callback(cfg, u["callback_query"])
+            _telegram_status["handled"] += 1
+        except Exception as e:
+            _telegram_status["last_error"] = "handler: " + type(e).__name__
+    return len(updates or [])
+
+def _telegram_main():
+    _telegram_status["running"] = True
+    try:
+        while not _telegram_stop.is_set():
+            cfg = telegram_config()
+            if not cfg or not cfg.get("enabled", True):
+                _telegram_stop.wait(5)
+                continue
+            try:
+                telegram_poll_once(cfg)
+                _telegram_status["last_error"] = None
+            except cloud_telegram.TelegramAPIError as e:
+                _telegram_status["last_error"] = str(e)
+                _telegram_stop.wait(5)
+            except Exception as e:
+                _telegram_status["last_error"] = type(e).__name__
+                _telegram_stop.wait(5)
+    finally:
+        _telegram_status["running"] = False
+
+def start_telegram():
+    global _telegram_thread
+    if _telegram_thread and _telegram_thread.is_alive():
+        return
+    _telegram_stop.clear()
+    _telegram_thread = threading.Thread(target=_telegram_main, name="telegram-poller", daemon=True)
+    _telegram_thread.start()
+
+def stop_telegram():
+    _telegram_stop.set()
+    t = _telegram_thread
+    if t:
+        t.join(timeout=TELEGRAM_POLL_TIMEOUT + 20)
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, data):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -1630,7 +1898,8 @@ class Handler(BaseHTTPRequestHandler):
                     "notify": True,
                     "pages": True,
                     "subagents": True,
-                    "image_generate": True
+                    "image_generate": True,
+                    "telegram": True
                 },
                 "timestamp": time.time()
             })
@@ -1676,6 +1945,12 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer ") or auth[7:].strip() != SERVER_TOKEN:
             self._send(401, {"error": "Unauthorized"})
+            return
+
+        if path == "/v1/telegram":
+            cfg = telegram_config()
+            self._send(200, {"configured": cfg is not None, "config": cloud_telegram.masked(cfg),
+                             "status": dict(_telegram_status, running=bool(_telegram_thread and _telegram_thread.is_alive()))})
             return
 
         if path == "/v1/pages":
@@ -1990,6 +2265,34 @@ class Handler(BaseHTTPRequestHandler):
             self._send(201 if created else 200, {"name": name, "base_url": base_url, "key_hint": credential_hint(api_key.strip()), "stored": True})
             return
 
+        if path == "/v1/telegram":
+            body = req_json.get("config", req_json)
+            existing = telegram_config()
+            if isinstance(body, dict) and existing and not body.get("bot_token"):
+                body = dict(body, bot_token=existing["bot_token"])  # 只改允许列表等字段时沿用已存 Token
+            try:
+                cfg = cloud_telegram.validate(body, lambda n: bool(CREDENTIAL_NAME_RE.match(n)) and any(c["name"] == n for c in list_credentials()))
+                me = cloud_telegram.call(cfg, "getMe", timeout=15)
+                cfg["bot_username"] = (me or {}).get("username")
+            except cloud_telegram.TelegramConfigError as e:
+                self._send(400, {"error": str(e)})
+                return
+            except cloud_telegram.TelegramAPIError as e:
+                self._send(502, {"error": "Telegram 校验失败：" + str(e)})
+                return
+            conn = get_db_connection()
+            try:
+                cloud_notify.save_setting(conn, cloud_telegram.SETTING_NAME, cfg)
+            except cloud_secrets.SecretStoreUnavailable as e:
+                self._send(503, {"error": f"Encrypted store unavailable: {e}"})
+                return
+            finally:
+                conn.close()
+            _telegram_warned_chats.clear()
+            start_telegram()
+            self._send(200, {"configured": True, "config": cloud_telegram.masked(cfg)})
+            return
+
         if path == "/v1/notify":
             conn = get_db_connection()
             try:
@@ -2043,6 +2346,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"name": name, "deleted": True})
             else:
                 self._send(404, {"error": "Credential not found"})
+            return
+
+        if path == "/v1/telegram":
+            conn = get_db_connection()
+            try:
+                existed = cloud_notify.delete_setting(conn, cloud_telegram.SETTING_NAME)
+                conn.execute("DELETE FROM telegram_state")
+                conn.commit()
+            finally:
+                conn.close()
+            self._send(200, {"configured": False, "deleted": existed})
             return
 
         if path.startswith("/v1/pages/"):
@@ -2474,6 +2788,7 @@ def run_server():
         SERVER_TOKEN = validate_and_load_token()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     start_scheduler()
+    start_telegram()
     print(f"OpenMinis Cloud Computer & Agent running on {HOST}:{PORT}")
     server.serve_forever()
 

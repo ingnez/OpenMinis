@@ -331,3 +331,10 @@
 
 ### 5.3 图片生成 (Image generation)
 - **工具** `image_generate {prompt, size?, model?}`：调用当前服务商 `POST {base_url}/images/generations`（`n = 1`，`size` ∈ 1024x1024 / 1024x1536 / 1536x1024 / 512x512 / auto，模型默认 `OPENMINIS_IMAGE_MODEL` 或 `gpt-image-1`），支持 `b64_json` 与 `url` 两种返回，图片保存为工作区 `attachments/image_*.png|jpg|webp`，结果含 `attachment_url`（§2 附件接口下载）。
+
+### 5.4 Telegram 渠道
+- **作用**: VPS 以 Bot API `getUpdates` 长轮询接入用户自己的 Telegram Bot（无需公网入口）。允许列表中的 chat 发来的文字消息在该 chat 对应的会话中运行（多轮续聊），结束后把最后的助手回复发回（>4000 字自动分段）。未授权 chat 首次来信会收到其 chat id 提示，之后忽略。命令：`/new` 新会话、`/stop` 停止当前任务、`/status`、`/help`。任务运行中再发消息会提示稍后。`capabilities.telegram = true`。
+- **审批**: Telegram 发起的任务命中 §4.2 规则时，额外发送带“批准 / 拒绝”内联按钮的消息（`callback_data = ap:<approval_id>:y|n`）；只接受来自同一 chat 的按钮。
+- **PUT /v1/telegram**: `{"config": {"bot_token", "allowed_chat_ids": [int], "credential", "model", "instructions"?, "api_base"?, "enabled"?}}`。`credential` 必须是 §4.1 已保存的凭据；保存前调用 `getMe` 校验（失败 `502`）。更新时可省略 `bot_token` 沿用已保存值。配置加密保存（AAD `setting:telegram`），保存后立即启动轮询线程。
+- **GET /v1/telegram**: `{"configured", "config": {"bot_id", "bot_username", "allowed_chat_ids", "credential", "model", "enabled", "api_base", "has_instructions"}, "status": {"running", "last_poll_at", "last_error", "handled"}}`，不返回 Token。**DELETE /v1/telegram** 删除配置与轮询位置。
+- **iOS**: 云电脑设置 → “Telegram 渠道”：填写 Bot Token 与允许的 chat id，使用当前服务商（自动加密上传 Key）与模型。
