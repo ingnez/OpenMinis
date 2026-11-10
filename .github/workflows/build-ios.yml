@@ -67,6 +67,11 @@ jobs:
         run: |
           set -o pipefail
           xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift src/ios/WatchShared/*.swift src/ios/Agent/Intents/CloudIntents.swift src/ios/AgentWidget/CloudBotsWidget.swift 2>&1 | tee cloud-typecheck.log
+      - name: Apple Watch App 类型检查（watchOS SDK）
+        run: |
+          set -o pipefail
+          xcrun --sdk watchos --show-sdk-version
+          xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk watchos --show-sdk-path)" -target arm64_32-apple-watchos9.0 src/ios/MinisWatch/*.swift src/ios/WatchShared/*.swift 2>&1 | tee watch-typecheck.log
 
   # 与平台无关的快速检查：Python 脚本、只依赖 Foundation 的 Swift 规则测试、云端服务全部单元测试。Linux 机器基本不用排队。
   quick-linux:
@@ -75,12 +80,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Apple Watch App 类型检查（watchOS SDK）
-        run: |
-          set -o pipefail
-          xcrun --sdk watchos --show-sdk-version
-          xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk watchos --show-sdk-path)" -target arm64_32-apple-watchos9.0 src/ios/MinisWatch/*.swift src/ios/WatchShared/*.swift 2>&1 | tee watch-typecheck.log
-
       - name: Swift 工具链
         run: swiftc --version
       - name: 本地模式没有云端入口
