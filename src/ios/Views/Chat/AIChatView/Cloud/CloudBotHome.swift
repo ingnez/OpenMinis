@@ -170,6 +170,7 @@ final class CloudBotHomeModel: ObservableObject {
     func refreshBots() async {
         guard CloudConnection.shared.isConnected, let list = try? await CloudBotService.list() else { return }
         bots = list
+        CloudWatchBridge.shared.publish(list)
     }
 
     /// 顶部一排大头像：主 Bot + 置顶的 Bot（隐藏的不算）
@@ -361,6 +362,7 @@ final class CloudBotHomeModel: ObservableObject {
         link.handle(.pageOpened)
         do {
             bots = try await CloudQuiet.retry { try await CloudBotService.list() }
+            CloudWatchBridge.shared.publish(bots)
             CloudBotLock.shared.lockSecretHoldersByDefault(bots)
             bannerText = nil
             publishToWidget()

@@ -730,6 +730,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		E5WA00010 /* MinisWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MinisWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0ED149397BEA7E0408C92688 /* GroupVoiceModelsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GroupVoiceModelsView.swift; sourceTree = "<group>"; };
 		0F5379380323FA8C6477708C /* GroupSlotPicker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GroupSlotPicker.swift; sourceTree = "<group>"; };
 		16FF3462D09402F14B610CD6 /* VoiceWaveformView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VoiceWaveformView.swift; sourceTree = "<group>"; };
@@ -1471,6 +1472,8 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		E5WA00012 /* MinisWatch */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = MinisWatch; sourceTree = "<group>"; };
+		E5WA00013 /* WatchShared */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = WatchShared; sourceTree = "<group>"; };
 		AA0838CB2F3CA8A900049557 /* Terminal */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Terminal; sourceTree = "<group>"; };
 		AA8A568C2F6FBB7A00A3E54E /* MinisUITests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = MinisUITests; sourceTree = "<group>"; };
 		BB1000012F700000000000AA /* MinisTests */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (E5EXC0001 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (Standalone, ); path = MinisTests; sourceTree = "<group>"; };
@@ -1482,6 +1485,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		E5WA00020 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		AA8A56882F6FBB7A00A3E54E /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -1701,6 +1711,8 @@
 				BB1000012F700000000000AA /* MinisTests */,
 				E5TH00012 /* MinisTestHost */,
 				E5TH0G000 /* MinisTests Embedded */,
+				E5WA00012 /* MinisWatch */,
+				E5WA00013 /* WatchShared */,
 				AA26BD0E2F2E5FA500AECF2D /* Frameworks */,
 				E51000032 /* Products */,
 				AACCC6B4300B9D590053F20D /* Recovered References */,
@@ -1752,6 +1764,7 @@
 				AA8A568B2F6FBB7A00A3E54E /* MinisUITests.xctest */,
 				BB1000010F700000000000AA /* MinisTests.xctest */,
 				E5TH00010 /* MinisTestHost.app */,
+				E5WA00010 /* MinisWatch.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -2735,6 +2748,27 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		E5WA00070 /* MinisWatch */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E5WA000A0 /* Build configuration list for PBXNativeTarget "MinisWatch" */;
+			buildPhases = (
+				E5WA00030 /* Sources */,
+				E5WA00020 /* Frameworks */,
+				E5WA00040 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E5WA00012 /* MinisWatch */,
+				E5WA00013 /* WatchShared */,
+			);
+			name = MinisWatch;
+			productName = MinisWatch;
+			productReference = E5WA00010 /* MinisWatch.app */;
+			productType = "com.apple.product-type.application";
+		};
 		AA8A568A2F6FBB7A00A3E54E /* MinisUITests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = AA8A56952F6FBB7A00A3E54E /* Build configuration list for PBXNativeTarget "MinisUITests" */;
@@ -2805,6 +2839,7 @@
 				E5CVSYNC00000000000000A1 /* ContentView */,
 				E5MDSYNC00000000000000A1 /* Markdown */,
 				E5V3SYNC00000000000000A1 /* CollectionViewMessageListV3 */,
+				E5WA00013 /* WatchShared */,
 			);
 			name = Minis;
 			packageProductDependencies = (
@@ -2957,11 +2992,19 @@
 				AA8A568A2F6FBB7A00A3E54E /* MinisUITests */,
 				BB1000070F700000000000AA /* MinisTests */,
 				E5TH00070 /* MinisTestHost */,
+				E5WA00070 /* MinisWatch */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		E5WA00040 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		AA8A56892F6FBB7A00A3E54E /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -3094,6 +3137,13 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		E5WA00030 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		AA8A56872F6FBB7A00A3E54E /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -3766,6 +3816,58 @@
 /* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
+		E5WA00080 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_DEBUG_DYLIB = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Minis;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.openminis.app;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.openminis.app.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 9.0;
+			};
+			name = Debug;
+		};
+		E5WA00090 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_DEBUG_DYLIB = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Minis;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.openminis.app;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.openminis.app.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 9.0;
+			};
+			name = Release;
+		};
 		AA8A56932F6FBB7A00A3E54E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -4363,6 +4465,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		E5WA000A0 /* Build configuration list for PBXNativeTarget "MinisWatch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E5WA00080 /* Debug */,
+				E5WA00090 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		AA8A56952F6FBB7A00A3E54E /* Build configuration list for PBXNativeTarget "MinisUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

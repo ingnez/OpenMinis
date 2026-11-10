@@ -66,7 +66,7 @@ jobs:
         timeout-minutes: 12
         run: |
           set -o pipefail
-          xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift src/ios/Agent/Intents/CloudIntents.swift src/ios/AgentWidget/CloudBotsWidget.swift 2>&1 | tee cloud-typecheck.log
+          xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift src/ios/WatchShared/*.swift src/ios/Agent/Intents/CloudIntents.swift src/ios/AgentWidget/CloudBotsWidget.swift 2>&1 | tee cloud-typecheck.log
 
   # 与平台无关的快速检查：Python 脚本、只依赖 Foundation 的 Swift 规则测试、云端服务全部单元测试。Linux 机器基本不用排队。
   quick-linux:
@@ -75,6 +75,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Apple Watch App 类型检查（watchOS SDK）
+        run: |
+          set -o pipefail
+          xcrun --sdk watchos --show-sdk-version
+          xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk watchos --show-sdk-path)" -target arm64_32-apple-watchos9.0 src/ios/MinisWatch/*.swift src/ios/WatchShared/*.swift 2>&1 | tee watch-typecheck.log
+
       - name: Swift 工具链
         run: swiftc --version
       - name: 本地模式没有云端入口
@@ -198,6 +204,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudTypingPhase.swift scripts/CloudTypingPhaseTests.swift -o /tmp/cloud-typing-phase-tests
           /tmp/cloud-typing-phase-tests
+      - name: 手表数据测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift scripts/WatchPayloadTests.swift -o /tmp/watch-payload-tests
+          /tmp/watch-payload-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -345,6 +356,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift scripts/WatchPayloadTests.swift -o /tmp/watch-payload-tests
+          /tmp/watch-payload-tests | tee watch-payload-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudTypingPhase.swift scripts/CloudTypingPhaseTests.swift -o /tmp/cloud-typing-phase-tests
           /tmp/cloud-typing-phase-tests | tee cloud-typing-phase-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudServerProfiles.swift scripts/CloudServerProfilesTests.swift -o /tmp/cloud-server-profiles-tests
@@ -389,7 +402,7 @@ jobs:
           /tmp/cloud-avatar-tests | tee cloud-avatar-test.log
           swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTaskPump.swift src/ios/Views/Chat/AIChatView/Cloud/CloudEventLedger.swift src/ios/Views/Chat/AIChatView/Cloud/CloudStepFeed.swift -o /tmp/cloud-chat-tests
           /tmp/cloud-chat-tests | tee cloud-chat-test.log
-          xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift 2>&1 | tee cloud-connection-typecheck.log
+          xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift src/ios/WatchShared/*.swift 2>&1 | tee cloud-connection-typecheck.log
 
       - name: Show toolchain
         run: |
@@ -517,6 +530,26 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build | tee xcodebuild.log
 
+      - name: Build Apple Watch app (unsigned, embedded into the IPA)
+        id: watch
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project src/ios/Minis.xcodeproj \
+            -target MinisWatch \
+            -configuration Release \
+            -sdk watchos \
+            SYMROOT="$GITHUB_WORKSPACE/build/watch" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | tee watch-build.log
+          W=$(find build/watch -maxdepth 3 -name 'MinisWatch.app' -path '*watchos*' | head -n 1)
+          test -n "$W"
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)
+          mkdir -p "$APP/Watch"
+          cp -R "$W" "$APP/Watch/"
+          echo "已嵌入：$APP/Watch/$(basename "$W")"
+
       - name: Package unsigned IPA
         run: |
           APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)
@@ -545,6 +578,7 @@ jobs:
             SHA256SUMS
             SOURCE_COMMIT.txt
             xcodebuild.log
+            watch-build.log
             reset-test.log
             soul-test.log
             realtime-test.log
@@ -635,6 +669,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift scripts/WatchPayloadTests.swift -o /tmp/watch-payload-tests
+          /tmp/watch-payload-tests | tee watch-payload-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudTypingPhase.swift scripts/CloudTypingPhaseTests.swift -o /tmp/cloud-typing-phase-tests
           /tmp/cloud-typing-phase-tests | tee cloud-typing-phase-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudServerProfiles.swift scripts/CloudServerProfilesTests.swift -o /tmp/cloud-server-profiles-tests
@@ -679,7 +715,7 @@ jobs:
           /tmp/cloud-avatar-tests | tee cloud-avatar-test.log
           swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTaskPump.swift src/ios/Views/Chat/AIChatView/Cloud/CloudEventLedger.swift src/ios/Views/Chat/AIChatView/Cloud/CloudStepFeed.swift -o /tmp/cloud-chat-tests
           /tmp/cloud-chat-tests | tee cloud-chat-test.log
-          xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift 2>&1 | tee cloud-connection-typecheck.log
+          xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift src/ios/WatchShared/*.swift 2>&1 | tee cloud-connection-typecheck.log
 
       - name: Show toolchain
         run: |
