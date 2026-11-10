@@ -465,3 +465,12 @@
 ## 先回话（2.11.0）
 
 资源设置 `quick_ack`（默认开，需要设置 `fast_model`）：前台对话里主模型 1.5 秒还没出字时，用 fast_model 生成一句 ≤20 字的确认，立刻作为 `thought` 事件显示；写库时并进第一条工具调用消息的文字（不打乱 tool_calls / tool 顺序），主模型已经说话就丢掉。
+
+## 步骤预览（2.12.0）
+
+`tool_result` 事件多一个 `preview` 对象，供手机对话里的步骤条显示缩略预览：
+
+- `text`：这一步结果的文字末尾（≤1500 字；命令取 stdout / stderr，其他工具取主要文字；已脱敏）。
+- `thumb` / `thumb_mime`：仅 `browser_action` / `desktop_action` 成功时附带，当前页面或桌面缩到 240 宽的 JPEG（base64，原始字节 ≤24 KB，超过就不带）。
+
+运行中的步骤仍从 `live.tool.output` 拿实时输出。

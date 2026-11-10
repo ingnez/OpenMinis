@@ -560,7 +560,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.11.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.12.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1269,6 +1269,50 @@ def tool_file_edit(task_id, session_id, args):
         return {"status": "success", "path": args.get("path")}
     except Exception as e:
         return {"error": str(e)}
+
+STEP_TEXT_TAIL = 1500
+STEP_THUMB_MAX = 24000          # 缩略图字节上限（base64 前），超过就不带
+
+def step_text_tail(fn_name, res):
+    """步骤预览的文字：命令看 stdout / stderr 的末尾，其他工具看结果里的主要文字，最后退回结果 JSON。"""
+    if isinstance(res, dict):
+        parts = [str(res[k]) for k in ("stdout", "stderr") if res.get(k)]
+        if not parts:
+            for k in ("error", "text", "content", "message", "result", "summary", "title", "url", "path", "status"):
+                if isinstance(res.get(k), (str, int, float)) and str(res.get(k)).strip():
+                    parts.append(f"{k}: {res[k]}" if k in ("url", "path", "status", "title") else str(res[k]))
+                    if k not in ("title", "url"):
+                        break
+        text = "\n".join(parts) if parts else json.dumps(res, ensure_ascii=False)
+    else:
+        text = str(res)
+    return cloud_vault.redact(text[-STEP_TEXT_TAIL:])
+
+def step_thumbnail(session_id, fn_name):
+    """浏览器 / 桌面步骤结束时的小截图（JPEG 字节），截不了返回 None。测试里会替换。"""
+    try:
+        if fn_name == "browser_action":
+            ws = get_session_workspace(session_id)
+            key, owner, display = browser_route(session_id)
+            r = cloud_browser.execute_browser_action(key, ws, {"action": "__thumb__", "width": 240}, owner=owner, display=display)
+            return r.get("thumb") if isinstance(r, dict) else None
+        if fn_name == "desktop_action":
+            _k, _o, display = browser_route(session_id)
+            data, _mime = cloud_desktop.thumbnail(display or os.environ.get("DISPLAY", ":99"), width=240, max_age=0.5)
+            return data
+    except Exception as e:
+        print(f"step thumbnail failed: {type(e).__name__}", flush=True)
+    return None
+
+def step_preview(session_id, fn_name, res):
+    """每一步的预览数据（随 tool_result 事件发给手机）：文字末尾；浏览器 / 桌面步骤再带一张小 JPEG。"""
+    out = {"text": step_text_tail(fn_name, res)}
+    if fn_name in ("browser_action", "desktop_action") and not (isinstance(res, dict) and res.get("error")):
+        data = step_thumbnail(session_id, fn_name)
+        if data and len(data) <= STEP_THUMB_MAX:
+            out["thumb"] = base64.b64encode(data).decode()
+            out["thumb_mime"] = "image/jpeg"
+    return out
 
 def tool_browser_action(task_id, session_id, args):
     if is_task_cancelled(task_id):
@@ -4323,7 +4367,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     if fn_name == "request_tools" and isinstance(res, dict) and res.get("enabled"):
                         extra_tools.update(res["enabled"])
                     live_update(task_id, tool=None)
-                    log_event(task_id, "tool_result", {"id": tc_id, "tool": fn_name, "result": res, "duration_ms": duration_ms})
+                    log_event(task_id, "tool_result", {"id": tc_id, "tool": fn_name, "result": res, "duration_ms": duration_ms,
+                                                       "preview": step_preview(session_id, fn_name, res)})
                     
                     # Tool result formatting: If screenshot produced, include attachment path and format
                     tool_content_str = spill_tool_output(session_id, tc_id, cloud_vault.redact(json.dumps(res, ensure_ascii=False)))

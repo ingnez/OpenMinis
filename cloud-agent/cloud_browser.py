@@ -533,6 +533,11 @@ class BrowserOwnerDaemon:
         elif action == "__vault_fill__":
             return vault_fill_page(page, args)
 
+        elif action == "__thumb__":
+            # 对话里步骤预览用的小图：当前页截屏缩到 width 宽的 JPEG（不落盘）
+            return {"status": "ok", "thumb": jpeg_thumb(page.screenshot(type="jpeg", quality=60), int(args.get("width") or 240)),
+                    "url": page.url, "title": page.title()}
+
         else:
             return {"error": f"Unsupported browser action: {action}"}
 
@@ -709,6 +714,21 @@ def is_browser_available():
             return False
 
     return True
+
+def jpeg_thumb(data, width=240):
+    """截屏字节 → 缩到 width 宽、质量 55 的 JPEG 字节；没有 PIL 时原样返回。"""
+    try:
+        from PIL import Image
+        import io
+        im = Image.open(io.BytesIO(data)).convert("RGB")
+        if im.width > width:
+            im = im.resize((width, max(1, im.height * width // im.width)))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=55)
+        return buf.getvalue()
+    except Exception:
+        return data
+
 
 def execute_browser_action(session_id, workspace_dir, args, owner=None, display=None):
     """session_id 实际是浏览器资料键：shared（所有 Bot 共用登录）或 bot-<id>（独立资料）。"""
