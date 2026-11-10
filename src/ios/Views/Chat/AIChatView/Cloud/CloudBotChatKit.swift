@@ -102,6 +102,12 @@ enum CloudBotProgress {
                 current = "正在思考…"
             case "approval_required":
                 current = "等你批准"
+            case "queued":
+                current = payload["message"] as? String ?? "排队中…"
+            case "started":
+                current = "正在思考…"
+            case "status":
+                current = payload["message"] as? String ?? current
             case "thought":
                 current = "正在思考…"
             default:

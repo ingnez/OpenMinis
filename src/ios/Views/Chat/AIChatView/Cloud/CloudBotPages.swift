@@ -221,6 +221,7 @@ struct CloudBotDetailView: View {
     @State private var exportURL: URL?
     @State private var showEdit = false
     @State private var showAdvanced = false
+    @State private var showResources = false
     @State private var confirmDelete = false
     @State private var busy = false
     @State private var errorText: String?
@@ -313,10 +314,14 @@ struct CloudBotDetailView: View {
                         if !bot.model.isEmpty { Button("恢复跟随手机") { setModel(false) } }
                     } label: { Label(bot.model.isEmpty ? "切换模型（跟随手机）" : "切换模型（\(bot.model)）", systemImage: "cpu") }
                     Button { showAdvanced = true } label: { Label("技能、插件与对话记录", systemImage: "slider.horizontal.3") }
+                    Button { showResources = true } label: { Label("资源限制", systemImage: "gauge.with.dots.needle.67percent") }
                     Divider()
                     Button(role: .destructive) { confirmDelete = true } label: { Label("删除 Bot", systemImage: "trash") }
                 } label: { Image(systemName: "ellipsis") }
             }
+        }
+        .navigationDestination(isPresented: $showResources) {
+            CloudBotResourceView(botId: bot.id, botName: bot.name)
         }
         .navigationDestination(isPresented: $showAdvanced) {
             CloudBotAdvancedView(bot: bot, onChanged: { await refresh(); await onChanged() })
@@ -684,6 +689,9 @@ struct CloudComputerView: View {
     @State private var keyboardText = CloudComputerView.sentinel
     @FocusState private var keyboardFocused: Bool
     @State private var sendChain: Task<Void, Never>?
+    /// websockify token（新版服务器）：main = 主屏，bot-<id> = 该 Bot 的独立屏幕
+    @State private var token: String?
+    @State private var ownDisplay = false
 
     enum Phase: Equatable { case connecting, live, failed(String) }
     private static let sentinel = "\u{200B}"
@@ -742,7 +750,8 @@ struct CloudComputerView: View {
 
     private var streamURL: URL? {
         URL(string: "http://127.0.0.1:\(connection.desktopPort)/vnc.html?autoconnect=1&resize=scale&reconnect=1&show_dot=1"
-            + (viewOnly ? "&view_only=1" : ""))
+            + (viewOnly ? "&view_only=1" : "")
+            + (token.map { "&path=websockify%3Ftoken%3D\($0)" } ?? ""))
     }
 
     private var topBar: some View {
@@ -752,6 +761,10 @@ struct CloudComputerView: View {
             HStack(spacing: 8) {
                 if let bot { CloudBotAvatarView(spec: CloudBotAvatarSpec.of(bot), size: 26) }
                 Text(bot?.name ?? "云电脑").font(.headline).foregroundStyle(.white).lineLimit(1)
+                if ownDisplay {
+                    Text("独立屏幕").font(.caption2).foregroundStyle(.white.opacity(0.7))
+                        .padding(.horizontal, 6).padding(.vertical, 2).background(Capsule().stroke(Color.white.opacity(0.4)))
+                }
             }
             Spacer()
             roundButton("questionmark", label: "帮助") { showHelp = true }
@@ -806,6 +819,13 @@ struct CloudComputerView: View {
             phase = .failed("连接云电脑失败：\(error.localizedDescription)")
             return
         }
+        // 新版服务器：先打开这个 Bot 的屏幕（独立模式按需启动），拿到 noVNC token
+        var displayBody: [String: Any] = [:]
+        if let botId { displayBody["bot_id"] = botId }
+        if let resp = try? await connection.request(method: "POST", path: "/v1/desktop/display", body: displayBody) {
+            token = (resp["token_proxy"] as? Bool ?? false) ? resp["token"] as? String : nil
+            ownDisplay = resp["own_display"] as? Bool ?? false
+        }
         let reachable = await connection.checkDesktopReachable()
         if !reachable {
             phase = .failed("云电脑桌面没有运行。请在 设置 → 云电脑设置 中点「安装 / 更新云电脑桌面环境」，或在 … 菜单里重启桌面。")
@@ -849,7 +869,9 @@ struct CloudComputerView: View {
         sendChain = Task { @MainActor in
             await previous?.value
             do {
-                _ = try await connection.request(method: "POST", path: "/v1/desktop/input", body: body)
+                var payload = body
+                if ownDisplay, let botId { payload["bot_id"] = botId }
+                _ = try await connection.request(method: "POST", path: "/v1/desktop/input", body: payload)
                 if let done { show(done) }
             } catch {
                 show(error.localizedDescription)

@@ -254,6 +254,11 @@ struct CloudAgentSettingsView: View {
                             .font(.headline)
                             .foregroundColor(.accentColor)
                     }
+                    NavigationLink(destination: CloudResourceSettingsView()) {
+                        Label("云电脑资源设置", systemImage: "gauge.with.dots.needle.67percent")
+                            .font(.headline)
+                            .foregroundColor(.accentColor)
+                    }
                     #endif
                 }
             }
