@@ -70,6 +70,7 @@ import cloud_pages
 import cloud_telegram
 import cloud_bots
 import cloud_plugins
+import cloud_oauth
 import cloud_mcp
 import cloud_deps
 import cloud_isolation as iso
@@ -4975,6 +4976,23 @@ class Handler(BaseHTTPRequestHandler):
             GROUPS.on_user_message(gid, mid, content.strip(), GROUP_FALLBACK.get(gid))
             GROUPS.notify()
             self._send(202, {"message_id": mid})
+            return
+
+        m_oauth = re.match(r"^/v1/plugins/([a-z0-9][a-z0-9_-]{0,31})/oauth/(start|finish|disconnect)$", path)
+        if m_oauth:
+            pid, step = m_oauth.group(1), m_oauth.group(2)
+            if not PLUGINS.get(pid):
+                self._send(404, {"error": "Plugin not found"})
+                return
+            try:
+                if step == "start":
+                    self._send(200, {"authorize_url": PLUGINS.oauth_start(pid, req_json.get("redirect_uri") or "openminis://oauth")})
+                elif step == "finish":
+                    self._send(200, {"plugin": PLUGINS.oauth_finish(pid, req_json.get("code"), req_json.get("state"))})
+                else:
+                    self._send(200, {"plugin": PLUGINS.oauth_disconnect(pid)})
+            except (cloud_plugins.PluginError, cloud_oauth.OAuthError) as e:
+                self._send(400, {"error": str(e)})
             return
 
         if path == "/v1/plugins/install":

@@ -7,6 +7,8 @@
 
 import Foundation
 import SwiftUI
+import AuthenticationServices
+import UIKit
 
 struct CloudPluginSecret: Identifiable, Hashable {
     let id: String
@@ -29,6 +31,9 @@ struct CloudPlugin: Identifiable, Hashable {
     let installed: Bool
     let homepage: String
     let missingDependencies: [String]
+    /// 远程（http）MCP 插件可以用 OAuth 登录；connected = 云电脑上已存有令牌
+    let oauthAvailable: Bool
+    let oauthConnected: Bool
 
     init?(_ d: [String: Any], installed: Bool) {
         guard let pid = (d["plugin_id"] as? String) ?? (d["id"] as? String) else { return nil }
@@ -51,12 +56,15 @@ struct CloudPlugin: Identifiable, Hashable {
         let manifest = d["manifest"] as? [String: Any] ?? d
         homepage = manifest["homepage"] as? String ?? ""
         missingDependencies = d["missing_dependencies"] as? [String] ?? []
+        let oauth = d["oauth"] as? [String: Any] ?? [:]
+        oauthAvailable = oauth["available"] as? Bool ?? false
+        oauthConnected = oauth["connected"] as? Bool ?? false
     }
 
     var statusText: String {
         switch status {
         case "ready": return kind == "skill" ? "技能包 · 已启用" : "可用"
-        case "needs_auth": return "需要授权：填写密钥"
+        case "needs_auth": return oauthAvailable ? "需要授权：登录或填写密钥" : "需要授权：填写密钥"
         case "missing_dependency":
             let names = missingDependencies.isEmpty ? "uvx / npx" : missingDependencies.joined(separator: " / ")
             return "云电脑缺少 \(names)：在“插件市场 › 运行依赖”一键安装"
@@ -362,6 +370,21 @@ struct CloudPluginDetailView: View {
                     Toggle("启用", isOn: Binding(get: { plugin.enabled }, set: { v in save(["enabled": v]) }))
                     Toggle("默认授权（不属于任何 Bot 的对话可用）", isOn: Binding(get: { plugin.defaultGrant }, set: { v in save(["default_grant": v]) }))
                 }
+                if plugin.oauthAvailable {
+                    Section {
+                        if plugin.oauthConnected {
+                            Label("已登录授权", systemImage: "checkmark.seal.fill").foregroundStyle(.green)
+                            Button("重新登录") { oauthLogin() }.disabled(busy)
+                            Button("断开授权", role: .destructive) { oauthDisconnect() }.disabled(busy)
+                        } else {
+                            Button { oauthLogin() } label: { Label("登录授权", systemImage: "person.badge.key") }.disabled(busy)
+                        }
+                    } header: {
+                        Text("登录")
+                    } footer: {
+                        Text("用系统登录页打开插件官方的授权页面，同意后令牌加密保存在云电脑，过期自动续期。服务器不支持自动注册时请改用下面的密钥。")
+                    }
+                }
                 if !plugin.secrets.isEmpty {
                     Section {
                         ForEach(plugin.secrets) { s in
@@ -434,6 +457,48 @@ struct CloudPluginDetailView: View {
         }
     }
 
+    private func oauthLogin() {
+        busy = true
+        errorText = nil
+        let pid = plugin.id
+        Task {
+            defer { busy = false }
+            do {
+                let start = try await CloudConnection.shared.request(method: "POST", path: "/v1/plugins/\(pid)/oauth/start",
+                                                                     body: ["redirect_uri": CloudOAuthLogin.redirectURI])
+                guard let s = start["authorize_url"] as? String, let url = URL(string: s) else { throw CloudOAuthLogin.Failure.badURL }
+                let callback = try await CloudOAuthLogin.shared.run(url)
+                let items = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                if let err = items.first(where: { $0.name == "error" })?.value {
+                    throw CloudOAuthLogin.Failure.denied(items.first(where: { $0.name == "error_description" })?.value ?? err)
+                }
+                guard let code = items.first(where: { $0.name == "code" })?.value,
+                      let state = items.first(where: { $0.name == "state" })?.value else { throw CloudOAuthLogin.Failure.badURL }
+                _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/plugins/\(pid)/oauth/finish",
+                                                             body: ["code": code, "state": state])
+                CloudHaptics.success()
+                infoText = "已登录授权"
+                await refresh()
+                await onChanged()
+            } catch CloudOAuthLogin.Failure.cancelled {
+                // 用户关掉了登录页：什么都不提示
+            } catch {
+                errorText = error.localizedDescription
+            }
+        }
+    }
+
+    private func oauthDisconnect() {
+        busy = true
+        let pid = plugin.id
+        Task {
+            _ = try? await CloudConnection.shared.request(method: "POST", path: "/v1/plugins/\(pid)/oauth/disconnect", body: [:])
+            await refresh()
+            await onChanged()
+            busy = false
+        }
+    }
+
     private func uninstall() {
         let pid = plugin.id
         Task {
@@ -445,5 +510,45 @@ struct CloudPluginDetailView: View {
                 errorText = error.localizedDescription
             }
         }
+    }
+}
+
+/// 系统登录页（ASWebAuthenticationSession）：不需要额外权限，未签名侧载的 IPA 也能用
+final class CloudOAuthLogin: NSObject, ASWebAuthenticationPresentationContextProviding {
+    @MainActor static let shared = CloudOAuthLogin()
+    static let redirectURI = "openminis://oauth"
+    private var session: ASWebAuthenticationSession?
+    private var anchor: ASPresentationAnchor?
+
+    enum Failure: LocalizedError {
+        case cancelled, badURL, denied(String)
+        var errorDescription: String? {
+            switch self {
+            case .cancelled: return "已取消登录"
+            case .badURL: return "授权服务器返回的地址不完整"
+            case .denied(let why): return "授权被拒绝：" + why
+            }
+        }
+    }
+
+    @MainActor
+    func run(_ url: URL) async throws -> URL {
+        anchor = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }.first { $0.isKeyWindow }
+        return try await withCheckedThrowingContinuation { cont in
+            let s = ASWebAuthenticationSession(url: url, callbackURLScheme: "openminis") { callback, error in
+                if let callback { cont.resume(returning: callback); return }
+                if let e = error as? ASWebAuthenticationSessionError, e.code == .canceledLogin { cont.resume(throwing: Failure.cancelled); return }
+                cont.resume(throwing: error ?? Failure.badURL)
+            }
+            s.presentationContextProvider = self
+            s.prefersEphemeralWebBrowserSession = false
+            session = s
+            if !s.start() { cont.resume(throwing: Failure.badURL) }
+        }
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        anchor ?? ASPresentationAnchor()
     }
 }

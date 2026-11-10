@@ -18,6 +18,7 @@ import urllib.request
 
 import cloud_mcp
 import cloud_notify
+import cloud_oauth
 import cloud_plugin_catalog
 
 PLUGIN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
@@ -190,15 +191,22 @@ class Registry:
              "enabled": bool(r[6]), "default_grant": bool(r[7]), "last_error": r[8], "installed_at": r[9], "updated_at": r[10],
              "secrets": [{"name": s["name"], "label": s["label"], "set": s["name"] in secrets, "optional": s.get("optional", False)}
                          for s in manifest.get("secrets", [])]}
+        tok = self._setting(conn, "oauth:" + r[0])
+        p["oauth"] = {"available": p["kind"] == "mcp" and manifest.get("mcp", {}).get("transport") == "http",
+                      "connected": bool(tok), "connected_at": (tok or {}).get("connected_at")}
         p["status"] = self._status(p)
         p["missing_dependencies"] = [b for b in manifest.get("requires", []) if not shutil.which(b)] if p["kind"] != "skill" else []
         return p
 
     def _secrets(self, conn, pid):
+        return self._setting(conn, "plugin:" + pid) or {}
+
+    @staticmethod
+    def _setting(conn, name):
         try:
-            return cloud_notify.load_setting(conn, "plugin:" + pid) or {}
+            return cloud_notify.load_setting(conn, name)
         except Exception:
-            return {}
+            return None
 
     def _status(self, p):
         if not p["enabled"]:
@@ -206,7 +214,7 @@ class Registry:
         if p["kind"] == "skill":
             return "ready"
         missing = [s for s in p["secrets"] if not s["set"] and not s["optional"]]
-        if missing:
+        if missing and not p.get("oauth", {}).get("connected"):
             return "needs_auth"
         for b in p["manifest"].get("requires", []):
             if not shutil.which(b):
@@ -303,10 +311,71 @@ class Registry:
                     conn.execute("DELETE FROM skills WHERE name = ? AND source = ?", (s["name"], "plugin:" + pid))
             conn.commit()
             cloud_notify.delete_setting(conn, "plugin:" + pid)
+            cloud_notify.delete_setting(conn, "oauth:" + pid)
+            cloud_notify.delete_setting(conn, "oauthclient:" + pid)
         finally:
             conn.close()
         self._drop(pid)
         return True
+
+    # ---------- OAuth ----------
+    def _force_refresh(self, pid):
+        """远端说令牌失效：有 refresh_token 就换一次新令牌，成功返回 True。"""
+        conn = self.get_conn()
+        try:
+            tok = self._setting(conn, "oauth:" + pid)
+            if not tok or not tok.get("refresh_token"):
+                return False
+            try:
+                tok = cloud_oauth.refresh(tok)
+            except cloud_oauth.OAuthError:
+                return False
+            cloud_notify.save_setting(conn, "oauth:" + pid, tok)
+        finally:
+            conn.close()
+        self._drop(pid)
+        return True
+
+    def oauth_start(self, pid, redirect_uri):
+        p = self.get(pid)
+        if not p or not p["oauth"]["available"]:
+            raise PluginError("只有远程（http）MCP 插件支持 OAuth 登录")
+        conn = self.get_conn()
+        try:
+            saved = self._setting(conn, "oauthclient:" + pid)
+        finally:
+            conn.close()
+        url, client = cloud_oauth.start(pid, p["manifest"]["mcp"]["url"], redirect_uri, saved_client=saved)
+        if client != saved:
+            conn = self.get_conn()
+            try:
+                cloud_notify.save_setting(conn, "oauthclient:" + pid, client)
+            finally:
+                conn.close()
+        return url
+
+    def oauth_finish(self, pid, code, state):
+        if not self.get(pid):
+            raise PluginError("Plugin not found")
+        tok = cloud_oauth.finish(pid, code, state)
+        conn = self.get_conn()
+        try:
+            cloud_notify.save_setting(conn, "oauth:" + pid, tok)
+            conn.execute("UPDATE plugins SET last_error = NULL, updated_at = ? WHERE plugin_id = ?", (time.time(), pid))
+            conn.commit()
+        finally:
+            conn.close()
+        self._drop(pid)
+        return self.get(pid)
+
+    def oauth_disconnect(self, pid):
+        conn = self.get_conn()
+        try:
+            cloud_notify.delete_setting(conn, "oauth:" + pid)
+        finally:
+            conn.close()
+        self._drop(pid)
+        return self.get(pid)
 
     def _set_error(self, pid, err):
         conn = self.get_conn()
@@ -336,9 +405,18 @@ class Registry:
         conn = self.get_conn()
         try:
             values = self._secrets(conn, p["plugin_id"])
+            tok = self._setting(conn, "oauth:" + p["plugin_id"])
+            if cloud_oauth.needs_refresh(tok):
+                try:
+                    tok = cloud_oauth.refresh(tok)
+                    cloud_notify.save_setting(conn, "oauth:" + p["plugin_id"], tok)
+                except cloud_oauth.OAuthError:
+                    pass   # 刷新失败就用旧令牌试一次；远端 401 时状态变成需要重新登录
         finally:
             conn.close()
         env, headers = {}, {}
+        if tok and p["manifest"]["mcp"]["transport"] == "http":
+            headers["Authorization"] = "Bearer " + tok["access_token"]
         for s in p["manifest"].get("secrets", []):
             if s["name"] not in values:
                 continue
@@ -371,7 +449,12 @@ class Registry:
         if p["status"] in ("needs_auth", "missing_dependency", "disabled"):
             raise cloud_mcp.MCPError(p["status"])
         try:
-            tools = cloud_mcp.list_tools(self._client(p))
+            try:
+                tools = cloud_mcp.list_tools(self._client(p))
+            except cloud_mcp.MCPAuthRequired:
+                if not self._force_refresh(pid):
+                    raise
+                tools = cloud_mcp.list_tools(self._client(p))
         except cloud_mcp.MCPAuthRequired as e:
             self._set_error(pid, "needs_auth: " + str(e))
             self._drop(pid)
