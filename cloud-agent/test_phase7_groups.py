@@ -172,5 +172,20 @@ class GroupServerTests(CloudServerTestCase):
         self.assertEqual(self.request("GET", f"/v1/groups/{gid}")[0], 404)
 
 
+    def test_group_send_nonce_is_idempotent(self):
+        self.srv.GROUPS.sleep = lambda s: None
+        self.request("PUT", "/v1/bots/gn1", {"name": "甲", "instructions": "x"})
+        st, g = self.request("POST", "/v1/groups", {"name": "去重", "members": ["gn1"]})
+        gid = g["group_id"]
+        a = self.request("POST", f"/v1/groups/{gid}/messages", {"content": "@nobody 你好", "client_nonce": "n-1"})[1]
+        b = self.request("POST", f"/v1/groups/{gid}/messages", {"content": "@nobody 你好", "client_nonce": "n-1"})[1]
+        self.assertEqual(a["message_id"], b["message_id"])
+        self.assertTrue(b.get("duplicate"))
+        c = self.request("POST", f"/v1/groups/{gid}/messages", {"content": "@nobody 你好", "client_nonce": "n-2"})[1]
+        self.assertNotEqual(c["message_id"], a["message_id"])
+        users = [m for m in self.request("GET", f"/v1/groups/{gid}/messages?after=0&wait=0")[1]["messages"] if m["sender"] == "user"]
+        self.assertEqual(len(users), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

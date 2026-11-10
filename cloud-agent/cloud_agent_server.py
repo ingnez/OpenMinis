@@ -728,6 +728,8 @@ def library_delete(bot_id, item_id):
 
 ATTACH_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 AVATAR_MAX_BYTES = 400 * 1024
+GROUP_NONCES = {}
+GROUP_NONCE_LOCK = threading.Lock()
 
 def avatar_path(bot_id):
     return os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "avatars", f"{bot_id}.jpg")
@@ -4960,6 +4962,16 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(content, str) or not content.strip() or len(content) > 8000:
                 self._send(400, {"error": "content 必须是 1–8000 字的文字"})
                 return
+            # 手机网络抖动时会静默重发：同一个 nonce 只算一条消息
+            nonce = req_json.get("client_nonce")
+            nonce_key = (gid, nonce) if isinstance(nonce, str) and 0 < len(nonce) <= 64 else None
+            with GROUP_NONCE_LOCK:
+                now = time.time()
+                for k in [k for k, v in GROUP_NONCES.items() if now - v[1] > 600]:
+                    GROUP_NONCES.pop(k, None)
+                if nonce_key and nonce_key in GROUP_NONCES:
+                    self._send(202, {"message_id": GROUP_NONCES[nonce_key][0], "duplicate": True})
+                    return
             conn = get_db_connection()
             try:
                 if not cloud_groups.get_group(conn, gid):
@@ -4971,6 +4983,9 @@ class Handler(BaseHTTPRequestHandler):
                     if not p_err:
                         GROUP_FALLBACK[gid] = (req_json.get("model") or "gpt-4o", provider)
                 mid = cloud_groups.add_message(conn, gid, "user", "text", content.strip())
+                if nonce_key:
+                    with GROUP_NONCE_LOCK:
+                        GROUP_NONCES[nonce_key] = (mid, time.time())
             finally:
                 conn.close()
             GROUPS.on_user_message(gid, mid, content.strip(), GROUP_FALLBACK.get(gid))

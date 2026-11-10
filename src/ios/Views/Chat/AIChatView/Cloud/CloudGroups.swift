@@ -84,8 +84,8 @@ enum CloudGroupService {
     }
 
     /// 成员 Bot 没有自己的模型时，用手机上当前选的模型（Key 先加密上传到云电脑，不随消息明文发送）
-    static func send(_ id: String, text: String) async throws -> Int {
-        var body: [String: Any] = ["content": text]
+    static func send(_ id: String, text: String, nonce: String = UUID().uuidString) async throws -> Int {
+        var body: [String: Any] = ["content": text, "client_nonce": nonce]
         let d = UserDefaults.standard
         let instanceId = d.string(forKey: "OpenMinisCloud_selectedInstanceId") ?? ""
         let model = d.string(forKey: "OpenMinisCloud_manualModel") ?? ""
@@ -299,6 +299,7 @@ final class CloudGroupChatModel: ObservableObject {
     }
 
     func pollLoop() async {
+        var misses = 0
         while !Task.isCancelled {
             do {
                 let (new, typing) = try await CloudGroupService.poll(groupId, after: lastId)
@@ -309,10 +310,14 @@ final class CloudGroupChatModel: ObservableObject {
                     lastId = messages.last?.id ?? lastId
                 }
                 if typing != self.typing { self.typing = typing }
+                misses = 0
                 if errorText != nil, !sending { errorText = nil; if group == nil { await load() } }
             } catch {
                 if Task.isCancelled { return }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                misses += 1
+                // 偶尔失败不打扰；连续失败才轻提示（成功一次就自动消失）
+                if misses >= 4, errorText == nil { errorText = "网络不太稳，正在自动重连…" }
+                try? await Task.sleep(nanoseconds: UInt64(min(8, 1 << min(misses, 3))) * 1_000_000_000)
             }
         }
     }
@@ -320,8 +325,10 @@ final class CloudGroupChatModel: ObservableObject {
     func send(_ text: String) async {
         sending = true
         defer { sending = false }
+        // 同一个 nonce 静默重试，服务器按 nonce 去重，不会发出两条
+        let nonce = UUID().uuidString
         do {
-            _ = try await CloudGroupService.send(groupId, text: text)
+            _ = try await CloudQuiet.retry { try await CloudGroupService.send(self.groupId, text: text, nonce: nonce) }
             errorText = nil
         } catch {
             errorText = "发送失败：\(error.localizedDescription)"
