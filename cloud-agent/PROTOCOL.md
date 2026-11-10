@@ -349,3 +349,13 @@
 - 系统提示词以 `[人格：<name>]\n<instructions>` 开头。`memory_write` 写入该人格的私有范围；`memory_search` 只返回共享记忆（`persona = ''`）与本人格记忆。`GET /v1/memory?persona=<id>` 同样过滤；不带时返回全部（每条含 `persona` 字段）。
 - `/health` 的 capabilities 增加 `personas: true`。
 - 人格互询：`subagent_task` 可带 `persona`（persona_id），子代理以该人格的指令与私有记忆运行，结果含 `persona`；不存在时返回错误与可用列表。存在其他人格时，系统提示词会列出它们供模型询问。
+
+## 6. 扩展接口（Grok Bot 对齐 Phase 3）
+
+### 6.1 多 Bot
+- 人格即 Bot（`personas` 表扩展列，旧人格自动迁移）。`GET /v1/bots` → `{bots:[...], primary}`，每项含 `bot_id`（= `persona_id`）、`name`、`emoji`、`description`、`instructions`、`model`、`credential`、`skills`（`null` = 全部技能）、`plugins`、`is_primary` 与 `session_count`/`routine_count`/`memory_count`。
+- `PUT /v1/bots/{id}`：新建 201 / 部分更新 200。`model` 与 `credential` 须同时设置或同时为空；设置后该 Bot 会话中的任务使用自己的模型与加密凭据，覆盖客户端选择。`is_primary: true` 会取消其他 Bot 的主 Bot 身份。`DELETE /v1/bots/{id}[?purge_memory=1]` 同 `/v1/personas`。
+- 主 Bot 的系统提示词列出其他 Bot 及简介，指示用 `subagent_task(persona=...)` 分派；Telegram 未指定人格时使用主 Bot。用户消息 `@<bot_id 或名称>` 会提示模型把相应部分交给被 @ 的 Bot。
+- 技能白名单：不在 `skills` 中的技能不出现在索引，`skill_load` 也拒绝加载。
+- `GET /v1/sessions?bot=<id>`、`GET /v1/routines?bot=<id>` 按 Bot 过滤，会话列表每项含 `persona_id`。
+- 导出 `GET /v1/bots/{id}/export` → `{format:"openminis-bot/1", bot_id, bot, routines, memory}`（不含凭据）。导入 `POST /v1/bots/import {bundle, bot_id?, credential?, model?}`：id 冲突时自动加后缀；私有记忆写入新 Bot；提供凭据与模型时例行任务以停用状态创建，否则列入 `routines_skipped`。

@@ -55,6 +55,7 @@ import cloud_skills
 import cloud_notify
 import cloud_pages
 import cloud_telegram
+import cloud_bots
 
 HOST = os.environ.get("OPENMINIS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
@@ -252,6 +253,7 @@ def init_db():
     conn.commit()
     cloud_memory.ensure_schema(conn)
     cloud_skills.ensure_schema(conn)
+    cloud_bots.ensure_schema(conn)
     cloud_notify.ensure_schema(conn)
     cloud_pages.ensure_schema(conn)
     cursor.execute("CREATE TABLE IF NOT EXISTS telegram_chats (chat_id INTEGER PRIMARY KEY, session_id TEXT, updated_at REAL)")
@@ -754,10 +756,78 @@ def get_persona(persona_id):
         return None
     conn = get_db_connection()
     try:
-        r = conn.execute("SELECT persona_id, name, instructions, emoji, created_at, updated_at FROM personas WHERE persona_id = ?", (persona_id,)).fetchone()
+        return cloud_bots.get(conn, persona_id)
     finally:
         conn.close()
-    return {"persona_id": r[0], "name": r[1], "instructions": r[2], "emoji": r[3], "created_at": r[4], "updated_at": r[5]} if r else None
+
+def credential_exists(name):
+    return bool(CREDENTIAL_NAME_RE.match(name)) and any(c["name"] == name for c in list_credentials())
+
+def bot_detail(bot):
+    conn = get_db_connection()
+    try:
+        pid = bot["persona_id"]
+        out = dict(bot)
+        out["session_count"] = conn.execute("SELECT COUNT(*) FROM sessions WHERE persona_id = ?", (pid,)).fetchone()[0]
+        out["routine_count"] = conn.execute("SELECT COUNT(*) FROM routines WHERE persona_id = ?", (pid,)).fetchone()[0]
+        out["memory_count"] = conn.execute("SELECT COUNT(*) FROM memory_entries WHERE persona = ?", (pid,)).fetchone()[0]
+        return out
+    finally:
+        conn.close()
+
+def import_bot_bundle(req):
+    bundle = req.get("bundle")
+    if not isinstance(bundle, dict) or bundle.get("format") != cloud_bots.EXPORT_FORMAT or not isinstance(bundle.get("bot"), dict):
+        raise cloud_bots.BotError("bundle must be an openminis-bot/1 export")
+    base = req.get("bot_id") or bundle.get("bot_id") or "bot"
+    if not isinstance(base, str) or not cloud_bots.BOT_ID_RE.match(base):
+        raise cloud_bots.BotError("bot_id must match ^[a-z0-9][a-z0-9_-]{0,31}$")
+    conn = get_db_connection()
+    try:
+        bot_id, n = base, 2
+        while cloud_bots.get(conn, bot_id):
+            bot_id = f"{base[:28]}-{n}"
+            n += 1
+        body = {k: v for k, v in bundle["bot"].items() if k in ("name", "emoji", "description", "instructions", "skills", "plugins")}
+        if req.get("credential") and (req.get("model") or bundle["bot"].get("model")):
+            body["credential"] = req["credential"]
+            body["model"] = req.get("model") or bundle["bot"].get("model")
+        bot, _ = cloud_bots.upsert(conn, bot_id, body, credential_exists)
+        imported_memory = 0
+        for m in (bundle.get("memory") or [])[:2000]:
+            if isinstance(m, dict) and isinstance(m.get("content"), str) and m["content"].strip():
+                try:
+                    _, created = cloud_memory.write(conn, m["content"], m.get("category"), source="import", entry_time=m.get("entry_time"), commit=False, persona=bot_id)
+                    imported_memory += 1 if created else 0
+                except ValueError:
+                    pass
+        conn.commit()
+    finally:
+        conn.close()
+    created_routines, skipped = [], []
+    cred = req.get("credential")
+    model = req.get("model") or bundle["bot"].get("model")
+    for r in (bundle.get("routines") or [])[:50]:
+        if not isinstance(r, dict):
+            continue
+        if not cred or not model:
+            skipped.append(r.get("name"))
+            continue
+        try:
+            fields = validate_routine_fields(dict(r, credential=cred, model=model, persona_id=bot_id, enabled=False))
+            created_routines.append(create_routine(fields)["routine_id"])
+        except ValueError:
+            skipped.append(r.get("name"))
+    return {"bot": bot, "memory_imported": imported_memory, "routines_created": created_routines,
+            "routines_skipped": skipped, "note": "导入的例行任务默认停用，确认后再启用" if created_routines else None}
+
+def primary_bot_id():
+    conn = get_db_connection()
+    try:
+        p = cloud_bots.primary(conn)
+    finally:
+        conn.close()
+    return p["persona_id"] if p else None
 
 def list_personas():
     conn = get_db_connection()
@@ -779,13 +849,28 @@ def persona_prompt(session_id):
     p = get_persona(session_persona_id(session_id))
     if not p:
         return ""
-    return f"[人格：{p['name']}] 本会话由用户创建的人格“{p['name']}”负责，记忆与其他人格隔离（共享记忆仍可见）。\n{p['instructions']}\n\n"
+    return cloud_bots.prompt(p, [b for b in list_personas() if b["persona_id"] != p["persona_id"]])
+
+def mention_note(session_id, content):
+    """用户消息里 @ 了其他 Bot 时，提示模型用 subagent_task(persona=...) 转交。"""
+    if not isinstance(content, str) or "@" not in content:
+        return ""
+    own = session_persona_id(session_id)
+    bots = [b for b in list_personas() if b["persona_id"] != own]
+    ids = cloud_bots.mentions(content, bots)
+    if not ids:
+        return ""
+    return "\n[@提及] 用户在消息中 @ 了：" + "、".join(ids) + "。请用 subagent_task 并传 persona 把相应部分交给这些 Bot，再把它们的答复整合给用户。"
+
+def session_bot(session_id):
+    return get_persona(session_persona_id(session_id))
 
 def server_tool_notes(session_id):
     """追加到 system 消息的服务端工具说明（客户端 instructions 不了解服务端新增工具）与技能索引。"""
     conn = get_db_connection()
+    bot = session_bot(session_id)
     try:
-        skills_index = cloud_skills.index_text(conn)
+        skills_index = cloud_skills.index_text(conn, lambda n: cloud_bots.skill_allowed(bot, n))
     except Exception as e:
         print(f"skills index failed: {e}")
         skills_index = ""
@@ -808,9 +893,10 @@ def tool_skill_load(task_id, session_id, args):
     name = args.get("name")
     conn = get_db_connection()
     try:
-        skill = cloud_skills.load(conn, name) if isinstance(name, str) else None
+        bot = session_bot(session_id)
+        skill = cloud_skills.load(conn, name) if isinstance(name, str) and cloud_bots.skill_allowed(bot, name) else None
         if not skill:
-            names = [s["name"] for s in cloud_skills.list_index(conn)]
+            names = [s["name"] for s in cloud_skills.list_index(conn) if cloud_bots.skill_allowed(bot, s["name"])]
             close = [n for n in names if isinstance(name, str) and name.lower() in n.lower()][:10]
             return {"error": f"技能不存在：{name}", "similar": close}
     finally:
@@ -1214,7 +1300,7 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
     rows = c.fetchall()
     conn.close()
 
-    system_text = persona_prompt(session_id) + (instructions or "") + server_tool_notes(session_id)
+    system_text = persona_prompt(session_id) + (instructions or "") + server_tool_notes(session_id) + mention_note(session_id, initial_content)
     messages = [{"role": "system", "content": system_text.lstrip()}]
     for r_role, r_content, r_tc, r_tcid in rows:
         m = {"role": r_role}
@@ -1783,7 +1869,7 @@ def telegram_session_for(cfg, chat_id, title_hint, new=False):
         sid = "sess_" + uuid.uuid4().hex[:12]
         now = time.time()
         c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, NULL, ?, ?, ?, ?)",
-                  (sid, ("Telegram：" + title_hint)[:80], cfg.get("instructions") or TELEGRAM_DEFAULT_INSTRUCTIONS, now, cfg.get("persona_id")))
+                  (sid, ("Telegram：" + title_hint)[:80], cfg.get("instructions") or TELEGRAM_DEFAULT_INSTRUCTIONS, now, cfg.get("persona_id") or primary_bot_id()))
         c.execute("INSERT INTO telegram_chats (chat_id, session_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at",
                   (chat_id, sid, now))
         conn.commit()
@@ -2036,7 +2122,8 @@ class Handler(BaseHTTPRequestHandler):
                     "subagents": True,
                     "image_generate": True,
                     "telegram": True,
-                    "personas": True
+                    "personas": True,
+                    "bots": True
                 },
                 "timestamp": time.time()
             })
@@ -2086,6 +2173,33 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/v1/personas":
             self._send(200, {"personas": list_personas()})
+            return
+
+        if path == "/v1/bots":
+            self._send(200, {"bots": [bot_detail(b) for b in list_personas()], "primary": primary_bot_id()})
+            return
+
+        if path.startswith("/v1/bots/") and path.endswith("/export"):
+            bid = path[len("/v1/bots/"):-len("/export")]
+            if not get_persona(bid):
+                self._send(404, {"error": "Bot not found"})
+                return
+            routines = [r for r in list_routines() if r.get("persona_id") == bid]
+            conn = get_db_connection()
+            try:
+                mem = [e for e in cloud_memory.list_entries(conn, limit=2000) if e.get("persona") == bid]
+                bundle = cloud_bots.export_bundle(conn, bid, routines, mem)
+            finally:
+                conn.close()
+            self._send(200, bundle)
+            return
+
+        if path.startswith("/v1/bots/"):
+            b = get_persona(path[len("/v1/bots/"):])
+            if b:
+                self._send(200, bot_detail(b))
+            else:
+                self._send(404, {"error": "Bot not found"})
             return
 
         if path.startswith("/v1/personas/"):
@@ -2196,8 +2310,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/sessions":
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("SELECT session_id, local_session_id, title, created_at FROM sessions ORDER BY created_at DESC")
-            sessions = [{"session_id": r[0], "local_session_id": r[1], "title": r[2], "created_at": r[3]} for r in c.fetchall()]
+            bot_filter = (query_params.get("bot") or [None])[0]
+            if bot_filter:
+                c.execute("SELECT session_id, local_session_id, title, created_at, persona_id FROM sessions WHERE persona_id = ? ORDER BY created_at DESC", (bot_filter,))
+            else:
+                c.execute("SELECT session_id, local_session_id, title, created_at, persona_id FROM sessions ORDER BY created_at DESC")
+            sessions = [{"session_id": r[0], "local_session_id": r[1], "title": r[2], "created_at": r[3], "persona_id": r[4]} for r in c.fetchall()]
             conn.close()
             self._send(200, {"sessions": sessions})
             return
@@ -2233,7 +2351,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
         if path == "/v1/routines":
-            self._send(200, {"routines": list_routines(), "server_time": time.time()})
+            bot_filter = (query_params.get("bot") or [None])[0]
+            routines = [r for r in list_routines() if not bot_filter or r.get("persona_id") == bot_filter]
+            self._send(200, {"routines": routines, "server_time": time.time()})
             return
 
         if path.startswith("/v1/routines/"):
@@ -2388,6 +2508,18 @@ class Handler(BaseHTTPRequestHandler):
         if req_json is None:
             return
 
+        if path.startswith("/v1/bots/"):
+            conn = get_db_connection()
+            try:
+                bot, created = cloud_bots.upsert(conn, path[len("/v1/bots/"):], req_json, credential_exists)
+            except cloud_bots.BotError as e:
+                self._send(400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            self._send(201 if created else 200, bot)
+            return
+
         if path.startswith("/v1/credentials/"):
             name = path[len("/v1/credentials/"):]
             if not CREDENTIAL_NAME_RE.match(name):
@@ -2520,6 +2652,8 @@ class Handler(BaseHTTPRequestHandler):
         query_params = parse_qs(urlparse(self.path).query)
         if not self._authorized():
             return
+        if path.startswith("/v1/bots/"):
+            path = "/v1/personas/" + path[len("/v1/bots/"):]
 
         if path.startswith("/v1/credentials/"):
             name = path[len("/v1/credentials/"):]
@@ -2632,6 +2766,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_json = self._read_json_body()
         if req_json is None:
+            return
+
+        if path == "/v1/bots/import":
+            try:
+                res = import_bot_bundle(req_json)
+            except (cloud_bots.BotError, ValueError) as e:
+                self._send(400, {"error": str(e)})
+                return
+            self._send(201, res)
             return
 
         if path == "/v1/sessions":
@@ -2810,8 +2953,14 @@ class Handler(BaseHTTPRequestHandler):
 
             model = req_json.get("model", "gpt-4o")
             client_nonce = req_json.get("client_nonce")
+            provider_req = req_json.get("provider", {})
+            bot = session_bot(sid)
+            if bot and bot.get("model") and bot.get("credential"):
+                # Bot 自带模型选择：覆盖客户端当前模型
+                model = bot["model"]
+                provider_req = {"protocol": "chat", "credential": bot["credential"]}
 
-            provider, p_status, p_err = resolve_provider(req_json.get("provider", {}))
+            provider, p_status, p_err = resolve_provider(provider_req)
             if p_err:
                 self._send(p_status, {"error": p_err})
                 return

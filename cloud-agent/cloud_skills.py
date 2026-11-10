@@ -138,9 +138,9 @@ def load(conn, name):
     return {"name": row[0], "description": row[1], "content": row[2], "updated_at": row[3]}
 
 
-def index_text(conn):
-    """system 消息中的技能索引；无技能时返回空串。"""
-    items = list_index(conn)
+def index_text(conn, allowed=None):
+    """system 消息中的技能索引；无技能时返回空串。allowed(name) 为 False 的技能不列出（Bot 技能白名单）。"""
+    items = [it for it in list_index(conn) if allowed is None or allowed(it["name"])]
     if not items:
         return ""
     lines, used = [], 0
