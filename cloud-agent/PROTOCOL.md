@@ -524,3 +524,12 @@
 `GET /v1/relays/watch` → `{"watch": {"credential", "model", "hours", "last_run", "history": [{at, ok, failed: [项目名], error}]}}`（最近 10 次）。
 `PUT /v1/relays/watch {"credential", "model", "hours"}`：hours ∈ 0 / 6 / 12 / 24 / 72 / 168，0 = 关闭；换了凭据或模型会清空历史。
 调度器到间隔就在后台跑一次 `relay_check`（长上下文探针约 3000 token）。结果变差（第一次就不合格、从合格变不合格、不合格项目变了）时推一条 `relay_watch` 通知。
+
+## 改系统前自动快照（2.21.0）
+
+`resources.system_snapshot`（默认 true）：`shell_execute` 遇到系统级命令（与 system_lock 同一套判断：apt / dpkg -i / pip install / npm -g / systemctl / snap / playwright install）时，
+执行前先拍快照：dpkg 包列表、pip freeze、全局 npm、开机自启服务，以及 /etc 文本配置打包（单文件 ≤512KB，总计 ≤30MB）。10 分钟内复用上一份，保留最近 10 份。事件流里有一条 `status`。
+
+- `GET /v1/system-snapshots` → `{"snapshots": [{id, created_at, reason, etc, counts}]}`
+- `GET /v1/system-snapshots/<id>/plan` → `{"plan": {id, created_at, reason, summary: [...], steps: [命令], etc_files: [相对 /etc 的路径]}}`（只看，不执行）
+- `POST /v1/system-snapshots/<id>/restore {"confirm": true}` → `{"plan", "results": [{step, ok, output?}], "ok"}`：先恢复改过的 /etc 文件，再卸新装的包、恢复服务开关。持有系统级操作锁。

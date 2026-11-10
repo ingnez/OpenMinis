@@ -835,6 +835,7 @@ struct CloudBotHubView: View {
             Section {
                 NavigationLink(destination: CloudUsageView()) { Label("用量与每日上限", systemImage: "chart.bar") }
                 NavigationLink(destination: CloudBackupView()) { Label("备份与恢复", systemImage: "externaldrive") }
+                NavigationLink(destination: CloudSystemSnapshotsView()) { Label("系统快照（装软件前自动拍）", systemImage: "camera.metering.matrix") }
             }
             if let onOpenAppSettings {
                 Section {

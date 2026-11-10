@@ -71,6 +71,7 @@ import cloud_handoff
 import cloud_botstatus
 import cloud_botthreads
 import cloud_duty
+import cloud_sysnap
 import cloud_secrets
 import cloud_policy
 import cloud_cron
@@ -95,6 +96,11 @@ HOST = os.environ.get("OPENMINIS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
 BASE_DIR = os.path.abspath(os.environ.get("OPENMINIS_BASE", SERVER_DIR))
 DB_PATH = os.environ.get("OPENMINIS_DB", os.path.join(BASE_DIR, "data", "openminis_agent.db"))
+SYSNAP_ETC = os.environ.get("OPENMINIS_SYSNAP_ETC", "/etc")
+def sysnap_dir():
+    return os.environ.get("OPENMINIS_SYSNAP_DIR") or os.path.join(os.path.dirname(DB_PATH), "system_snapshots")
+
+
 GLOBAL_WORKSPACE = os.path.abspath(os.environ.get("OPENMINIS_WORKSPACE", os.path.join(BASE_DIR, "workspace")))
 TOKEN_FILE = os.environ.get("OPENMINIS_TOKEN_FILE", "/etc/openminis/token")
 MAX_TURNS = int(os.environ.get("OPENMINIS_MAX_TURNS", "128"))
@@ -580,7 +586,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.20.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.21.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1177,6 +1183,12 @@ def tool_shell_execute(task_id, session_id, args):
                 "note": "命令在后台运行，完成后会写回对话并推送；可用 background_jobs 查看进度。"}
     argv, use_shell, preexec = iso.wrap_command(cmd, limits)
     system_op = resource_settings()["system_lock"] and iso.is_system_op(cmd)
+    if iso.is_system_op(cmd) and resource_settings().get("system_snapshot", True):
+        try:
+            snap = cloud_sysnap.take(sysnap_dir(), scrub_text(cmd), etc_root=SYSNAP_ETC)
+            log_event(task_id, "status", {"message": f"改系统之前已拍快照 {snap}，可在「系统快照」里对比和回滚"})
+        except Exception as e:
+            log_event(task_id, "status", {"message": f"系统快照没拍成（{type(e).__name__}），照常执行"})
     if system_op and not iso.SYSTEM_LOCK.acquire(blocking=False):
         log_event(task_id, "status", {"message": "等待其他 Bot 的系统级安装完成…"})
         if not iso.SYSTEM_LOCK.acquire(timeout=max(timeout, 600)):
@@ -5975,6 +5987,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(500, {"error": f"读取代理设置失败：{type(e).__name__}"})
             return
+        if path == "/v1/system-snapshots":
+            self._send(200, {"snapshots": cloud_sysnap.list_all(sysnap_dir())})
+            return
+        m = re.match(r"^/v1/system-snapshots/([0-9-]{10,32})/plan$", path)
+        if m:
+            p = cloud_sysnap.plan(sysnap_dir(), m.group(1))
+            self._send(200 if p else 404, {"plan": p} if p else {"error": "没有这个快照"})
+            return
         if path == "/v1/relays/watch":
             cfg = relay_watch_config()
             self._send(200, {"watch": {k: cfg.get(k) for k in ("credential", "model", "hours", "last_run", "history")}})
@@ -7282,6 +7302,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": str(e)})
                 return
             self._send(200, stats)
+            return
+
+        m = re.match(r"^/v1/system-snapshots/([0-9-]{10,32})/restore$", path)
+        if m:
+            if req_json.get("confirm") is not True:
+                self._send(400, {"error": "回滚会卸载新装的软件、恢复 /etc，需要 confirm: true"})
+                return
+            with iso.SYSTEM_LOCK:
+                r = cloud_sysnap.restore(sysnap_dir(), m.group(1))
+            self._send(200 if r else 404, r or {"error": "没有这个快照"})
             return
 
         if path == "/v1/relays/check":

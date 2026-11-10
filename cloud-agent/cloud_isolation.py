@@ -20,6 +20,7 @@ DEFAULTS = {
     "max_tasks_total": 3,          # 全局同时运行的任务数，0 = 不限
     "max_bots_running": 0,         # 同时运行任务的 Bot 数，0 = 不限
     "system_lock": True,           # apt / pip / npm -g / systemctl 等系统级操作同一时间只允许一个
+    "system_snapshot": True,       # 系统级操作之前自动拍快照（软件包、pip、全局 npm、自启服务、/etc），可对比和回滚
     "bot_defaults": {
         "max_tasks_per_bot": 1,    # 同一个 Bot 同时运行的任务数（>1 时额外任务用独立子工作区 / 屏幕）
         "queue_cap": 20,           # 每个 Bot 排队上限，0 = 不限
@@ -123,7 +124,7 @@ def validate(patch, current):
     for k, v in patch.items():
         if k not in DEFAULTS:
             raise SettingsError(f"未知设置：{k}")
-        if k in ("system_lock", "browser_warm", "stream", "lazy_tools", "parallel_tools", "prompt_cache"):
+        if k in ("system_lock", "system_snapshot", "browser_warm", "stream", "lazy_tools", "parallel_tools", "prompt_cache"):
             if not isinstance(v, bool):
                 raise SettingsError(f"{k} 必须是布尔值")
             s[k] = v
