@@ -1,7 +1,7 @@
 //
 //  CloudBotHomeMenu.swift
 //  Minis - Minis Bot 首页长按 Bot（主 Bot 大卡片和列表行）：系统菜单，上面是预览卡片（头像 + 名字 + 最后一条消息），
-//  下面是 标为未读 / 置顶 / 替换主 Bot / 分享为模板 / 隐藏 / 更多（重命名、编辑设置、/reset、删除）。
+//  下面是 标为未读 / 置顶 / 替换主 Bot 或分组 / 分享为模板 / 隐藏 / 更多（编辑设置、复制 ID、删除）。
 //  菜单挂在按钮上（.contextMenu），点一下照常打开对话。
 //
 
@@ -14,6 +14,7 @@ struct CloudBotMenuActions {
     var share: (CloudBot) -> Void
     var delete: (CloudBot) -> Void
     var newSection: (CloudBot) -> Void
+    var edit: (CloudBot) -> Void
 }
 
 struct CloudBotContextMenu: ViewModifier {
@@ -30,8 +31,8 @@ struct CloudBotContextMenu: ViewModifier {
     }
 }
 
-/// 非主 Bot：标为未读、置顶、新建分组、分享为模板、隐藏、更多（复制 ID、删除）
-/// 主 Bot：标为未读、置顶、替换主 Bot、分享为模板、隐藏、更多（复制 ID）
+/// 非主 Bot：标为未读、置顶、新建分组、分享为模板、隐藏、更多（编辑设置、复制 ID、删除）
+/// 主 Bot：标为未读、置顶、替换主 Bot、分享为模板、隐藏、更多（编辑设置、复制 ID）
 struct CloudBotMenuItems: View {
     let bot: CloudBot
     @ObservedObject var model: CloudBotHomeModel
@@ -53,6 +54,7 @@ struct CloudBotMenuItems: View {
         Button { actions.share(bot) } label: { Label("分享为模板…", systemImage: "square.and.arrow.up") }
         Button(role: .destructive) { model.setPrefs(bot.id, ["hidden": true]) } label: { Label("隐藏", systemImage: "eye.slash") }
         Menu {
+            Button { actions.edit(bot) } label: { Label("编辑设置", systemImage: "slider.horizontal.3") }
             Button { UIPasteboard.general.string = bot.id; CloudHaptics.success() } label: { Label("复制 ID", systemImage: "doc.on.doc") }
             if !bot.isPrimary {
                 Button(role: .destructive) { actions.delete(bot) } label: { Label("删除", systemImage: "trash") }

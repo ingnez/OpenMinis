@@ -176,6 +176,7 @@ struct CloudBotAvatarView: View {
     var eyeOpen: CGFloat = 1
     /// 心情：排队时眯眼专注、等你审批时睁大眼、有新回复时笑眯眯
     var mood: CloudBotMood = .calm
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         if spec.photo != nil {
@@ -197,6 +198,8 @@ struct CloudBotAvatarView: View {
     private var shapeBody: some View {
         ZStack {
             CloudBotShape(kind: spec.shape).fill(spec.fill)
+            // 深色模式下黑色头像（主 Bot 默认）会融进背景：加一圈随外观变化的细描边
+            CloudBotShape(kind: spec.shape).stroke(Color.primary.opacity(colorScheme == .dark ? 0.35 : 0.06), lineWidth: max(1, size * 0.025))
             HStack(spacing: size * 0.13) {
                 eye
                 eye

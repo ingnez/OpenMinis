@@ -358,6 +358,9 @@ struct CloudBotDetailView: View {
             }
 
             Section {
+                NavigationLink { CloudBotSoulView(bot: bot, onSaved: { await refresh(); await onChanged() }) } label: {
+                    LabeledContent("灵魂设定", value: bot.soul.isEmpty ? "未设置" : (bot.soul["language"] ?? "已设置"))
+                }
                 NavigationLink { CloudBotLibraryView(bot: bot) } label: { Text("资料库") }
                 NavigationLink { CloudBotMemoryView(botId: bot.id, botName: bot.name) } label: {
                     LabeledContent("记忆", value: bot.memoryCount > 0 ? "\(bot.memoryCount) 条" : "")

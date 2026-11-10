@@ -39,7 +39,7 @@ enum CloudConnectAppsData {
         case "sequential-thinking": return ("效率", "list.number", .indigo)
         case "filesystem": return ("效率", "folder", .teal)
         case "brave-search": return ("效率", "magnifyingglass", .orange)
-        case "github": return ("开发", "chevron.left.forwardslash.chevron.right", .black)
+        case "github": return ("开发", "chevron.left.forwardslash.chevron.right", Color(.darkGray))
         case "deepwiki", "context7": return ("开发", "book", .green)
         default:
             if id.hasPrefix("skills-") { return ("技能", "sparkles", .pink) }
@@ -54,7 +54,7 @@ enum CloudConnectAppsData {
         CloudConnectApp(id: "ph-reminders", name: "提醒事项", subtitle: "同步待办到 iPhone 提醒事项（即将支持）", symbol: "checklist", tint: .orange, category: "iPhone", catalogId: nil, connected: false, placeholder: true, route: nil),
         CloudConnectApp(id: "ph-photos", name: "照片", subtitle: "把选中的照片交给云端 Bot 处理（即将支持）", symbol: "photo.on.rectangle", tint: .yellow, category: "iPhone", catalogId: nil, connected: false, placeholder: true, route: nil),
         CloudConnectApp(id: "ph-contacts", name: "通讯录", subtitle: "按姓名查找联系人（即将支持）", symbol: "person.crop.circle", tint: .gray, category: "iPhone", catalogId: nil, connected: false, placeholder: true, route: nil),
-        CloudConnectApp(id: "ph-vault", name: "密码库", subtitle: "让云端 Bot 在网页登录时使用你保存的密码（即将支持）", symbol: "key.fill", tint: .black, category: "密码管理器", catalogId: nil, connected: false, placeholder: true, route: nil),
+        CloudConnectApp(id: "vault", name: "保管库", subtitle: "Bot 可以使用的登录信息、卡片和联系信息", symbol: "lock.shield.fill", tint: .teal, category: "密码管理器", catalogId: nil, connected: false, placeholder: false, route: "vault"),
         CloudConnectApp(id: "ph-mail", name: "邮件", subtitle: "整理收件箱、起草回复（即将支持）", symbol: "envelope.fill", tint: .blue, category: "通信", catalogId: nil, connected: false, placeholder: true, route: nil),
         CloudConnectApp(id: "ph-design", name: "设计稿", subtitle: "读取设计文件并导出切图（即将支持）", symbol: "paintpalette.fill", tint: .purple, category: "设计", catalogId: nil, connected: false, placeholder: true, route: nil),
     ]
@@ -131,7 +131,9 @@ struct CloudConnectAppsSheet: View {
                 }
             }
             .navigationDestination(for: String.self) { id in
-                if id == "telegram" {
+                if id == "vault" {
+                    CloudVaultView()
+                } else if id == "telegram" {
                     Form { CloudTelegramSection(selectedInstanceId: selectedInstanceId) }.navigationTitle("Telegram")
                 } else if let p = installed.first(where: { $0.id == id }) {
                     CloudPluginDetailView(plugin: p, onChanged: { await reload() })
@@ -189,6 +191,7 @@ struct CloudConnectAppsSheet: View {
                 .foregroundStyle(.white)
                 .frame(width: 40, height: 40)
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(app.tint))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name).font(.system(size: 17, weight: .medium)).lineLimit(1)
                 Text(app.subtitle).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
@@ -233,12 +236,12 @@ struct CloudConnectAppsSheet: View {
 
     private func open(_ app: CloudConnectApp) {
         if app.placeholder { placeholderAlert = app; return }
-        if app.route == "telegram" || app.connected { path = [app.id] }
+        if app.route == "telegram" || app.route == "vault" || app.connected { path = [app.id] }
     }
 
     private func connect(_ app: CloudConnectApp) {
         if app.placeholder { placeholderAlert = app; return }
-        if app.route == "telegram" { path = ["telegram"]; return }
+        if app.route == "telegram" || app.route == "vault" { path = [app.route ?? ""]; return }
         guard let cid = app.catalogId else { return }
         busyId = app.id
         errorText = nil

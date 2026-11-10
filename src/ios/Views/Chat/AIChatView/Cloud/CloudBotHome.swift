@@ -7,12 +7,12 @@
 
 import Foundation
 import SwiftUI
+import UIKit
 import WidgetKit
 
 enum CloudBotHome {
     /// 主屏模式（"local" / "bots"），跨启动保存
     static let modeKey = "OpenMinis_homeMode"
-    static let initialsKey = "OpenMinis_userInitials"
 
     static let palette: [Color] = [
         Color(red: 0.23, green: 0.51, blue: 0.96), Color(red: 0.93, green: 0.29, blue: 0.60),
@@ -416,7 +416,6 @@ struct CloudBotHomeScreen: View {
     let onOpenSettings: () -> Void
     let onSwitchToLocal: () -> Void
     @ObservedObject private var model = CloudBotHomeModel.shared
-    @AppStorage(CloudBotHome.initialsKey) private var initials: String = "我"
     @State private var path: [String] = []
     @State private var search = ""
     @StateObject private var searchModel = CloudSearchModel()
@@ -445,7 +444,8 @@ struct CloudBotHomeScreen: View {
                 }
             },
             delete: { bot in deleting = bot },
-            newSection: { bot in sectionName = ""; sectionFor = bot })
+            newSection: { bot in sectionName = ""; sectionFor = bot },
+            edit: { bot in path = ["detail:" + bot.id] })
     }
 
     var body: some View {
@@ -561,6 +561,8 @@ struct CloudBotHomeScreen: View {
                     CloudGroupChatView(groupId: String(id.dropFirst(6)))
                 } else if id == "hidden" {
                     CloudHiddenBotsPage(model: model)
+                } else if id.hasPrefix("detail:"), let bot = model.bot(String(id.dropFirst(7))) {
+                    CloudBotDetailView(bot: bot, onChanged: { await model.refresh() })
                 } else {
                     CloudBotChatView(botId: id)
                 }
@@ -634,6 +636,7 @@ struct CloudBotHomeScreen: View {
         Button {} label: { Label("Minis Bot ✓", systemImage: "person.3.fill") }
     }
 
+    /// 左上角设置按钮：和右上角「+」同样的系统工具栏样式（iOS 26 上自动是玻璃按钮），点一下打开设置，长按有更多入口
     private var avatarMenu: some View {
         Menu {
             Button { onOpenSettings() } label: { Label("设置", systemImage: "gear") }
@@ -641,12 +644,13 @@ struct CloudBotHomeScreen: View {
             Divider()
             Button { onSwitchToLocal() } label: { Label("切换到本地模式", systemImage: "iphone") }
         } label: {
-            Text(String(initials.prefix(2)))
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 36, height: 36)
-                .background(Circle().fill(Color(.secondarySystemBackground)))
+            Image(systemName: "gear")
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        } primaryAction: {
+            onOpenSettings()
         }
+        .accessibilityLabel("设置")
     }
 
     private var bottomBar: some View {
@@ -686,6 +690,25 @@ struct CloudBotHomeScreen: View {
     }
 }
 
+/// 外观：跟随系统（默认）/ 浅色 / 深色；和 App 设置里的「Theme」是同一个开关
+struct CloudAppearancePicker: View {
+    @AppStorage("appearanceMode") private var appearanceMode: Int = 0
+
+    var body: some View {
+        Picker(selection: $appearanceMode) {
+            Text("跟随系统").tag(0)
+            Text("浅色").tag(1)
+            Text("深色").tag(2)
+        } label: {
+            Label("外观", systemImage: "circle.lefthalf.filled")
+        }
+        .onChange(of: appearanceMode) { mode in
+            let style: UIUserInterfaceStyle = mode == 1 ? .light : mode == 2 ? .dark : .unspecified
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows).forEach { $0.overrideUserInterfaceStyle = style }
+        }
+    }
+}
+
 /// 左下角入口：Bot 管理、插件、例行任务、记忆、页面、云电脑设置
 struct CloudBotHubView: View {
     let onDone: () -> Void
@@ -694,6 +717,7 @@ struct CloudBotHubView: View {
         List {
             Section {
                 CloudVaultSettingsRow()
+                CloudAppearancePicker()
             }
             Section {
                 NavigationLink(destination: CloudBotsView()) { Label("我的 Bot（模板、导入导出）", systemImage: "person.3") }

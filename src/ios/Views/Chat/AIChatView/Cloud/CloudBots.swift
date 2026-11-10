@@ -43,6 +43,8 @@ struct CloudBot: Identifiable, Hashable {
     var markedUnread = false
     var seenAt: Double = 0
     var sectionId: String?
+    /// 灵魂设定：style / language / persona / forbidden（服务器每次调用模型都放在系统提示最前面）
+    var soul: [String: String] = [:]
 
     init(id: String, name: String, emoji: String, summary: String, instructions: String, isPrimary: Bool = false) {
         self.id = id
@@ -107,6 +109,7 @@ struct CloudBot: Identifiable, Hashable {
         markedUnread = prefs["unread"] as? Bool ?? false
         seenAt = (prefs["seen_at"] as? NSNumber)?.doubleValue ?? 0
         sectionId = prefs["section_id"] as? String
+        soul = (d["soul"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String }
     }
 
     /// 这个 Bot 自己固定了模型与凭据：对话不依赖手机当前选择的服务商
