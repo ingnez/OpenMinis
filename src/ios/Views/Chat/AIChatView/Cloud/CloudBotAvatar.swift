@@ -200,6 +200,16 @@ struct CloudBotAvatarView: View {
             }
             .rotationEffect(.degrees(mood == .curious ? -4 : -14))
             .offset(x: size * (0.06 + 0.08 * gaze.width), y: size * (-0.08 + 0.07 * gaze.height))
+            if mood == .shy {
+                HStack(spacing: size * 0.3) {
+                    Ellipse().fill(Color.pink.opacity(0.75))
+                    Ellipse().fill(Color.pink.opacity(0.75))
+                }
+                .frame(width: size * 0.55, height: size * 0.08)
+                .blur(radius: size * 0.015)
+                .offset(x: size * 0.06, y: size * 0.08)
+                .accessibilityHidden(true)
+            }
             if mood == .dozing {
                 Text("z").font(.system(size: size * 0.22, weight: .heavy, design: .rounded)).foregroundStyle(.white.opacity(0.9))
                     .offset(x: size * 0.3, y: -size * 0.3)
@@ -226,6 +236,10 @@ extension CloudBotAvatarView {
             // 出错：向下弯的眼，像皱着眉
             CloudHappyEye().stroke(Color.white, style: StrokeStyle(lineWidth: size * 0.07, lineCap: .round))
                 .frame(width: size * 0.14, height: size * 0.07).rotationEffect(.degrees(180))
+        case .shy:
+            // 害羞：眯成向下弯的笑眼
+            CloudHappyEye().stroke(Color.white, style: StrokeStyle(lineWidth: size * 0.06, lineCap: .round))
+                .frame(width: size * 0.13, height: size * 0.06).rotationEffect(.degrees(180))
         case .dozing:
             // 闲太久：闭眼成一条线
             Capsule().fill(Color.white).frame(width: size * 0.13, height: max(1.5, size * 0.035))
@@ -430,12 +444,18 @@ struct CloudBotAliveAvatar: View {
     @State private var eyeOpen: CGFloat = 1
     @State private var touching = false
     @State private var bounce: CGFloat = 1
+    @State private var shy = false
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             let breath = reduceMotion ? 0 : sin(t * 1.6)
-            CloudBotAvatarView(spec: spec, size: size, gaze: gaze, eyeOpen: eyeOpen)
+            let tilt = CloudBotMood.tilt(gaze: (Double(gaze.width), Double(gaze.height)), shy: shy)
+            CloudBotAvatarView(spec: spec, size: size, gaze: shy ? CGSize(width: tilt.yaw > 0 ? 0.8 : -0.8, height: 0.6) : gaze,
+                               eyeOpen: eyeOpen, mood: shy ? .shy : .calm)
+                .overlay(CloudAvatarSheen(yaw: reduceMotion ? 0 : tilt.yaw, pitch: reduceMotion ? 0 : tilt.pitch).allowsHitTesting(false))
+                .rotation3DEffect(.degrees(reduceMotion ? 0 : tilt.yaw), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+                .rotation3DEffect(.degrees(reduceMotion ? 0 : tilt.pitch), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
                 .scaleEffect(x: (1 + 0.015 * breath) * bounce, y: (1 - 0.02 * breath) * (2 - bounce), anchor: .bottom)
                 .rotationEffect(.degrees(reduceMotion ? 0 : 2.5 * sin(t * 0.7)))
                 .offset(y: reduceMotion ? 0 : -4 * (0.5 + 0.5 * sin(t * 1.6)))
@@ -458,6 +478,10 @@ struct CloudBotAliveAvatar: View {
                 },
             including: interactive ? .all : .subviews
         )
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.5, maximumDistance: 30).onEnded { _ in becomeShy() },
+            including: interactive ? .all : .subviews
+        )
         .modifier(CloudFollowTouch(gaze: $gaze, enabled: !reduceMotion && !touching))
         .onChange(of: spec) { _ in
             guard !reduceMotion else { return }
@@ -466,6 +490,16 @@ struct CloudBotAliveAvatar: View {
         }
         .task(id: reduceMotion) { await live() }
         .accessibilityHidden(true)
+    }
+
+    /// 长按：害羞地扭头、脸红，2.5 秒后恢复
+    private func becomeShy() {
+        CloudHaptics.tap()
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.6)) { shy = true }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.75)) { shy = false }
+        }
     }
 
     private func live() async {
@@ -511,5 +545,19 @@ struct CloudBotBlinkingIcon: View {
                     try? await Task.sleep(nanoseconds: UInt64.random(in: 4_000_000_000...11_000_000_000))
                 }
             }
+    }
+}
+
+/// 3D 倾斜时的一层高光：朝光的一侧亮、背光的一侧暗，让扁平头像有立体感
+struct CloudAvatarSheen: View {
+    let yaw: Double
+    let pitch: Double
+
+    var body: some View {
+        let x = 0.5 - yaw / 80, y = 0.35 + pitch / 80
+        RadialGradient(colors: [.white.opacity(0.28), .clear, .black.opacity(0.12)],
+                       center: UnitPoint(x: x, y: y), startRadius: 0, endRadius: 120)
+            .blendMode(.softLight)
+            .mask(Circle().scale(0.95))
     }
 }
