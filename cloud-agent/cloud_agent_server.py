@@ -69,6 +69,7 @@ import cloud_desktop
 import cloud_vision
 import cloud_handoff
 import cloud_botstatus
+import cloud_botthreads
 import cloud_secrets
 import cloud_policy
 import cloud_cron
@@ -314,6 +315,7 @@ def init_db():
     cloud_workers.ensure_schema(conn)
     cloud_runmodel.ensure_schema(conn)
     cloud_vision.ensure_schema(conn)
+    cloud_botthreads.ensure_schema(conn)
     cloud_vault.set_loader(get_db_connection)
     cloud_plugins.ensure_schema(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS app_settings (name TEXT PRIMARY KEY, value TEXT)")
@@ -564,7 +566,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.15.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.16.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1920,6 +1922,12 @@ def bot_detail(bot):
                             "WHERE s.persona_id = ? AND COALESCE(s.incognito, 0) = 0 AND s.session_id NOT IN (SELECT worker_session FROM bot_workers) AND m.role IN ('user', 'assistant') AND m.content IS NOT NULL AND m.content != '' "
                             "ORDER BY m.timestamp DESC, m.id DESC LIMIT 1", (pid,)).fetchone()
         out["last_message"] = {"role": last[0], "preview": " ".join(str(last[1]).split())[:120], "at": last[2], "session_id": last[3]} if last else None
+        tmsg = cloud_botthreads.latest_for(conn, pid)
+        if tmsg and (not last or tmsg["ts"] >= (last[2] or 0) - 0.5):
+            # 最近的动静是和别的 Bot 说话：首页显示「➤ 已发消息给 X：…」/「← 来自 X：…」
+            out["thread_preview"] = {"text": cloud_botthreads.preview_text(pid, tmsg, _thread_names()), "at": tmsg["ts"],
+                                     "peer": tmsg["recipient"] if tmsg["sender"] == cloud_botthreads.norm(pid) else tmsg["sender"],
+                                     "outgoing": tmsg["sender"] == cloud_botthreads.norm(pid), "priority": tmsg["priority"]}
         counts = dict(conn.execute("SELECT t.status, COUNT(*) FROM tasks t JOIN sessions s ON s.session_id = t.session_id "
                                    "WHERE s.persona_id = ? AND t.status IN ('running', 'queued', 'waiting_user') GROUP BY t.status", (pid,)).fetchall())
         out["notify"] = pid not in muted_bots()
@@ -2105,6 +2113,7 @@ def search_everything(q, limit=60):
         grows = conn.execute(
             "SELECT gm.group_id, gm.id, gm.sender, gm.content, gm.timestamp, g.name FROM group_messages gm JOIN groups g ON g.group_id = gm.group_id "
             "WHERE gm.kind IN ('text', 'task', 'task_result') AND gm.content LIKE ? ESCAPE '\\' ORDER BY gm.timestamp DESC LIMIT ?", (like, limit)).fetchall()
+        trows = cloud_botthreads.search(conn, like, limit)
     finally:
         conn.close()
 
@@ -2121,8 +2130,17 @@ def search_everything(q, limit=60):
               "bot_id": r[5] or "", "bot_name": names.get(r[5], "主助手")} for r in rows]
     items += [{"type": "group", "group_id": r[0], "message_id": r[1], "sender": r[2], "snippet": snippet(r[3]), "timestamp": r[4],
                "group_name": r[5], "bot_name": "我" if r[2] == "user" else names.get(r[2], r[2])} for r in grows]
+    tn = _thread_names()
+    items += [{"type": "bot_thread", "message_id": r["id"], "bots": sorted([r["sender"], r["recipient"]]), "sender": r["sender"],
+               "snippet": snippet(r["text"]), "timestamp": r["ts"], "bot_name": tn.get(r["sender"], r["sender"]),
+               "title": f"{tn.get(r['sender'], r['sender'])} ↔ {tn.get(r['recipient'], r['recipient'])}"} for r in trows]
     items.sort(key=lambda x: -(x["timestamp"] or 0))
     return items[:limit]
+
+def _thread_names():
+    names = {p["persona_id"]: p["name"] for p in list_personas()}
+    names[cloud_botthreads.MAIN] = "主助手"
+    return names
 
 def CloudMessageText_plain(raw):
     try:
@@ -2985,6 +3003,7 @@ def start_delegation(task_id, session_id, kind, target_id, body, priority="norma
         c.execute("INSERT INTO bot_delegations (delegation_id, kind, from_bot, to_bot, from_session, from_task, to_session, to_task, content, priority, "
                   "report_back, hop, root_id, status, result, reported, created_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'running', NULL, 0, ?, NULL)",
                   (did, kind, own or "", target_id, session_id, task_id, sid, tid, body[:20000], priority, 1 if report_back else 0, hop, root, now))
+        cloud_botthreads.record(conn, own or "", target_id, cloud_vault.redact(body), kind, did, priority, "running", tid, sid, now)
         conn.commit()
     finally:
         conn.close()
@@ -3011,6 +3030,9 @@ def start_delegation(task_id, session_id, kind, target_id, body, priority="norma
                 result = ((last[0] if last else "") or "")[:20000]
                 conn2.execute("UPDATE bot_delegations SET status = ?, result = ?, finished_at = ? WHERE delegation_id = ?",
                               (status, result, time.time(), did))
+                cloud_botthreads.set_status(conn2, did, status)
+                if kind == "task":
+                    cloud_botthreads.record(conn2, target_id, own or "", cloud_vault.redact(result or ""), "result", did, priority, status, tid, sid)
                 conn2.commit()
             finally:
                 conn2.close()
@@ -5925,6 +5947,55 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/v1/backup":
             self._send(200, make_backup((query_params.get("messages") or ["1"])[0] != "0"))
+            return
+
+        if path == "/v1/bot-threads":
+            bid = (query_params.get("bot_id") or [None])[0]
+            conn = get_db_connection()
+            try:
+                self._send(200, {"threads": cloud_botthreads.threads(conn, bid, _thread_names())})
+            finally:
+                conn.close()
+            return
+
+        m_bt = re.match(r"^/v1/bot-threads/([a-z0-9_][a-z0-9_-]{0,31})/([a-z0-9_][a-z0-9_-]{0,31})$", path)
+        if m_bt:
+            # 只读线程；after + wait 长轮询（新消息 / 状态变化立刻返回）
+            try:
+                after = int((query_params.get("after") or ["0"])[0])
+                wait_s = max(0.0, min(25.0, float((query_params.get("wait") or ["0"])[0])))
+            except ValueError:
+                self._send(400, {"error": "after / wait must be numbers"})
+                return
+            deadline = time.time() + wait_s
+            seen_working = (query_params.get("working") or [None])[0]
+            while True:
+                conn = get_db_connection()
+                try:
+                    out = cloud_botthreads.thread(conn, m_bt.group(1), m_bt.group(2), after)
+                finally:
+                    conn.close()
+                remaining = deadline - time.time()
+                if out["messages"] or remaining <= 0 or (seen_working is not None and ",".join(out["working"]) != seen_working):
+                    break
+                with EVENT_COND:
+                    EVENT_COND.wait(min(remaining, 5.0))
+            out["names"] = _thread_names()
+            self._send(200, out)
+            return
+
+        m_sbt = re.match(r"^/v1/sessions/([A-Za-z0-9_-]{1,64})/bot-threads$", path)
+        if m_sbt:
+            conn = get_db_connection()
+            try:
+                rows = cloud_botthreads.session_summary(conn, m_sbt.group(1))
+            finally:
+                conn.close()
+            names = _thread_names()
+            for r in rows:
+                r["peer_name"] = names.get(r["peer"], r["peer"])
+                r["label"] = cloud_botthreads.collapsed_label(r["count"], r["peer_name"])
+            self._send(200, {"threads": rows})
             return
 
         if path == "/v1/delegations":

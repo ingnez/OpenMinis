@@ -493,3 +493,12 @@
 
 `GET /v1/bots` 每个 Bot 多了：`unread_count`（已读时间 `prefs.seen_at` 之后的助手消息数）、`pending_cards`（最近 20 张选项卡里没回答的）、`last_task_status`（最近一次结束的任务状态）、`routine_running`，以及推出的 `status {state, unread, flags}`：
 `state` 按优先级 needs_you（待审批 / 待回答）> error（最近一次结束的任务 failed / limit_reached / interrupted）> working（运行 / 排队 / 后台任务）> unread > idle；`flags` 里有 routine_running / routine_scheduled、muted。App 自己再叠加连接状态（离线显示灰色）。
+
+## Bot 之间的对话线程（2.16.0）
+
+每次 `send_to_bot` / `delegate_task` 记一条线程消息（委托结束再记一条回复），表 `bot_thread_messages`：`id, pair, sender, recipient, text, ts, priority, kind(message/task/result), status, delegation_id, task_id, session_id`。没有 Bot 身份的会话记作 `_main`。文字经过保管库脱敏。
+- `GET /v1/bot-threads[?bot_id=]`：线程列表（每对一条）`{pair, bots, names, count, last, last_at, working, high_priority, peer?, preview?}`。
+- `GET /v1/bot-threads/<a>/<b>?after=<id>&wait=<秒>&working=<逗号分隔>`：只读线程消息，`working` 是正在处理的 Bot；有新消息或 working 变化立刻返回。
+- `GET /v1/sessions/<sid>/bot-threads`：用户对话里的折叠行 `{peer, peer_name, count, label:"N 条消息，与 X", delegations}`。
+- `GET /v1/bots` 每个 Bot 可能带 `thread_preview {text:"➤ 已发消息给 X：…" / "← 来自 X：…", at, peer, outgoing, priority}`（最近的动静是 Bot 间消息时）。
+- `GET /v1/search` 结果多了 `type: "bot_thread"`（`bots`, `sender`, `message_id`）。
