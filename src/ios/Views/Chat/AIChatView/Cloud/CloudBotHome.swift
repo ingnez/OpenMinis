@@ -78,7 +78,7 @@ final class CloudBotHomeModel: ObservableObject {
     private init() {
         seen = UserDefaults.standard.dictionary(forKey: "OpenMinisCloud_botSeen") as? [String: Double] ?? [:]
         bots = CloudBotService.cachedList()
-        if !bots.isEmpty { loaded = true }
+        if !bots.isEmpty { loaded = true; publishToWidget() }
     }
 
     var primary: CloudBot? { bots.first(where: { $0.isPrimary }) }

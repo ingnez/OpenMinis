@@ -19,7 +19,8 @@ struct CloudBotsProvider: TimelineProvider {
     static func load() -> [CloudBotsEntry.Bot] {
         let raw = UserDefaults(suiteName: "group.com.openminis.app")?.array(forKey: key) as? [[String: String]] ?? []
         return raw.compactMap { d in
-            guard let id = d["id"], let name = d["name"] else { return nil }
+            guard let id = d["id"], let name = d["name"], !name.isEmpty,
+                  id.range(of: "^[a-z0-9][a-z0-9_-]{0,31}$", options: .regularExpression) != nil else { return nil }
             return CloudBotsEntry.Bot(id: id, name: name, emoji: d["emoji"] ?? "")
         }
     }
@@ -33,7 +34,8 @@ struct CloudBotsProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<CloudBotsEntry>) -> Void) {
-        completion(Timeline(entries: [CloudBotsEntry(date: Date(), bots: Self.load())], policy: .never))
+        // App 每次刷新 Bot 列表会主动刷新小组件；再加 6 小时兜底，防止那次刷新没送达
+        completion(Timeline(entries: [CloudBotsEntry(date: Date(), bots: Self.load())], policy: .after(Date().addingTimeInterval(6 * 3600))))
     }
 }
 
@@ -61,14 +63,26 @@ struct CloudBotsWidgetView: View {
                 badge(bots[0], size: 44)
                 Spacer(minLength: 0)
                 Text(bots[0].name).font(.headline).lineLimit(1)
-                Text("点一下开始对话").font(.caption).foregroundStyle(.secondary)
+                Text(entry.bots.isEmpty ? "打开 App 一次即可同步 Bot" : "点一下开始对话").font(.caption).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .padding()
             .widgetURL(url(bots[0]))
         } else {
             HStack(spacing: 10) {
-                ForEach(Array(bots.prefix(4)), id: \.self) { b in
+                if entry.bots.isEmpty {
+                    Link(destination: url(nil)) {
+                        HStack(spacing: 12) {
+                            badge(bots[0], size: 46)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("主 Bot").font(.headline)
+                                Text("打开 App 一次即可同步 Bot 列表").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+                ForEach(Array(entry.bots.prefix(4)), id: \.self) { b in
                     Link(destination: url(b)) {
                         VStack(spacing: 6) {
                             badge(b, size: 46)
