@@ -264,6 +264,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudFocusFilter.swift scripts/CloudFocusFilterTests.swift -o /tmp/cloud-focus-tests
           /tmp/cloud-focus-tests
+      - name: Bot 接力链测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudHandoffChain.swift scripts/CloudHandoffChainTests.swift -o /tmp/cloud-handoff-tests
+          /tmp/cloud-handoff-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -424,6 +429,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudHandoffChain.swift scripts/CloudHandoffChainTests.swift -o /tmp/cloud-handoff-tests
+          /tmp/cloud-handoff-tests | tee cloud-handoff-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudFocusFilter.swift scripts/CloudFocusFilterTests.swift -o /tmp/cloud-focus-tests
           /tmp/cloud-focus-tests | tee cloud-focus-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopFiles.swift scripts/CloudDesktopFilesTests.swift -o /tmp/cloud-desktopfiles-tests
@@ -757,6 +764,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudHandoffChain.swift scripts/CloudHandoffChainTests.swift -o /tmp/cloud-handoff-tests
+          /tmp/cloud-handoff-tests | tee cloud-handoff-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudFocusFilter.swift scripts/CloudFocusFilterTests.swift -o /tmp/cloud-focus-tests
           /tmp/cloud-focus-tests | tee cloud-focus-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopFiles.swift scripts/CloudDesktopFilesTests.swift -o /tmp/cloud-desktopfiles-tests

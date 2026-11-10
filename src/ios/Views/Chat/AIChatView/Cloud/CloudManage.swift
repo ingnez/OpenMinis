@@ -745,6 +745,7 @@ struct CloudDelegationsView: View {
             if items.isEmpty && !loading {
                 Text("还没有 Bot 之间的委托。对话里说「让 xx 去做…」或用 @ 提到别的 Bot。").font(.footnote).foregroundStyle(.secondary)
             }
+            CloudHandoffChainSection(items: items)
             ForEach(items.indices, id: \.self) { i in
                 let d = items[i]
                 let target = d["to_bot"] as? String ?? ""
