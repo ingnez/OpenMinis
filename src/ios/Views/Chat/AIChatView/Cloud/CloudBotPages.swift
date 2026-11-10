@@ -143,7 +143,7 @@ struct CloudBotEditSheet: View {
             Form {
                 Section {
                     Button { showAvatar = true } label: {
-                        CloudBotAliveAvatar(spec: spec, size: 110)
+                        CloudBotAliveAvatar(spec: spec, size: 110, interactive: false)
                             .overlay(alignment: .bottomTrailing) {
                                 Image(systemName: "pencil").font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary)
                                     .frame(width: 36, height: 36)

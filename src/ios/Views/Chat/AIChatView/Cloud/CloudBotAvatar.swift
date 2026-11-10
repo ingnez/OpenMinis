@@ -414,6 +414,8 @@ struct CloudBotCreateSheet: View {
 struct CloudBotAliveAvatar: View {
     let spec: CloudBotAvatarSpec
     var size: CGFloat = 150
+    /// 放在按钮里时传 false：头像自己的拖动手势（minimumDistance 0）会吞掉按钮的点按
+    var interactive = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var gaze: CGSize = .zero
     @State private var eyeOpen: CGFloat = 1
@@ -444,7 +446,8 @@ struct CloudBotAliveAvatar: View {
                 .onEnded { _ in
                     touching = false
                     withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) { gaze = .zero }
-                }
+                },
+            including: interactive ? .all : .subviews
         )
         .modifier(CloudFollowTouch(gaze: $gaze, enabled: !reduceMotion && !touching))
         .onChange(of: spec) { _ in

@@ -468,7 +468,9 @@ struct CloudBotHomeScreen: View {
     private func hero(_ bot: CloudBot) -> some View {
         Button { open(bot.id) } label: {
             VStack(spacing: 10) {
-                CloudBotAliveAvatar(spec: CloudBotAvatarSpec.of(bot), size: 96)
+                // 头像不接收触摸，整块交给按钮：之前头像的拖动手势吞掉了点按，主 Bot 点了进不去
+                CloudBotAliveAvatar(spec: CloudBotAvatarSpec.of(bot), size: 96, interactive: false)
+                    .allowsHitTesting(false)
                     .overlay(alignment: .bottomTrailing) {
                         ZStack {
                             Circle().fill(Color(.systemBackground)).frame(width: 30, height: 30)
@@ -485,8 +487,11 @@ struct CloudBotHomeScreen: View {
                 if status.busy { CloudBotStatusChip(status: status) }
             }
             .padding(.top, 8).padding(.bottom, 18)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("打开 \(bot.name)")
     }
 
     @ViewBuilder
