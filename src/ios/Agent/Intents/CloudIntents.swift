@@ -52,10 +52,10 @@ struct AskCloudBotIntent: AppIntent {
     static var description = IntentDescription("打开多 Bot 模式里指定 Bot 的对话并发送这句话；不填 Bot 就发给主 Bot。")
     static var openAppWhenRun = true
 
-    @Parameter(title: "问题")
+    @Parameter(title: "问题", requestValueDialog: "想问什么？")
     var question: String
 
-    @Parameter(title: "Bot 名称")
+    @Parameter(title: "Bot 名称", optionsProvider: CloudBotNameOptions())
     var bot: String?
 
     @MainActor
@@ -71,12 +71,19 @@ struct OpenCloudBotIntent: AppIntent {
     static var description = IntentDescription("切到多 Bot 模式并打开指定 Bot 的对话；不填就是主 Bot。")
     static var openAppWhenRun = true
 
-    @Parameter(title: "Bot 名称")
+    @Parameter(title: "Bot 名称", optionsProvider: CloudBotNameOptions())
     var bot: String?
 
     @MainActor
     func perform() async throws -> some IntentResult {
         CloudBotEntry.open(bot: bot, text: nil, send: false)
         return .result()
+    }
+}
+
+/// 「快捷指令」里 Bot 名称的候选：App 上次刷新时缓存的 Bot 列表（不联网）
+struct CloudBotNameOptions: DynamicOptionsProvider {
+    func results() async throws -> [String] {
+        await MainActor.run { CloudBotService.cachedList().map(\.name) }
     }
 }

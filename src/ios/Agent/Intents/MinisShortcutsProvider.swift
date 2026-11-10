@@ -117,6 +117,25 @@ struct MinisShortcutsProvider: AppShortcutsProvider {
             shortTitle: "Open Session",
             systemImageName: "arrow.up.right.square"
         )
+        // 多 Bot 模式：Siri 说完触发词后会追问问题；Bot 不说就发给主 Bot（在「快捷指令」里可选具体 Bot）
+        AppShortcut(
+            intent: AskCloudBotIntent(),
+            phrases: [
+                "Ask my bot in \(.applicationName)",
+                "Ask a cloud bot in \(.applicationName)",
+            ],
+            shortTitle: "Ask Bot",
+            systemImageName: "person.crop.circle.badge.questionmark"
+        )
+        AppShortcut(
+            intent: OpenCloudBotIntent(),
+            phrases: [
+                "Open my bot in \(.applicationName)",
+                "Open cloud bots in \(.applicationName)",
+            ],
+            shortTitle: "Open Bot",
+            systemImageName: "person.2.circle"
+        )
         // [T-ios-remove-open-webapp-shortcut-intent] OpenWebAppIntent removed —
         // the Home-Screen WebApp tile path was replaced by another mechanism,
         // so the Shortcuts/AppIntents action is no longer registered.

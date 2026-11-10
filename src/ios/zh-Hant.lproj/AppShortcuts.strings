@@ -16,3 +16,7 @@
 "Follow up a ${applicationName} session" = "跟進${applicationName}會話";
 "Continue a ${applicationName} session" = "繼續${applicationName}會話";
 "Open a ${applicationName} session" = "開啟${applicationName}會話";
+"Ask my bot in ${applicationName}" = "在${applicationName}問我的Bot";
+"Ask a cloud bot in ${applicationName}" = "問${applicationName}雲端Bot";
+"Open my bot in ${applicationName}" = "打開${applicationName}的Bot";
+"Open cloud bots in ${applicationName}" = "打開${applicationName}雲端Bot";

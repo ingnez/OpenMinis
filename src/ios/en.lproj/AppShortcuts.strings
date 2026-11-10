@@ -19,3 +19,7 @@
 "Follow up a ${applicationName} session" = "Follow up a ${applicationName} session";
 "Continue a ${applicationName} session" = "Continue a ${applicationName} session";
 "Open a ${applicationName} session" = "Open a ${applicationName} session";
+"Ask my bot in ${applicationName}" = "Ask my bot in ${applicationName}";
+"Ask a cloud bot in ${applicationName}" = "Ask a cloud bot in ${applicationName}";
+"Open my bot in ${applicationName}" = "Open my bot in ${applicationName}";
+"Open cloud bots in ${applicationName}" = "Open cloud bots in ${applicationName}";
