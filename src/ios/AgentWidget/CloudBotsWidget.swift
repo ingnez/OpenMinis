@@ -100,7 +100,7 @@ struct CloudBotsWidgetView: View {
 struct CloudBotsWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "CloudBotsWidget", provider: CloudBotsProvider()) { entry in
-            if #available(iOSApplicationExtension 17.0, *) {
+            if #available(iOS 17.0, *) {
                 CloudBotsWidgetView(entry: entry).containerBackground(.fill.tertiary, for: .widget)
             } else {
                 CloudBotsWidgetView(entry: entry)
