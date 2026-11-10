@@ -84,7 +84,7 @@ def validate_manifest(m):
             out["mcp"] = {"transport": "http", "url": url}
         else:
             cmd, args = spec.get("command"), spec.get("args", [])
-            if not isinstance(cmd, str) or not re.match(r"^[A-Za-z0-9_./+-]{1,200}$", cmd):
+            if not isinstance(cmd, str) or not re.match(r"^[A-Za-z0-9_./+@-]{1,200}$", cmd):
                 raise PluginError("manifest.mcp.command must be a plain executable name or path")
             if not isinstance(args, list) or len(args) > 50 or not all(isinstance(a, str) and len(a) <= 500 for a in args):
                 raise PluginError("manifest.mcp.args must be a list of strings")
