@@ -602,10 +602,13 @@ def start_watchdog():
 
 def user_notify(cfg, event, title, body, session_id=None, bot_id=None):
     """通知用户：先记进 App 通知流（App 在线时用系统本地通知显示），App 不在线且允许兜底时再发 Bark。"""
-    bot_id = bot_id or (session_persona_id(session_id) if session_id else None)
-    if bot_id and bot_id in (resource_settings().get("private_bots") or []):
-        # 上锁的 Bot：通知里不带名字和内容
-        title, body = "OpenMinis", "有一条新消息（已上锁的 Bot）"
+    try:
+        bot_id = bot_id or (session_persona_id(session_id) if session_id else None)
+        if bot_id and bot_id in (resource_settings().get("private_bots") or []):
+            # 上锁的 Bot：通知里不带名字和内容
+            title, body = "OpenMinis", "有一条新消息（已上锁的 Bot）"
+    except Exception as e:
+        print(f"notify privacy check failed: {type(e).__name__}", flush=True)
     try:
         if APP_FEED is not None:
             APP_FEED.add(event, title, body, session_id=session_id, bot_id=bot_id or (session_persona_id(session_id) if session_id else None))

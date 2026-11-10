@@ -583,6 +583,8 @@ struct CloudBotChatView: View {
     @ObservedObject private var lock = CloudBotLock.shared
     /// 当前是无痕对话时记下它和之前的对话，结束后删掉并回到原来的对话
     @State private var incognito: (id: String, previous: String?)?
+    /// 页面真正关闭（被弹出）时删掉无痕对话；推到委托 / 电脑 / 资料页时不会触发
+    @StateObject private var incognitoGuard = CloudIncognitoGuard()
     @State private var incognitoError: String?
     @AppStorage private var backdropRaw: String
     @Environment(\.colorScheme) private var systemScheme
@@ -686,10 +688,7 @@ struct CloudBotChatView: View {
         .alert("没能开无痕对话", isPresented: Binding(get: { incognitoError != nil }, set: { if !$0 { incognitoError = nil } })) {
             Button("好", role: .cancel) {}
         } message: { Text(incognitoError ?? "") }
-        .onDisappear { model.markSeen(botId); CloudBotSpeaker.stop()
-            // 推到电脑 / 资料页时也会触发 onDisappear：这时不结束无痕
-            if !showComputer && !showDetail { endIncognito(restore: true) }
-        }
+        .onDisappear { model.markSeen(botId); CloudBotSpeaker.stop() }
     }
 
     private func speakLatest(_ sid: String) {
@@ -731,6 +730,7 @@ struct CloudBotChatView: View {
             let sid = try await CloudQuiet.retry(2) { try await CloudBotService.newIncognitoSession(bot) }
             guard !sid.isEmpty else { return }
             incognito = (sid, sessionId)
+            incognitoGuard.sessionId = sid
             sessionId = sid
         } catch {
             incognitoError = error.localizedDescription
@@ -740,6 +740,7 @@ struct CloudBotChatView: View {
     private func endIncognito(restore: Bool) {
         guard let current = incognito else { return }
         incognito = nil
+        incognitoGuard.sessionId = nil
         if restore, sessionId == current.id { sessionId = current.previous }
         Task { await CloudBotService.deleteIncognito(current.id) }
     }
@@ -830,6 +831,18 @@ struct CloudTodayFeed: View {
                                  botHasOwnModel: bot?.hasOwnModel ?? false, theme: bot.map { CloudBotChatTheme(bot: $0) })
             } label: { content }
             .buttonStyle(.plain)
+        }
+    }
+}
+
+/// 跟着 CloudBotChatView 的生命周期：视图真正离开（不是被别的页面盖住）时释放，顺手删掉还开着的无痕对话
+@MainActor
+final class CloudIncognitoGuard: ObservableObject {
+    nonisolated(unsafe) var sessionId: String?
+
+    deinit {
+        if let sid = sessionId {
+            Task { @MainActor in await CloudBotService.deleteIncognito(sid) }
         }
     }
 }
