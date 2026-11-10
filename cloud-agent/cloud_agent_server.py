@@ -630,7 +630,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.30.1"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.31.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1617,7 +1617,7 @@ def tool_vault(task_id, session_id, name, args):
     try:
         if name == "vault_list":
             items = cloud_vault.list_items(conn, args.get("kind"), args.get("query"))
-            out = [cloud_vault.for_model(i) for i in items[:50]]
+            out = [cloud_vault.for_model(i, actor) for i in items[:50]]
             note = "用 vault_fill(id) 把选中的一项填进当前网页；allowed=false 的项用户不允许 Bot 使用"
             return {"items": out, "count": len(items), "note": note if out else "保管库里没有匹配的项；请用户在 App 的「保管库」里添加"}
         try:
@@ -1629,6 +1629,11 @@ def tool_vault(task_id, session_id, name, args):
         if not item.get("allow_bots", True):
             cloud_vault.record_use(conn, item, actor, session_id, name, None, False, "用户不允许 Bot 使用这一项")
             return {"error": f"用户关掉了「{item['title']}」的「允许 Bot 使用」，不能使用；请用户在保管库里打开或亲自填写"}
+        if not cloud_vault.bot_allowed(item, actor):
+            cloud_vault.record_use(conn, item, actor, session_id, name, None, False, "这一项只允许指定的 Bot 使用")
+            return {"error": f"「{item['title']}」只允许指定的 Bot 使用，你不在名单里；请用户在保管库里加上你或亲自填写"}
+        if item["kind"] == "note":
+            return {"error": "安全备注只能用户在 App 里查看，Bot 不能读取或填写"}
         target = args.get("target") or "browser"
         if name == "vault_totp":
             if item["kind"] != "login" or not sec.get("totp"):
@@ -6918,7 +6923,7 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/vault":
                 q = lambda k: (query.get(k) or [None])[0]
                 ok, reason = cloud_secrets.status()
-                self._send(200, {"items": cloud_vault.list_items(conn, q("kind"), q("q")), "available": ok,
+                self._send(200, {"items": cloud_vault.list_items(conn, q("kind"), q("q"), hints=ok), "available": ok,
                                  **({} if ok else {"reason": reason})})
             elif method == "GET" and path == "/v1/vault/uses":
                 item_id = (query.get("item_id") or [None])[0]

@@ -601,3 +601,9 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 ## 2.30.1
 
 - 修复：`GET /v1/tasks/<id>/replay/<i>` 里多余的局部 `import base64` 让整个 `do_GET` 把 `base64` 当成局部变量，`GET /v1/bots/<id>/avatar` 因此 500。接口形状不变。
+
+## 保管库新界面（2.31.0）
+
+- 新类型 `note`（安全备注）：机密字段 `body`；Bot 的 `vault_list` 里 `allowed` 恒为 false，`vault_fill` / `vault_totp` 拒绝；内容参与防泄漏替换。
+- 每项可选 `allowed_bots: [bot_id]`（`[]` 或 `null` = 所有 Bot）。不在名单的 Bot 调用会被拒并记一条失败使用记录；`vault_list` 的 `allowed` 按调用的 Bot 计算。
+- `GET /v1/vault`（只给 App）每项多出提示：卡片 `expiry_hint`（MM/YY）、联系信息 `address_hint`（默认地址一行）、登录 `pw_weak` / `pw_reused`（布尔）。服务端解密后只算提示，密码、卡号、CVV 原值不外传；模型看到的 `for_model` 不含这些提示。`?q=` 搜索也覆盖两个提示字段。

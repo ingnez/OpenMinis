@@ -96,7 +96,8 @@ class VaultTests(CloudServerTestCase):
                                                         "addresses": [{"label": "家", "line1": "测试路 1 号", "city": "上海"}]})
         self.assertEqual(st, 201, contact)
         listing = json.dumps(self.request("GET", "/v1/vault")[1], ensure_ascii=False)
-        for s in (FAKE_PW, FAKE_TOTP, FAKE_CARD, FAKE_CVV + '"', "测试路"):
+        # 2.31.0 起 App 列表带默认地址提示（只给 App，不给模型，见 test_phase44），密码 / 卡号 / CVV 仍不出现
+        for s in (FAKE_PW, FAKE_TOTP, FAKE_CARD, FAKE_CVV + '"'):
             self.assertNotIn(s, listing)
         self.assertEqual(len(self.request("GET", "/v1/vault?kind=card")[1]["items"]), 1)
         self.assertEqual(len(self.request("GET", "/v1/vault?q=login.example.com")[1]["items"]), 1)

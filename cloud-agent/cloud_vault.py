@@ -24,14 +24,18 @@ from urllib.parse import urlparse, parse_qs, unquote
 
 import cloud_secrets
 
-KINDS = ("login", "card", "contact")
+KINDS = ("login", "card", "contact", "note")
 ID_RE = re.compile(r"^v_[a-f0-9]{10}$")
 MASK = "[保管库已隐藏]"
 SECRET_KEYS = {
     "login": ("password", "totp", "notes"),
     "card": ("number", "expiry", "cvv", "notes"),
     "contact": ("phone", "email", "addresses", "notes"),
+    "note": ("body",),
 }
+# 太常见、一猜就中的密码（弱密码判断用；只在服务端对比，不外传）
+COMMON_PASSWORDS = {"123456", "12345678", "123456789", "password", "qwerty", "111111", "abc123", "password1", "iloveyou",
+                    "000000", "1234567890", "a123456", "woaini1314", "qwerty123", "1q2w3e4r", "admin", "letmein", "welcome"}
 MULTI_SUFFIX = {"co.uk", "org.uk", "ac.uk", "gov.uk", "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "com.hk", "com.tw",
                 "com.au", "net.au", "org.au", "co.jp", "ne.jp", "or.jp", "co.kr", "com.sg", "com.br", "co.in", "co.nz",
                 "com.mx", "com.tr", "co.za", "com.my", "com.ph", "co.id", "com.vn", "com.ar"}
@@ -50,6 +54,10 @@ def ensure_schema(conn):
                  "item_title TEXT, actor TEXT, session_id TEXT, action TEXT NOT NULL, target TEXT, ok INTEGER NOT NULL, "
                  "detail TEXT, at REAL NOT NULL)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_uses_at ON vault_uses(at)")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(vault_items)").fetchall()}
+    if "allowed_bots" not in cols:
+        # 只允许哪些 Bot 使用（JSON 数组）；NULL = 所有 Bot
+        conn.execute("ALTER TABLE vault_items ADD COLUMN allowed_bots TEXT")
     conn.commit()
 
 
@@ -116,13 +124,18 @@ def _open(item_id, blob):
 
 
 COLS = ("id", "kind", "title", "site", "username", "name", "last4", "brand", "is_default", "has_totp", "allow_bots",
-        "created_at", "updated_at", "last_used_at")
+        "created_at", "updated_at", "last_used_at", "allowed_bots")
 
 
 def _public(row):
     d = dict(zip(COLS, row))
     for k in ("is_default", "has_totp", "allow_bots"):
         d[k] = bool(d[k])
+    try:
+        bots = json.loads(d.get("allowed_bots") or "null")
+    except ValueError:
+        bots = None
+    d["allowed_bots"] = [b for b in bots if isinstance(b, str)] if isinstance(bots, list) else None
     return {k: v for k, v in d.items() if v not in (None, "") or k in ("allow_bots",)}
 
 
@@ -188,6 +201,14 @@ def _apply(kind, meta, secret, body):
         meta["allow_bots"] = 1 if body["allow_bots"] else 0
     if "is_default" in body:
         meta["is_default"] = 1 if body["is_default"] else 0
+    if "allowed_bots" in body:
+        v = body["allowed_bots"]
+        if v is None or v == []:
+            meta["allowed_bots"] = None
+        elif isinstance(v, list) and all(isinstance(b, str) and re.match(r"^[A-Za-z0-9_-]{1,64}$", b) for b in v):
+            meta["allowed_bots"] = json.dumps(sorted(set(v))[:50])
+        else:
+            raise VaultError("allowed_bots 应为 Bot ID 列表")
     for k in SECRET_KEYS[kind]:
         if k not in body:
             continue
@@ -221,6 +242,8 @@ def _apply(kind, meta, secret, body):
         if secret.get("cvv") and not re.match(r"^\d{3,4}$", secret["cvv"]):
             raise VaultError("CVV 应为 3–4 位数字")
         meta["title"] = meta.get("title") or f"{meta.get('brand') or '卡'} •••• {meta.get('last4') or ''}".strip()
+    elif kind == "note":
+        meta["title"] = meta.get("title") or "安全备注"
     else:
         meta["title"] = meta.get("title") or meta.get("name") or "联系信息"
     if not meta.get("title"):
@@ -232,14 +255,16 @@ def _save(conn, item_id, meta, secret, created):
     blob = _seal(item_id, secret)
     if created:
         conn.execute("INSERT INTO vault_items (id, kind, title, site, username, name, last4, brand, is_default, has_totp, allow_bots, "
-                     "secret, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     "secret, created_at, updated_at, allowed_bots) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      (item_id, meta["kind"], meta["title"], meta.get("site"), meta.get("username"), meta.get("name"), meta.get("last4"),
-                      meta.get("brand"), meta.get("is_default", 0), meta.get("has_totp", 0), meta.get("allow_bots", 1), blob, now, now))
+                      meta.get("brand"), meta.get("is_default", 0), meta.get("has_totp", 0), meta.get("allow_bots", 1), blob, now, now,
+                      meta.get("allowed_bots")))
     else:
         conn.execute("UPDATE vault_items SET title = ?, site = ?, username = ?, name = ?, last4 = ?, brand = ?, is_default = ?, "
-                     "has_totp = ?, allow_bots = ?, secret = ?, updated_at = ? WHERE id = ?",
+                     "has_totp = ?, allow_bots = ?, secret = ?, updated_at = ?, allowed_bots = ? WHERE id = ?",
                      (meta["title"], meta.get("site"), meta.get("username"), meta.get("name"), meta.get("last4"), meta.get("brand"),
-                      meta.get("is_default", 0), meta.get("has_totp", 0), meta.get("allow_bots", 1), blob, now, item_id))
+                      meta.get("is_default", 0), meta.get("has_totp", 0), meta.get("allow_bots", 1), blob, now,
+                      meta.get("allowed_bots"), item_id))
     if meta.get("is_default"):
         conn.execute("UPDATE vault_items SET is_default = 0 WHERE kind = ? AND id != ?", (meta["kind"], item_id))
     conn.commit()
@@ -249,7 +274,7 @@ def _save(conn, item_id, meta, secret, created):
 
 def create(conn, body):
     if not isinstance(body, dict) or body.get("kind") not in KINDS:
-        raise VaultError("kind 必须是 login / card / contact")
+        raise VaultError("kind 必须是 login / card / contact / note")
     item_id = "v_" + uuid.uuid4().hex[:10]
     meta, secret = {"kind": body["kind"], "allow_bots": 1}, {}
     _apply(body["kind"], meta, secret, body)
@@ -280,9 +305,51 @@ def secret(conn, item_id):
     return _public(r[:-1]), _open(item_id, r[-1])
 
 
-def list_items(conn, kind=None, query=None):
+def password_weak(pw):
+    """弱密码：太短、太常见，或字符种类少于 3 种（小写 / 大写 / 数字 / 符号）"""
+    pw = pw or ""
+    kinds = sum(bool(re.search(p, pw)) for p in (r"[a-z]", r"[A-Z]", r"\d", r"[^A-Za-z0-9]"))
+    return len(pw) < 10 or pw.lower() in COMMON_PASSWORDS or kinds < 3
+
+
+def _hints(conn, items):
+    """只给 App 列表看的提示（不进模型）：卡片有效期 MM/YY、联系信息的默认地址、密码弱 / 重复。
+    机密在这里解密后只算出提示，原值不外传。"""
+    by_id = {i["id"]: i for i in items}
+    pw_count = {}
+    pw_of = {}
+    for item_id, blob in conn.execute("SELECT id, secret FROM vault_items").fetchall():
+        it = by_id.get(item_id)
+        if not it:
+            continue
+        try:
+            sec = _open(item_id, blob)
+        except Exception:
+            continue
+        if it["kind"] == "card" and sec.get("expiry"):
+            it["expiry_hint"] = sec["expiry"]
+        elif it["kind"] == "contact":
+            addrs = sec.get("addresses") or []
+            a = next((x for x in addrs if x.get("default")), addrs[0] if addrs else None)
+            if a:
+                it["address_hint"] = " ".join(str(a.get(k)) for k in ("line1", "line2", "city", "region", "postal", "country") if a.get(k))[:200]
+        elif it["kind"] == "login" and sec.get("password"):
+            digest = hashlib.sha256(sec["password"].encode("utf-8")).hexdigest()
+            pw_of[item_id] = digest
+            pw_count[digest] = pw_count.get(digest, 0) + 1
+            it["pw_weak"] = password_weak(sec["password"])
+    for item_id, digest in pw_of.items():
+        by_id[item_id]["pw_reused"] = pw_count[digest] > 1
+
+
+def list_items(conn, kind=None, query=None, hints=False):
     rows = conn.execute(f"SELECT {', '.join(COLS)} FROM vault_items ORDER BY kind, is_default DESC, title COLLATE NOCASE").fetchall()
     items = [_public(r) for r in rows]
+    if hints:
+        try:
+            _hints(conn, items)
+        except Exception:
+            pass
     if kind in KINDS:
         items = [i for i in items if i["kind"] == kind]
     q = (query or "").strip().lower()
@@ -291,16 +358,25 @@ def list_items(conn, kind=None, query=None):
         def hit(i):
             if key and i.get("site") and site_key(i["site"]) == key:
                 return True
-            return any(q in str(i.get(f) or "").lower() for f in ("title", "site", "username", "name", "last4", "brand"))
+            return any(q in str(i.get(f) or "").lower()
+                       for f in ("title", "site", "username", "name", "last4", "brand", "expiry_hint", "address_hint"))
         items = [i for i in items if hit(i)]
     return items
 
 
-def for_model(item):
-    """给模型看的字段：只有元数据。"""
+def bot_allowed(item, bot_id):
+    """这一项能不能给这个 Bot 用：总开关 + 可选的 Bot 名单"""
+    if not item.get("allow_bots", True):
+        return False
+    bots = item.get("allowed_bots")
+    return not bots or (bot_id or "default") in bots
+
+
+def for_model(item, bot_id=None):
+    """给模型看的字段：只有元数据（不含有效期、地址等提示，也不含安全备注内容）。"""
     keep = ("id", "kind", "title", "site", "username", "name", "last4", "brand", "is_default", "has_totp")
     out = {k: item[k] for k in keep if k in item}
-    out["allowed"] = item.get("allow_bots", True)
+    out["allowed"] = bot_allowed(item, bot_id) and item.get("kind") != "note"
     return out
 
 
@@ -340,6 +416,8 @@ def fill_fields(kind, item, sec, address_index=None):
         f = {"cc_number": sec.get("number"), "cc_exp": exp, "cc_csc": sec.get("cvv"), "cc_name": item.get("name")}
         if exp:
             f["cc_exp_month"], f["cc_exp_year"] = exp[:2], "20" + exp[-2:]
+    elif kind == "note":
+        return {}
     else:
         addrs = sec.get("addresses") or []
         a = {}
@@ -396,7 +474,7 @@ def _secret_values():
                     sec = _open(item_id, blob)
                 except Exception:
                     continue
-                for key in ("password", "totp", "number"):
+                for key in ("password", "totp", "number", "body"):
                     if sec.get(key):
                         vals.update(x for x in _variants(kind, key, sec[key]) if len(x) >= 6)
         except Exception:
