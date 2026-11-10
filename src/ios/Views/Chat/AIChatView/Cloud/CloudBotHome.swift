@@ -162,7 +162,9 @@ struct CloudBotBlobAvatar: View {
     var dark = false
 
     var body: some View {
-        CloudBotAvatarView(spec: CloudBotAvatarSpec.of(bot), size: size)
+        // 首页列表里的头像也会眨眼、跟着手指看
+        CloudBotWatchingAvatar(spec: CloudBotAvatarSpec.of(bot), size: size)
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel(bot.name)
     }
 }
