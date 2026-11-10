@@ -131,7 +131,8 @@ final class MarkdownNSRenderer {
         let t0 = CFAbsoluteTimeGetCurrent()
         let tableCountBefore = tableAttachmentCache.count
 
-        let result = renderBlockSequence(blocks, listDepth: 0, quoteDepth: 0, tightSpacing: false).attributed
+        // 聊天字体（设置里选的圆体 / 衬线 / 等宽）；默认系统字体时原样返回
+        let result = ChatFontDesign.current.apply(renderBlockSequence(blocks, listDepth: 0, quoteDepth: 0, tightSpacing: false).attributed)
         let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
 
         // Only log noisy cases to keep signal-to-noise high: slow renders, or

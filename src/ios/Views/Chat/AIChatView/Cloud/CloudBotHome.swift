@@ -463,7 +463,7 @@ struct CloudBotHomeRow: View {
 
     private var showsThread: Bool { !CloudBotLock.shared.isLocked(bot.id) && threadChoice.isThread }
 
-    private var previewText: String {
+    var previewText: String {
         if CloudBotLock.shared.isLocked(bot.id) { return "已上锁" }
         if showsThread {
             // 去掉文字里的「➤」「←」，用前面的图标表示方向
@@ -784,8 +784,16 @@ struct CloudBotHomeScreen: View {
 /// 外观：跟随系统（默认）/ 浅色 / 深色；和 App 设置里的「Theme」是同一个开关
 struct CloudAppearancePicker: View {
     @AppStorage("appearanceMode") private var appearanceMode: Int = 0
+    @AppStorage(CloudHomeLayout.key) private var layout: String = CloudHomeLayout.list.rawValue
+    @AppStorage(ChatFontDesign.key) private var font: String = ChatFontDesign.system.rawValue
 
     var body: some View {
+        Picker(selection: $layout) {
+            ForEach(CloudHomeLayout.allCases) { Label($0.label, systemImage: $0.icon).tag($0.rawValue) }
+        } label: { Label("首页布局", systemImage: "square.grid.2x2") }
+        Picker(selection: $font) {
+            ForEach(ChatFontDesign.allCases) { Text($0.label).font(.system(.body, design: $0.swiftUI)).tag($0.rawValue) }
+        } label: { Label("聊天字体", systemImage: "textformat") }
         Picker(selection: $appearanceMode) {
             Text("跟随系统").tag(0)
             Text("浅色").tag(1)
@@ -878,7 +886,15 @@ struct CloudBotChatView: View {
         _backdropRaw = AppStorage(wrappedValue: "", CloudChatBackdrop.key(botId))
     }
 
+    @AppStorage(ChatFontDesign.key) private var chatFontRaw: String = ChatFontDesign.system.rawValue
+
     var body: some View {
+        chatBody
+            // 聊天字体：Bot 对话里没写死字体的文字都跟着换（消息正文由 Markdown 渲染器单独处理）
+            .font(.system(.body, design: (ChatFontDesign(rawValue: chatFontRaw) ?? .system).swiftUI))
+    }
+
+    private var chatBody: some View {
         Group {
             if let bot = model.bot(botId), lock.needsUnlock(botId) {
                 CloudBotLockedView(bot: bot)

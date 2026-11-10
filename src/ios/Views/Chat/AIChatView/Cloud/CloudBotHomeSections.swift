@@ -97,6 +97,7 @@ struct CloudBotSectionedList: View {
     let open: (String) -> Void
     @State private var renamingSection: CloudBotSection?
     @State private var sectionName = ""
+    @AppStorage(CloudHomeLayout.key) private var layoutRaw: String = CloudHomeLayout.list.rawValue
 
     var body: some View {
         let bots = model.listed(matching: search)
@@ -104,7 +105,7 @@ struct CloudBotSectionedList: View {
         let known = Set(model.sections.map(\.id))
         let loose = searching ? bots : bots.filter { $0.sectionId == nil || !known.contains($0.sectionId ?? "") }
         LazyVStack(spacing: 0) {
-            ForEach(loose) { bot in row(bot) }
+            group(loose)
             if !searching {
                 ForEach(model.sections) { sec in
                     sectionView(sec, bots: bots.filter { $0.sectionId == sec.id })
@@ -118,6 +119,25 @@ struct CloudBotSectionedList: View {
                 if let sec = renamingSection { model.sectionAction("rename", sec, name: sectionName) }
                 renamingSection = nil
             }
+        }
+    }
+
+    /// 按首页布局排：列表 = 一行一个（可左滑）；网格 / 卡片 = 方块（长按菜单）
+    @ViewBuilder private func group(_ bots: [CloudBot]) -> some View {
+        let layout = CloudHomeLayout(rawValue: layoutRaw) ?? .list
+        if layout == .list {
+            ForEach(bots) { bot in row(bot) }
+        } else {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: layout.columns), spacing: 12) {
+                ForEach(bots) { bot in
+                    Button { open(bot.id) } label: {
+                        CloudBotHomeTile(bot: bot, unread: model.isUnread(bot), presence: model.presence(bot), card: layout == .card)
+                    }
+                    .buttonStyle(.plain)
+                    .cloudBotMenu(bot, model: model, actions: actions)
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 6)
         }
     }
 
@@ -156,7 +176,7 @@ struct CloudBotSectionedList: View {
             Button(role: .destructive) { model.sectionAction("delete", sec) } label: { Label("删除分组（Bot 保留）", systemImage: "trash") }
         }
         if !sec.collapsed {
-            ForEach(bots) { bot in row(bot) }
+            group(bots)
         }
     }
 }
