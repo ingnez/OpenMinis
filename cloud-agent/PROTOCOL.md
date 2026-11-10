@@ -537,3 +537,7 @@
 ## Bot 是否存了密钥（2.22.0）
 
 `GET /v1/bots` 每个 Bot 多一个 `holds_secrets`：Bot 有自己的 API 凭据，或成功用过保管库条目时为 true。App 第一次看到这样的 Bot 会默认给它上 Face ID 锁。
+
+## 错误日志（2.23.0）
+
+`GET /v1/logs/errors` → `{"version", "errors": [{at, kind: "task"|"server", task_id?, bot_id?, model?, where?, error}]}`：最近 7 天任务出错事件和服务器后台异常（最多 300 条），保管库值和常见密钥形状已打码，不含对话内容。

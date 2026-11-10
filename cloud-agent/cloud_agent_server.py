@@ -467,6 +467,39 @@ _TOKEN_PATTERNS = [re.compile(p) for p in (r'sk-[A-Za-z0-9\-_]{16,}', r'gh[pousr
                                              r'AKIA[0-9A-Z]{16}', r'(?i)bearer\s+[A-Za-z0-9\-_.]{12,}', r'eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{5,}')]
 
 
+SERVER_ERRORS = deque(maxlen=300)
+
+
+def note_server_error(where, e):
+    """服务器自己的异常（后台线程、调度器等）记一笔，给「导出错误日志」用；只存打码后的类型和消息"""
+    try:
+        SERVER_ERRORS.append({"at": time.time(), "where": where, "error": scrub_text(f"{type(e).__name__}: {e}")[:300]})
+    except Exception:
+        pass
+
+
+def error_log(days=7, limit=300):
+    """最近的错误：任务出错事件 + 服务器后台异常，按时间倒序；全部打码，不含对话内容"""
+    since = time.time() - days * 86400
+    conn = get_db_connection()
+    try:
+        rows = conn.execute("SELECT e.timestamp, e.task_id, e.payload, t.model, COALESCE(s.persona_id, '') FROM task_events e "
+                            "LEFT JOIN tasks t ON t.task_id = e.task_id LEFT JOIN sessions s ON s.session_id = t.session_id "
+                            "WHERE e.event_type = 'error' AND e.timestamp >= ? ORDER BY e.id DESC LIMIT ?", (since, limit)).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for ts, tid, payload, model, bot in rows:
+        try:
+            err = (json.loads(payload or "{}") or {}).get("error") or ""
+        except ValueError:
+            err = ""
+        out.append({"at": ts, "kind": "task", "task_id": tid, "bot_id": bot, "model": model or "", "error": scrub_text(str(err))[:400]})
+    out += [dict(x, kind="server") for x in SERVER_ERRORS if x["at"] >= since]
+    out.sort(key=lambda x: x["at"], reverse=True)
+    return out[:limit]
+
+
 def scrub_text(text):
     """保管库里的值 + 常见密钥形状都打码；用于要长期存下来或发出去的文字（值班汇总、错误日志）"""
     text = cloud_vault.redact(text or "")
@@ -586,7 +619,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.22.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.23.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -5218,6 +5251,7 @@ def scheduler_tick(now=None):
             runs.append(launch_routine_run(routine, "schedule"))
         except Exception as e:
             sys.stderr.write(f"[routine] launch failed {routine['routine_id']}: {sanitize_err(e)}\n")
+            note_server_error("routine_launch", e)
     return runs
 
 def _scheduler_main():
@@ -5226,14 +5260,17 @@ def _scheduler_main():
             scheduler_tick()
         except Exception as e:
             sys.stderr.write(f"[routine] scheduler error: {sanitize_err(e)}\n")
+            note_server_error("scheduler", e)
         try:
             duty_check()
         except Exception as e:
             sys.stderr.write(f"[duty] check error: {sanitize_err(e)}\n")
+            note_server_error("duty", e)
         try:
             relay_watch_check()
         except Exception as e:
             sys.stderr.write(f"[relay] watch error: {sanitize_err(e)}\n")
+            note_server_error("relay_watch", e)
 
 def start_scheduler():
     global _scheduler_thread
@@ -5989,6 +6026,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, proxy_mgr().status())
             except Exception as e:
                 self._send(500, {"error": f"读取代理设置失败：{type(e).__name__}"})
+            return
+        if path == "/v1/logs/errors":
+            self._send(200, {"version": AGENT_VERSION, "errors": error_log()})
             return
         if path == "/v1/system-snapshots":
             self._send(200, {"snapshots": cloud_sysnap.list_all(sysnap_dir())})

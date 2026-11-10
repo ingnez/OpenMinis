@@ -61,6 +61,7 @@ struct CloudLinkDiagnosticsView: View {
                         UIPasteboard.general.string = logText
                         copied = true
                     }
+                    NavigationLink("导出完整错误日志") { CloudErrorLogView() }
                 }
             }
         }
