@@ -200,6 +200,11 @@ struct CloudBotAvatarView: View {
             }
             .rotationEffect(.degrees(mood == .curious ? -4 : -14))
             .offset(x: size * (0.06 + 0.08 * gaze.width), y: size * (-0.08 + 0.07 * gaze.height))
+            if mood == .dozing {
+                Text("z").font(.system(size: size * 0.22, weight: .heavy, design: .rounded)).foregroundStyle(.white.opacity(0.9))
+                    .offset(x: size * 0.3, y: -size * 0.3)
+                    .accessibilityHidden(true)
+            }
         }
         .frame(width: size, height: size)
     }
@@ -217,20 +222,27 @@ extension CloudBotAvatarView {
             Capsule().fill(Color.white).frame(width: size * 0.11, height: size * 0.12 * open)
         case .curious:
             Capsule().fill(Color.white).frame(width: size * 0.12, height: size * 0.27 * open)
+        case .frown:
+            // 出错：向下弯的眼，像皱着眉
+            CloudHappyEye().stroke(Color.white, style: StrokeStyle(lineWidth: size * 0.07, lineCap: .round))
+                .frame(width: size * 0.14, height: size * 0.07).rotationEffect(.degrees(180))
+        case .dozing:
+            // 闲太久：闭眼成一条线
+            Capsule().fill(Color.white).frame(width: size * 0.13, height: max(1.5, size * 0.035))
         default:
             Capsule().fill(Color.white).frame(width: size * 0.1, height: size * 0.22 * open)
         }
     }
 }
 
-enum CloudBotMood: Equatable {
-    case calm, focused, curious, happy
-
-    static func of(_ status: CloudBotStatus, unread: Bool) -> CloudBotMood {
+extension CloudBotMood {
+    /// lastTaskStatus：上一次任务的状态（失败时皱眉）；lastAt：最后活动时间（闲太久打瞌睡）
+    static func of(_ status: CloudBotStatus, unread: Bool, lastTaskStatus: String? = nil, lastAt: Double = 0, now: Double = Date().timeIntervalSince1970) -> CloudBotMood {
         switch status {
         case .waiting: return .curious
         case .queued, .working: return .focused
-        case .idle: return unread ? .happy : .calm
+        case .idle: return idle(unread: unread, failed: lastTaskStatus.map(CloudBotPresence.failedStatuses.contains) ?? false,
+                                idleSeconds: lastAt > 0 ? now - lastAt : 0)
         }
     }
 }
