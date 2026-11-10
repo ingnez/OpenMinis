@@ -66,6 +66,7 @@ jobs:
         timeout-minutes: 12
         run: |
           set -o pipefail
+          python3 scripts/check_cloud_no_intents_refs.py
           xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift src/ios/WatchShared/*.swift src/ios/Agent/Intents/CloudIntents.swift src/ios/AgentWidget/CloudBotsWidget.swift 2>&1 | tee cloud-typecheck.log
       - name: 纯逻辑 Swift 单测在 macOS 上也能编译（CoreGraphics 差异只在 Mac 上暴露）
         run: |
@@ -94,6 +95,8 @@ jobs:
         run: python3 scripts/check_bot_settings_entry.py
       - name: 类型检查替身与真实声明一致
         run: python3 scripts/check_typecheck_stubs.py
+      - name: 云端目录不引用只在 Intents / Widget 里的声明（完整构建的云端类型检查不含这两处）
+        run: python3 scripts/check_cloud_no_intents_refs.py
       - name: 断线重连逻辑测试
         run: |
           set -o pipefail
