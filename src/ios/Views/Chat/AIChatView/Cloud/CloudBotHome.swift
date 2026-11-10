@@ -373,7 +373,7 @@ struct CloudBotHomeScreen: View {
                             modeButtons
                         } label: {
                             HStack(spacing: 3) {
-                                Text("多 Bot").font(.caption.weight(.semibold))
+                                Text("Minis Bot").font(.caption.weight(.semibold))
                                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
                             }
                             .foregroundStyle(.secondary)
@@ -497,7 +497,7 @@ struct CloudBotHomeScreen: View {
     @ViewBuilder
     private var modeButtons: some View {
         Button { onSwitchToLocal() } label: { Label("本地模式", systemImage: "iphone") }
-        Button {} label: { Label("多 Bot 模式 ✓", systemImage: "person.3.fill") }
+        Button {} label: { Label("Minis Bot ✓", systemImage: "person.3.fill") }
     }
 
     private var avatarMenu: some View {

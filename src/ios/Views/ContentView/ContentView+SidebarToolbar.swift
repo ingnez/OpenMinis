@@ -334,7 +334,7 @@ extension ContentView {
                         // 点标题切换 本地模式 / 多 Bot 模式（Grok Bot 风格首页），选择会记住
                         Menu {
                             Button { homeMode = "local" } label: { Label("本地模式", systemImage: "checkmark") }
-                            Button { homeMode = "bots" } label: { Text("多 Bot 模式") }
+                            Button { homeMode = "bots" } label: { Text("Minis Bot") }
                         } label: {
                             HStack(spacing: 4) {
                                 titleLabel

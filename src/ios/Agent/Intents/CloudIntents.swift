@@ -49,7 +49,7 @@ struct SaveCloudMemoryIntent: AppIntent {
 /// 快捷指令 / Siri：问某个云端 Bot 一句话（打开 App，进入这个 Bot 的对话并直接发送）。
 struct AskCloudBotIntent: AppIntent {
     static var title: LocalizedStringResource = "问云端 Bot"
-    static var description = IntentDescription("打开多 Bot 模式里指定 Bot 的对话并发送这句话；不填 Bot 就发给主 Bot。")
+    static var description = IntentDescription("打开 Minis Bot 里指定 Bot 的对话并发送这句话；不填 Bot 就发给主 Bot。")
     static var openAppWhenRun = true
 
     @Parameter(title: "问题", requestValueDialog: "想问什么？")
@@ -68,7 +68,7 @@ struct AskCloudBotIntent: AppIntent {
 /// 快捷指令：打开某个云端 Bot 的对话（可放到主屏幕或锁屏）。
 struct OpenCloudBotIntent: AppIntent {
     static var title: LocalizedStringResource = "打开云端 Bot"
-    static var description = IntentDescription("切到多 Bot 模式并打开指定 Bot 的对话；不填就是主 Bot。")
+    static var description = IntentDescription("切到 Minis Bot 并打开指定 Bot 的对话；不填就是主 Bot。")
     static var openAppWhenRun = true
 
     @Parameter(title: "Bot 名称", optionsProvider: CloudBotNameOptions())

@@ -80,9 +80,9 @@ struct CloudPerfView: View {
             }
             Section {
                 clientRow("本地云电脑 · 首字", mode: "local", kind: "first_text")
-                clientRow("多 Bot · 首字", mode: "bot", kind: "first_text")
+                clientRow("Minis Bot · 首字", mode: "bot", kind: "first_text")
                 clientRow("本地云电脑 · 整个任务", mode: "local", kind: "total")
-                clientRow("多 Bot · 整个任务", mode: "bot", kind: "total")
+                clientRow("Minis Bot · 整个任务", mode: "bot", kind: "total")
                 clientRow("隧道重连耗时", mode: "link", kind: "reconnect")
                 Button("清空本机实测", role: .destructive) { CloudClientMetrics.clear(); clientTick += 1 }
             } header: { Text("本机实测（中位数 · 样本数）") } footer: {
