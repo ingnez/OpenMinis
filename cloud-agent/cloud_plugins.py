@@ -191,6 +191,7 @@ class Registry:
              "secrets": [{"name": s["name"], "label": s["label"], "set": s["name"] in secrets, "optional": s.get("optional", False)}
                          for s in manifest.get("secrets", [])]}
         p["status"] = self._status(p)
+        p["missing_dependencies"] = [b for b in manifest.get("requires", []) if not shutil.which(b)] if p["kind"] != "skill" else []
         return p
 
     def _secrets(self, conn, pid):

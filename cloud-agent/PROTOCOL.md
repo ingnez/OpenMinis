@@ -373,3 +373,5 @@
 - `GET/PUT/DELETE /v1/bots/{id}/telegram`：给单个 Bot 绑定独立的 Telegram Bot Token（字段同 `/v1/telegram`，`persona_id` 强制为该 Bot）。Token 用 AES-256-GCM 加密存于 `secure_settings`（名称 `telegram:<bot_id>`），GET 只返回掩码。同一 Token 不能同时用于两个渠道（400）。每个渠道独立长轮询、独立会话（`telegram_bot_chats`）。删除 Bot 时一并删除其渠道。共享渠道 `/v1/telegram` 未指定 `persona_id` 时由主 Bot 接待。`GET /v1/bots/{id}` 返回 `telegram: bool`。
 - `GET/PUT /v1/settings`：`{"timezone": "Asia/Shanghai"}`（IANA 名称，`null` 清除）。记忆 `entry_time` 按该时区记录，与手机日志格式一致；手机连接后自动上报 `TimeZone.current`。
 - `POST /v1/sessions/import` 新增可选 `persona_id`；省略时会话归主 Bot。
+- `GET /v1/plugins/deps`：`{"tools": {"node": {...}, "uv": {...}}}`，每项含 `installed`、`paths`（npx/uvx 等可执行文件位置）与最近一次安装任务 `job`（`running` / `succeeded` / `failed`，含 `log`、`error`）。插件对象新增 `missing_dependencies`。
+- `POST /v1/plugins/deps/install {"tool": "npx"|"node"|"uvx"|"uv", "confirm": true}`：不带 `confirm` 时返回 428 `confirm_install`（含来源与安装目录，供手机弹窗确认）；确认后 202 后台安装。只从官方地址（nodejs.org / astral-sh/uv GitHub Releases）下载，SHA-256 校验不一致即放弃；安装到 `~/.local/bin`，无需 root。

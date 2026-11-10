@@ -58,6 +58,7 @@ import cloud_telegram
 import cloud_bots
 import cloud_plugins
 import cloud_mcp
+import cloud_deps
 
 HOST = os.environ.get("OPENMINIS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
@@ -2344,6 +2345,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"installed": installed, "catalog": cat})
             return
 
+        if path == "/v1/plugins/deps":
+            self._send(200, {"tools": cloud_deps.status()})
+            return
+
         if path.startswith("/v1/plugins/") and path.endswith("/tools"):
             pid = path[len("/v1/plugins/"):-len("/tools")]
             if not PLUGINS.get(pid):
@@ -3011,6 +3016,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": str(e)})
                 return
             self._send(201 if created else 200, p)
+            return
+
+        if path == "/v1/plugins/deps/install":
+            tool = cloud_deps.tool_for(req_json.get("tool") or "") or req_json.get("tool")
+            if tool not in cloud_deps.TOOLS:
+                self._send(400, {"error": "tool must be one of: node, npx, uv, uvx"})
+                return
+            info = cloud_deps.TOOLS[tool]
+            if req_json.get("confirm") is not True:
+                # 会从官方地址下载并在 VPS 上安装可执行文件：必须由用户确认后带 confirm 重试
+                self._send(428, {"error": "confirm_install", "tool": tool, "label": info["label"], "source": info["source"],
+                                 "install_dir": cloud_deps.bin_dir(),
+                                 "message": f"将从 {info['source']} 下载 {info['label']}，校验 SHA-256 后安装到 {cloud_deps.bin_dir()}"})
+                return
+            job = cloud_deps.start_install(tool)
+            self._send(202, {"job": job})
             return
 
         if path == "/v1/plugins/import-phone":
