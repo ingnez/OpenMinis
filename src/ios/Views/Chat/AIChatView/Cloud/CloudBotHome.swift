@@ -50,6 +50,7 @@ enum CloudBotHome {
 final class CloudBotHomeModel: ObservableObject {
     static let shared = CloudBotHomeModel()
     @Published private(set) var bots: [CloudBot] = []
+    @Published private(set) var groups: [CloudGroup] = []
     @Published private(set) var loaded = false
     @Published private(set) var connecting = false
     @Published var bannerText: String?
@@ -105,6 +106,8 @@ final class CloudBotHomeModel: ObservableObject {
         do {
             bots = try await CloudBotService.list()
             bannerText = nil
+            // 旧版服务器没有群聊接口：忽略错误
+            groups = (try? await CloudGroupService.list()) ?? groups
         } catch {
             bannerText = "读取 Bot 失败：\(error.localizedDescription.prefix(160))"
         }
@@ -173,6 +176,7 @@ struct CloudBotHomeScreen: View {
     @State private var path: [String] = []
     @State private var search = ""
     @State private var showCreate = false
+    @State private var showCreateGroup = false
     @State private var showHub = false
     @State private var showConnectApps = false
 
@@ -199,6 +203,13 @@ struct CloudBotHomeScreen: View {
                             hero(primary)
                         }
                         LazyVStack(spacing: 0) {
+                            ForEach(groupsMatching) { g in
+                                Button { path = ["group:" + g.id] } label: {
+                                    CloudGroupHomeRow(group: g, bots: model.bots)
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.horizontal, 20)
+                            }
                             ForEach(model.others(matching: search)) { bot in
                                 Button { open(bot.id) } label: {
                                     CloudBotHomeRow(bot: bot, unread: model.isUnread(bot))
@@ -237,18 +248,32 @@ struct CloudBotHomeScreen: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { showCreate = true } label: { Image(systemName: "plus") }
-                        .accessibilityLabel("新建 Bot")
+                    Menu {
+                        Button { showCreate = true } label: { Label("新 Bot", systemImage: "person.crop.circle.badge.plus") }
+                        Button { showCreateGroup = true } label: { Label("新群聊", systemImage: "person.3") }
+                            .disabled(model.bots.isEmpty)
+                    } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("新建")
                 }
             }
             .navigationDestination(for: String.self) { id in
-                CloudBotChatView(botId: id)
+                if id.hasPrefix("group:") {
+                    CloudGroupChatView(groupId: String(id.dropFirst(6)))
+                } else {
+                    CloudBotChatView(botId: id)
+                }
             }
         }
         .sheet(isPresented: $showCreate) {
             CloudBotCreateSheet(onCreated: { id in
                 await model.refresh()
                 if !id.isEmpty { open(id) }
+            })
+        }
+        .sheet(isPresented: $showCreateGroup) {
+            CloudGroupCreateSheet(onCreated: { id in
+                await model.refresh()
+                if !id.isEmpty { path = ["group:" + id] }
             })
         }
         .sheet(isPresented: $showHub) {
@@ -265,6 +290,11 @@ struct CloudBotHomeScreen: View {
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
             }
         }
+    }
+
+    private var groupsMatching: [CloudGroup] {
+        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
+        return model.groups.filter { q.isEmpty || $0.name.lowercased().contains(q) || ($0.lastContent ?? "").lowercased().contains(q) }
     }
 
     private func open(_ id: String) {

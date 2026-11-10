@@ -31,6 +31,13 @@ struct CloudResourceSettings: Codable, Equatable {
     var mirror: String
     var mirror_pip: String
     var mirror_npm: String
+    // Bot 协作与群聊（旧服务器没有这些字段时为 nil，不显示对应行）
+    var delegation_max_hops: Int?
+    var delegation_pair_per_10min: Int?
+    var group_max_bot_turns: Int?
+    var group_tokens_per_min: Int?
+    var group_max_concurrent: Int?
+    var group_activity: String?
 
     static func decode(_ object: Any?) -> CloudResourceSettings? {
         guard let object, let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
@@ -106,6 +113,10 @@ struct CloudResourceSettingsView: View {
     @State private var errorText: String?
     @State private var info: String?
     @State private var saving = false
+
+    static func opt(_ b: Binding<Int?>, _ fallback: Int) -> Binding<Int> {
+        Binding(get: { b.wrappedValue ?? fallback }, set: { b.wrappedValue = $0 })
+    }
 
     var body: some View {
         Form {
@@ -191,6 +202,38 @@ struct CloudResourceSettingsView: View {
                     Text("缓存与镜像")
                 } footer: {
                     Text("pip / npm / Playwright 缓存在所有 Bot 之间共用。")
+                }
+            }
+
+            if let d = Binding($draft), let def = defaults, def.group_activity != nil {
+                Section {
+                    CloudNumberRow(title: "最多委托层数", unit: "层", value: Self.opt(d.delegation_max_hops, 3), defaultValue: def.delegation_max_hops,
+                                   range: 0...10, zeroMeansUnlimited: false)
+                    CloudNumberRow(title: "同一对 Bot 每 10 分钟", unit: "次", value: Self.opt(d.delegation_pair_per_10min, 10),
+                                   defaultValue: def.delegation_pair_per_10min, range: 0...1000)
+                } header: {
+                    Text("Bot 之间协作")
+                } footer: {
+                    Text("Bot 可以给其他 Bot 发消息或委托任务；层数为 0 表示不允许 Bot 之间委托。用户取消任务时，它委托出去的任务会一起取消。")
+                }
+
+                Section {
+                    Picker("活跃度", selection: Binding(get: { d.wrappedValue.group_activity ?? "normal" },
+                                                      set: { d.wrappedValue.group_activity = $0 })) {
+                        Text("安静").tag("quiet")
+                        Text("正常").tag("normal")
+                        Text("活跃").tag("lively")
+                    }
+                    CloudNumberRow(title: "每条消息最多 Bot 发言", unit: "条", value: Self.opt(d.group_max_bot_turns, 6),
+                                   defaultValue: def.group_max_bot_turns, range: 0...100)
+                    CloudNumberRow(title: "每分钟 token 预算", unit: "tokens", value: Self.opt(d.group_tokens_per_min, 60000),
+                                   defaultValue: def.group_tokens_per_min, step: 5000, range: 0...10_000_000)
+                    CloudNumberRow(title: "同时回复的 Bot", unit: "个", value: Self.opt(d.group_max_concurrent, 2),
+                                   defaultValue: def.group_max_concurrent, range: 0...32)
+                } header: {
+                    Text("群聊")
+                } footer: {
+                    Text("被 @ 的 Bot 一定回复，其余按话题相关度和活跃度随机接话、点表情。每个群也可以在群设置里单独选活跃度。")
                 }
             }
 

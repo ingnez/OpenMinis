@@ -57,8 +57,16 @@ struct CloudThemedBubble: View {
     let accent: Color
 
     var body: some View {
+        if let mark = CloudDelegationMark.parse(content) {
+            CloudDelegationCard(mark: mark, accent: accent)
+        } else {
+            plainBubble
+        }
+    }
+
+    private var plainBubble: some View {
         let shown = CloudMessageText.display(content)
-        HStack {
+        return HStack {
             if role == "user" { Spacer(minLength: 48) }
             VStack(alignment: role == "user" ? .trailing : .leading, spacing: 4) {
                 if shown.images > 0 {
@@ -75,6 +83,89 @@ struct CloudThemedBubble: View {
             .background(RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(role == "user" ? accent : Color(.systemGray6)))
             if role != "user" { Spacer(minLength: 24) }
+        }
+    }
+}
+
+// MARK: - Bot 之间的委托卡片
+
+/// 服务器写进消息开头的标记：「【来自 X·委托】」（别的 Bot 交来的）或「【X 的委托结果·已完成】」（交回的结果）
+struct CloudDelegationMark {
+    enum Kind { case incoming, result }
+    let kind: Kind
+    let botName: String
+    let label: String
+    let body: String
+
+    static func parse(_ content: String) -> CloudDelegationMark? {
+        guard content.hasPrefix("【"), let end = content.firstIndex(of: "】") else { return nil }
+        let inner = String(content[content.index(after: content.startIndex)..<end])
+        let body = String(content[content.index(after: end)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if inner.hasPrefix("来自 "), let dot = inner.lastIndex(of: "·") {
+            let name = String(inner[inner.index(inner.startIndex, offsetBy: 3)..<dot])
+            return CloudDelegationMark(kind: .incoming, botName: name, label: String(inner[inner.index(after: dot)...]), body: body)
+        }
+        if let r = inner.range(of: " 的委托结果·") {
+            return CloudDelegationMark(kind: .result, botName: String(inner[..<r.lowerBound]),
+                                       label: String(inner[r.upperBound...]), body: body)
+        }
+        return nil
+    }
+
+    /// 去掉服务器附加的「（委托编号 …）」说明，只给人看任务本身
+    var shownBody: String {
+        guard kind == .incoming, let r = body.range(of: "\n\n（委托编号") else { return body }
+        return String(body[..<r.lowerBound])
+    }
+}
+
+struct CloudDelegationCard: View {
+    let mark: CloudDelegationMark
+    let accent: Color
+    @ObservedObject private var home = CloudBotHomeModel.shared
+    @State private var expanded = false
+
+    var body: some View {
+        let other = home.bots.first(where: { $0.name == mark.botName })
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                if let other {
+                    CloudBotAvatarView(spec: CloudBotAvatarSpec.of(other), size: 22)
+                } else {
+                    Image(systemName: "person.2.circle.fill").foregroundStyle(accent)
+                }
+                Text(title).font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(mark.label).font(.caption2.weight(.medium))
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Capsule().fill(badgeColor.opacity(0.15)))
+                    .foregroundStyle(badgeColor)
+            }
+            Text(mark.shownBody.isEmpty ? "（没有文字内容）" : mark.shownBody)
+                .font(.callout)
+                .lineLimit(expanded ? nil : 6)
+                .textSelection(.enabled)
+            if mark.shownBody.count > 240 {
+                Button(expanded ? "收起" : "展开全部") { withAnimation { expanded.toggle() } }
+                    .font(.caption).foregroundStyle(accent)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color(.secondarySystemBackground)))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(accent.opacity(0.35), lineWidth: 1))
+        .accessibilityElement(children: .combine)
+    }
+
+    private var title: String {
+        mark.kind == .incoming ? "来自 \(mark.botName) 的\(mark.label)" : "\(mark.botName) 交回的结果"
+    }
+
+    private var badgeColor: Color {
+        switch mark.label {
+        case "已完成", "委托", "消息": return .green
+        case "进行中": return .blue
+        default: return .orange
         }
     }
 }
@@ -97,6 +188,9 @@ enum CloudBotProgress {
         case "image_generate": return "正在生成图片…"
         case "send_message": return "正在准备消息…"
         case "request_user_takeover": return "需要你帮忙…"
+        case "list_bots": return "正在看看其他 Bot…"
+        case "send_to_bot": return "正在给其他 Bot 发消息…"
+        case "delegate_task": return "正在交给其他 Bot…"
         default:
             if tool.contains("search") { return "正在搜索…" }
             return "正在调用 \(tool)…"
@@ -127,6 +221,14 @@ enum CloudBotProgress {
                 current = "正在思考…"
             case "status":
                 current = payload["message"] as? String ?? current
+            case "delegation_started":
+                let name = payload["to_name"] as? String ?? "其他 Bot"
+                current = "\(name) 正在处理…"
+                steps.append("交给 \(name)")
+            case "delegation_finished":
+                let name = payload["to_name"] as? String ?? "其他 Bot"
+                steps.append("\(name) " + ((payload["status"] as? String) == "completed" ? "已完成" : "已结束"))
+                current = "正在思考…"
             case "thought":
                 current = "正在思考…"
             default:
