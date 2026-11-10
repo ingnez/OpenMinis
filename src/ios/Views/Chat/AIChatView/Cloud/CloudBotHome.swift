@@ -7,6 +7,7 @@
 
 import Foundation
 import SwiftUI
+import WidgetKit
 
 enum CloudBotHome {
     /// 主屏模式（"local" / "bots"），跨启动保存
@@ -56,6 +57,14 @@ final class CloudBotHomeModel: ObservableObject {
     @Published var bannerText: String?
     /// 外部入口（小组件、Siri、分享、委托卡片）要打开的 Bot id 或 "group:<id>"；首页收到后进入对话
     @Published var pendingOpen: String?
+    /// 外部入口带来的文字 / 附件：对应 Bot 的对话打开时取走
+    var pendingPrompt: CloudBotPendingPrompt?
+
+    func takePrompt(for botId: String) -> CloudBotPendingPrompt? {
+        guard let p = pendingPrompt, p.botId == nil || p.botId == botId else { return nil }
+        pendingPrompt = nil
+        return p
+    }
     private var seen: [String: Double]
 
     private init() {
@@ -65,6 +74,19 @@ final class CloudBotHomeModel: ObservableObject {
     }
 
     var primary: CloudBot? { bots.first(where: { $0.isPrimary }) }
+
+    /// 主屏幕小组件「云端 Bot」读 App Group 里的列表（主 Bot 在前，最多 4 个）；有变化才刷新小组件
+    private func publishToWidget() {
+        guard let shared = UserDefaults(suiteName: "group.com.openminis.app") else { return }
+        let ordered = bots.filter { $0.isPrimary } + bots.filter { !$0.isPrimary }
+        let list: [[String: String]] = ordered.prefix(4).map { b in
+            ["id": b.id, "name": b.name, "emoji": CloudBotAvatarSpec.of(b).emoji ?? ""]
+        }
+        if (shared.array(forKey: "OpenMinisCloud_widgetBots") as? [[String: String]]) != list {
+            shared.set(list, forKey: "OpenMinisCloud_widgetBots")
+            WidgetCenter.shared.reloadTimelines(ofKind: "CloudBotsWidget")
+        }
+    }
 
     func others(matching query: String) -> [CloudBot] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
@@ -112,6 +134,7 @@ final class CloudBotHomeModel: ObservableObject {
         do {
             bots = try await CloudQuiet.retry { try await CloudBotService.list() }
             bannerText = nil
+            publishToWidget()
             // 旧版服务器没有群聊接口：忽略错误
             groups = (try? await CloudGroupService.list()) ?? groups
         } catch let error as URLError where CloudConnection.tunnelDropped(error) {
@@ -317,7 +340,13 @@ struct CloudBotHomeScreen: View {
         .onChange(of: model.pendingOpen) { target in
             guard let target else { return }
             model.pendingOpen = nil
-            path = [target]
+            if path == [target] {
+                // 已经在这个对话里：退出再进，让对话页取走新的文字
+                path = []
+                Task { @MainActor in try? await Task.sleep(nanoseconds: 350_000_000); path = [target] }
+            } else {
+                path = [target]
+            }
         }
         .task {
             CloudTouchTracker.shared.install()

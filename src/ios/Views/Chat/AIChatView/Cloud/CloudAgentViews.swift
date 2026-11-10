@@ -900,6 +900,16 @@ struct CloudSessionView: View {
             loadSessionDetail()
             warmUp()
             if CloudComputerHandoff.consume(sessionId) { sendFinished() }
+            if let theme, let p = CloudBotHomeModel.shared.takePrompt(for: theme.botId) {
+                inputPrompt = p.text
+                attachments.append(contentsOf: p.attachments)
+                if p.send {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        sendTask()
+                    }
+                }
+            }
         }
         .onChange(of: inputPrompt.isEmpty) { empty in
             if !empty { warmUp() }

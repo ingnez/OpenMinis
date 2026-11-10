@@ -1041,6 +1041,8 @@ struct ContentView: View {
                 // opened a new session before .task ran. Skip normal launch
                 // screen logic so we don't clobber it with a different session.
                 shareLog.info("[Share] .task: share already handled by onChange — skipping launchScreen logic")
+            } else if shareCoordinator.hasPendingShare, routeShareToBotIfNeeded() {
+                shareLog.info("[Share] .task: share handed to the cloud bot")
             } else if shareCoordinator.hasPendingShare {
                 // onChange hasn't fired yet (e.g. onOpenURL arrived during await).
                 // Process share here and open a new session for it.
@@ -1323,6 +1325,7 @@ struct ContentView: View {
             fetchAlarmsIfNeeded()
         }
         .onChange(of: shareCoordinator.hasPendingShare) { hasPending in
+            if hasPending, routeShareToBotIfNeeded() { return }
             if hasPending {
                 let hadRecord = SharedContainerStore.loadPendingShare() != nil
                 processPendingShare()

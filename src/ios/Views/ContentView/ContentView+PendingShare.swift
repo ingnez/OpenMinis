@@ -9,11 +9,41 @@
 //
 
 import SwiftUI
+import UIKit
 
 private let shareLog = AppLogger(category: "Share")
 
 extension ContentView {
     // MARK: - Share Extension Handling
+
+    /// 多 Bot 模式下分享进来的内容交给主 Bot：文字 / 链接填进输入框，图片和文件作为附件，等你确认再发。
+    /// 返回 true 表示已处理，本地模式的分享流程不再运行。
+    @MainActor
+    func routeShareToBotIfNeeded() -> Bool {
+        guard homeMode == "bots", let pending = SharedContainerStore.loadPendingShare() else { return false }
+        SharedContainerStore.clearPendingShare()
+        shareCoordinator.hasPendingShare = false
+        var texts: [String] = []
+        var files: [CloudPendingAttachment] = []
+        for item in pending.items {
+            switch item.kind {
+            case .inlineText:
+                texts.append(item.value)
+            case .attachment:
+                guard let dir = SharedContainerStore.sharedFileDirectory,
+                      let data = try? Data(contentsOf: dir.appendingPathComponent(item.value)) else { continue }
+                if let img = UIImage(data: data), let a = CloudAttachmentKit.image(img, name: item.value) {
+                    files.append(a)
+                } else {
+                    files.append(CloudPendingAttachment(filename: item.value, data: data, isImage: false))
+                }
+            }
+        }
+        SharedContainerStore.cleanSharedFiles()
+        shareLog.info("[Share] multi-bot mode: routed \(texts.count) text + \(files.count) files to the primary bot")
+        CloudBotEntry.open(bot: nil, text: texts.joined(separator: "\n"), send: false, attachments: files)
+        return true
+    }
 
     func processPendingShare() {
         shareLog.info("[Share] processPendingShare called")

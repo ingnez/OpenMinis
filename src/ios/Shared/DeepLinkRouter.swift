@@ -93,6 +93,10 @@ enum DeepLinkRouter {
         case "settings":
             handleSettings(url: url, coord: coord)
 
+        case "bot", "bots":
+            // minis://bot/<id 或名字>?text=…&send=1 → 多 Bot 模式里打开这个 Bot 的对话
+            CloudBotEntry.handle(url: url)
+
         default:
             deepLinkLog.info("unknown host '\(host)': \(url.absoluteString)")
         }

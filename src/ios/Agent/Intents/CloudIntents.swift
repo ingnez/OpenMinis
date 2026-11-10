@@ -45,3 +45,38 @@ struct SaveCloudMemoryIntent: AppIntent {
         return .result(value: created ? "已记到云端记忆。" : "这条已经记过了。")
     }
 }
+
+/// 快捷指令 / Siri：问某个云端 Bot 一句话（打开 App，进入这个 Bot 的对话并直接发送）。
+struct AskCloudBotIntent: AppIntent {
+    static var title: LocalizedStringResource = "问云端 Bot"
+    static var description = IntentDescription("打开多 Bot 模式里指定 Bot 的对话并发送这句话；不填 Bot 就发给主 Bot。")
+    static var openAppWhenRun = true
+
+    @Parameter(title: "问题")
+    var question: String
+
+    @Parameter(title: "Bot 名称")
+    var bot: String?
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        CloudBotEntry.open(bot: bot, text: question, send: true)
+        return .result()
+    }
+}
+
+/// 快捷指令：打开某个云端 Bot 的对话（可放到主屏幕或锁屏）。
+struct OpenCloudBotIntent: AppIntent {
+    static var title: LocalizedStringResource = "打开云端 Bot"
+    static var description = IntentDescription("切到多 Bot 模式并打开指定 Bot 的对话；不填就是主 Bot。")
+    static var openAppWhenRun = true
+
+    @Parameter(title: "Bot 名称")
+    var bot: String?
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        CloudBotEntry.open(bot: bot, text: nil, send: false)
+        return .result()
+    }
+}
