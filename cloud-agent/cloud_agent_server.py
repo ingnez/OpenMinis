@@ -76,6 +76,7 @@ import cloud_pages
 import cloud_telegram
 import cloud_bots
 import cloud_admin
+import cloud_vault
 import cloud_plugins
 import cloud_oauth
 import cloud_mcp
@@ -304,6 +305,8 @@ def init_db():
     cloud_skills.ensure_schema(conn)
     cloud_bots.ensure_schema(conn)
     cloud_admin.ensure_schema(conn)
+    cloud_vault.ensure_schema(conn)
+    cloud_vault.set_loader(get_db_connection)
     cloud_plugins.ensure_schema(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS app_settings (name TEXT PRIMARY KEY, value TEXT)")
     try:
@@ -436,7 +439,7 @@ def validate_base_url(url_str):
 
 def sanitize_err(e):
     import re
-    s = str(e)
+    s = cloud_vault.redact(str(e))
     s = re.sub(r'sk-[a-zA-Z0-9\-_]{20,}', 'sk-***REDACTED***', s)
     s = re.sub(r'Bearer\s+[a-zA-Z0-9\-_.\s]+', 'Bearer ***REDACTED***', s)
     return s
@@ -552,7 +555,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.6.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.7.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -623,6 +626,7 @@ def start_watchdog():
 
 def user_notify(cfg, event, title, body, session_id=None, bot_id=None):
     """通知用户：先记进 App 通知流（App 在线时用系统本地通知显示），App 不在线且允许兜底时再发 Bark。"""
+    title, body = cloud_vault.redact(title), cloud_vault.redact(body)
     try:
         bot_id = bot_id or (session_persona_id(session_id) if session_id else None)
         if bot_id and bot_id in (resource_settings().get("private_bots") or []):
@@ -993,7 +997,7 @@ def log_event(task_id, etype, payload):
     c = conn.cursor()
     c.execute(
         "INSERT INTO task_events (task_id, event_type, payload, timestamp) VALUES (?, ?, ?, ?)",
-        (task_id, etype, json.dumps(payload, ensure_ascii=False), time.time())
+        (task_id, etype, cloud_vault.redact(json.dumps(payload, ensure_ascii=False)), time.time())
     )
     conn.commit()
     conn.close()
@@ -1083,6 +1087,9 @@ def inbox_drop(task_id):
         INBOX.pop(task_id, None)
 
 def insert_message(session_id, role, content, tool_calls=None, tool_call_id=None, meta=None):
+    content = cloud_vault.redact(content)
+    if tool_calls:
+        tool_calls = json.loads(cloud_vault.redact(json.dumps(tool_calls, ensure_ascii=False)))
     conn = get_db_connection()
     try:
         conn.execute("INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp, meta) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1261,6 +1268,8 @@ def tool_file_edit(task_id, session_id, args):
 def tool_browser_action(task_id, session_id, args):
     if is_task_cancelled(task_id):
         return {"error": "Cancelled"}
+    if str(args.get("action") or "").startswith("__"):
+        return {"error": f"Unsupported browser action: {args.get('action')}"}
     ws = get_session_workspace(session_id)
     key, owner, display = browser_route(session_id)
     return cloud_browser.execute_browser_action(key, ws, args, owner=owner, display=display)
@@ -1453,6 +1462,83 @@ def tool_request_user_takeover(task_id, session_id, args):
     return {"status": "requested", "reason": reason,
             "note": "已请求用户在手机「电脑」页接管。现在结束本轮，用一两句话告诉用户需要做什么；"
                     "用户完成后会发来“我完成了”，届时先截图确认结果再继续。不要索要或记录密码。"}
+
+def _vault_type_desktop(session_id, values):
+    """在桌面当前焦点处依次输入（栏位之间按 Tab）。值经 stdin 交给 xdotool，不出现在进程参数里。"""
+    if not shutil.which("xdotool"):
+        return {"error": "云电脑没有安装 xdotool，无法在桌面输入"}
+    _key, _owner, display = browser_route(session_id)
+    env = os.environ.copy()
+    env["DISPLAY"] = display or os.environ.get("DISPLAY", ":99")
+    for i, (_name, value) in enumerate(values):
+        if i:
+            subprocess.run(["xdotool", "key", "Tab"], env=env, capture_output=True, timeout=10)
+        r = subprocess.run(["xdotool", "type", "--delay", "20", "--file", "-"], input=str(value).encode("utf-8"),
+                           env=env, capture_output=True, timeout=60)
+        if r.returncode != 0:
+            return {"error": "桌面输入失败"}
+    return {"status": "ok", "filled": [n for n, _ in values]}
+
+def tool_vault(task_id, session_id, name, args):
+    """保管库工具：机密只在这里解密、直接填进云电脑，返回给模型的只有元数据和「填了哪些栏」。"""
+    if is_task_cancelled(task_id):
+        return {"error": "Cancelled"}
+    actor = session_persona_id(session_id) or "default"
+    conn = get_db_connection()
+    try:
+        if name == "vault_list":
+            items = cloud_vault.list_items(conn, args.get("kind"), args.get("query"))
+            out = [cloud_vault.for_model(i) for i in items[:50]]
+            note = "用 vault_fill(id) 把选中的一项填进当前网页；allowed=false 的项用户不允许 Bot 使用"
+            return {"items": out, "count": len(items), "note": note if out else "保管库里没有匹配的项；请用户在 App 的「保管库」里添加"}
+        try:
+            item, sec = cloud_vault.secret(conn, args.get("id"))
+        except cloud_vault.VaultError as e:
+            return {"error": str(e) + "；先用 vault_list 查 id"}
+        except (cloud_secrets.SecretStoreUnavailable, cloud_secrets.SecretDecryptError) as e:
+            return {"error": "保管库无法解密：" + str(e)}
+        if not item.get("allow_bots", True):
+            cloud_vault.record_use(conn, item, actor, session_id, name, None, False, "用户不允许 Bot 使用这一项")
+            return {"error": f"用户关掉了「{item['title']}」的「允许 Bot 使用」，不能使用；请用户在保管库里打开或亲自填写"}
+        target = args.get("target") or "browser"
+        if name == "vault_totp":
+            if item["kind"] != "login" or not sec.get("totp"):
+                return {"error": "这一项没有保存两步验证（TOTP）密钥"}
+            code, left = cloud_vault.totp_code(sec["totp"])
+            fields = {"totp": code}
+            selectors = {"totp": args["selector"]} if isinstance(args.get("selector"), str) and args.get("selector") else {}
+        else:
+            fields = cloud_vault.fill_fields(item["kind"], item, sec, args.get("address_index"))
+            only = args.get("fields")
+            if isinstance(only, list) and only:
+                fields = {k: v for k, v in fields.items() if k in only}
+            selectors = args.get("selectors") if isinstance(args.get("selectors"), dict) else {}
+            left = None
+        if not fields:
+            return {"error": "这一项没有可以填写的内容"}
+        if target == "desktop":
+            res = _vault_type_desktop(session_id, list(fields.items()))
+            where = "桌面"
+        else:
+            ws = get_session_workspace(session_id)
+            key, owner, display = browser_route(session_id)
+            want = cloud_vault.site_key(item["site"]) if item["kind"] == "login" and item.get("site") else None
+            res = cloud_browser.execute_browser_action(key, ws, {"action": "__vault_fill__", "fields": fields, "selectors": selectors,
+                                                                 "site_key": want, "site_key_fn": cloud_vault.site_key},
+                                                       owner=owner, display=display)
+            where = (res or {}).get("page_host") or "浏览器"
+        fields = None
+        ok = isinstance(res, dict) and res.get("status") == "ok"
+        cloud_vault.record_use(conn, item, actor, session_id, name, where, ok, None if ok else (res or {}).get("error"))
+        out = {"item": item["title"], "where": where}
+        for k in ("status", "filled", "not_found", "error", "page_host"):
+            if isinstance(res, dict) and k in res:
+                out[k] = res[k]
+        if ok:
+            out["note"] = "已填好（值不会显示给你）。接着点登录 / 提交按钮" + ("；验证码约 %d 秒后过期" % left if left else "")
+        return out
+    finally:
+        conn.close()
 
 def tool_desktop_action(task_id, session_id, args):
     if is_task_cancelled(task_id):
@@ -2199,7 +2285,7 @@ def tool_list_bots(task_id, session_id, args):
             conn.close()
     return out
 
-ADMIN_API_BLOCKED = re.compile(r"^/v1/(credentials|notify|backup|auth|token)(/|$)")
+ADMIN_API_BLOCKED = re.compile(r"^/v1/(credentials|notify|backup|auth|token|vault)(/|$)")
 
 def _admin_api(method, path, body):
     """主 Bot 调本机 API（和 App 用的同一套）。密钥类接口不开放：模型不该经手原始密钥。"""
@@ -3173,6 +3259,40 @@ TOOL_DEFINITIONS.append({"type": "function", "function": {
         "overwrite": {"type": "boolean"}},
         "required": ["name", "description", "content"]}}})
 
+TOOL_DEFINITIONS.extend([
+    {"type": "function", "function": {
+        "name": "vault_list",
+        "description": "List items in the user's vault (保管库): saved logins, payment cards and contact info shared by all Bots. Returns only "
+                       "non-secret metadata (id, site, username, card last4, labels) — never passwords or numbers. When the user says "
+                       "'用保管库里的 X 账号登录' / asks you to log in, pay or fill a form, call this, then vault_fill, without asking the user for "
+                       "the password. query can be a site/domain (matched by registrable domain) or words.",
+        "parameters": {"type": "object", "properties": {
+            "kind": {"type": "string", "enum": ["login", "card", "contact"]},
+            "query": {"type": "string", "description": "Site, domain, URL or keyword (optional)."}}}}},
+    {"type": "function", "function": {
+        "name": "vault_fill",
+        "description": "Fill a vault item into the page open in the cloud computer's browser (login: username + password; card: number, "
+                       "expiry, CVV, name; contact: name, phone, email, address). The server fills it directly; you never see the values. "
+                       "Logins are only filled when the page's domain matches the item's site. Open the page with browser_action first; "
+                       "afterwards click the submit button yourself. target=desktop types into the focused field of the desktop instead.",
+        "parameters": {"type": "object", "properties": {
+            "id": {"type": "string", "description": "Item id from vault_list."},
+            "target": {"type": "string", "enum": ["browser", "desktop"]},
+            "fields": {"type": "array", "items": {"type": "string"}, "description": "Only these fields (optional), e.g. ['username'] on a username-first login page, ['password'] on the next step."},
+            "selectors": {"type": "object", "description": "Optional CSS selector per field name when auto-detection misses, e.g. {\"password\": \"#pw\"}."},
+            "address_index": {"type": "integer", "description": "Contact: which saved address (default = the default one)."}},
+            "required": ["id"]}}},
+    {"type": "function", "function": {
+        "name": "vault_totp",
+        "description": "Fill the current two-factor (TOTP) code of a vault login into the verification-code field of the open page. You never see the code.",
+        "parameters": {"type": "object", "properties": {
+            "id": {"type": "string"},
+            "target": {"type": "string", "enum": ["browser", "desktop"]},
+            "selector": {"type": "string", "description": "Optional CSS selector of the code field."}},
+            "required": ["id"]}}},
+])
+
+VAULT_TOOLS = {"vault_list", "vault_fill", "vault_totp"}
 DELEGATION_TOOLS = {"send_to_bot", "delegate_task"}
 ADMIN_TOOLS = {"create_bot", "update_bot", "delete_bot", "restore_bot", "set_primary_bot", "admin_api"}
 
@@ -3630,6 +3750,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     elif fn_name == "page_write": res = tool_page_write(task_id, session_id, fn_args)
                     elif fn_name == "subagent_task": res = tool_subagent_task(task_id, session_id, fn_args, model, provider_config, depth)
                     elif fn_name == "list_bots": res = tool_list_bots(task_id, session_id, fn_args)
+                    elif fn_name in VAULT_TOOLS: res = tool_vault(task_id, session_id, fn_name, fn_args)
                     elif fn_name in ADMIN_TOOLS:
                         res = tool_admin(task_id, session_id, fn_name, fn_args) if is_admin_session(session_id, depth) \
                             else {"error": "只有主 Bot 能管理 Bot 和系统设置；请让用户在主 Bot 里操作"}
@@ -3656,7 +3777,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     log_event(task_id, "tool_result", {"id": tc_id, "tool": fn_name, "result": res, "duration_ms": duration_ms})
                     
                     # Tool result formatting: If screenshot produced, include attachment path and format
-                    tool_content_str = spill_tool_output(session_id, tc_id, json.dumps(res, ensure_ascii=False))
+                    tool_content_str = spill_tool_output(session_id, tc_id, cloud_vault.redact(json.dumps(res, ensure_ascii=False)))
                     messages.append({"role": "tool", "tool_call_id": tc_id, "content": tool_content_str})
 
                     # If model is vision-capable (e.g. gpt-4o, claude-3, gemini-1.5, qwen-vl) and screenshot generated, inject vision user message
@@ -4769,6 +4890,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Plugin not found"})
             return
 
+        if path == "/v1/vault" or path.startswith("/v1/vault/"):
+            self._vault("GET", path, query_params, None)
+            return
         if path == "/v1/bot_sections":
             conn = get_db_connection()
             try:
@@ -5437,6 +5561,48 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _vault(self, method, path, query, body):
+        """保管库接口（只给 App 用；admin_api 不能访问）。列表只有元数据；reveal 返回机密，App 先过 Face ID。"""
+        conn = get_db_connection()
+        try:
+            item_m = re.match(r"^/v1/vault/(v_[a-f0-9]{10})(/reveal)?$", path)
+            if method == "GET" and path == "/v1/vault":
+                q = lambda k: (query.get(k) or [None])[0]
+                ok, reason = cloud_secrets.status()
+                self._send(200, {"items": cloud_vault.list_items(conn, q("kind"), q("q")), "available": ok,
+                                 **({} if ok else {"reason": reason})})
+            elif method == "GET" and path == "/v1/vault/uses":
+                item_id = (query.get("item_id") or [None])[0]
+                self._send(200, {"items": cloud_vault.uses(conn, item_id)})
+            elif method == "POST" and path == "/v1/vault":
+                self._send(201, {"item": cloud_vault.create(conn, body)})
+            elif method == "POST" and path == "/v1/vault/import":
+                self._send(200, cloud_vault.import_csv(conn, body.get("csv")))
+            elif item_m and item_m.group(2):
+                if method != "POST":
+                    self._send(405, {"error": "Method not allowed"})
+                    return
+                item, sec = cloud_vault.secret(conn, item_m.group(1))
+                cloud_vault.record_use(conn, item, "app", None, "app_reveal", "App", True)
+                self._send(200, {"item": item, "secret": sec})
+            elif item_m and method == "GET":
+                self._send(200, {"item": cloud_vault.get(conn, item_m.group(1))})
+            elif item_m and method == "PUT":
+                self._send(200, {"item": cloud_vault.update(conn, item_m.group(1), body)})
+            elif item_m and method == "DELETE":
+                cloud_vault.delete(conn, item_m.group(1))
+                self._send(200, {"deleted": True})
+            else:
+                self._send(404, {"error": "Not found"})
+        except cloud_vault.VaultError as e:
+            self._send(404 if "没有这一项" in str(e) else 400, {"error": str(e)})
+        except cloud_secrets.SecretStoreUnavailable as e:
+            self._send(503, {"error": "加密存储不可用：" + str(e)})
+        except cloud_secrets.SecretDecryptError as e:
+            self._send(500, {"error": str(e)})
+        finally:
+            conn.close()
+
     def _read_json_body(self):
         """返回 dict；出错时已发送错误响应并返回 None。"""
         raw_len = self.headers.get("Content-Length", 0)
@@ -5594,6 +5760,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Plugin not found"})
             return
 
+        if path.startswith("/v1/vault/"):
+            self._vault("PUT", path, {}, req_json)
+            return
         m_sec = re.match(r"^/v1/bot_sections/(sec_[a-f0-9]{10})$", path)
         if m_sec:
             conn = get_db_connection()
@@ -5833,6 +6002,9 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
             self._send(200 if ok else 404, {"deleted": True} if ok else {"error": "Group not found"})
             return
+        if path.startswith("/v1/vault/"):
+            self._vault("DELETE", path, query_params, None)
+            return
         m_sec_del = re.match(r"^/v1/bot_sections/(sec_[a-f0-9]{10})$", path)
         if m_sec_del:
             conn = get_db_connection()
@@ -5980,6 +6152,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.startswith("/v1/proxy/"):
             self._proxy_post(path, req_json)
+            return
+        if path == "/v1/vault" or path.startswith("/v1/vault/"):
+            self._vault("POST", path, {}, req_json)
             return
         m_share = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/library/([A-Za-z0-9_-]{1,64})/share$", path)
         if m_share:

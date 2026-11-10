@@ -530,6 +530,9 @@ class BrowserOwnerDaemon:
             else:
                 return {"error": "Cannot close the last remaining tab in session"}
 
+        elif action == "__vault_fill__":
+            return vault_fill_page(page, args)
+
         else:
             return {"error": f"Unsupported browser action: {action}"}
 
@@ -552,6 +555,117 @@ class BrowserOwnerDaemon:
             return {"error": "Browser action timed out after 40 seconds"}
         except Exception as e:
             return {"error": f"Browser daemon error: {e}"}
+
+# ---------- 保管库填写：值只在这里用一次，返回里只有栏位名 ----------
+VAULT_SELECTORS = {
+    "username": ["input[autocomplete~=username]", "input[type=email]", "input[name*=user i]", "input[name*=login i]",
+                 "input[name*=email i]", "input[name*=account i]", "input[id*=user i]", "input[id*=email i]", "input[id*=login i]",
+                 "input[type=tel]", "input[type=text]", "input:not([type])"],
+    "password": ["input[type=password]"],
+    "totp": ["input[autocomplete~=one-time-code]", "input[name*=otp i]", "input[name*=totp i]", "input[id*=otp i]",
+             "input[name*=code i]", "input[id*=code i]", "input[inputmode=numeric]"],
+    "cc_name": ["input[autocomplete~=cc-name]", "input[name*=cardholder i]", "input[name*=card_name i]", "input[name*=cc-name i]"],
+    "cc_number": ["input[autocomplete~=cc-number]", "input[name*=cardnumber i]", "input[name*=card_number i]", "input[name*=card-number i]",
+                  "input[name*=ccnum i]", "input[id*=cardnumber i]", "input[id*=card-number i]", "input[name=number i]"],
+    "cc_exp": ["input[autocomplete~=cc-exp]", "input[name*=expiry i]", "input[name*=exp-date i]", "input[name*=expdate i]", "input[id*=expiry i]"],
+    "cc_exp_month": ["select[autocomplete~=cc-exp-month]", "input[autocomplete~=cc-exp-month]", "select[name*=month i]", "input[name*=exp_month i]"],
+    "cc_exp_year": ["select[autocomplete~=cc-exp-year]", "input[autocomplete~=cc-exp-year]", "select[name*=year i]", "input[name*=exp_year i]"],
+    "cc_csc": ["input[autocomplete~=cc-csc]", "input[name*=cvc i]", "input[name*=cvv i]", "input[name*=csc i]", "input[name*=security i]"],
+    "name": ["input[autocomplete~=name]", "input[name=name i]", "input[name*=fullname i]", "input[name*=full_name i]", "input[name*=receiver i]"],
+    "tel": ["input[autocomplete~=tel]", "input[type=tel]", "input[name*=phone i]", "input[name*=mobile i]"],
+    "email": ["input[autocomplete~=email]", "input[type=email]", "input[name*=email i]"],
+    "street": ["input[autocomplete~=address-line1]", "input[autocomplete~=street-address]", "textarea[autocomplete~=street-address]",
+               "input[name*=address1 i]", "input[name*=address i]", "textarea[name*=address i]"],
+    "street2": ["input[autocomplete~=address-line2]", "input[name*=address2 i]"],
+    "city": ["input[autocomplete~=address-level2]", "input[name*=city i]"],
+    "region": ["input[autocomplete~=address-level1]", "select[autocomplete~=address-level1]", "input[name*=state i]", "input[name*=province i]"],
+    "postal": ["input[autocomplete~=postal-code]", "input[name*=zip i]", "input[name*=postal i]", "input[name*=postcode i]"],
+    "country": ["select[autocomplete~=country]", "input[autocomplete~=country-name]", "select[name*=country i]"],
+}
+
+
+_NEAR_USER_JS = """pw => { const root = pw.form || document;
+  const ok = e => ['text', 'email', 'tel', ''].includes((e.getAttribute('type') || '').toLowerCase()) && e.offsetParent !== null && !e.disabled && !e.readOnly;
+  const ins = [...root.querySelectorAll('input')].filter(ok).filter(e => e.compareDocumentPosition(pw) & Node.DOCUMENT_POSITION_FOLLOWING);
+  return ins.length ? ins[ins.length - 1] : null; }"""
+
+
+def _same(a, b):
+    try:
+        return bool(a.evaluate("(x, y) => x === y", b))
+    except Exception:
+        return False
+
+
+def _vault_find(frames, sels, used):
+    for frame in frames:
+        for sel in sels:
+            try:
+                loc = frame.locator(sel + ":visible")
+                for i in range(min(loc.count(), 6)):
+                    el = loc.nth(i)
+                    h = el.element_handle(timeout=1000)
+                    if h is None or any(_same(h, u) for u in used):
+                        continue
+                    if el.is_disabled() or not el.is_editable():
+                        continue
+                    return el, h
+            except Exception:
+                continue
+    return None, None
+
+
+def vault_fill_page(page, args):
+    """args: fields {栏位: 值}，selectors {栏位: CSS}（可选），site_key（登录项要核对网站），site_key_fn。"""
+    from urllib.parse import urlparse
+    url = page.url or ""
+    host = (urlparse(url).hostname or "").lower()
+    if urlparse(url).scheme not in ("http", "https") and not url.startswith("file:"):
+        return {"error": "当前标签页不是网页，先打开要登录 / 填写的页面"}
+    want = args.get("site_key")
+    key_fn = args.get("site_key_fn")
+    if want and key_fn and key_fn(url) != want:
+        return {"error": f"当前页面（{host}）和保管库条目的网站（{want}）不一致，为防钓鱼没有填写", "page_host": host}
+    fields = args.get("fields") or {}
+    custom = args.get("selectors") or {}
+    frames = [page.main_frame] + [f for f in page.frames if f != page.main_frame]
+    filled, missing, used = [], [], []
+    order = ["password", "username"] + [k for k in fields if k not in ("password", "username")]
+    for name in order:
+        value = fields.get(name)
+        if not value:
+            continue
+        sels = [custom[name]] if isinstance(custom.get(name), str) and custom[name] else VAULT_SELECTORS.get(name, [])
+        el, h = None, None
+        if name == "username" and "password" in filled and not custom.get("username"):
+            # 用户名一般是同一表单里、密码框前面最近的文本框
+            try:
+                cand = used[0].evaluate_handle(_NEAR_USER_JS).as_element()
+                if cand is not None:
+                    el, h = cand, cand
+            except Exception:
+                el, h = None, None
+        if el is None:
+            el, h = _vault_find(frames, sels, used)
+        if el is None:
+            missing.append(name)
+            continue
+        try:
+            tag = el.evaluate("e => e.tagName.toLowerCase()")
+            if tag == "select":
+                try:
+                    el.select_option(value=str(value), timeout=3000)
+                except Exception:
+                    el.select_option(label=str(value), timeout=3000)
+            else:
+                el.fill(str(value), timeout=5000)
+            used.append(h)
+            filled.append(name)
+        except Exception:
+            missing.append(name)
+    return {"status": "ok" if filled else "error", "filled": filled, "not_found": missing, "page_host": host,
+            **({} if filled else {"error": "页面上没找到可以填写的栏位；可以先点开登录框，或用 selectors 指定"})}
+
 
 def get_daemon():
     global _browser_daemon_instance

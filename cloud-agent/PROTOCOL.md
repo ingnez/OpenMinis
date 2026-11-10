@@ -422,7 +422,18 @@
 - 超过 90 秒没报到（App 被挂起或杀掉）才按设置走外部推送；这条通知在通知流里带 `external: true`，App 之后取到也不再弹一次。
 
 ### 9.6 首页长按菜单
-- `PUT /v1/bots/<id>/prefs` `{pinned?, hidden?, unread?, seen_at?}`：置顶、隐藏（主 Bot 不能隐藏）、手动标为未读、已读到的时间；`GET /v1/bots` 每个 Bot 带 `prefs`。
+- `PUT /v1/bots/<id>/prefs` `{pinned?, hidden?, unread?, seen_at?}`：置顶、隐藏、手动标为未读、已读到的时间；`GET /v1/bots` 每个 Bot 带 `prefs`。
 - 替换主 Bot：`PUT /v1/bots/<id>` `{is_primary: true}`，一次事务里转移，记一条可撤销的 `set_primary_bot` 审计。管理工具的角色检查每次现查当前主 Bot 的 id，旧主 Bot 立刻失去权限。
 - `DELETE /v1/bots/<id>?soft=1` 放进回收站（主 Bot 不能删）；`GET /v1/bots/trash` 看回收站；`POST /v1/bots/<id>/restore` 恢复。
 - 首页分组：`GET /v1/bot_sections`；`POST /v1/bot_sections` `{name, bot_id?}` 新建（可顺便把一个 Bot 放进去）；`PUT /v1/bot_sections/<id>` `{name?, collapsed?}`；`DELETE /v1/bot_sections/<id>`（里面的 Bot 回到未分组）。Bot 放进 / 移出分组：`PUT /v1/bots/<id>/prefs` `{section_id: "<id>" | null}`。主 Bot 也可以隐藏。
+
+## 10. 保管库（服务器 2.7.0+）
+所有 Bot 共用的登录信息、卡片和联系信息。机密字段（密码、TOTP 密钥、卡号、有效期、CVV、电话、邮箱、地址、备注）整包用主密钥 AES-256-GCM 加密（AAD `vault:<id>`），库里明文只有标题、网站、用户名、卡号后四位。
+- `GET /v1/vault` → `{items, available}`，只有元数据（`id, kind, title, site, username, name, last4, brand, is_default, has_totp, allow_bots, last_used_at`）。
+- `POST /v1/vault` `{kind: login|card|contact, …}` 新建；`PUT /v1/vault/<id>` 修改（机密字段不带 = 不变，空字符串 = 清空）；`DELETE /v1/vault/<id>`。
+  - login：`site, username, password, totp?（Base32 或 otpauth://）, notes?`；card：`name, number, expiry (MM/YY), cvv, notes?`；contact：`name, phone, email, addresses: [{label, line1, line2, city, region, postal, country, default}], is_default`。共有：`title?, allow_bots`。
+- `POST /v1/vault/<id>/reveal` → `{item, secret}`：只给 App（先过 Face ID），记一条 `app_reveal` 使用记录。
+- `GET /v1/vault/uses[?item_id=<id>]` 使用记录（哪个 Bot、哪一项、动作、填到哪个网站、成功与否、时间）。
+- `POST /v1/vault/import` `{csv}`：Chrome / 1Password / Bitwarden 导出的密码 CSV → `{imported, skipped}`。
+- Bot 工具（所有 Bot）：`vault_list(kind?, query?)` 只返回元数据；`vault_fill(id, target?, fields?, selectors?, address_index?)` 由服务器解密后直接填进云电脑浏览器（或 `target=desktop` 用 xdotool 在焦点处输入），登录项要求网页的主域名（eTLD+1 近似）和条目一致；`vault_totp(id)` 填当前验证码。结果只有填了哪些栏位。
+- 机密写进对话、事件、通知、发给模型之前都会过一遍替换（`[保管库已隐藏]`，覆盖 6 位以上的密码、TOTP 密钥、卡号及分组写法）。`admin_api` 不能访问 `/v1/vault`。

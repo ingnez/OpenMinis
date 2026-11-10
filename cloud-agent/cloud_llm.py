@@ -288,6 +288,9 @@ TOOL_TRIGGERS = {
     "send_to_bot": r"bot|@|交给|委托|让.{0,12}(做|查|写|看)|问问|告诉",
     "delegate_task": r"bot|@|交给|委托|让.{0,12}(做|查|写|看)|问问",
     "skill_save": r"技能|skill|流程|工作流|下次|以后|保存.*步骤|记住.*做法",
+    "vault_list": r"保管库|vault|账号|帐号|密码|登录|登陆|log ?in|sign ?in|password|信用卡|银行卡|卡号|付款|支付|结账|checkout|地址|收货|填写|表单|验证码|两步|2fa|totp|otp",
+    "vault_fill": r"保管库|vault|账号|帐号|密码|登录|登陆|log ?in|sign ?in|password|信用卡|银行卡|卡号|付款|支付|结账|checkout|地址|收货|填写|表单",
+    "vault_totp": r"保管库|vault|验证码|两步|2fa|totp|otp|登录|登陆|log ?in",
 }
 REQUEST_TOOLS_DEF = {"type": "function", "function": {
     "name": "request_tools",

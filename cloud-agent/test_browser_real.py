@@ -35,4 +35,24 @@ class RealBrowserTests(unittest.TestCase):
             self.assertGreaterEqual(tabs.get('count',len(tabs.get('tabs',[]))),1)
             print('真实Chromium跨任务线程：导航、输入、点击、读回、截图、再次访问通过')
 
+    def test_vault_fill_login_form(self):
+        import cloud_browser
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            html=root/'login.html'
+            html.write_text('<html><input id="q" placeholder="search"><form><input id="u" name="email" type="text"><input id="p" type="password">'
+                            '<input id="otp" autocomplete="one-time-code"></form><button id="go" onclick="document.getElementById(\'r\').textContent='
+                            'document.getElementById(\'u\').value+\'|\'+document.getElementById(\'p\').value.length+\'|\'+document.getElementById(\'q\').value">x</button><p id="r"></p></html>')
+            session='real_vault_ci'
+            out=[]
+            def run(a):
+                t=threading.Thread(target=lambda:out.append(cloud_browser.execute_browser_action(session,str(root),a)));t.start();t.join(45)
+                return out[-1]
+            run({'action':'navigate','url':html.as_uri()})
+            res=run({'action':'__vault_fill__','fields':{'username':'fake.user@example.com','password':'FakePass-123456'}})
+            self.assertEqual(sorted(res['filled']),['password','username'],res)
+            run({'action':'click','selector':'#go'})
+            self.assertEqual(run({'action':'get_text','selector':'#r'})['text'],'fake.user@example.com|15|')
+            print('真实Chromium保管库填写：用户名进了表单里的框、没进搜索框，密码已填')
+
 if __name__=='__main__':unittest.main(verbosity=2)
