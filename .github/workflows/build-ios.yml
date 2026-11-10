@@ -184,6 +184,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWorkflowGraph.swift scripts/CloudWorkflowGraphTests.swift -o /tmp/cloud-workflow-graph-tests
           /tmp/cloud-workflow-graph-tests
+      - name: 多台云电脑测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudServerProfiles.swift scripts/CloudServerProfilesTests.swift -o /tmp/cloud-server-profiles-tests
+          /tmp/cloud-server-profiles-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -331,6 +336,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudServerProfiles.swift scripts/CloudServerProfilesTests.swift -o /tmp/cloud-server-profiles-tests
+          /tmp/cloud-server-profiles-tests | tee cloud-server-profiles-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWorkflowGraph.swift scripts/CloudWorkflowGraphTests.swift -o /tmp/cloud-workflow-graph-tests
           /tmp/cloud-workflow-graph-tests | tee cloud-workflow-graph-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudGroupVoiceRules.swift scripts/CloudGroupVoiceTests.swift -o /tmp/cloud-group-voice-tests

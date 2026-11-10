@@ -40,6 +40,12 @@ struct CloudAgentSettingsView: View {
     var body: some View {
         Form {
             Section {
+                NavigationLink(destination: CloudServersView()) {
+                    Label("多台云电脑（切换 · 测负载）", systemImage: "server.rack")
+                }
+                .disabled(isConnecting || isInstalling)
+            }
+            Section {
                 TextField("连接名称 (如: 我的云电脑)", text: $connection.name)
                     .disabled(isConnecting || isInstalling)
                 TextField("IP地址 / 域名", text: $connection.host)
