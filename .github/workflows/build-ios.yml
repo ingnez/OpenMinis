@@ -12,6 +12,13 @@ permissions:
   contents: read
 
 jobs:
+  # 每次触发都至少跑这一个任务：其余任务都按 quick 输入跳过时，GitHub 会把整次运行报成「No jobs were run」失败
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "mode=${{ inputs.quick && 'quick-typecheck' || 'full-build' }} ref=${{ github.ref_name }} sha=${{ github.sha }}"
+
   quick-typecheck:
     if: ${{ inputs.quick }}
     runs-on: macos-26
