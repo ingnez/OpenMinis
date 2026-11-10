@@ -849,6 +849,7 @@ struct CloudSessionView: View {
             }
         }
         .tint(theme?.accent)
+        .background { if let theme { theme.backdrop.fill(accent: theme.accent).ignoresSafeArea() } }
         .sheet(isPresented: $showModelPicker) {
             if let theme {
                 CloudModelEffortSheet(title: "\(theme.name) 的模型",
@@ -1204,7 +1205,7 @@ struct CloudSessionView: View {
             .padding(.horizontal, 12)
         }
         .padding(.vertical, 8)
-        .background(Color(.systemBackground))
+        .background(theme.backdrop.fill(accent: theme.accent))
     }
 
     private func composerIcon(_ icon: String, label: String, action: @escaping () -> Void) -> some View {

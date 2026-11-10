@@ -211,6 +211,7 @@ struct CloudBotEditSheet: View {
                 }
                 CloudProactiveSection(botId: bot.id, botName: bot.name)
                 CloudBotLockSection(botId: bot.id)
+                CloudChatBackdropSection(botId: bot.id, accent: CloudBotAvatarSpec.of(bot).fill)
                 Section {
                     Toggle("快速模式", isOn: $bot.fastMode)
                 } footer: {

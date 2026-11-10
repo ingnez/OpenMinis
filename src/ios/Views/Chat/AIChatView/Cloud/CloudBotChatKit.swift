@@ -20,6 +20,7 @@ struct CloudBotChatTheme {
     var credential: String = ""
     var effort: String = ""
     var accent: Color { spec.fill }
+    var backdrop: CloudChatBackdrop { CloudChatBackdrop.of(botId) }
 
     init(bot: CloudBot) {
         botId = bot.id

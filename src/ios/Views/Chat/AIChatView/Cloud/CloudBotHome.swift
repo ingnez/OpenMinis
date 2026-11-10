@@ -562,6 +562,13 @@ struct CloudBotChatView: View {
     /// 当前是无痕对话时记下它和之前的对话，结束后删掉并回到原来的对话
     @State private var incognito: (id: String, previous: String?)?
     @State private var incognitoError: String?
+    @AppStorage private var backdropRaw: String
+    @Environment(\.colorScheme) private var systemScheme
+
+    init(botId: String) {
+        self.botId = botId
+        _backdropRaw = AppStorage(wrappedValue: "", CloudChatBackdrop.key(botId))
+    }
 
     var body: some View {
         Group {
@@ -574,7 +581,8 @@ struct CloudBotChatView: View {
                                  botHasOwnModel: bot.hasOwnModel,
                                  mentionBots: model.bots.filter { $0.id != botId },
                                  theme: CloudBotChatTheme(bot: bot))
-                    .id(sid)
+                    .id(sid + "|" + backdropRaw)
+                    .environment(\.colorScheme, CloudChatBackdrop(rawValue: backdropRaw)?.colorScheme ?? systemScheme)
                     .safeAreaInset(edge: .top) {
                         if incognito?.id == sid {
                             HStack(spacing: 8) {
