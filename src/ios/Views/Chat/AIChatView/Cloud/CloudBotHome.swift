@@ -347,6 +347,7 @@ final class CloudBotHomeModel: ObservableObject {
         link.handle(.pageOpened)
         do {
             bots = try await CloudQuiet.retry { try await CloudBotService.list() }
+            CloudBotLock.shared.lockSecretHoldersByDefault(bots)
             bannerText = nil
             publishToWidget()
             prefetchChats()
@@ -835,6 +836,7 @@ struct CloudBotHubView: View {
             Section {
                 NavigationLink(destination: CloudUsageView()) { Label("用量与每日上限", systemImage: "chart.bar") }
                 NavigationLink(destination: CloudBackupView()) { Label("备份与恢复", systemImage: "externaldrive") }
+                NavigationLink(destination: FaceIDProtectionSettingsView()) { Label("Face ID 锁（打开 App 先验证）", systemImage: "faceid") }
                 NavigationLink(destination: CloudSystemSnapshotsView()) { Label("系统快照（装软件前自动拍）", systemImage: "camera.metering.matrix") }
             }
             if let onOpenAppSettings {

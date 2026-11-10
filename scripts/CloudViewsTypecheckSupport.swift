@@ -42,3 +42,8 @@ struct CloudStepBar: View {
  let working: Bool
  var body: some View { EmptyView() }
 }
+
+/// 替身：真实实现在 Views/Settings/FaceIDProtectionSettingsView.swift（App 锁、会话锁）
+struct FaceIDProtectionSettingsView: View {
+    var body: some View { EmptyView() }
+}

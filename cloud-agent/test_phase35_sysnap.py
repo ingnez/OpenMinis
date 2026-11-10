@@ -90,3 +90,15 @@ class SysnapServerTests(CloudServerTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HoldsSecretsTests(CloudServerTestCase):
+    def test_01_bot_with_own_credential_holds_secrets(self):
+        self.request("PUT", "/v1/credentials/botkey", {"api_key": "sk-bot-fake-0000000000000000", "base_url": self.model_base})
+        st, b = self.request("PUT", "/v1/bots/keybot", {"name": "钥匙 Bot", "instructions": "x", "credential": "botkey", "model": "m-x"})
+        self.assertIn(st, (200, 201), b)
+        self.request("PUT", "/v1/bots/plainbot", {"name": "普通 Bot", "instructions": "x"})
+        bid, bid2 = "keybot", "plainbot"
+        bots = {x["persona_id"]: x for x in self.request("GET", "/v1/bots")[1]["bots"]}
+        self.assertTrue(bots[bid]["holds_secrets"])
+        self.assertFalse(bots[bid2]["holds_secrets"])

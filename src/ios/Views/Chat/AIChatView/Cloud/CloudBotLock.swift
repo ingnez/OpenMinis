@@ -33,6 +33,24 @@ final class CloudBotLock: ObservableObject {
             try await CloudConnection.shared.request(method: "PUT", path: "/v1/resources", body: ["private_bots": Array(locked).sorted()])
         })
     }
+    nonisolated private static let decidedKey = "OpenMinisCloud_lockDefaultsDecided"
+
+    /// 存了密钥的 Bot（自己的 API 凭据 / 用过保管库）第一次出现时默认上锁；之后用户自己解了锁就不再加回去。
+    /// 上锁更安全，不需要验证；解锁仍然要 Face ID。
+    func lockSecretHoldersByDefault(_ bots: [CloudBot]) {
+        var decided = Set(UserDefaults.standard.stringArray(forKey: Self.decidedKey) ?? [])
+        let fresh = bots.filter { $0.holdsSecrets && !decided.contains($0.id) }
+        guard !fresh.isEmpty else { return }
+        for b in fresh {
+            decided.insert(b.id)
+            locked.insert(b.id)
+        }
+        UserDefaults.standard.set(Array(decided), forKey: Self.decidedKey)
+        UserDefaults.standard.set(Array(locked), forKey: Self.key)
+        Task { await syncToServer() }
+        CloudBotHomeModel.shared.publishFeedToWidget()
+    }
+
     func needsUnlock(_ botId: String) -> Bool { locked.contains(botId) && !unlocked.contains(botId) }
 
     func set(_ botId: String, locked on: Bool) async -> Bool {

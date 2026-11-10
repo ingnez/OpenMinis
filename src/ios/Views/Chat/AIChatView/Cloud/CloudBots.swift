@@ -44,6 +44,8 @@ struct CloudBot: Identifiable, Hashable {
     var pendingCards = 0
     var lastTaskStatus: String?
     var routineRunning = 0
+    /// 有自己的 API 凭据或用过保管库：App 默认给它上 Face ID 锁
+    var holdsSecrets = false
     var notify: Bool
     var routinesEnabled: Int
     var reasoningEffort: String
@@ -133,6 +135,7 @@ struct CloudBot: Identifiable, Hashable {
         seenAt = (prefs["seen_at"] as? NSNumber)?.doubleValue ?? 0
         sectionId = prefs["section_id"] as? String
         soul = (d["soul"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String }
+        holdsSecrets = d["holds_secrets"] as? Bool ?? false
     }
 
     /// 这个 Bot 自己固定了模型与凭据：对话不依赖手机当前选择的服务商

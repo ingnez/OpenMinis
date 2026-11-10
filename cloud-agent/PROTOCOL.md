@@ -533,3 +533,7 @@
 - `GET /v1/system-snapshots` → `{"snapshots": [{id, created_at, reason, etc, counts}]}`
 - `GET /v1/system-snapshots/<id>/plan` → `{"plan": {id, created_at, reason, summary: [...], steps: [命令], etc_files: [相对 /etc 的路径]}}`（只看，不执行）
 - `POST /v1/system-snapshots/<id>/restore {"confirm": true}` → `{"plan", "results": [{step, ok, output?}], "ok"}`：先恢复改过的 /etc 文件，再卸新装的包、恢复服务开关。持有系统级操作锁。
+
+## Bot 是否存了密钥（2.22.0）
+
+`GET /v1/bots` 每个 Bot 多一个 `holds_secrets`：Bot 有自己的 API 凭据，或成功用过保管库条目时为 true。App 第一次看到这样的 Bot 会默认给它上 Face ID 锁。

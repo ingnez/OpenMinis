@@ -586,7 +586,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.21.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.22.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1967,6 +1967,9 @@ def bot_detail(bot):
         out["waiting_approvals"] = counts.get("waiting_user", 0)
         # 首页状态：未读数、待回答卡片、最近一次任务是否出错、例行任务在跑 → status {state, unread, flags}
         cloud_botstatus.fill(conn, out, "COALESCE(s.incognito, 0) = 0 AND s.session_id NOT IN (SELECT worker_session FROM bot_workers)")
+        # 存了密钥的 Bot：有自己的 API 凭据，或用过保管库里的条目 → App 默认给它上 Face ID 锁
+        out["holds_secrets"] = bool(bot.get("credential")) or conn.execute(
+            "SELECT 1 FROM vault_uses WHERE actor = ? AND ok = 1 LIMIT 1", (pid or "default",)).fetchone() is not None
         return out
     finally:
         conn.close()
