@@ -89,3 +89,54 @@ struct CloudDutyDigestCard: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.indigo.opacity(0.1)))
     }
 }
+
+/// 「今日」动态下面的赞 / 踩 / 评论：服务器把它变成这个 Bot 的一条规则记忆，下次做同类内容时参考
+struct CloudFeedFeedbackBar: View {
+    let item: CloudFeedItem
+    @State private var liked: Int?
+    @State private var comment: String?
+    @State private var editing = false
+    @State private var draft = ""
+    @State private var failed = false
+
+    var body: some View {
+        let l = liked ?? item.liked
+        let c = comment ?? item.comment
+        HStack(spacing: 14) {
+            Button { send(l == 1 ? 0 : 1, c) } label: { Image(systemName: l == 1 ? "hand.thumbsup.fill" : "hand.thumbsup") }
+                .accessibilityLabel(l == 1 ? "取消赞" : "有用")
+            Button { send(l == -1 ? 0 : -1, c) } label: { Image(systemName: l == -1 ? "hand.thumbsdown.fill" : "hand.thumbsdown") }
+                .accessibilityLabel(l == -1 ? "取消踩" : "不想要这类内容")
+            Button { draft = c; editing = true } label: { Image(systemName: c.isEmpty ? "text.bubble" : "text.bubble.fill") }
+                .accessibilityLabel("评论")
+            if !c.isEmpty { Text(c).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+            if failed { Text("没保存上").font(.caption2).foregroundStyle(.orange) }
+            Spacer(minLength: 0)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .buttonStyle(.plain)
+        .alert("给 Bot 的反馈", isPresented: $editing) {
+            TextField("比如：医学新闻多一点", text: $draft)
+            Button("取消", role: .cancel) {}
+            Button("保存") { send(l, draft.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        } message: { Text("会记进这个 Bot 的规则记忆，下次做同类内容时参考。") }
+    }
+
+    private func send(_ newLiked: Int, _ newComment: String) {
+        let old = (liked, comment)
+        liked = newLiked
+        comment = newComment
+        CloudHaptics.selection()
+        Task { @MainActor in
+            do {
+                _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/feed/\(item.id)/feedback",
+                                                             body: ["liked": newLiked, "comment": String(newComment.prefix(500))])
+                failed = false
+            } catch {
+                (liked, comment) = old
+                failed = true
+            }
+        }
+    }
+}

@@ -1076,9 +1076,13 @@ struct CloudFeedItem: Identifiable, Equatable {
     let proactive: Bool
     let text: String
     let at: Date
+    var liked = 0          // 1 赞 / -1 踩 / 0 没反馈
+    var comment = ""
 
     init?(_ d: [String: Any]) {
         guard let id = d["run_id"] as? String, let text = d["text"] as? String, !text.isEmpty else { return nil }
+        liked = (d["liked"] as? Int) ?? 0
+        comment = d["comment"] as? String ?? ""
         self.id = id
         sessionId = d["session_id"] as? String ?? ""
         title = d["title"] as? String ?? ""
@@ -1105,7 +1109,10 @@ struct CloudTodayFeed: View {
                 }
             }
             ForEach(expanded ? items : Array(items.prefix(3))) { item in
-                row(item)
+                VStack(alignment: .leading, spacing: 4) {
+                    row(item)
+                    CloudFeedFeedbackBar(item: item).padding(.leading, 36)
+                }
             }
         }
         .padding(14)

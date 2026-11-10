@@ -324,6 +324,8 @@ def init_db():
     cloud_vision.ensure_schema(conn)
     cloud_botthreads.ensure_schema(conn)
     cloud_duty.ensure_schema(conn)
+    conn.execute("CREATE TABLE IF NOT EXISTS feed_feedback (run_id TEXT PRIMARY KEY, liked INTEGER NOT NULL DEFAULT 0, "
+                 "comment TEXT NOT NULL DEFAULT '', at REAL NOT NULL, memory_id INTEGER)")
     cloud_vault.set_loader(get_db_connection)
     cloud_plugins.ensure_schema(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS app_settings (name TEXT PRIMARY KEY, value TEXT)")
@@ -619,7 +621,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.23.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.24.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -5079,10 +5081,51 @@ def daily_feed(hours=24, limit=20):
         if not result or is_quiet_result(result):
             continue
         items.append({"run_id": run_id, "session_id": sid, "title": name, "bot_id": bot or "",
-                      "proactive": (name or "").startswith("主动消息"), "text": result.strip()[:600], "at": at})
+                      "proactive": (name or "").startswith("主动消息"), "text": result.strip()[:600], "at": at,
+                      "liked": 0, "comment": ""})
         if len(items) >= limit:
             break
+    if items:
+        conn = get_db_connection()
+        try:
+            fb = {r[0]: (r[1], r[2]) for r in conn.execute(
+                "SELECT run_id, liked, comment FROM feed_feedback WHERE run_id IN (%s)" % ",".join("?" * len(items)), [i["run_id"] for i in items])}
+        finally:
+            conn.close()
+        for i in items:
+            if i["run_id"] in fb:
+                i["liked"], i["comment"] = fb[i["run_id"]]
     return items
+
+
+def feed_feedback(run_id, liked, comment):
+    """「今日」动态的点赞 / 点踩 / 评论 → 变成这个 Bot 的一条规则记忆（下次做同类内容时参考）；改反馈会替换旧的那条"""
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT r.result, t.name, COALESCE(t.persona_id, '') FROM routine_runs r JOIN routines t ON t.routine_id = r.routine_id "
+                           "WHERE r.run_id = ?", (run_id,)).fetchone()
+        if not row:
+            return None
+        result, name, bot = row
+        old = conn.execute("SELECT memory_id FROM feed_feedback WHERE run_id = ?", (run_id,)).fetchone()
+        if old and old[0]:
+            cloud_memory.delete(conn, old[0])
+        memory_id = None
+        comment = scrub_text((comment or "").strip())[:500]
+        if liked or comment:
+            verdict = {1: "👍 觉得有用，这类内容可以多给", -1: "👎 不想要这类内容，以后少发或换个方式"}.get(liked, "")
+            excerpt = " ".join((result or "").split())[:80]
+            text = f"用户对例行任务「{name}」的一次结果的反馈（{time.strftime('%Y-%m-%d')}）：" + "；".join(
+                x for x in (verdict, f"评论：{comment}" if comment else "") if x) + f"。那次的内容开头：{excerpt}"
+            entry, _ = cloud_memory.write(conn, text, category="rules", source="feedback", persona=bot, commit=False)
+            memory_id = entry["id"]
+        conn.execute("INSERT INTO feed_feedback (run_id, liked, comment, at, memory_id) VALUES (?, ?, ?, ?, ?) "
+                     "ON CONFLICT(run_id) DO UPDATE SET liked = excluded.liked, comment = excluded.comment, at = excluded.at, memory_id = excluded.memory_id",
+                     (run_id, liked, comment, time.time(), memory_id))
+        conn.commit()
+        return {"run_id": run_id, "liked": liked, "comment": comment, "memory_id": memory_id}
+    finally:
+        conn.close()
 
 
 def on_routine_finished(routine, run):
@@ -7345,6 +7388,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": str(e)})
                 return
             self._send(200, stats)
+            return
+
+        m = re.match(r"^/v1/feed/(run_[A-Za-z0-9_-]{4,40})/feedback$", path)
+        if m:
+            liked, comment = req_json.get("liked", 0), req_json.get("comment", "")
+            if liked not in (-1, 0, 1) or not isinstance(comment, str) or len(comment) > 500:
+                self._send(400, {"error": "liked 是 -1 / 0 / 1，comment 最多 500 字"})
+                return
+            r = feed_feedback(m.group(1), liked, comment)
+            self._send(200 if r else 404, r or {"error": "没有这条动态"})
             return
 
         m = re.match(r"^/v1/system-snapshots/([0-9-]{10,32})/restore$", path)

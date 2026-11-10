@@ -541,3 +541,8 @@
 ## 错误日志（2.23.0）
 
 `GET /v1/logs/errors` → `{"version", "errors": [{at, kind: "task"|"server", task_id?, bot_id?, model?, where?, error}]}`：最近 7 天任务出错事件和服务器后台异常（最多 300 条），保管库值和常见密钥形状已打码，不含对话内容。
+
+## 「今日」动态的反馈（2.24.0）
+
+`GET /v1/feed` 每条多 `liked`（1 / -1 / 0）和 `comment`。
+`POST /v1/feed/<run_id>/feedback {"liked": -1|0|1, "comment": "最多 500 字"}`：写成这个 Bot 的一条 `rules` 类记忆（source = feedback），改反馈会替换旧的那条，`liked: 0` 且没有评论时删掉。
