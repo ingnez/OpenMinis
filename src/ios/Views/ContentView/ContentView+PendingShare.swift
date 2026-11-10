@@ -16,7 +16,7 @@ private let shareLog = AppLogger(category: "Share")
 extension ContentView {
     // MARK: - Share Extension Handling
 
-    /// 多 Bot 模式下分享进来的内容交给主 Bot：文字 / 链接填进输入框，图片和文件作为附件，等你确认再发。
+    /// 多 Bot 模式下分享进来的内容：先选发给哪个 Bot，文字 / 链接填进输入框，图片和文件作为附件，等你确认再发。
     /// 返回 true 表示已处理，本地模式的分享流程不再运行。
     @MainActor
     func routeShareToBotIfNeeded() -> Bool {
@@ -40,8 +40,8 @@ extension ContentView {
             }
         }
         SharedContainerStore.cleanSharedFiles()
-        shareLog.info("[Share] multi-bot mode: routed \(texts.count) text + \(files.count) files to the primary bot")
-        CloudBotEntry.open(bot: nil, text: texts.joined(separator: "\n"), send: false, attachments: files)
+        shareLog.info("[Share] multi-bot mode: handing \(texts.count) text + \(files.count) files to the bot picker")
+        CloudBotEntry.share(text: texts.joined(separator: "\n"), attachments: files)
         return true
     }
 

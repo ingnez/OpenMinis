@@ -5,6 +5,7 @@
 //
 
 import Foundation
+import SwiftUI
 
 struct CloudBotPendingPrompt {
     var botId: String?
@@ -16,6 +17,23 @@ struct CloudBotPendingPrompt {
 @MainActor
 enum CloudBotEntry {
     /// bot 可以是 id 或名字（不区分大小写）；nil / 找不到 = 主 Bot
+    /// 分享：先让用户选发给哪个 Bot（只有一个 Bot 时直接给它）
+    static func share(text: String, attachments: [CloudPendingAttachment]) {
+        UserDefaults.standard.set("bots", forKey: CloudBotHome.modeKey)
+        let model = CloudBotHomeModel.shared
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty || !attachments.isEmpty else { return }
+        model.pendingPrompt = CloudBotPendingPrompt(botId: nil, text: body, send: false, attachments: attachments)
+        Task { @MainActor in
+            if model.bots.isEmpty { await model.refresh() }
+            if model.bots.count <= 1, let only = model.bots.first?.id {
+                model.deliverShare(to: only)
+            } else {
+                model.showSharePicker = true
+            }
+        }
+    }
+
     static func open(bot: String?, text: String?, send: Bool, attachments: [CloudPendingAttachment] = []) {
         UserDefaults.standard.set("bots", forKey: CloudBotHome.modeKey)
         let model = CloudBotHomeModel.shared
@@ -45,5 +63,44 @@ enum CloudBotEntry {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         open(bot: key, text: items.first(where: { $0.name == "text" })?.value,
              send: items.first(where: { $0.name == "send" })?.value == "1")
+    }
+}
+
+/// 分享内容发给哪个 Bot
+struct CloudShareBotPicker: View {
+    let prompt: CloudBotPendingPrompt?
+    let bots: [CloudBot]
+    let onPick: (String) -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let prompt {
+                    Section {
+                        if !prompt.text.isEmpty { Text(prompt.text).font(.footnote).lineLimit(4).foregroundStyle(.secondary) }
+                        if !prompt.attachments.isEmpty {
+                            Label("\(prompt.attachments.count) 个附件", systemImage: "paperclip").font(.footnote).foregroundStyle(.secondary)
+                        }
+                    } header: { Text("分享的内容") }
+                }
+                Section {
+                    ForEach(bots.filter { $0.isPrimary } + bots.filter { !$0.isPrimary }) { bot in
+                        Button { CloudHaptics.selection(); onPick(bot.id) } label: {
+                            HStack(spacing: 12) {
+                                CloudBotAvatarView(spec: CloudBotAvatarSpec.of(bot), size: 34)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(bot.name).font(.body.weight(.medium)).foregroundStyle(.primary)
+                                    if !bot.summary.isEmpty { Text(bot.summary).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                                }
+                                Spacer()
+                                if bot.isPrimary { Text("主 Bot").font(.caption2).foregroundStyle(.secondary) }
+                            }
+                        }
+                    }
+                } header: { Text("发给") } footer: { Text("内容会填进对话输入框，确认后再发送。") }
+            }
+            .navigationTitle("分享给 Bot")
+            .navigationBarTitleDisplayMode(.inline)
+        }
     }
 }

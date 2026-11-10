@@ -59,9 +59,17 @@ final class CloudBotHomeModel: ObservableObject {
     @Published var pendingOpen: String?
     /// 外部入口带来的文字 / 附件：对应 Bot 的对话打开时取走
     var pendingPrompt: CloudBotPendingPrompt?
+    /// 分享进来的内容还没选 Bot：首页弹出选择表
+    @Published var showSharePicker = false
+
+    func deliverShare(to botId: String) {
+        pendingPrompt?.botId = botId
+        showSharePicker = false
+        pendingOpen = botId
+    }
 
     func takePrompt(for botId: String) -> CloudBotPendingPrompt? {
-        guard let p = pendingPrompt, p.botId == nil || p.botId == botId else { return nil }
+        guard let p = pendingPrompt, p.botId == botId else { return nil }
         pendingPrompt = nil
         return p
     }
@@ -329,6 +337,13 @@ struct CloudBotHomeScreen: View {
                 await model.refresh()
                 if !id.isEmpty { path = ["group:" + id] }
             })
+        }
+        .sheet(isPresented: $model.showSharePicker, onDismiss: {
+            // 没选就关掉：丢弃这次分享，不要留到下一次打开对话
+            if model.pendingPrompt?.botId == nil { model.pendingPrompt = nil }
+        }) {
+            CloudShareBotPicker(prompt: model.pendingPrompt, bots: model.bots) { model.deliverShare(to: $0) }
+                .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showHub) {
             NavigationStack { CloudBotHubView(onDone: { showHub = false }) }
