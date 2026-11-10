@@ -15,9 +15,93 @@ AUTH_FILE = os.environ.get("XAUTHORITY", "/var/lib/openminis-cloud-agent/.Xautho
 MAIN_DISPLAY = os.environ.get("DISPLAY", ":99") or ":99"
 
 
+def websockify_mode(proc_root="/proc"):
+    """看正在运行的 websockify 进程实际用的是哪种目标：token（按 token 文件找屏幕）、fixed（固定 127.0.0.1:5901）、None（没在运行）。
+    安装脚本更新了 token 文件但服务没重启时，两者会不一致，所以以进程为准。"""
+    try:
+        pids = [p for p in os.listdir(proc_root) if p.isdigit()]
+    except OSError:
+        return None
+    for pid in pids:
+        try:
+            with open(os.path.join(proc_root, pid, "cmdline"), "rb") as f:
+                args = f.read().split(b"\0")
+        except OSError:
+            continue
+        if not any(b"websockify" in a for a in args[:3]):
+            continue
+        return "token" if b"--token-plugin" in args or any(a.startswith(b"--token-plugin=") for a in args) else "fixed"
+    return None
+
+
 def token_proxy_enabled():
-    """install-desktop.sh 新版把 websockify 改成 token 模式并写入 main 条目。"""
+    """websockify 是 token 模式时为 True；查不到进程时按安装脚本写入的 main 条目判断。"""
+    mode = websockify_mode()
+    if mode is not None:
+        return mode == "token"
     return os.path.isfile(os.path.join(TOKEN_DIR, "main"))
+
+
+def port_open(port, host="127.0.0.1", timeout=1.0, banner=None):
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as s:
+            if banner is None:
+                return True
+            s.settimeout(timeout)
+            return s.recv(12).startswith(banner)
+    except OSError:
+        return False
+
+
+def display_alive(display):
+    n = display.lstrip(":").split(".")[0]
+    return os.path.exists(f"/tmp/.X11-unix/X{n}")
+
+
+def diagnose(display=None, vnc_port=5901, token="main", web_port=18766, mode="auto"):
+    """桌面链路逐段检查：Xvfb → x11vnc（RFB 握手）→ websockify（端口与 token 目标）。返回给手机显示的中文诊断。"""
+    display = display or MAIN_DISPLAY
+    mode = websockify_mode() if mode == "auto" else mode
+    checks = {
+        "xvfb": display_alive(display),
+        "vnc": port_open(vnc_port, banner=b"RFB "),
+        "websockify": port_open(web_port),
+        "websockify_mode": mode,
+        "token_file": None,
+    }
+    if mode == "token":
+        path = os.path.join(TOKEN_DIR, token)
+        want = f"{token}: 127.0.0.1:{vnc_port}"
+        try:
+            with open(path) as f:
+                checks["token_file"] = f.read().strip() == want
+        except OSError:
+            checks["token_file"] = False
+        if not checks["token_file"] and os.path.isdir(TOKEN_DIR):
+            # token 条目缺失或指向旧端口（例如主屏条目被旧版安装脚本删掉）：直接改正，websockify 每次连接都会重新读取
+            try:
+                with open(path, "w") as f:
+                    f.write(want + "\n")
+                checks["token_file"] = True
+                checks["token_repaired"] = True
+            except OSError:
+                pass
+    code, msg = "ok", "桌面服务正常"
+    if not checks["xvfb"]:
+        code, msg = "display_down", f"桌面服务未运行：虚拟屏幕 {display} 没有启动"
+    elif not checks["vnc"]:
+        code, msg = "vnc_down", f"VNC 端口不通：x11vnc 没有在 {vnc_port} 端口响应"
+    elif not checks["websockify"]:
+        code, msg = "proxy_down", "桌面网页代理（websockify / noVNC）没有运行"
+    elif mode == "token" and checks["token_file"] is False:
+        code, msg = "token_mismatch", f"屏幕 {token} 的转发目标不对或缺失，需要重启桌面"
+    elif mode == "fixed" and vnc_port != 5901:
+        code, msg = "proxy_old", "服务器的桌面代理是旧版（只能看主屏），请安装 / 更新桌面环境"
+    checks["ok"] = code == "ok"
+    checks["diagnosis"] = code
+    checks["message"] = msg
+    return checks
 
 
 def safe_token(key):

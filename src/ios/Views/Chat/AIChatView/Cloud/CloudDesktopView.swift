@@ -8,43 +8,37 @@ import WebKit
 
 struct CloudDesktopView: View {
     @ObservedObject private var connection = CloudConnection.shared
-    @State private var isReachable = false
-    @State private var isChecking = true
+    @State private var state: CloudDesktopCheckResult?
     @State private var reloadToken = UUID()
+    @State private var rechecking = false
+    @State private var notice: String?
 
     var body: some View {
-        VStack(spacing: 0) {
-            if isChecking {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    Text("正在校验云电脑桌面连接 (本机端口 \(CloudConnection.shared.desktopPort))...")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
+        ZStack {
+            Color.black.ignoresSafeArea()
+            switch state {
+            case .none:
+                VStack(spacing: 10) {
+                    ProgressView().tint(.white)
+                    Text("正在检查云电脑桌面…").font(.footnote).foregroundStyle(.white.opacity(0.8))
                 }
-                .padding()
-                Spacer()
-            } else if !isReachable {
-                VStack(spacing: 16) {
-                    Image(systemName: "desktopcomputer.slash")
-                        .font(.system(size: 48))
-                        .foregroundColor(.orange)
-                    Text("云电脑桌面端口不可达或服务未启动")
-                        .font(.headline)
-                    Text("请确保已通过“安装 / 更新云电脑桌面环境”成功部署，且 SSH 已成功建立桌面端口隧道。")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-
-                    Button("重新检测桌面可达性") {
-                        checkReachability()
-                    }
-                    .buttonStyle(.borderedProminent)
+            case .some(.problem(let p)):
+                CloudDesktopProblemView(problem: p) { check() }
+            case .some(.ready(let token, _)):
+                // 与「电脑」页相同：token 模式时连主屏 main，旧版固定目标的服务器不带 token
+                if let url = CloudDesktopCheck.streamURL(token: token) {
+                    CloudDesktopWebView(url: url, reloadToken: reloadToken, onState: { vncStateChanged($0) })
+                        .edgesIgnoringSafeArea(.bottom)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                CloudDesktopWebView(url: CloudConnection.shared.desktopURL ?? URL(string: "http://127.0.0.1:18766/vnc.html")!, reloadToken: reloadToken)
-                    .edgesIgnoringSafeArea(.bottom)
+            }
+            if let notice {
+                VStack {
+                    Text(notice).font(.footnote).foregroundStyle(.black)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(Capsule().fill(Color.white))
+                    Spacer()
+                }
+                .padding(.top, 12)
             }
         }
         .navigationTitle("云电脑桌面接管")
@@ -53,24 +47,38 @@ struct CloudDesktopView: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     reloadToken = UUID()
-                    checkReachability()
+                    check()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
+                .accessibilityLabel("重新检测并刷新")
             }
         }
-        .onAppear {
-            checkReachability()
+        .onAppear { check() }
+    }
+
+    private func check() {
+        state = nil
+        Task {
+            let r = await CloudDesktopCheck.run(botId: nil)
+            state = r
+            reloadToken = UUID()
         }
     }
 
-    private func checkReachability() {
-        isChecking = true
+    private func vncStateChanged(_ s: String) {
+        if s == "connected" { notice = nil; return }
+        guard s.hasPrefix("error"), !rechecking else { return }
+        rechecking = true
         Task {
-            let reachable = await connection.checkDesktopReachable()
-            await MainActor.run {
-                self.isReachable = reachable
-                self.isChecking = false
+            let r = await CloudDesktopCheck.run(botId: nil)
+            rechecking = false
+            if case .problem = r {
+                state = r
+            } else {
+                notice = "画面断开，正在重连…"
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                notice = nil
             }
         }
     }
@@ -105,9 +113,14 @@ class DesktopNavigationCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate
 struct CloudDesktopWebView: UIViewRepresentable {
     let url: URL
     let reloadToken: UUID
+    var onState: (String) -> Void = { _ in }
 
-    func makeCoordinator() -> DesktopNavigationCoordinator {
-        DesktopNavigationCoordinator()
+    final class Coordinator: DesktopNavigationCoordinator {
+        let bridge = CloudNoVNCBridge()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -117,6 +130,8 @@ struct CloudDesktopWebView: UIViewRepresentable {
         config.defaultWebpagePreferences = prefs
         // 严格 cookies 隔离与无持久化
         config.websiteDataStore = WKWebsiteDataStore.nonPersistent()
+        context.coordinator.bridge.onState = onState
+        CloudNoVNCBridge.install(on: config, bridge: context.coordinator.bridge)
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
@@ -132,6 +147,7 @@ struct CloudDesktopWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
+        context.coordinator.bridge.onState = onState
         // 当 reloadToken 变化或 URL 变化时重新加载
         if uiView.url != url || context.coordinator.lastReloadToken != reloadToken {
             context.coordinator.lastReloadToken = reloadToken

@@ -151,6 +151,11 @@ struct CloudBotEditSheet: View {
                 } footer: {
                     Text("用于在 Bot 对话里朗读回复；保存在本机。")
                 }
+                Section {
+                    Toggle("快速模式", isOn: $bot.fastMode)
+                } footer: {
+                    Text("开启后这个 Bot 用较低的思考强度、更短的回答，适合查询、翻译这类要快的事。")
+                }
                 Section("简介") {
                     TextField("一句话介绍（可选）", text: $bot.summary)
                 }
@@ -723,14 +728,16 @@ struct CloudComputerView: View {
     @State private var token: String?
     @State private var ownDisplay = false
 
-    enum Phase: Equatable { case connecting, live, failed(String) }
+    enum Phase: Equatable { case connecting, live, failed(String), problem(CloudDesktopProblem) }
+    @State private var rechecking = false
     private static let sentinel = "\u{200B}"
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            if case .failed = phase {} else if let url = streamURL {
-                CloudComputerWebView(url: url, reloadToken: reloadToken, onLoaded: { phase = .live })
+            if case .failed = phase {} else if case .problem = phase {} else if let url = streamURL {
+                CloudComputerWebView(url: url, reloadToken: reloadToken, onLoaded: { if phase == .connecting { phase = .live } },
+                                     onState: { vncStateChanged($0) })
                     .opacity(phase == .live ? 1 : 0.01)
                     .ignoresSafeArea(edges: .bottom)
             }
@@ -747,6 +754,9 @@ struct CloudComputerView: View {
                     Button("重试") { Task { await start() } }.buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.black)
                 }
                 .padding(32)
+            case .problem(let p):
+                CloudDesktopProblemView(problem: p) { Task { await start() } }
+                    .padding(.vertical, 60)
             case .live:
                 EmptyView()
             }
@@ -778,10 +788,18 @@ struct CloudComputerView: View {
 
     private var bot: CloudBot? { botId.flatMap { home.bot($0) } }
 
-    private var streamURL: URL? {
-        URL(string: "http://127.0.0.1:\(connection.desktopPort)/vnc.html?autoconnect=1&resize=scale&reconnect=1&show_dot=1"
-            + (viewOnly ? "&view_only=1" : "")
-            + (token.map { "&path=websockify%3Ftoken%3D\($0)" } ?? ""))
+    private var streamURL: URL? { CloudDesktopCheck.streamURL(token: token, viewOnly: viewOnly) }
+
+    /// noVNC 报告连接失败：先查服务器链路，真坏了就换成诊断卡片；只是网络抖动则交给 noVNC 自动重连
+    private func vncStateChanged(_ state: String) {
+        if state == "connected" { phase = .live; return }
+        guard state.hasPrefix("error"), !rechecking else { return }
+        rechecking = true
+        Task {
+            let r = await CloudDesktopCheck.run(botId: botId, autoRepair: true)
+            rechecking = false
+            if case .problem(let p) = r { phase = .problem(p) } else { show("画面断开，正在重连…") }
+        }
     }
 
     private var topBar: some View {
@@ -843,23 +861,14 @@ struct CloudComputerView: View {
 
     private func start() async {
         phase = .connecting
-        do {
-            try await connection.ensureConnected()
-        } catch {
-            phase = .failed("连接云电脑失败：\(error.localizedDescription)")
+        // 先体检桌面链路（坏了自动重启一次），拿到这个 Bot 屏幕的 noVNC token
+        switch await CloudDesktopCheck.run(botId: botId) {
+        case .problem(let p):
+            phase = .problem(p)
             return
-        }
-        // 新版服务器：先打开这个 Bot 的屏幕（独立模式按需启动），拿到 noVNC token
-        var displayBody: [String: Any] = [:]
-        if let botId { displayBody["bot_id"] = botId }
-        if let resp = try? await connection.request(method: "POST", path: "/v1/desktop/display", body: displayBody) {
-            token = (resp["token_proxy"] as? Bool ?? false) ? resp["token"] as? String : nil
-            ownDisplay = resp["own_display"] as? Bool ?? false
-        }
-        let reachable = await connection.checkDesktopReachable()
-        if !reachable {
-            phase = .failed("云电脑桌面没有运行。请在 设置 → 云电脑设置 中点「安装 / 更新云电脑桌面环境」，或在 … 菜单里重启桌面。")
-            return
+        case .ready(let t, let own):
+            token = t
+            ownDisplay = own
         }
         reloadToken = UUID()
         // 网页加载完成后 onLoaded 切换到实时画面；超时兜底
@@ -972,9 +981,11 @@ struct CloudComputerWebView: UIViewRepresentable {
     let url: URL
     let reloadToken: UUID
     let onLoaded: () -> Void
+    var onState: (String) -> Void = { _ in }
 
     final class Coordinator: DesktopNavigationCoordinator {
         var onLoaded: (() -> Void)?
+        let bridge = CloudNoVNCBridge()
         @objc func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { self.onLoaded?() }
         }
@@ -986,6 +997,8 @@ struct CloudComputerWebView: UIViewRepresentable {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         config.websiteDataStore = WKWebsiteDataStore.nonPersistent()
+        context.coordinator.bridge.onState = onState
+        CloudNoVNCBridge.install(on: config, bridge: context.coordinator.bridge)
         let web = WKWebView(frame: .zero, configuration: config)
         web.navigationDelegate = context.coordinator
         web.uiDelegate = context.coordinator
@@ -1004,6 +1017,7 @@ struct CloudComputerWebView: UIViewRepresentable {
 
     func updateUIView(_ web: WKWebView, context: Context) {
         context.coordinator.onLoaded = onLoaded
+        context.coordinator.bridge.onState = onState
         if context.coordinator.lastReloadToken != reloadToken || web.url?.port != url.port || web.url?.query != url.query {
             context.coordinator.lastReloadToken = reloadToken
             context.coordinator.allowedPort = url.port ?? 18766

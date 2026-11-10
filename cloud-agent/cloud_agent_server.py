@@ -3675,6 +3675,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"url": url})
             return
 
+        if path == "/v1/desktop/health":
+            # 手机打开桌面页前先查链路；独立屏幕挂了会在这里自动重启
+            bid = (query_params.get("bot_id") or [None])[0]
+            display, port, token, own = cloud_displays.MAIN_DISPLAY, 5901, "main", False
+            if bid and get_persona(bid) and iso.bot_settings(resource_settings(), bid)["browser_profile"] == "per_bot":
+                info = DISPLAYS.ensure(bid)
+                if info:
+                    display, port, token, own = info["display"], info["vnc_port"], info["token"], True
+            h = cloud_displays.diagnose(display, port, token)
+            h.update({"display": display, "token": token, "own_display": own,
+                      "token_proxy": h["websockify_mode"] == "token" if h["websockify_mode"] else cloud_displays.token_proxy_enabled(),
+                      "tools": cloud_desktop.is_desktop_available()})
+            self._send(200, h)
+            return
+
         if path == "/v1/desktop/status":
             conn = get_db_connection()
             try:
