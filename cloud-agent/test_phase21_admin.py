@@ -122,7 +122,8 @@ class AdminToolTests(CloudServerTestCase):
         self.request("PUT", "/v1/bots/helper/prefs", {"hidden": True, "seen_at": 123.0})
         p = next(b for b in self.request("GET", "/v1/bots")[1]["bots"] if b["bot_id"] == "helper")["prefs"]
         self.assertEqual((p["pinned"], p["hidden"], p["unread"], p["seen_at"]), (True, True, True, 123.0))
-        self.assertEqual(self.request("PUT", "/v1/bots/boss/prefs", {"hidden": True})[0], 400, "主 Bot 不能隐藏")
+        self.assertEqual(self.request("PUT", "/v1/bots/boss/prefs", {"hidden": True})[0], 200, "主 Bot 也能隐藏")
+        self.request("PUT", "/v1/bots/boss/prefs", {"hidden": False})
         self.assertEqual(self.request("PUT", "/v1/bots/nobody/prefs", {"pinned": True})[0], 404)
         self.assertEqual(self.request("PUT", "/v1/bots/helper/prefs", {"pinned": "yes"})[0], 400)
 
@@ -136,6 +137,23 @@ class AdminToolTests(CloudServerTestCase):
         self.assertEqual(st, 200)
         self.assertIn("helper", self._bot_ids())
         self.assertEqual(self.request("POST", "/v1/bots/helper/restore", {})[0], 404)
+
+    def test_07_sections(self):
+        st, sec = self.request("POST", "/v1/bot_sections", {"name": "工作", "bot_id": "helper"})
+        self.assertEqual(st, 201)
+        self.assertEqual(sec["bots"], ["helper"])
+        sid = sec["section_id"]
+        self.assertEqual(self.request("PUT", f"/v1/bot_sections/{sid}", {"name": "项目", "collapsed": True})[1]["name"], "项目")
+        secs = self.request("GET", "/v1/bot_sections")[1]["sections"]
+        self.assertTrue(any(x["section_id"] == sid and x["collapsed"] for x in secs))
+        p = next(b for b in self.request("GET", "/v1/bots")[1]["bots"] if b["bot_id"] == "helper")["prefs"]
+        self.assertEqual(p["section_id"], sid)
+        self.assertEqual(self.request("PUT", "/v1/bots/helper/prefs", {"section_id": "sec_0000000000"})[0], 404)
+        self.assertEqual(self.request("POST", "/v1/bot_sections", {"name": ""})[0], 400)
+        self.assertEqual(self.request("DELETE", f"/v1/bot_sections/{sid}")[0], 200)
+        p = next(b for b in self.request("GET", "/v1/bots")[1]["bots"] if b["bot_id"] == "helper")["prefs"]
+        self.assertIsNone(p["section_id"], "删分组后 Bot 回到未分组")
+        self.assertIn("helper", self._bot_ids())
 
 
 if __name__ == "__main__":

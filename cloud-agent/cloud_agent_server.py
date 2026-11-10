@@ -4769,6 +4769,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Plugin not found"})
             return
 
+        if path == "/v1/bot_sections":
+            conn = get_db_connection()
+            try:
+                self._send(200, {"sections": cloud_admin.sections(conn)})
+            finally:
+                conn.close()
+            return
         if path == "/v1/bots/trash":
             conn = get_db_connection()
             try:
@@ -5587,6 +5594,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Plugin not found"})
             return
 
+        m_sec = re.match(r"^/v1/bot_sections/(sec_[a-f0-9]{10})$", path)
+        if m_sec:
+            conn = get_db_connection()
+            try:
+                sec = cloud_admin.update_section(conn, m_sec.group(1), req_json)
+            except cloud_admin.AdminError as e:
+                self._send(404 if "没有" in str(e) else 400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            bots_changed()
+            self._send(200, sec)
+            return
         m_prefs = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/prefs$", path)
         if m_prefs:
             conn = get_db_connection()
@@ -5812,6 +5832,19 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 conn.close()
             self._send(200 if ok else 404, {"deleted": True} if ok else {"error": "Group not found"})
+            return
+        m_sec_del = re.match(r"^/v1/bot_sections/(sec_[a-f0-9]{10})$", path)
+        if m_sec_del:
+            conn = get_db_connection()
+            try:
+                cloud_admin.delete_section(conn, m_sec_del.group(1))
+            except cloud_admin.AdminError as e:
+                self._send(404, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            bots_changed()
+            self._send(200, {"deleted": True})
             return
         if path.startswith("/v1/bots/") and (query_params.get("soft") or ["0"])[0] == "1":
             # 首页长按「删除」：进回收站（保留记忆和会话），可在操作记录里撤销或 POST /v1/bots/<id>/restore
@@ -6249,6 +6282,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"results": results})
             return
 
+        if path == "/v1/bot_sections":
+            conn = get_db_connection()
+            try:
+                sec = cloud_admin.create_section(conn, req_json.get("name"), req_json.get("bot_id"))
+            except cloud_admin.AdminError as e:
+                self._send(400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            bots_changed()
+            self._send(201, sec)
+            return
         m_restore = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/restore$", path)
         if m_restore:
             conn = get_db_connection()

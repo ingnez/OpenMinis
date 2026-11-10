@@ -425,3 +425,4 @@
 - `PUT /v1/bots/<id>/prefs` `{pinned?, hidden?, unread?, seen_at?}`：置顶、隐藏（主 Bot 不能隐藏）、手动标为未读、已读到的时间；`GET /v1/bots` 每个 Bot 带 `prefs`。
 - 替换主 Bot：`PUT /v1/bots/<id>` `{is_primary: true}`，一次事务里转移，记一条可撤销的 `set_primary_bot` 审计。管理工具的角色检查每次现查当前主 Bot 的 id，旧主 Bot 立刻失去权限。
 - `DELETE /v1/bots/<id>?soft=1` 放进回收站（主 Bot 不能删）；`GET /v1/bots/trash` 看回收站；`POST /v1/bots/<id>/restore` 恢复。
+- 首页分组：`GET /v1/bot_sections`；`POST /v1/bot_sections` `{name, bot_id?}` 新建（可顺便把一个 Bot 放进去）；`PUT /v1/bot_sections/<id>` `{name?, collapsed?}`；`DELETE /v1/bot_sections/<id>`（里面的 Bot 回到未分组）。Bot 放进 / 移出分组：`PUT /v1/bots/<id>/prefs` `{section_id: "<id>" | null}`。主 Bot 也可以隐藏。

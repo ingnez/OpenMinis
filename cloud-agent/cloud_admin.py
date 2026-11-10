@@ -26,6 +26,12 @@ def ensure_schema(conn):
     # 首页长按菜单：置顶 / 隐藏 / 手动标为未读，以及「已读到」的时间（换手机也一致）
     conn.execute("CREATE TABLE IF NOT EXISTS bot_prefs (bot_id TEXT PRIMARY KEY, pinned INTEGER NOT NULL DEFAULT 0, "
                  "hidden INTEGER NOT NULL DEFAULT 0, unread INTEGER NOT NULL DEFAULT 0, seen_at REAL NOT NULL DEFAULT 0, pinned_at REAL)")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(bot_prefs)")}
+    if "section_id" not in cols:
+        conn.execute("ALTER TABLE bot_prefs ADD COLUMN section_id TEXT")
+    # 首页分组（可折叠的小节）
+    conn.execute("CREATE TABLE IF NOT EXISTS bot_sections (section_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+                 "collapsed INTEGER NOT NULL DEFAULT 0, position REAL NOT NULL, created_at REAL NOT NULL)")
     conn.execute("CREATE TABLE IF NOT EXISTS bot_trash (bot_id TEXT PRIMARY KEY, bot TEXT NOT NULL, routines TEXT, "
                  "deleted_by TEXT, deleted_at REAL NOT NULL)")
     conn.commit()
@@ -164,14 +170,15 @@ def undo(conn, info, credential_exists=None):
     return False, "这条操作不能撤销"
 
 
-PREF_KEYS = ("pinned", "hidden", "unread", "seen_at")
+PREF_KEYS = ("pinned", "hidden", "unread", "seen_at", "section_id")
 
 
 def prefs(conn, bot_id):
-    r = conn.execute("SELECT pinned, hidden, unread, seen_at, pinned_at FROM bot_prefs WHERE bot_id = ?", (bot_id,)).fetchone()
+    r = conn.execute("SELECT pinned, hidden, unread, seen_at, pinned_at, section_id FROM bot_prefs WHERE bot_id = ?", (bot_id,)).fetchone()
     if not r:
-        return {"pinned": False, "hidden": False, "unread": False, "seen_at": 0.0, "pinned_at": None}
-    return {"pinned": bool(r[0]), "hidden": bool(r[1]), "unread": bool(r[2]), "seen_at": r[3] or 0.0, "pinned_at": r[4]}
+        return {"pinned": False, "hidden": False, "unread": False, "seen_at": 0.0, "pinned_at": None, "section_id": None}
+    return {"pinned": bool(r[0]), "hidden": bool(r[1]), "unread": bool(r[2]), "seen_at": r[3] or 0.0, "pinned_at": r[4],
+            "section_id": r[5]}
 
 
 def set_prefs(conn, bot_id, body):
@@ -191,9 +198,57 @@ def set_prefs(conn, bot_id, body):
         if not isinstance(body["seen_at"], (int, float)):
             raise AdminError("seen_at 必须是时间戳")
         cur["seen_at"] = max(cur["seen_at"], float(body["seen_at"]))
-    if cur["hidden"] and (cloud_bots.get(conn, bot_id) or {}).get("is_primary"):
-        raise AdminError("主 Bot 不能隐藏")
-    conn.execute("INSERT OR REPLACE INTO bot_prefs (bot_id, pinned, hidden, unread, seen_at, pinned_at) VALUES (?, ?, ?, ?, ?, ?)",
-                 (bot_id, int(cur["pinned"]), int(cur["hidden"]), int(cur["unread"]), cur["seen_at"], cur["pinned_at"]))
+    if "section_id" in body:
+        sid = body["section_id"]
+        if sid is not None and not conn.execute("SELECT 1 FROM bot_sections WHERE section_id = ?", (sid,)).fetchone():
+            raise AdminError("没有这个分组")
+        cur["section_id"] = sid
+    conn.execute("INSERT OR REPLACE INTO bot_prefs (bot_id, pinned, hidden, unread, seen_at, pinned_at, section_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (bot_id, int(cur["pinned"]), int(cur["hidden"]), int(cur["unread"]), cur["seen_at"], cur["pinned_at"], cur["section_id"]))
     conn.commit()
     return prefs(conn, bot_id)
+
+
+def sections(conn):
+    rows = conn.execute("SELECT section_id, name, collapsed, position FROM bot_sections ORDER BY position, created_at").fetchall()
+    return [{"section_id": r[0], "name": r[1], "collapsed": bool(r[2]), "position": r[3],
+             "bots": [b[0] for b in conn.execute("SELECT bot_id FROM bot_prefs WHERE section_id = ?", (r[0],))]} for r in rows]
+
+
+def _section_name(v):
+    if not isinstance(v, str) or not v.strip() or len(v.strip()) > 40:
+        raise AdminError("分组名 1–40 个字")
+    return v.strip()
+
+
+def create_section(conn, name, bot_id=None):
+    sid = "sec_" + uuid.uuid4().hex[:10]
+    pos = (conn.execute("SELECT MAX(position) FROM bot_sections").fetchone()[0] or 0) + 1
+    conn.execute("INSERT INTO bot_sections (section_id, name, collapsed, position, created_at) VALUES (?, ?, 0, ?, ?)",
+                 (sid, _section_name(name), pos, time.time()))
+    conn.commit()
+    if bot_id:
+        set_prefs(conn, bot_id, {"section_id": sid})
+    return next(x for x in sections(conn) if x["section_id"] == sid)
+
+
+def update_section(conn, sid, body):
+    if not conn.execute("SELECT 1 FROM bot_sections WHERE section_id = ?", (sid,)).fetchone():
+        raise AdminError("没有这个分组")
+    if "name" in body:
+        conn.execute("UPDATE bot_sections SET name = ? WHERE section_id = ?", (_section_name(body["name"]), sid))
+    if "collapsed" in body:
+        if not isinstance(body["collapsed"], bool):
+            raise AdminError("collapsed 必须是 true / false")
+        conn.execute("UPDATE bot_sections SET collapsed = ? WHERE section_id = ?", (int(body["collapsed"]), sid))
+    conn.commit()
+    return next(x for x in sections(conn) if x["section_id"] == sid)
+
+
+def delete_section(conn, sid):
+    """删除分组：里面的 Bot 回到未分组，不删 Bot。"""
+    if not conn.execute("SELECT 1 FROM bot_sections WHERE section_id = ?", (sid,)).fetchone():
+        raise AdminError("没有这个分组")
+    conn.execute("UPDATE bot_prefs SET section_id = NULL WHERE section_id = ?", (sid,))
+    conn.execute("DELETE FROM bot_sections WHERE section_id = ?", (sid,))
+    conn.commit()
