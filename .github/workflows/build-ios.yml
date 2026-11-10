@@ -164,6 +164,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Images/ImageStackLayout.swift scripts/ImageStackLayoutTests.swift -o /tmp/image-stack-tests
           /tmp/image-stack-tests
+      - name: 本地通话分隔线测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/LocalCallDivider.swift scripts/LocalCallDividerTests.swift -o /tmp/local-call-divider-tests
+          /tmp/local-call-divider-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -311,6 +316,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/LocalCallDivider.swift scripts/LocalCallDividerTests.swift -o /tmp/local-call-divider-tests
+          /tmp/local-call-divider-tests | tee local-call-divider-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Images/ImageStackLayout.swift scripts/ImageStackLayoutTests.swift -o /tmp/image-stack-tests
           /tmp/image-stack-tests | tee image-stack-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudVaultModel.swift scripts/CloudVaultModelTests.swift -o /tmp/cloud-vault-model-tests

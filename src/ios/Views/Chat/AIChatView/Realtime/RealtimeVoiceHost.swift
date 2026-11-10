@@ -66,7 +66,12 @@ final class RealtimeLocalChatHost: RealtimeVoiceHost {
         }
     }
 
-    func prepareForCall() { chat?.stopSpeechForThisSession() }
+    private var callStartedAt: Date?
+
+    func prepareForCall() {
+        callStartedAt = Date()
+        chat?.stopSpeechForThisSession()
+    }
 
     func callTool(name: String, arguments: [String: Any]) async -> (output: String, watchTaskId: String?) {
         await CloudVoiceBridge.call(name: name, arguments: arguments)
@@ -80,6 +85,7 @@ final class RealtimeLocalChatHost: RealtimeVoiceHost {
         guard let chat, !chat.isRetiredByReset else { return }
         // 按服务端会话顺序写入，而不是按异步转写返回顺序。
         await chat.ensureSession()
+        var firstSortOrder: Int?
         for line in transcript {
             guard !chat.isRetiredByReset else { return }
             var message = AgentMessage(role: line.role == "user" ? .user : .assistant,
@@ -87,7 +93,15 @@ final class RealtimeLocalChatHost: RealtimeVoiceHost {
             message.dbMessageId = await chat.persistAgentMessage(message)
             guard !chat.isRetiredByReset else { return }
             chat.agentHistory.append(message)
+            if firstSortOrder == nil, message.dbMessageId != nil, let sid = chat.sessionId {
+                firstSortOrder = await ChatStore.shared.sessionWriteStats(sessionId: sid).maxSortOrder
+            }
         }
+        // 通话分隔线：插在这次通话第一条文字前面
+        if let order = firstSortOrder, let sid = chat.sessionId, let start = callStartedAt {
+            LocalCallDivider.add(sid, LocalCallDivider(sortOrder: order, seconds: Int(Date().timeIntervalSince(start))))
+        }
+        callStartedAt = nil
         guard !chat.isRetiredByReset else { return }
         await chat.reloadMessagesFromDB(reason: "实时语音通话结束")
     }

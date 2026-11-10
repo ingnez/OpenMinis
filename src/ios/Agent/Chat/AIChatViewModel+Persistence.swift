@@ -854,6 +854,15 @@ extension AIChatViewModel {
         // Assign snapshots and messages together so the UI renders with
         // complete data — prevents tables/images from rendering without snapshots.
         toolSnapshots = loadedSnapshots
+        // 本地实时通话的分隔线（只在界面上，不进模型上下文）
+        if let sid = sessionId {
+            for (idx, d) in LocalCallDivider.insertions(sortOrders: loadedUIMessages.map(\.sourceSortOrder),
+                                                         dividers: LocalCallDivider.load(sid)) {
+                let row = ChatMessage(role: .systemInfo, content: LocalCallDivider.text(seconds: d.seconds))
+                row.systemIcon = "phone.fill"
+                loadedUIMessages.insert(row, at: idx)
+            }
+        }
         messages = loadedUIMessages
         markLostQueuedDelegations()
         // [T-user-ask-notsent-retry] Offer Retry on the last not-sent run.

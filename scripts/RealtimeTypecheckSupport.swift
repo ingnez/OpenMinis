@@ -51,6 +51,12 @@ struct AgentMessage {
  func ensureSession() async {}
  func persistAgentMessage(_ m: AgentMessage) async -> String? { nil }
  func reloadMessagesFromDB(reason: String) async {}
+ var sessionId: String?
+}
+/// 替身：真实实现在 Agent/Chat/ChatStore.swift（actor）
+actor ChatStore {
+ static let shared = ChatStore()
+ func sessionWriteStats(sessionId: String) -> (count: Int, maxSortOrder: Int) { (0, -1) }
 }
 enum SystemPromptBuilder { static func identitySection() -> String { "" } }
 extension Notification.Name { static let newChatRequested = Notification.Name("newChatRequested") }
