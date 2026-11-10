@@ -43,9 +43,11 @@
 - [ ] 真实中转站基准（需要真实中转站与 Key，在 VPS 上跑 `cloud-agent/bench_latency.py --client both`；目前只有标注为 mock 的数字）
 - [ ] 真机核对：照片头像上传、OAuth 回调（ASWebAuthenticationSession 无需额外权限，侧载 IPA 可用；授权服务器不支持动态注册时只能用密钥）
 - [ ] 小组件在侧载重签后读不到 App Group 时只显示「主 Bot」入口（已做降级，需真机确认）
-- [ ] 云端 Bot 的实时语音（双向流式）通话：当前是「听完 → 发送 → 朗读」轮流模式。本地模式已有 OpenAI Realtime / Gemini Live 双向通话，侧载未签名 IPA 可用（只需麦克风和 WebSocket）；接到云端 Bot 需要改动不在快速检查范围内的 AIChatViewModel，暂缓，避免完整构建出错
+- [x] 云端 Bot 的实时双向通话：复用本机 OpenAI Realtime / Gemini Live，实时模型扮演这个 Bot；要动手的事交给云端的这个 Bot 在同一对话里执行，完成后口头转述；挂断后文字记录存进对话（需要服务器 2.5.0）。没配实时服务或连不上时可退回轮流模式
 - [x] Face ID 锁：已上锁 Bot 在群聊里的发言、群聊预览和首页搜索也不再显示内容（轻点用 Face ID 解锁）
-- [ ] 真机核对：Live Activity、Face ID 锁、Siri 短语识别
+- [ ] 真机核对：Live Activity、Face ID 锁、Siri 短语识别、云端 Bot 实时通话（插话、交给 Bot 做事后的转述）
+
+- [x] 服务器升级路径：2.0.0 / 2.4.0 旧数据库迁移有测试；只更新服务器 Agent 时保留桌面服务配置；完整构建里检查重复安装不丢 Token、主密钥和数据
 
 ## 第二批（后续）
 

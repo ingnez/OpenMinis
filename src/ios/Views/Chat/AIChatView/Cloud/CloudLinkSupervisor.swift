@@ -362,10 +362,13 @@ struct CloudLinkBanner: View {
     @ObservedObject private var conn = CloudConnection.shared
     var onOpenSettings: () -> Void = {}
     @State private var updating = false
+    @State private var updateError: String?
 
     var body: some View {
         Group {
-            if case .offline(let cause) = link.state {
+            if let updateError, !updating {
+                row("更新没有完成：\(updateError)", button: "重试", tint: .red) { update() }
+            } else if case .offline(let cause) = link.state {
                 row(cause.message, button: cause.fix.title, tint: .red) { link.performFix(cause.fix, openSettings: onOpenSettings) }
             } else if link.state == .online && link.serverOutdated {
                 row(updating ? "正在更新服务器…" : "服务器上的 Agent 版本较旧，部分功能不可用", button: updating ? nil : "更新服务器", tint: .orange) { update() }
@@ -391,12 +394,16 @@ struct CloudLinkBanner: View {
 
     private func update() {
         updating = true
+        updateError = nil
         Task {
             defer { updating = false }
             do {
                 try await conn.installAgent(withDesktop: true)
                 link.userRetry()
-            } catch {}
+            } catch {
+                // 之前失败时什么都不显示，横幅停在「版本较旧」看不出发生了什么
+                updateError = String(error.localizedDescription.prefix(160))
+            }
         }
     }
 }
