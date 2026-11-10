@@ -34,6 +34,8 @@ final class CloudDesktopController: ObservableObject {
     @Published private(set) var pointerUnsupported = false
     /// 本次连接收到的画面字节数（页面里统计 WebSocket 消息，真实值）
     @Published private(set) var bytesReceived = 0
+    /// 宏录制中（nil = 没在录）
+    @Published var macro: CloudMacro?
     /// 蜂窝 / 低数据模式（auto 时据此压画质）
     @Published private(set) var expensiveNetwork = false
     var lowBandwidth: Bool {
@@ -134,6 +136,7 @@ final class CloudDesktopController: ObservableObject {
     func click(_ button: Int, double: Bool = false) {
         guard controlling else { return }
         haptic.impactOccurred()
+        macro?.add(.click(x: Int(trackpad.cursor.x), y: Int(trackpad.cursor.y), right: button != CloudPointer.left, double: double))
         for _ in 0..<(double ? 2 : 1) {
             buttons |= button; sendPointer()
             buttons &= ~button; sendPointer()
@@ -152,6 +155,7 @@ final class CloudDesktopController: ObservableObject {
         guard controlling else { return }
         let (v, h) = scroll.feed(delta)
         guard v != 0 || h != 0 else { return }
+        if v != 0 { macro?.add(.scroll(down: v > 0)) }
         js("window.om&&om.wheel(\(Int(trackpad.cursor.x)),\(Int(trackpad.cursor.y)),\(v),\(h),\(buttons))")
     }
 
@@ -182,11 +186,13 @@ final class CloudDesktopController: ObservableObject {
     func key(_ k: CloudKey) {
         if k.isModifier { modifiers.tap(k); return }
         haptic.impactOccurred(intensity: 0.5)
+        macro?.add(.key(k.label))
         sendKeys(modifiers.wrap(k.keysym))
     }
 
     func combo(_ c: CloudCombo) {
         haptic.impactOccurred(intensity: 0.5)
+        macro?.add(.combo(c.label))
         sendKeys(c.events)
     }
 
@@ -197,6 +203,7 @@ final class CloudDesktopController: ObservableObject {
             case .backspace(let n):
                 sendKeys(Array(repeating: [(CloudKey.backspace.keysym, true), (CloudKey.backspace.keysym, false)], count: min(n, 50)).flatMap { $0 })
             case .text(let t):
+                macro?.add(.typed(count: t.count))
                 if CloudIMECommit.viaServer(t) { viaServer(t); continue }
                 sendKeys(t.compactMap(CloudKey.keysym(for:)).flatMap { modifiers.wrap($0) })
             }

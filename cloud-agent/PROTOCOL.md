@@ -624,6 +624,11 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 每项可选 `allowed_bots: [bot_id]`（`[]` 或 `null` = 所有 Bot）。不在名单的 Bot 调用会被拒并记一条失败使用记录；`vault_list` 的 `allowed` 按调用的 Bot 计算。
 - `GET /v1/vault`（只给 App）每项多出提示：卡片 `expiry_hint`（MM/YY）、联系信息 `address_hint`（默认地址一行）、登录 `pw_weak` / `pw_reused`（布尔）。服务端解密后只算提示，密码、卡号、CVV 原值不外传；模型看到的 `for_model` 不含这些提示。`?q=` 搜索也覆盖两个提示字段。
 
+## 云电脑宏（2.40.0）
+
+- `POST /v1/skills/sync` 多一个可选 `source`：`phone`（默认）或 `macro`。App 的宏录制用 `{"source":"macro","prune":false,"skills":[{name:"宏：…",content,description}]}`；
+  手机技能同步（source=phone、prune=true）不会删掉宏。宏内容只有点击坐标、按键、组合键、「输入了 N 个字」，不含输入原文。
+
 ## 撤回发送（2.39.0）
 
 - `POST /v1/tasks/<id>/retract`：任务创建 15 秒内（`RETRACT_WINDOW_S`）可撤回：停掉任务，删掉这条用户消息及其后写入该对话的消息，

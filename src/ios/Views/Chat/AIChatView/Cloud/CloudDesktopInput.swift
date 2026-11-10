@@ -385,3 +385,42 @@ enum CloudPointAndTell {
             + "\n请先截图确认这个位置是什么，再按要求操作。"
     }
 }
+
+/// 宏录制：接管时（触控板模式）记下点击位置、按键、组合键、输入了几个字，存成 Bot 可照做的技能。
+/// 输入的文字默认不记原文（可能是密码），只记「这里输入了 N 个字」，回放时 Bot 按任务自己填。
+struct CloudMacro: Equatable {
+    enum Step: Equatable {
+        case click(x: Int, y: Int, right: Bool, double: Bool)
+        case typed(count: Int)
+        case key(String)
+        case combo(String)
+        case scroll(down: Bool)
+    }
+
+    private(set) var steps: [Step] = []
+    static let maxSteps = 200
+
+    mutating func add(_ s: Step) {
+        guard steps.count < Self.maxSteps else { return }
+        // 连续打字合并成一步；连续同向滚动合并
+        if case .typed(let n) = s, case .typed(let m)? = steps.last { steps[steps.count - 1] = .typed(count: m + n); return }
+        if case .scroll(let d) = s, case .scroll(let e)? = steps.last, d == e { return }
+        steps.append(s)
+    }
+
+    static func line(_ s: Step) -> String {
+        switch s {
+        case let .click(x, y, right, double): return "\(double ? "双击" : (right ? "右键点击" : "点击")) 屏幕坐标 (\(x), \(y))"
+        case .typed(let n): return "在当前输入框输入文字（录制时输入了 \(n) 个字，原文未记录，按任务需要填写）"
+        case .key(let k): return "按 \(k) 键"
+        case .combo(let c): return "按组合键「\(c)」"
+        case .scroll(let down): return down ? "向下滚动" : "向上滚动"
+        }
+    }
+
+    func skill(name: String, screen: CGSize) -> String {
+        var out = "# \(name)\n\n录制的云电脑操作（屏幕 \(Int(screen.width))×\(Int(screen.height))）。照做时每一步前先截图确认画面和录制时一致，不一致就停下说明。\n\n"
+        for (i, s) in steps.enumerated() { out += "\(i + 1). \(Self.line(s))\n" }
+        return out
+    }
+}

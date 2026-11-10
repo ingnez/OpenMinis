@@ -635,7 +635,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.39.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.40.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -8512,7 +8512,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/skills/sync":
             conn = get_db_connection()
             try:
-                counts = cloud_skills.sync(conn, req_json.get("skills"), prune=bool(req_json.get("prune")))
+                # source：phone（手机技能同步，默认）/ macro（云电脑宏录制，手机技能同步的 prune 不会删到它）
+                source = req_json.get("source") or "phone"
+                if source not in ("phone", "macro"):
+                    raise ValueError("source 只能是 phone 或 macro")
+                counts = cloud_skills.sync(conn, req_json.get("skills"), prune=bool(req_json.get("prune")), source=source)
             except ValueError as e:
                 self._send(400, {"error": str(e)})
                 return

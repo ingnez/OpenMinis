@@ -108,6 +108,14 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         let pt = CloudPointAndTell.message(point: CGPoint(x: 1500.4, y: 30.6), screen: CGSize(width: 1280, height: 800), instruction: " 点这个按钮 ")
         check(pt.contains("x=1279, y=31") && pt.contains("1280×800") && pt.contains("要求：点这个按钮") && pt.contains("先截图"), "指给 Bot 看：\(pt)")
         check(CloudPointAndTell.message(point: .zero, screen: CGSize(width: 1280, height: 800), instruction: "").contains("看看这里是什么"), "没说要求")
+        var mac = CloudMacro()
+        mac.add(.click(x: 10, y: 20, right: false, double: false))
+        mac.add(.typed(count: 3)); mac.add(.typed(count: 4))
+        mac.add(.scroll(down: true)); mac.add(.scroll(down: true))
+        mac.add(.combo("复制"))
+        check(mac.steps.count == 4 && mac.steps[1] == .typed(count: 7), "宏合并打字与滚动")
+        let sk = mac.skill(name: "宏：示例", screen: CGSize(width: 1280, height: 800))
+        check(sk.contains("1. 点击 屏幕坐标 (10, 20)") && sk.contains("输入了 7 个字，原文未记录") && sk.contains("4. 按组合键「复制」") && sk.contains("先截图"), "宏技能文本：\(sk)")
         print("CloudDesktopInputTests OK")
     }
 }

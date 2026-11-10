@@ -61,6 +61,9 @@ struct CloudComputerTopBar: View {
             }
         } label: { Label("画质", systemImage: "dial.medium") }
         CloudLowDataMenu(ctl: ctl)
+        if ctl.macro == nil {
+            Button { ctl.macro = CloudMacro(); ctl.controlling = true } label: { Label("录制宏（存成 Bot 技能）", systemImage: "record.circle.fill") }
+        }
         if ctl.zoom.scale > 1.01 {
             Button { ctl.resetZoom() } label: { Label("恢复原始大小", systemImage: "arrow.down.right.and.arrow.up.left") }
         }
@@ -376,6 +379,53 @@ struct CloudPointOverlay: View {
             Button("发给 Bot") { onSend(remote, text); text = ""; mark = nil }
             Button("重新指", role: .cancel) { mark = nil }
             Button("不指了", role: .destructive) { onCancel() }
+        }
+    }
+}
+
+/// 宏录制中的红色胶囊：显示步数，停止后起名存成技能（Bot 以后可照做）
+struct CloudMacroBar: View {
+    @ObservedObject var ctl: CloudDesktopController
+    let onSaved: (String) -> Void
+    @State private var naming = false
+    @State private var name = ""
+
+    var body: some View {
+        if let m = ctl.macro {
+            HStack(spacing: 8) {
+                Circle().fill(Color.red).frame(width: 8, height: 8)
+                Text("录制中 · \(m.steps.count) 步").font(.footnote.weight(.semibold)).foregroundStyle(.white)
+                Button("停止") { naming = true }.font(.footnote.weight(.bold)).foregroundStyle(.red)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(Capsule().fill(Color.black.opacity(0.75)))
+            .alert("给这个宏起个名字", isPresented: $naming) {
+                TextField("比如：登录医院 OA 后打开排班表", text: $name)
+                Button("存成技能") { save(m) }
+                Button("丢弃", role: .destructive) { ctl.macro = nil }
+                Button("继续录", role: .cancel) {}
+            } message: {
+                Text("只记点击位置、按键和输入了几个字，不记输入的原文。")
+            }
+        }
+    }
+
+    private func save(_ m: CloudMacro) {
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let skillName = "宏：" + (title.isEmpty ? "未命名 \(Int(Date().timeIntervalSince1970))" : String(title.prefix(60)))
+        let content = m.skill(name: skillName, screen: ctl.trackpad.screen)
+        ctl.macro = nil
+        name = ""
+        Task {
+            do {
+                _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/skills/sync", body: [
+                    "source": "macro", "prune": false,
+                    "skills": [["name": skillName, "content": content, "description": "录制的云电脑操作（\(m.steps.count) 步）"]],
+                ])
+                onSaved("已存成技能「\(skillName)」，以后可以让 Bot 照做")
+            } catch {
+                onSaved("没存上：\(error.localizedDescription)")
+            }
         }
     }
 }
