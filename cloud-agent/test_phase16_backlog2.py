@@ -191,5 +191,34 @@ class BotVersionTests(CloudServerTestCase):
         self.assertEqual(self.request("POST", "/v1/bots/verbot/versions/999999/restore", {})[0], 400)
 
 
+
+class WorkflowTriggerTests(CloudServerTestCase):
+    def test_01_after_schedule_chains_with_context_and_depth_limit(self):
+        self.request("PUT", "/v1/credentials/wf", {"api_key": "sk-workflow-test-000000000000", "base_url": self.model_base})
+        base = {"model": "m-wf", "credential": "wf", "enabled": True}
+        up = self.request("POST", "/v1/routines", dict(base, name="抓取", prompt="抓数据", schedule={"kind": "interval", "seconds": 3600}))[1]
+        code, down = self.request("POST", "/v1/routines", dict(base, name="总结", prompt="总结上一步",
+                                                                 schedule={"kind": "after", "routine_id": up["routine_id"]}))
+        self.assertEqual(code, 201, down)
+        self.assertIsNone(down["next_run_at"])
+        self.assertEqual(self.request("POST", "/v1/routines", dict(base, name="坏", prompt="x",
+                                                                   schedule={"kind": "after", "routine_id": "rtn_000000000000"}))[0], 400)
+        launched = []
+        orig = self.srv.launch_routine_run
+        self.srv.launch_routine_run = lambda r, trigger="schedule", context=None: launched.append((r["name"], trigger, context)) or {}
+        try:
+            self.srv.fire_followups(up, {"status": "completed", "result": "数据 42 条", "trigger": "schedule"})
+            self.assertEqual(launched[0][0], "总结")
+            self.assertEqual(launched[0][1], "after:1")
+            self.assertIn("数据 42 条", launched[0][2])
+            launched.clear()
+            self.srv.fire_followups(up, {"status": "completed", "result": "[SKIP]", "trigger": "schedule"})
+            self.srv.fire_followups(up, {"status": "failed", "error": "x", "trigger": "schedule"})
+            self.srv.fire_followups(up, {"status": "completed", "result": "y", "trigger": "after:3"})
+            self.assertEqual(launched, [])
+        finally:
+            self.srv.launch_routine_run = orig
+
+
 if __name__ == "__main__":
     unittest.main()

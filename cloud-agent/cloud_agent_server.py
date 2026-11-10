@@ -3204,7 +3204,18 @@ def validate_schedule(schedule):
         if not isinstance(at, (int, float)) or isinstance(at, bool):
             raise ValueError("once.at must be a UNIX timestamp")
         return {"kind": "once", "at": float(at)}
-    raise ValueError("schedule.kind must be cron, interval or once")
+    if kind == "after":
+        # 工作流：另一个例行任务跑完后接着跑（拿到它的结果）
+        rid = schedule.get("routine_id")
+        if not isinstance(rid, str) or not re.match(r"^rtn_[a-f0-9]{12}$", rid):
+            raise ValueError("after.routine_id must be a routine id")
+        if not get_routine(rid):
+            raise ValueError("after.routine_id 指向的例行任务不存在")
+        on = schedule.get("on") or "completed"
+        if on not in ("completed", "any"):
+            raise ValueError("after.on must be completed or any")
+        return {"kind": "after", "routine_id": rid, "on": on}
+    raise ValueError("schedule.kind must be cron, interval, once or after")
 
 def compute_next_run(schedule, after_ts, first=False):
     kind = schedule["kind"]
@@ -3214,7 +3225,7 @@ def compute_next_run(schedule, after_ts, first=False):
         return after_ts + schedule["seconds"]
     if kind == "once":
         return schedule["at"] if first else None
-    return None
+    return None     # after：不按时间，由上游任务结束时触发
 
 def get_routine(routine_id):
     conn = get_db_connection()
@@ -3394,7 +3405,35 @@ def on_routine_finished(routine, run):
     user_notify(cfg, "routine_finished", f"例行任务「{routine['name']}」{label}"[:120], body,
                 session_id=run.get("session_id"), bot_id=routine.get("persona_id"))
 
-def launch_routine_run(routine, trigger="schedule"):
+CHAIN_MAX_DEPTH = 3
+
+
+def chain_depth(trigger):
+    m = re.match(r"^after:(\d+)$", str(trigger or ""))
+    return int(m.group(1)) if m else 0
+
+
+def fire_followups(routine, run):
+    """上游例行任务结束后，启动 schedule.kind == after 且指向它的任务；最多连 3 层，防止循环。"""
+    depth = chain_depth(run.get("trigger")) + 1
+    if depth > CHAIN_MAX_DEPTH or run.get("status") == "skipped":
+        return []
+    if run.get("status") == "completed" and is_quiet_result(run.get("result")):
+        return []
+    started = []
+    for r in list_routines():
+        sch = r.get("schedule") or {}
+        if not r.get("enabled") or sch.get("kind") != "after" or sch.get("routine_id") != routine["routine_id"]:
+            continue
+        if sch.get("on", "completed") == "completed" and run.get("status") != "completed":
+            continue
+        ctx = (run.get("result") or run.get("error") or "").strip()[:6000]
+        started.append(launch_routine_run(r, trigger=f"after:{depth}",
+                                          context=f"上一步「{routine['name']}」{'完成' if run.get('status') == 'completed' else '结束（' + str(run.get('status')) + '）'}，结果：\n{ctx}"))
+    return started
+
+
+def launch_routine_run(routine, trigger="schedule", context=None):
     """启动一次例行任务。返回 run dict（含 run_id / task_id / status）。"""
     run_id = "run_" + uuid.uuid4().hex[:12]
     now = time.time()
@@ -3428,7 +3467,10 @@ def launch_routine_run(routine, trigger="schedule"):
         TASK_EFFORT[tid] = routine["reasoning_effort"]
     instructions = routine.get("instructions") or ROUTINE_DEFAULT_INSTRUCTIONS
     fired = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(now))
-    content = f"[例行任务「{routine['name']}」于 {fired} 触发（{'手动运行' if trigger == 'manual' else '按计划'}）]\n{routine['prompt']}"
+    how = "手动运行" if trigger == "manual" else ("上一步完成后" if chain_depth(trigger) else "按计划")
+    content = f"[例行任务「{routine['name']}」于 {fired} 触发（{how}）]\n{routine['prompt']}"
+    if context:
+        content += "\n\n[工作流上一步的结果]\n" + context
     conn = get_db_connection()
     try:
         c = conn.cursor()
@@ -3471,6 +3513,10 @@ def launch_routine_run(routine, trigger="schedule"):
                                               "result": result, "error": err, "trigger": trigger})
             except Exception:
                 pass
+            try:
+                fire_followups(routine, {"status": final, "result": result, "error": err, "trigger": trigger})
+            except Exception as e:
+                print(f"[routine] follow-up failed: {type(e).__name__}", flush=True)
 
     threading.Thread(target=worker, daemon=True).start()
     return {"run_id": run_id, "status": "running", "task_id": tid, "session_id": sid}

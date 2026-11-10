@@ -36,6 +36,12 @@ enum CloudRoutineService {
         return try await CloudConnection.shared.request(method: "POST", path: "/v1/routines", body: body)
     }
 
+    static func rememberNames(_ list: [[String: Any]]) {
+        for r in list {
+            if let id = r["routine_id"] as? String, let name = r["name"] as? String { afterNames[id] = name }
+        }
+    }
+
     static func list() async throws -> [[String: Any]] {
         if !CloudConnection.shared.isConnected { try await CloudConnection.shared.connect() }
         let resp = try await CloudConnection.shared.request(method: "GET", path: "/v1/routines", body: nil)
@@ -59,6 +65,9 @@ enum CloudRoutineService {
         _ = try await CloudConnection.shared.request(method: "DELETE", path: "/v1/routines/\(routineId)", body: nil)
     }
 
+    /// 工作流显示上游任务名用：列表加载时顺便记下 routine_id → 名称
+    nonisolated(unsafe) static var afterNames: [String: String] = [:]
+
     static func scheduleText(_ s: [String: Any]?) -> String {
         guard let s, let kind = s["kind"] as? String else { return "未知" }
         switch kind {
@@ -73,6 +82,10 @@ enum CloudRoutineService {
         case "once":
             let at = (s["at"] as? NSNumber)?.doubleValue ?? 0
             return "一次：" + Date(timeIntervalSince1970: at).formatted(date: .abbreviated, time: .shortened)
+        case "after":
+            let name = (s["routine_id"] as? String).flatMap { afterNames[$0] }
+            let any = (s["on"] as? String) == "any"
+            return "接在" + (name.map { "「\($0)」" } ?? "另一个任务") + (any ? "结束后" : "完成后")
         default:
             return kind
         }
@@ -191,7 +204,7 @@ struct CloudRoutinesView: View {
     private func reload() async {
         loading = true
         defer { loading = false }
-        do { routines = try await CloudRoutineService.list(); errorText = nil } catch { errorText = error.localizedDescription }
+        do { routines = try await CloudRoutineService.list(); CloudRoutineService.rememberNames(routines); errorText = nil } catch { errorText = error.localizedDescription }
     }
 }
 
@@ -285,6 +298,9 @@ struct CloudRoutineEditor: View {
     @State private var errorText: String?
     @State private var personas: [CloudPersona] = []
     @State private var personaId = ""
+    @State private var routines: [[String: Any]] = []
+    @State private var afterId = ""
+    @State private var afterAny = false
 
     var body: some View {
         Form {
@@ -331,6 +347,7 @@ struct CloudRoutineEditor: View {
                     Text("Cron").tag("cron")
                     Text("间隔").tag("interval")
                     Text("一次").tag("once")
+                    if !routines.isEmpty { Text("接着").tag("after") }
                 }
                 .pickerStyle(.segmented)
                 switch kind {
@@ -342,23 +359,34 @@ struct CloudRoutineEditor: View {
                     Text("时区：\(TimeZone.current.identifier)").font(.caption).foregroundStyle(.secondary)
                 case "interval":
                     Stepper("每 \(intervalMinutes) 分钟", value: $intervalMinutes, in: 1...10080)
+                case "after":
+                    Picker("上一步", selection: $afterId) {
+                        Text("选择任务").tag("")
+                        ForEach(routines.indices, id: \.self) { i in
+                            Text(routines[i]["name"] as? String ?? "").tag(routines[i]["routine_id"] as? String ?? "")
+                        }
+                    }
+                    Toggle("上一步失败也运行", isOn: $afterAny)
                 default:
                     DatePicker("运行时间", selection: $onceAt, in: Date()...)
                 }
             } header: {
                 Text("计划")
             } footer: {
-                Text("Cron 例：“30 8 * * 1-5” 表示工作日 8:30。")
+                Text(kind == "after" ? "上一步跑完后自动接着跑，并把它的结果交给这一步；最多连 3 层。" : "Cron 例：“30 8 * * 1-5” 表示工作日 8:30。")
             }
             if let errorText { Section { Text(errorText).foregroundStyle(.red).font(.footnote) } }
         }
         .navigationTitle("新建例行任务")
-        .task { personas = (try? await CloudPersonaService.list()) ?? [] }
+        .task {
+            personas = (try? await CloudPersonaService.list()) ?? []
+            routines = (try? await CloudRoutineService.list()) ?? []
+        }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
             ToolbarItem(placement: .confirmationAction) {
                 Button(saving ? "保存中…" : "保存") { save() }
-                    .disabled(saving || name.trimmingCharacters(in: .whitespaces).isEmpty
+                    .disabled(saving || name.trimmingCharacters(in: .whitespaces).isEmpty || (kind == "after" && afterId.isEmpty)
                               || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
@@ -369,6 +397,7 @@ struct CloudRoutineEditor: View {
         switch kind {
         case "cron": schedule = ["kind": "cron", "expr": cronExpr.trimmingCharacters(in: .whitespaces), "timezone": TimeZone.current.identifier]
         case "interval": schedule = ["kind": "interval", "seconds": intervalMinutes * 60]
+        case "after": schedule = ["kind": "after", "routine_id": afterId, "on": afterAny ? "any" : "completed"]
         default: schedule = ["kind": "once", "at": onceAt.timeIntervalSince1970]
         }
         saving = true
