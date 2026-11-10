@@ -33,6 +33,7 @@ struct CloudBot: Identifiable, Hashable {
     var waitingApprovals: Int
     var notify: Bool
     var routinesEnabled: Int
+    var reasoningEffort: String
 
     init(id: String, name: String, emoji: String, summary: String, instructions: String, isPrimary: Bool = false) {
         self.id = id
@@ -57,6 +58,7 @@ struct CloudBot: Identifiable, Hashable {
         self.waitingApprovals = 0
         self.notify = true
         self.routinesEnabled = 0
+        self.reasoningEffort = ""
     }
 
     init?(_ d: [String: Any]) {
@@ -84,6 +86,7 @@ struct CloudBot: Identifiable, Hashable {
         waitingApprovals = d["waiting_approvals"] as? Int ?? 0
         notify = d["notify"] as? Bool ?? true
         routinesEnabled = d["routines_enabled"] as? Int ?? 0
+        reasoningEffort = d["reasoning_effort"] as? String ?? ""
     }
 
     /// 这个 Bot 自己固定了模型与凭据：对话不依赖手机当前选择的服务商

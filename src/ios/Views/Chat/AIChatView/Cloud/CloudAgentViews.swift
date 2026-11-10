@@ -619,6 +619,7 @@ struct CloudSessionView: View {
     @State private var showVoiceCall = false
     @StateObject private var dictation = CloudDictation()
     @State private var dictationBase = ""
+    @State private var showModelPicker = false
 
     private let timer = Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()
 
@@ -764,6 +765,22 @@ struct CloudSessionView: View {
             }
         }
         .tint(theme?.accent)
+        .sheet(isPresented: $showModelPicker) {
+            if let theme {
+                CloudModelEffortSheet(title: "\(theme.name) 的模型",
+                                      current: (CloudBotService.instanceId(forCredential: theme.credential), theme.model,
+                                                CloudEffort(rawValue: theme.effort) ?? CloudEffort.globalDefault)) { option, effort in
+                    Task {
+                        do {
+                            try await CloudBotService.setModelChoice(theme.botId, option: option, effort: effort)
+                            await CloudBotHomeModel.shared.refresh()
+                        } catch {
+                            errorMessage = "切换模型失败：\(error.localizedDescription)"
+                        }
+                    }
+                }
+            }
+        }
         .sheet(isPresented: $showPhotos) { CloudPhotoPicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showCamera) { CloudCameraPicker { attachments.append($0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showScanner) { CloudDocumentScanner { attachments.append($0) }.ignoresSafeArea() }
@@ -913,6 +930,22 @@ struct CloudSessionView: View {
                 }
             }
             if let err = dictation.errorText { Text(err).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Button { showModelPicker = true } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "cpu").font(.caption2)
+                        Text(theme.chipText).font(.caption.weight(.medium)).lineLimit(1)
+                        Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Capsule().fill(Color(.systemGray6)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("切换模型与思考深度：\(theme.chipText)")
+                Spacer()
+            }
+            .padding(.horizontal, 14)
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
                     Button { showPhotos = true } label: { Label("照片或视频", systemImage: "photo.on.rectangle") }
@@ -979,7 +1012,11 @@ struct CloudSessionView: View {
     }
 
     /// 有附件时先上传（文件存到工作区，图片同时作为图片消息发给模型），再提交任务
-    private func submitPrepared(content: String, body: [String: Any]) {
+    private func submitPrepared(content: String, body rawBody: [String: Any]) {
+        var body = rawBody
+        // 思考深度：Bot 自己设置了就由服务器使用；否则带上手机默认
+        let effort = theme.flatMap { CloudEffort(rawValue: $0.effort) } ?? CloudEffort.globalDefault
+        if effort != .off { body["reasoning_effort"] = effort.rawValue }
         guard !attachments.isEmpty else {
             submit(content: content, body: body)
             return

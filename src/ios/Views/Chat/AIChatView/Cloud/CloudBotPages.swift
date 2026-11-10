@@ -73,6 +73,8 @@ struct CloudBotEditSheet: View {
     @State private var spec: CloudBotAvatarSpec
     @State private var voice: CloudBotVoiceSettings
     @State private var showAvatar = false
+    @State private var showModel = false
+    @State private var modelPick: (option: CloudModelOption?, effort: CloudEffort)?
     @State private var saving = false
     @State private var errorText: String?
 
@@ -103,6 +105,11 @@ struct CloudBotEditSheet: View {
                 }
                 Section("名称") {
                     TextField("为 Bot 取个名字", text: $bot.name)
+                }
+                Section {
+                    CloudModelEffortRows(modelText: modelText, effort: currentEffort) { showModel = true }
+                } header: { Text("模型") } footer: {
+                    Text("这个 Bot 的对话、定时任务和 Telegram 都用这里的模型；对话里输入框上方的小标签也能随时切换。")
                 }
                 Section("外观") {
                     NavigationLink {
@@ -171,6 +178,13 @@ struct CloudBotEditSheet: View {
                     .disabled(saving || bot.name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+            .sheet(isPresented: $showModel) {
+                CloudModelEffortSheet(title: "模型与思考深度",
+                                      current: (modelPick?.option?.instanceId ?? CloudBotService.instanceId(forCredential: bot.credential),
+                                                modelPick?.option?.model ?? bot.model, currentEffort)) { option, e in
+                    modelPick = (option, e)
+                }
+            }
             .sheet(isPresented: $showAvatar) {
                 NavigationStack {
                     ScrollView {
@@ -189,6 +203,15 @@ struct CloudBotEditSheet: View {
         }
     }
 
+    private var currentEffort: CloudEffort {
+        modelPick?.effort ?? CloudEffort(rawValue: bot.reasoningEffort) ?? CloudEffort.globalDefault
+    }
+
+    private var modelText: String {
+        if let modelPick { return modelPick.option?.model ?? "跟随手机默认" }
+        return bot.model.isEmpty ? "跟随手机默认" : bot.model
+    }
+
     private func save() {
         saving = true
         errorText = nil
@@ -202,6 +225,11 @@ struct CloudBotEditSheet: View {
         Task {
             do {
                 try await CloudBotService.save(updated)
+                if let modelPick {
+                    try await CloudBotService.setModelChoice(bot.id, option: modelPick.option, effort: modelPick.effort)
+                    updated.model = modelPick.option?.model ?? ""
+                    updated.reasoningEffort = modelPick.effort.rawValue
+                }
                 await onSaved(updated)
                 dismiss()
             } catch {

@@ -16,7 +16,26 @@ struct CloudBotChatTheme {
     let botId: String
     let name: String
     let spec: CloudBotAvatarSpec
+    var model: String = ""
+    var credential: String = ""
+    var effort: String = ""
     var accent: Color { spec.fill }
+
+    init(bot: CloudBot) {
+        botId = bot.id
+        name = bot.name
+        spec = CloudBotAvatarSpec.of(bot)
+        model = bot.model
+        credential = bot.credential
+        effort = bot.reasoningEffort
+    }
+
+    /// 输入框上方的小标签，如「gpt-5 · 中」
+    var chipText: String {
+        let m = model.isEmpty ? (UserDefaults.standard.string(forKey: "OpenMinisCloud_manualModel") ?? "默认模型") : model
+        let e = CloudEffort(rawValue: effort) ?? CloudEffort.globalDefault
+        return CloudEffort.short(m) + (e == .off ? "" : " · " + e.label)
+    }
 }
 
 // MARK: - 消息气泡

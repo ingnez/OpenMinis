@@ -392,7 +392,7 @@ struct CloudBotChatView: View {
                                  selectedInstanceId: UserDefaults.standard.string(forKey: "OpenMinisCloud_selectedInstanceId") ?? "",
                                  botHasOwnModel: bot.hasOwnModel,
                                  mentionBots: model.bots.filter { $0.id != botId },
-                                 theme: CloudBotChatTheme(botId: bot.id, name: bot.name, spec: CloudBotAvatarSpec.of(bot)))
+                                 theme: CloudBotChatTheme(bot: bot))
                     .id(sid)
             } else if let errorText {
                 VStack(spacing: 12) {

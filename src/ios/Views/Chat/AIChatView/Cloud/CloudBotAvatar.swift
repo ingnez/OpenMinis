@@ -200,6 +200,9 @@ struct CloudBotCreateSheet: View {
     @State private var saving = false
     @State private var errorText: String?
     @State private var showTemplates = false
+    @State private var modelOption: CloudModelOption?
+    @State private var effort = CloudEffort.globalDefault
+    @State private var showModel = false
 
     var body: some View {
         NavigationStack {
@@ -212,6 +215,12 @@ struct CloudBotCreateSheet: View {
                         .padding(.vertical, 14)
                         .background(RoundedRectangle(cornerRadius: 14).fill(Color(.systemBackground)))
                         .padding(.horizontal, 20)
+                    VStack(spacing: 0) {
+                        CloudModelEffortRows(modelText: modelOption?.model ?? "跟随手机默认", effort: effort) { showModel = true }
+                            .padding(.horizontal, 16).padding(.vertical, 12)
+                    }
+                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(.systemBackground)))
+                    .padding(.horizontal, 20)
                     CloudBotAvatarPicker(spec: $spec)
                     if let errorText { Text(errorText).font(.footnote).foregroundStyle(.red) }
                     Button("从模板创建…") { showTemplates = true }
@@ -234,6 +243,13 @@ struct CloudBotCreateSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { dismiss() } label: { Image(systemName: "xmark") }.accessibilityLabel("关闭")
+                }
+            }
+            .sheet(isPresented: $showModel) {
+                CloudModelEffortSheet(title: "模型与思考深度",
+                                      current: (modelOption?.instanceId ?? "", modelOption?.model ?? "", effort)) { option, e in
+                    modelOption = option
+                    effort = e
                 }
             }
             .sheet(isPresented: $showTemplates) {
@@ -268,6 +284,9 @@ struct CloudBotCreateSheet: View {
             do {
                 try await CloudConnection.shared.ensureConnected()
                 try await CloudBotService.save(bot)
+                if modelOption != nil || effort != .off {
+                    try await CloudBotService.setModelChoice(bot.id, option: modelOption, effort: effort)
+                }
                 await onCreated(bot.id)
                 dismiss()
             } catch {
