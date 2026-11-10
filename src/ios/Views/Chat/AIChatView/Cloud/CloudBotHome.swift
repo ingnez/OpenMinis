@@ -55,6 +55,8 @@ final class CloudBotHomeModel: ObservableObject {
     @Published private(set) var loaded = false
     @Published private(set) var connecting = false
     @Published var bannerText: String?
+    /// 首页分组（服务器保存）
+    @Published var sections: [CloudBotSection] = []
     /// 外部入口（小组件、Siri、分享、委托卡片）要打开的 Bot id 或 "group:<id>"；首页收到后进入对话
     @Published var pendingOpen: String?
     /// 外部入口带来的文字 / 附件：对应 Bot 的对话打开时取走
@@ -145,7 +147,54 @@ final class CloudBotHomeModel: ObservableObject {
             }
     }
 
-    var hiddenBots: [CloudBot] { bots.filter { $0.hidden && !$0.isPrimary } }
+    var hiddenBots: [CloudBot] { bots.filter { $0.hidden } }
+
+    /// 顶部一排大头像：主 Bot + 置顶的 Bot（隐藏的不算）
+    var topRow: [CloudBot] {
+        let pinned = bots.filter { $0.pinned && !$0.isPrimary && !$0.hidden }.sorted { $0.pinnedAt > $1.pinnedAt }
+        return bots.filter { $0.isPrimary && !$0.hidden } + pinned
+    }
+
+    /// 列表：搜索时全部匹配；平时去掉主 Bot、置顶（已在顶部）和隐藏的
+    func listed(matching query: String) -> [CloudBot] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        return others(matching: query).filter { !q.isEmpty || !$0.pinned }
+    }
+
+    func sectionAction(_ op: String, _ section: CloudBotSection? = nil, name: String? = nil, botId: String? = nil) {
+        Task {
+            do {
+                let conn = CloudConnection.shared
+                switch op {
+                case "create":
+                    var body: [String: Any] = ["name": name ?? "新分组"]
+                    if let botId { body["bot_id"] = botId }
+                    _ = try await CloudQuiet.retry { try await conn.request(method: "POST", path: "/v1/bot_sections", body: body) }
+                case "rename":
+                    guard let section, let name else { return }
+                    _ = try await CloudQuiet.retry { try await conn.request(method: "PUT", path: "/v1/bot_sections/\(section.id)", body: ["name": name]) }
+                case "toggle":
+                    guard let section else { return }
+                    if let i = sections.firstIndex(where: { $0.id == section.id }) { sections[i].collapsed.toggle() }
+                    _ = try await CloudQuiet.retry {
+                        try await conn.request(method: "PUT", path: "/v1/bot_sections/\(section.id)", body: ["collapsed": !section.collapsed])
+                    }
+                case "delete":
+                    guard let section else { return }
+                    _ = try await CloudQuiet.retry { try await conn.request(method: "DELETE", path: "/v1/bot_sections/\(section.id)", body: nil) }
+                case "move":
+                    guard let botId else { return }
+                    _ = try await CloudQuiet.retry {
+                        try await CloudBotService.setPrefs(botId, ["section_id": section.map { $0.id as Any } ?? NSNull()])
+                    }
+                default: return
+                }
+            } catch {
+                bannerText = "分组没保存成功：\(error.localizedDescription)"
+            }
+            await refresh()
+        }
+    }
 
     func isUnread(_ bot: CloudBot) -> Bool {
         bot.markedUnread || (bot.lastRole == "assistant" && bot.lastAt > max(seen[bot.id] ?? 0, bot.seenAt) + 0.5)
@@ -265,6 +314,10 @@ final class CloudBotHomeModel: ObservableObject {
             publishToWidget()
             // 旧版服务器没有群聊接口：忽略错误
             groups = (try? await CloudGroupService.list()) ?? groups
+            if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/bot_sections"),
+               let items = r["sections"] as? [[String: Any]] {
+                sections = items.compactMap(CloudBotSection.init)
+            }
             if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/resources") {
                 let settings = r["settings"] as? [String: Any] ?? [:]
                 if let until = settings["duty_until"] as? Double {
@@ -372,7 +425,8 @@ struct CloudBotHomeScreen: View {
     @State private var showHub = false
     @State private var showConnectApps = false
     @State private var showPrimaryPicker = false
-    @State private var showHidden = false
+    @State private var sectionFor: CloudBot?
+    @State private var sectionName = ""
     @State private var renaming: CloudBot?
     @State private var renameText = ""
     @State private var deleting: CloudBot?
@@ -380,8 +434,6 @@ struct CloudBotHomeScreen: View {
 
     private var menuActions: CloudBotMenuActions {
         CloudBotMenuActions(
-            rename: { bot in renameText = bot.name; renaming = bot },
-            edit: { bot in path = ["detail:" + bot.id] },
             pickPrimary: { showPrimaryPicker = true },
             share: { bot in
                 Task { @MainActor in
@@ -392,7 +444,8 @@ struct CloudBotHomeScreen: View {
                     }
                 }
             },
-            delete: { bot in deleting = bot })
+            delete: { bot in deleting = bot },
+            newSection: { bot in sectionName = ""; sectionFor = bot })
     }
 
     var body: some View {
@@ -426,8 +479,8 @@ struct CloudBotHomeScreen: View {
                         if model.connecting && model.bots.isEmpty {
                             Text("正在连接云电脑…").font(.caption).foregroundStyle(.secondary).padding(.bottom, 6)
                         }
-                        if let primary = model.primary, search.isEmpty {
-                            hero(primary)
+                        if search.isEmpty {
+                            CloudBotTopRow(model: model, actions: menuActions, open: open)
                         }
                         if search.isEmpty && model.feed.contains(where: { !CloudBotLock.shared.isLocked($0.botId) }) {
                             CloudTodayFeed(items: model.feed.filter { !CloudBotLock.shared.isLocked($0.botId) }, bots: model.bots)
@@ -440,14 +493,10 @@ struct CloudBotHomeScreen: View {
                                 .buttonStyle(.plain)
                                 .padding(.horizontal, 20)
                             }
-                            ForEach(model.others(matching: search)) { bot in
-                                Button { open(bot.id) } label: {
-                                    CloudBotHomeRow(bot: bot, unread: model.isUnread(bot))
-                                }
-                                .buttonStyle(.plain)
-                                .cloudBotMenu(bot, model: model, actions: menuActions)
-                                .padding(.horizontal, 20)
-                            }
+                        }
+                        CloudBotSectionedList(model: model, search: search, actions: menuActions, open: open)
+                        if search.isEmpty {
+                            CloudHiddenFooter(count: model.hiddenBots.count) { path = ["hidden"] }
                         }
                         if !search.trimmingCharacters(in: .whitespaces).isEmpty {
                             CloudSearchResultsSection(model: searchModel, query: search) { target in
@@ -493,7 +542,7 @@ struct CloudBotHomeScreen: View {
                         Button { showCreateGroup = true } label: { Label("新群聊", systemImage: "person.3") }
                             .disabled(model.bots.isEmpty)
                         if !model.hiddenBots.isEmpty {
-                            Button { showHidden = true } label: { Label("已隐藏的 Bot（\(model.hiddenBots.count)）", systemImage: "eye.slash") }
+                            Button { path = ["hidden"] } label: { Label("已隐藏对话（\(model.hiddenBots.count)）", systemImage: "eye.slash") }
                         }
                         Menu {
                             Button("8 小时") { Task { await model.setDuty(hours: 8) } }
@@ -510,10 +559,8 @@ struct CloudBotHomeScreen: View {
             .navigationDestination(for: String.self) { id in
                 if id.hasPrefix("group:") {
                     CloudGroupChatView(groupId: String(id.dropFirst(6)))
-                } else if id.hasPrefix("detail:") {
-                    if let bot = model.bot(String(id.dropFirst(7))) {
-                        CloudBotDetailView(bot: bot, onChanged: { await model.refresh() })
-                    }
+                } else if id == "hidden" {
+                    CloudHiddenBotsPage(model: model)
                 } else {
                     CloudBotChatView(botId: id)
                 }
@@ -541,8 +588,9 @@ struct CloudBotHomeScreen: View {
         .sheet(isPresented: $showHub) {
             NavigationStack { CloudBotHubView(onDone: { showHub = false }) }
         }
-        .modifier(CloudBotHomeMenuSheets(model: model, showPrimaryPicker: $showPrimaryPicker, showHidden: $showHidden,
-                                         renaming: $renaming, renameText: $renameText, deleting: $deleting, shareURL: $shareURL))
+        .modifier(CloudBotHomeMenuSheets(model: model, showPrimaryPicker: $showPrimaryPicker,
+                                         renaming: $renaming, renameText: $renameText, deleting: $deleting, shareURL: $shareURL,
+                                         sectionFor: $sectionFor, sectionName: $sectionName))
         .sheet(isPresented: $showConnectApps) {
             CloudConnectAppsSheet(onClose: { showConnectApps = false })
                 .presentationDetents([.large])
@@ -580,36 +628,6 @@ struct CloudBotHomeScreen: View {
         path = [id]
     }
 
-    private func hero(_ bot: CloudBot) -> some View {
-        Button { open(bot.id) } label: {
-            VStack(spacing: 10) {
-                // 头像不接收触摸，整块交给按钮：之前头像的拖动手势吞掉了点按，主 Bot 点了进不去
-                CloudBotAliveAvatar(spec: CloudBotAvatarSpec.of(bot), size: 96, interactive: false)
-                    .allowsHitTesting(false)
-                    .overlay(alignment: .bottomTrailing) {
-                        ZStack {
-                            Circle().fill(Color(.systemBackground)).frame(width: 30, height: 30)
-                            Circle().fill(Color.orange).frame(width: 24, height: 24)
-                            Image(systemName: "star.fill").font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
-                        }
-                        .offset(x: 4, y: 4)
-                    }
-                    .overlay(alignment: .topTrailing) {
-                        if model.isUnread(bot) { Circle().fill(Color.blue).frame(width: 12, height: 12) }
-                    }
-                Text(bot.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary)
-                let status = CloudBotStatus.of(bot)
-                if status.busy { CloudBotStatusChip(status: status) }
-            }
-            .padding(.top, 8).padding(.bottom, 18)
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .cloudBotMenu(bot, model: model, actions: menuActions)
-        .accessibilityLabel("打开 \(bot.name)")
-    }
-
     @ViewBuilder
     private var modeButtons: some View {
         Button { onSwitchToLocal() } label: { Label("本地模式", systemImage: "iphone") }
@@ -633,7 +651,12 @@ struct CloudBotHomeScreen: View {
 
     private var bottomBar: some View {
         HStack(spacing: 12) {
-            Button { showConnectApps = true } label: {
+            Menu {
+                Button { showConnectApps = true } label: { Label("连接应用", systemImage: "square.grid.2x2") }
+                Button { path = ["hidden"] } label: {
+                    Label(model.hiddenBots.isEmpty ? "已隐藏对话" : "已隐藏对话（\(model.hiddenBots.count)）", systemImage: "eye.slash")
+                }
+            } label: {
                 Image(systemName: "square.grid.2x2")
                     .font(.system(size: 18, weight: .medium))
                     .foregroundStyle(.primary)

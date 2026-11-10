@@ -42,6 +42,7 @@ struct CloudBot: Identifiable, Hashable {
     var hidden = false
     var markedUnread = false
     var seenAt: Double = 0
+    var sectionId: String?
 
     init(id: String, name: String, emoji: String, summary: String, instructions: String, isPrimary: Bool = false) {
         self.id = id
@@ -105,6 +106,7 @@ struct CloudBot: Identifiable, Hashable {
         hidden = prefs["hidden"] as? Bool ?? false
         markedUnread = prefs["unread"] as? Bool ?? false
         seenAt = (prefs["seen_at"] as? NSNumber)?.doubleValue ?? 0
+        sectionId = prefs["section_id"] as? String
     }
 
     /// 这个 Bot 自己固定了模型与凭据：对话不依赖手机当前选择的服务商

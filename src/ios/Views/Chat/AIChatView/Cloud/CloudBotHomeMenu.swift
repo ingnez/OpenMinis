@@ -10,11 +10,10 @@ import UIKit
 
 /// 菜单要首页做的事（弹窗 / 跳转由首页负责）
 struct CloudBotMenuActions {
-    var rename: (CloudBot) -> Void
-    var edit: (CloudBot) -> Void
     var pickPrimary: () -> Void
     var share: (CloudBot) -> Void
     var delete: (CloudBot) -> Void
+    var newSection: (CloudBot) -> Void
 }
 
 struct CloudBotContextMenu: ViewModifier {
@@ -24,14 +23,21 @@ struct CloudBotContextMenu: ViewModifier {
 
     func body(content: Content) -> some View {
         content.contextMenu {
-            menuItems
+            CloudBotMenuItems(bot: bot, model: model, actions: actions)
         } preview: {
             CloudBotMenuPreview(bot: bot)
         }
     }
+}
 
-    @ViewBuilder
-    private var menuItems: some View {
+/// 非主 Bot：标为未读、置顶、新建分组、分享为模板、隐藏、更多（复制 ID、删除）
+/// 主 Bot：标为未读、置顶、替换主 Bot、分享为模板、隐藏、更多（复制 ID）
+struct CloudBotMenuItems: View {
+    let bot: CloudBot
+    @ObservedObject var model: CloudBotHomeModel
+    let actions: CloudBotMenuActions
+
+    var body: some View {
         let unread = model.isUnread(bot)
         Button { model.markUnread(bot.id, !unread) } label: {
             Label(unread ? "标为已读" : "标为未读", systemImage: unread ? "envelope.open" : "envelope.badge")
@@ -42,25 +48,35 @@ struct CloudBotContextMenu: ViewModifier {
         if bot.isPrimary {
             Button { actions.pickPrimary() } label: { Label("替换主 Bot…", systemImage: "arrow.triangle.2.circlepath") }
         } else {
-            Button { Task { await model.makePrimary(bot.id) } } label: { Label("设为主 Bot", systemImage: "star") }
+            sectionItems
         }
         Button { actions.share(bot) } label: { Label("分享为模板…", systemImage: "square.and.arrow.up") }
-        if !bot.isPrimary {
-            Button(role: .destructive) { model.setPrefs(bot.id, ["hidden": true]) } label: { Label("隐藏", systemImage: "eye.slash") }
-        }
+        Button(role: .destructive) { model.setPrefs(bot.id, ["hidden": true]) } label: { Label("隐藏", systemImage: "eye.slash") }
         Menu {
-            Button { actions.rename(bot) } label: { Label("重命名", systemImage: "pencil") }
-            Button { actions.edit(bot) } label: { Label("编辑设置", systemImage: "slider.horizontal.3") }
-            if bot.latestSessionId != nil {
-                Button { Task { await model.resetContext(bot.id) } } label: {
-                    Label("/reset 上下文", systemImage: "arrow.counterclockwise.circle")
-                }
-            }
+            Button { UIPasteboard.general.string = bot.id; CloudHaptics.success() } label: { Label("复制 ID", systemImage: "doc.on.doc") }
             if !bot.isPrimary {
                 Button(role: .destructive) { actions.delete(bot) } label: { Label("删除", systemImage: "trash") }
             }
         } label: {
             Label("更多", systemImage: "ellipsis.circle")
+        }
+    }
+
+    @ViewBuilder
+    private var sectionItems: some View {
+        Button { actions.newSection(bot) } label: { Label("新建分组", systemImage: "folder.badge.plus") }
+        let others = model.sections.filter { $0.id != bot.sectionId }
+        if !others.isEmpty || bot.sectionId != nil {
+            Menu {
+                ForEach(others) { sec in
+                    Button(sec.name) { model.sectionAction("move", sec, botId: bot.id) }
+                }
+                if bot.sectionId != nil {
+                    Button { model.sectionAction("move", nil, botId: bot.id) } label: { Label("移出分组", systemImage: "folder.badge.minus") }
+                }
+            } label: {
+                Label("移到分组", systemImage: "folder")
+            }
         }
     }
 }
@@ -136,34 +152,6 @@ struct CloudPrimaryPicker: View {
     }
 }
 
-/// 已隐藏的 Bot：取消隐藏
-struct CloudHiddenBotsSheet: View {
-    @ObservedObject var model: CloudBotHomeModel
-    let onDone: () -> Void
-
-    var body: some View {
-        NavigationView {
-            List {
-                if model.hiddenBots.isEmpty {
-                    Text("没有隐藏的 Bot").foregroundStyle(.secondary)
-                }
-                ForEach(model.hiddenBots) { bot in
-                    HStack(spacing: 10) {
-                        CloudBotWatchingAvatar(spec: CloudBotAvatarSpec.of(bot), size: 30)
-                        Text(bot.name)
-                        Spacer()
-                        Button("取消隐藏") { model.setPrefs(bot.id, ["hidden": false]) }
-                            .buttonStyle(.bordered)
-                    }
-                }
-            }
-            .navigationTitle("已隐藏的 Bot")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { onDone() } } }
-        }
-    }
-}
-
 extension View {
     func cloudBotMenu(_ bot: CloudBot, model: CloudBotHomeModel, actions: CloudBotMenuActions) -> some View {
         modifier(CloudBotContextMenu(bot: bot, model: model, actions: actions))
@@ -174,22 +162,27 @@ extension View {
 struct CloudBotHomeMenuSheets: ViewModifier {
     @ObservedObject var model: CloudBotHomeModel
     @Binding var showPrimaryPicker: Bool
-    @Binding var showHidden: Bool
     @Binding var renaming: CloudBot?
     @Binding var renameText: String
     @Binding var deleting: CloudBot?
     @Binding var shareURL: URL?
+    @Binding var sectionFor: CloudBot?
+    @Binding var sectionName: String
 
     func body(content: Content) -> some View {
         content
             .sheet(isPresented: $showPrimaryPicker) {
                 CloudPrimaryPicker(model: model, onDone: { showPrimaryPicker = false })
             }
-            .sheet(isPresented: $showHidden) {
-                CloudHiddenBotsSheet(model: model, onDone: { showHidden = false })
-            }
             .sheet(isPresented: shareShown) {
                 if let url = shareURL { CloudActivitySheet(items: [url]) }
+            }
+            .alert("新建分组", isPresented: sectionShown) {
+                TextField("分组名", text: $sectionName)
+                Button("取消", role: .cancel) { sectionFor = nil }
+                Button("创建") { createSection() }
+            } message: {
+                Text("把这个 Bot 放进新分组；首页按分组显示，可以折叠。")
             }
             .alert("重命名", isPresented: renameShown) {
                 TextField("名字", text: $renameText)
@@ -205,6 +198,16 @@ struct CloudBotHomeMenuSheets: ViewModifier {
 
     private var shareShown: Binding<Bool> {
         Binding(get: { shareURL != nil }, set: { if !$0 { shareURL = nil } })
+    }
+
+    private var sectionShown: Binding<Bool> {
+        Binding(get: { sectionFor != nil }, set: { if !$0 { sectionFor = nil } })
+    }
+
+    private func createSection() {
+        let name = sectionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let bot = sectionFor, !name.isEmpty { model.sectionAction("create", name: name, botId: bot.id) }
+        sectionFor = nil
     }
 
     private var renameShown: Binding<Bool> {
