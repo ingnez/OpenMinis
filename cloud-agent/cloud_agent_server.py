@@ -36,6 +36,8 @@ import tempfile
 import mimetypes
 import urllib.request
 import urllib.error
+import urllib.parse
+import hashlib
 from urllib.parse import urlparse, parse_qs, unquote
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -470,6 +472,122 @@ def current_notify_config():
     finally:
         conn.close()
 
+def muted_bots():
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT value FROM app_settings WHERE name = 'notify_muted_bots'").fetchone()
+        return set(json.loads(row[0])) if row else set()
+    except Exception:
+        return set()
+    finally:
+        conn.close()
+
+def set_bot_notify(bot_id, enabled):
+    muted = muted_bots()
+    if enabled:
+        muted.discard(bot_id)
+    else:
+        muted.add(bot_id)
+    conn = get_db_connection()
+    try:
+        conn.execute("INSERT INTO app_settings (name, value) VALUES ('notify_muted_bots', ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+                     (json.dumps(sorted(muted)),))
+        conn.commit()
+    finally:
+        conn.close()
+
+def _bot_muted(session_id=None, persona_id=None):
+    """该会话（或例行任务）所属 Bot 关闭了推送时返回 True。"""
+    pid = persona_id if persona_id is not None else (session_persona_id(session_id) if session_id else None)
+    return bool(pid) and pid in muted_bots()
+
+def bot_library(bot_id, limit=300):
+    """Bot 对话里出现过的图片、链接与生成的页面（资料库）。"""
+    conn = get_db_connection()
+    try:
+        sids = [r[0] for r in conn.execute("SELECT session_id FROM sessions WHERE persona_id = ?", (bot_id,)).fetchall()]
+        if not sids:
+            return []
+        marks = ",".join("?" * len(sids))
+        rows = conn.execute(f"SELECT id, session_id, role, content, timestamp FROM messages WHERE session_id IN ({marks}) "
+                            f"AND role IN ('user', 'assistant') AND content IS NOT NULL ORDER BY id DESC LIMIT 2000", sids).fetchall()
+        pages = conn.execute(f"SELECT page_id, title, summary, session_id, updated_at FROM pages WHERE session_id IN ({marks}) ORDER BY updated_at DESC LIMIT 200", sids).fetchall()
+    finally:
+        conn.close()
+    items, seen_links = [], set()
+    for mid, sid, role, content, ts in rows:
+        text = content
+        parts = None
+        if content.startswith("["):
+            try:
+                parts = json.loads(content)
+            except ValueError:
+                parts = None
+        if isinstance(parts, list):
+            text = " ".join(p.get("text", "") for p in parts if isinstance(p, dict) and p.get("type") == "text")
+            for idx, p in enumerate(parts):
+                if isinstance(p, dict) and p.get("type") == "image_url":
+                    items.append({"kind": "media", "id": f"m{mid}-{idx}", "message_id": mid, "part": idx, "session_id": sid,
+                                  "role": role, "title": "图片", "at": ts})
+        for url in re.findall(r"https?://[^\s<>\"'）)\]，。]+", text or ""):
+            url = url.rstrip(".,;:!?")
+            if url in seen_links:
+                continue
+            seen_links.add(url)
+            host = urllib.parse.urlparse(url).hostname or url
+            items.append({"kind": "link", "id": "l" + hashlib.sha256(url.encode()).hexdigest()[:16], "url": url,
+                          "title": host, "session_id": sid, "role": role, "at": ts})
+    for sid in sids:
+        adir = os.path.join(GLOBAL_WORKSPACE, sid, "attachments")
+        if not os.path.isdir(adir):
+            continue
+        for name in os.listdir(adir):
+            if not name.startswith("up_"):
+                continue  # 只收手机上传的附件；Agent 截图不进资料库
+            full = os.path.join(adir, name)
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            items.append({"kind": "media" if ext in ("png", "jpg", "jpeg", "heic", "gif", "webp", "mov", "mp4") else "file",
+                          "id": "a" + hashlib.sha256((sid + name).encode()).hexdigest()[:16], "title": name[12:] or name,
+                          "attachment_url": f"/v1/sessions/{sid}/attachments/{name}", "bytes": os.path.getsize(full),
+                          "session_id": sid, "at": os.path.getmtime(full)})
+    for pid, title, summary, sid, ts in pages:
+        items.append({"kind": "file", "id": "p" + pid, "page_id": pid, "title": title, "summary": summary or "", "session_id": sid, "at": ts})
+    items.sort(key=lambda i: i.get("at") or 0, reverse=True)
+    return items[:limit]
+
+ATTACH_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+def save_upload(session_id, filename, data):
+    """手机上传的附件存到会话工作区 attachments/，文件名去掉危险字符并加随机前缀。"""
+    stem, ext = os.path.splitext(os.path.basename(filename or "file"))
+    stem = ATTACH_NAME_RE.sub("_", stem).strip("._")[-60:] or "file"
+    ext = ATTACH_NAME_RE.sub("", ext.lstrip("."))[:10].lower()
+    base = stem + ("." + ext if ext else "")
+    name = f"up_{uuid.uuid4().hex[:8]}_{base}"
+    target, err = safe_path_resolve(session_id, os.path.join("attachments", name))
+    if err:
+        raise ValueError(err)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "wb") as f:
+        f.write(data)
+    return {"file_path": f"attachments/{name}", "filename": name, "bytes": len(data),
+            "attachment_url": f"/v1/sessions/{session_id}/attachments/{name}"}
+
+def library_media(bot_id, message_id, part):
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT m.content FROM messages m JOIN sessions s ON s.session_id = m.session_id WHERE m.id = ? AND s.persona_id = ?",
+                           (message_id, bot_id)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    try:
+        p = json.loads(row[0])[part]
+        return p["image_url"]["url"] if isinstance(p.get("image_url"), dict) else p.get("image_url")
+    except (ValueError, IndexError, KeyError, TypeError, AttributeError):
+        return None
+
 def _session_title(session_id):
     conn = get_db_connection()
     try:
@@ -485,7 +603,7 @@ def on_approval_required(task_id, session_id, approval):
     except Exception as e:
         print(f"telegram approval notify failed: {type(e).__name__}")
     cfg = current_notify_config()
-    if not cfg:
+    if not cfg or _bot_muted(session_id):
         return None
     args = json.dumps(approval.get("arguments"), ensure_ascii=False)
     body = f"{approval.get('reason', '')}\n工具：{approval.get('tool')}  {args[:300]}\n会话：{_session_title(session_id)}"
@@ -503,7 +621,7 @@ def on_task_finished(task_id, session_id, final_status):
     finally:
         conn.close()
     cfg = current_notify_config()
-    if not cfg:
+    if not cfg or _bot_muted(session_id):
         return None
     label = {"completed": "已完成", "failed": "失败", "limit_reached": "达到轮数上限"}[final_status]
     body = ((row[0] if row else "") or "").strip()[:600] or "（无文字回复）"
@@ -703,6 +821,18 @@ def tool_browser_action(task_id, session_id, args):
     ws = get_session_workspace(session_id)
     return cloud_browser.execute_browser_action(session_id, ws, args)
 
+def tool_request_user_takeover(task_id, session_id, args):
+    """需要用户亲自操作（登录、验证码、扫码、付款确认）时请求接管：记事件让手机显示「打开电脑」卡片，并推送提醒。"""
+    reason = str((args or {}).get("reason") or "").strip()[:300] or "需要你在云电脑上完成一步操作"
+    log_event(task_id, "takeover_request", {"reason": reason})
+    cfg = current_notify_config()
+    if cfg and not _bot_muted(session_id):
+        cloud_notify.notify_async(cfg, "approval_required", "Bot 需要你帮忙"[:120],
+                                  f"{reason}\n打开 App → 电脑 接管，完成后点「我完成了」。\n会话：{_session_title(session_id)}")
+    return {"status": "requested", "reason": reason,
+            "note": "已请求用户在手机「电脑」页接管。现在结束本轮，用一两句话告诉用户需要做什么；"
+                    "用户完成后会发来“我完成了”，届时先截图确认结果再继续。不要索要或记录密码。"}
+
 def tool_desktop_action(task_id, session_id, args):
     if is_task_cancelled(task_id):
         return {"error": "Cancelled"}
@@ -804,6 +934,21 @@ def bot_detail(bot):
         out["routine_count"] = conn.execute("SELECT COUNT(*) FROM routines WHERE persona_id = ?", (pid,)).fetchone()[0]
         out["memory_count"] = conn.execute("SELECT COUNT(*) FROM memory_entries WHERE persona = ?", (pid,)).fetchone()[0]
         out["telegram"] = conn.execute("SELECT 1 FROM secure_settings WHERE name = ?", (telegram_setting_name(pid),)).fetchone() is not None
+        # 首页 Bot 列表：最近会话、最后一条可见消息、运行中 / 待审批任务数
+        latest = conn.execute("SELECT s.session_id, s.title FROM sessions s LEFT JOIN messages m ON m.session_id = s.session_id "
+                              "WHERE s.persona_id = ? GROUP BY s.session_id ORDER BY MAX(COALESCE(m.timestamp, s.created_at)) DESC LIMIT 1", (pid,)).fetchone()
+        out["latest_session_id"] = latest[0] if latest else None
+        out["latest_session_title"] = latest[1] if latest else None
+        last = conn.execute("SELECT m.role, m.content, m.timestamp, m.session_id FROM messages m JOIN sessions s ON s.session_id = m.session_id "
+                            "WHERE s.persona_id = ? AND m.role IN ('user', 'assistant') AND m.content IS NOT NULL AND m.content != '' "
+                            "ORDER BY m.timestamp DESC, m.id DESC LIMIT 1", (pid,)).fetchone()
+        out["last_message"] = {"role": last[0], "preview": " ".join(str(last[1]).split())[:120], "at": last[2], "session_id": last[3]} if last else None
+        counts = dict(conn.execute("SELECT t.status, COUNT(*) FROM tasks t JOIN sessions s ON s.session_id = t.session_id "
+                                   "WHERE s.persona_id = ? AND t.status IN ('running', 'queued', 'waiting_user') GROUP BY t.status", (pid,)).fetchall())
+        out["notify"] = pid not in muted_bots()
+        out["routines_enabled"] = conn.execute("SELECT COUNT(*) FROM routines WHERE persona_id = ? AND enabled = 1", (pid,)).fetchone()[0]
+        out["running_tasks"] = counts.get("running", 0) + counts.get("queued", 0)
+        out["waiting_approvals"] = counts.get("waiting_user", 0)
         return out
     finally:
         conn.close()
@@ -1194,6 +1339,18 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "request_user_takeover",
+            "description": "Ask the user to take over the cloud desktop on their phone for a step only they can do (login, password, captcha, QR scan, payment confirmation). After calling, end your turn; the user replies '我完成了' when done.",
+            "parameters": {
+                "type": "object",
+                "properties": {"reason": {"type": "string", "description": "What the user should do, in Chinese, one sentence"}},
+                "required": ["reason"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "memory_write",
             "description": "Save one long-term memory entry (shared with the user's phone). Keep it concise and self-contained; never store secrets.",
             "parameters": {
@@ -1455,6 +1612,7 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
                     elif fn_name == "file_edit": res = tool_file_edit(task_id, session_id, fn_args)
                     elif fn_name == "browser_action": res = tool_browser_action(task_id, session_id, fn_args)
                     elif fn_name == "desktop_action": res = tool_desktop_action(task_id, session_id, fn_args)
+                    elif fn_name == "request_user_takeover": res = tool_request_user_takeover(task_id, session_id, fn_args)
                     elif fn_name == "memory_write": res = tool_memory_write(task_id, session_id, fn_args)
                     elif fn_name == "memory_search": res = tool_memory_search(task_id, session_id, fn_args)
                     elif fn_name == "skill_load": res = tool_skill_load(task_id, session_id, fn_args)
@@ -1726,7 +1884,7 @@ def _finish_routine_run(run_id, routine_id, status, result=None, error=None):
 
 def on_routine_finished(routine, run):
     """例行任务结束时推送，异常不影响调度。"""
-    if not routine.get("notify", True) or run.get("status") == "skipped":
+    if not routine.get("notify", True) or run.get("status") == "skipped" or _bot_muted(persona_id=routine.get("persona_id") or ""):
         return None
     cfg = current_notify_config()
     if not cfg:
@@ -2394,6 +2552,32 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, telegram_view(bid))
             return
 
+        if path.startswith("/v1/bots/") and path.endswith("/library"):
+            bid = path[len("/v1/bots/"):-len("/library")]
+            if not get_persona(bid):
+                self._send(404, {"error": "Bot not found"})
+                return
+            self._send(200, {"items": bot_library(bid)})
+            return
+
+        m_media = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/library/media/(\d+)/(\d+)$", path)
+        if m_media:
+            url = library_media(m_media.group(1), int(m_media.group(2)), int(m_media.group(3)))
+            if not url:
+                self._send(404, {"error": "Media not found"})
+                return
+            self._send(200, {"url": url})
+            return
+
+        if path == "/v1/desktop/status":
+            conn = get_db_connection()
+            try:
+                running = conn.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('running', 'queued')").fetchone()[0]
+            finally:
+                conn.close()
+            self._send(200, {"available": cloud_desktop.is_desktop_available(), "busy": running > 0, "running_tasks": running})
+            return
+
         if path.startswith("/v1/bots/") and path.endswith("/export"):
             bid = path[len("/v1/bots/"):-len("/export")]
             if not get_persona(bid):
@@ -2696,8 +2880,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "Invalid Content-Length"})
             return None
 
-        if length < 0 or length > 5 * 1024 * 1024:
-            self._send(400 if length < 0 else 413, {"error": "Invalid body size or exceeds 5MB limit"})
+        # 附件上传（base64）放宽到 36MB，其余接口仍限制 5MB
+        limit = 36 * 1024 * 1024 if re.match(r"^/v1/sessions/[A-Za-z0-9_-]{1,64}/upload$", urlparse(self.path).path) else 5 * 1024 * 1024
+        if length < 0 or length > limit:
+            self._send(400 if length < 0 else 413, {"error": "Invalid body size or exceeds limit"})
             return None
 
         req_json = {}
@@ -2720,6 +2906,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_json = self._read_json_body()
         if req_json is None:
+            return
+
+        if path.startswith("/v1/bots/") and path.endswith("/notify"):
+            bid = path[len("/v1/bots/"):-len("/notify")]
+            if not get_persona(bid):
+                self._send(404, {"error": "Bot not found"})
+                return
+            if not isinstance(req_json.get("enabled"), bool):
+                self._send(400, {"error": "enabled must be a boolean"})
+                return
+            set_bot_notify(bid, req_json["enabled"])
+            self._send(200, {"bot_id": bid, "notify": req_json["enabled"]})
             return
 
         if path == "/v1/settings":
@@ -3025,6 +3223,61 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": str(e)})
                 return
             self._send(201 if created else 200, p)
+            return
+
+        m_up = re.match(r"^/v1/sessions/([A-Za-z0-9_-]{1,64})/upload$", path)
+        if m_up:
+            sid = m_up.group(1)
+            conn = get_db_connection()
+            try:
+                found = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (sid,)).fetchone()
+            finally:
+                conn.close()
+            if not found:
+                self._send(404, {"error": "Session not found"})
+                return
+            data_b64 = req_json.get("data_base64")
+            if not isinstance(data_b64, str) or not data_b64:
+                self._send(400, {"error": "data_base64 must be a non-empty string"})
+                return
+            try:
+                import base64
+                data = base64.b64decode(data_b64, validate=True)
+            except Exception:
+                self._send(400, {"error": "data_base64 is not valid base64"})
+                return
+            if len(data) > 25 * 1024 * 1024:
+                self._send(413, {"error": "附件超过 25MB"})
+                return
+            try:
+                self._send(200, save_upload(sid, str(req_json.get("filename") or "file"), data))
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+            return
+
+        if path == "/v1/desktop/input":
+            # 手机「电脑」页：把剪贴板文字或键盘输入发到云电脑桌面（与 Agent 共用 desktop_lock）
+            action = req_json.get("action")
+            if action == "type":
+                text = req_json.get("text")
+                if not isinstance(text, str) or not text or len(text) > 10000:
+                    self._send(400, {"error": "text must be a non-empty string (max 10000)"})
+                    return
+                args = {"action": "type", "text": text}
+            elif action == "key":
+                key = req_json.get("key")
+                if not isinstance(key, str) or not re.match(r"^[A-Za-z0-9_+]{1,40}$", key):
+                    self._send(400, {"error": "key must be an xdotool key name such as Return or ctrl+v"})
+                    return
+                args = {"action": "key", "key": key}
+            else:
+                self._send(400, {"error": "action must be type or key"})
+                return
+            if not cloud_desktop.is_desktop_available():
+                self._send(503, {"error": "云电脑桌面未运行：请先安装 / 更新云电脑桌面环境"})
+                return
+            res = cloud_desktop.execute_desktop_action("phone", GLOBAL_WORKSPACE, args)
+            self._send(200 if not res.get("error") else 500, res)
             return
 
         if path == "/v1/plugins/deps/install":

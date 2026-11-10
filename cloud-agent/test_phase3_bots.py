@@ -61,6 +61,70 @@ class BotTests(CloudServerTestCase):
         self.assertIn("law（法务：合同审查）", system)
         self.assertIn("[@提及] 用户在消息中 @ 了：law、doc", system)
 
+    def test_05_home_list_activity(self):
+        self.request("PUT", "/v1/bots/home", {"name": "首页", "instructions": "x"})
+        b = self.request("GET", "/v1/bots/home")[1]
+        self.assertEqual((b["latest_session_id"], b["last_message"], b["running_tasks"], b["waiting_approvals"]), (None, None, 0, 0))
+        FakeModelHandler.scripts["m-home"] = lambda d: {"role": "assistant", "content": "最新的\n回复"}
+        old = self.request("POST", "/v1/sessions", {"title": "旧", "persona_id": "home"})[1]["session_id"]
+        new = self.request("POST", "/v1/sessions", {"title": "新", "persona_id": "home"})[1]["session_id"]
+        t = self.submit(old, "在旧会话里说话", "m-home")[1]
+        self.wait_status(t["task_id"], ("completed",))
+        b = next(x for x in self.request("GET", "/v1/bots")[1]["bots"] if x["bot_id"] == "home")
+        self.assertEqual(b["latest_session_id"], old)   # 最近有消息的会话优先于更晚创建的空会话
+        self.assertEqual(b["last_message"]["role"], "assistant")
+        self.assertEqual(b["last_message"]["preview"], "最新的 回复")
+        self.assertNotEqual(new, old)
+
+    def test_06_library_and_notify_mute(self):
+        self.request("PUT", "/v1/bots/lib", {"name": "资料", "instructions": "x"})
+        FakeModelHandler.scripts["m-lib"] = lambda d: {"role": "assistant", "content": "参考 https://example.org/a?b=1 和 https://docs.python.org/3/。"}
+        sid = self.request("POST", "/v1/sessions", {"title": "l", "persona_id": "lib"})[1]["session_id"]
+        t = self.submit(sid, "看看 https://example.org/a?b=1", "m-lib")[1]
+        self.wait_status(t["task_id"], ("completed",))
+        items = self.request("GET", "/v1/bots/lib/library")[1]["items"]
+        links = sorted(i["url"] for i in items if i["kind"] == "link")
+        self.assertEqual(links, ["https://docs.python.org/3/", "https://example.org/a?b=1"])
+        self.assertEqual(self.request("GET", "/v1/bots/ghost/library")[0], 404)
+        self.assertEqual(self.request("GET", "/v1/bots/lib/library/media/999/0")[0], 404)
+        self.assertTrue(self.request("GET", "/v1/bots/lib")[1]["notify"])
+        self.assertEqual(self.request("PUT", "/v1/bots/lib/notify", {"enabled": "no"})[0], 400)
+        self.assertEqual(self.request("PUT", "/v1/bots/lib/notify", {"enabled": False})[1]["notify"], False)
+        self.assertFalse(self.request("GET", "/v1/bots/lib")[1]["notify"])
+        self.assertTrue(self.srv._bot_muted(sid))
+        self.request("PUT", "/v1/bots/lib/notify", {"enabled": True})
+        self.assertFalse(self.srv._bot_muted(sid))
+        status = self.request("GET", "/v1/desktop/status")[1]
+        self.assertIn("available", status)
+        self.assertEqual(self.request("POST", "/v1/desktop/input", {"action": "rm"})[0], 400)
+        self.assertEqual(self.request("POST", "/v1/desktop/input", {"action": "key", "key": "ctrl+v; rm"})[0], 400)
+
+    def test_08_upload_attachment_into_library(self):
+        import base64
+        self.request("PUT", "/v1/bots/upl", {"name": "上传", "instructions": "x"})
+        sid = self.request("POST", "/v1/sessions", {"title": "u", "persona_id": "upl"})[1]["session_id"]
+        code, res = self.request("POST", f"/v1/sessions/{sid}/upload",
+                                 {"filename": "../扫描 文档.pdf", "data_base64": base64.b64encode(b"%PDF-1.4 test").decode()})
+        self.assertEqual(code, 200, res)
+        self.assertTrue(res["file_path"].startswith("attachments/up_"))
+        self.assertNotIn("..", res["file_path"])
+        self.assertTrue(res["file_path"].endswith(".pdf"))
+        self.assertEqual(self.request("POST", f"/v1/sessions/{sid}/upload", {"filename": "a", "data_base64": "!!"})[0], 400)
+        self.assertEqual(self.request("POST", "/v1/sessions/nope/upload", {"filename": "a", "data_base64": "YQ=="})[0], 404)
+        files = [i for i in self.request("GET", "/v1/bots/upl/library")[1]["items"] if i["kind"] == "file"]
+        self.assertEqual(files[0]["attachment_url"], res["attachment_url"])
+
+    def test_07_request_user_takeover(self):
+        FakeModelHandler.scripts["m-take"] = lambda d: (tool_call("t1", "request_user_takeover", {"reason": "请登录 GitHub"})
+                                                        if d["messages"][-1]["role"] != "tool" else {"role": "assistant", "content": "请接管"})
+        sid = self.request("POST", "/v1/sessions", {"title": "t"})[1]["session_id"]
+        t = self.submit(sid, "登录", "m-take")[1]
+        self.wait_status(t["task_id"], ("completed",))
+        events = self.request("GET", f"/v1/tasks/{t['task_id']}/events?after=0")[1]["events"]
+        req = [e for e in events if e["type"] == "takeover_request"]
+        self.assertEqual(req[0]["payload"]["reason"], "请登录 GitHub")
+        self.assertIn("我完成了", tool_turns(FakeModelHandler.requests[-1])[-1]["content"])
+
     def test_04_export_import(self):
         self.request("PUT", "/v1/credentials/imp", {"api_key": "sk-import-key-0000000000000", "base_url": self.model_base})
         self.request("PUT", "/v1/bots/news", {"name": "简报", "emoji": "📰", "instructions": "做简报", "model": "m", "credential": "imp"})
