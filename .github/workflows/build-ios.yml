@@ -8,9 +8,9 @@ on:
         type: boolean
         default: false
       mac_runner:
-        description: "macOS 机器标签。macos-26 连续两次 15 分钟都没分到机器（runner 为空、0 步），默认改用 macos-15 + Xcode 26"
+        description: "macOS 机器标签。arm64 机器紧张时 GitHub 会在约 15 分钟后报「job was not acquired by Runner of type hosted」并取消；那时换 macos-15-intel（Intel 机器池，同样有 Xcode 26）"
         type: choice
-        options: [macos-15, macos-26, macos-latest]
+        options: [macos-15, macos-15-intel, macos-26, macos-latest]
         default: macos-15
 
 permissions:
