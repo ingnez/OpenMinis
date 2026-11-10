@@ -30,6 +30,7 @@ struct CloudBot: Identifiable, Hashable {
     var lastRole: String
     var lastAt: Double
     var runningTasks: Int
+    var queuedTasks: Int
     var waitingApprovals: Int
     var notify: Bool
     var routinesEnabled: Int
@@ -56,6 +57,7 @@ struct CloudBot: Identifiable, Hashable {
         self.lastRole = ""
         self.lastAt = 0
         self.runningTasks = 0
+        self.queuedTasks = 0
         self.waitingApprovals = 0
         self.notify = true
         self.routinesEnabled = 0
@@ -85,6 +87,7 @@ struct CloudBot: Identifiable, Hashable {
         lastRole = last?["role"] as? String ?? ""
         lastAt = (last?["at"] as? NSNumber)?.doubleValue ?? 0
         runningTasks = d["running_tasks"] as? Int ?? 0
+        queuedTasks = d["queued_tasks"] as? Int ?? 0
         waitingApprovals = d["waiting_approvals"] as? Int ?? 0
         notify = d["notify"] as? Bool ?? true
         routinesEnabled = d["routines_enabled"] as? Int ?? 0

@@ -176,9 +176,9 @@ struct CloudBotEditSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { save() } label: {
-                        Text(saving ? "保存中" : "完成").font(.subheadline.bold()).foregroundStyle(.white)
+                        Text(saving ? "保存中" : "完成").font(.subheadline.bold()).foregroundStyle(Color(.systemBackground))
                             .padding(.horizontal, 14).padding(.vertical, 7)
-                            .background(Capsule().fill(Color.black))
+                            .background(Capsule().fill(Color.primary))
                     }
                     .disabled(saving || bot.name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
@@ -235,9 +235,11 @@ struct CloudBotEditSheet: View {
                     updated.model = modelPick.option?.model ?? ""
                     updated.reasoningEffort = modelPick.effort.rawValue
                 }
+                CloudHaptics.success()
                 await onSaved(updated)
                 dismiss()
             } catch {
+                CloudHaptics.warning()
                 errorText = error.localizedDescription
             }
             saving = false
@@ -270,7 +272,7 @@ struct CloudBotDetailView: View {
         List {
             Section {
                 VStack(spacing: 12) {
-                    CloudBotAvatarView(spec: CloudBotAvatarSpec.of(bot), size: 112)
+                    CloudBotAliveAvatar(spec: CloudBotAvatarSpec.of(bot), size: 112)
                         .overlay(alignment: .bottomTrailing) {
                             if bot.isPrimary {
                                 Image(systemName: "star.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
@@ -295,6 +297,13 @@ struct CloudBotDetailView: View {
 
             Section {
                 NavigationLink { CloudBotLibraryView(bot: bot) } label: { Text("资料库") }
+                NavigationLink { CloudBotMemoryView(botId: bot.id, botName: bot.name) } label: {
+                    LabeledContent("记忆", value: bot.memoryCount > 0 ? "\(bot.memoryCount) 条" : "")
+                }
+                NavigationLink { CloudSkillsView(bot: bot, onBotChanged: { await refresh() }) } label: {
+                    LabeledContent("技能", value: bot.skills.map { "\($0.count) 个" } ?? "全部")
+                }
+                NavigationLink { CloudDelegationsView(sessionId: bot.latestSessionId) } label: { Text("委托记录") }
                 NavigationLink {
                     CloudComputerView(botId: bot.id, sessionId: bot.latestSessionId, reason: nil)
                 } label: {
@@ -322,7 +331,7 @@ struct CloudBotDetailView: View {
             Section {
                 Toggle("通知", isOn: Binding(get: { bot.notify }, set: { setNotify($0) })).disabled(busy)
             } footer: {
-                Text("Bot 完成任务或等你处理时通知你（Bark / ntfy 推送）。")
+                Text("Bot 完成任务或等你处理时，用 Minis 的系统通知提醒你。App 被关掉时，可在「通知」设置里选择用 Bark / ntfy 兜底。")
             }
 
             if let errorText { Section { Text(errorText).font(.footnote).foregroundStyle(.red) } }
@@ -496,9 +505,9 @@ struct CloudBotLibraryView: View {
                     ForEach(Self.filters, id: \.0) { f in
                         Button(f.1) { filter = f.0 }
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(filter == f.0 ? Color.white : Color.primary)
+                            .foregroundStyle(filter == f.0 ? Color(.systemBackground) : Color.primary)
                             .padding(.horizontal, 14).padding(.vertical, 7)
-                            .background(Capsule().fill(filter == f.0 ? Color.black : Color(.systemGray5)))
+                            .background(Capsule().fill(filter == f.0 ? Color.primary : Color(.systemGray5)))
                             .buttonStyle(.plain)
                     }
                 }
@@ -701,7 +710,7 @@ struct CloudTakeoverCard: View {
             Button(action: onOpen) {
                 Label("打开电脑接管", systemImage: "display").frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent).tint(.black)
+            .buttonStyle(.borderedProminent).tint(.primary).foregroundStyle(Color(.systemBackground))
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 14).fill(Color.orange.opacity(0.1)))

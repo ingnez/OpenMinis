@@ -167,7 +167,7 @@ struct CloudBotAvatarPicker: View {
         VStack(spacing: 22) {
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(52), spacing: 10), count: 5), spacing: 12) {
                 ForEach(0..<CloudBotAvatarSpec.shapeCount, id: \.self) { k in
-                    Button { spec.shape = k } label: {
+                    Button { CloudHaptics.selection(); spec.shape = k } label: {
                         CloudBotBlinkingIcon(spec: CloudBotAvatarSpec(shape: k, color: spec.color), size: 38)
                             .frame(width: 50, height: 50)
                             .overlay(Circle().stroke(Color.gray.opacity(spec.shape == k ? 0.45 : 0), lineWidth: 2))
@@ -178,7 +178,7 @@ struct CloudBotAvatarPicker: View {
             }
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(44), spacing: 14), count: 6), spacing: 14) {
                 ForEach(0..<CloudBotAvatarSpec.colors.count, id: \.self) { c in
-                    Button { spec.color = c } label: {
+                    Button { CloudHaptics.selection(); spec.color = c } label: {
                         Circle().fill(CloudBotAvatarSpec.colors[c]).frame(width: 28, height: 28)
                             .padding(5)
                             .overlay(Circle().stroke(Color.gray.opacity(spec.color == c ? 0.5 : 0), lineWidth: 2))
@@ -232,8 +232,8 @@ struct CloudBotCreateSheet: View {
             .safeAreaInset(edge: .bottom) {
                 Button { create() } label: {
                     Text(saving ? "创建中…" : "创建").font(.headline).frame(maxWidth: .infinity).frame(height: 50)
-                        .foregroundStyle(.white)
-                        .background(Capsule().fill(trimmed.isEmpty ? Color.gray : Color.black))
+                        .foregroundStyle(Color(.systemBackground))
+                        .background(Capsule().fill(trimmed.isEmpty ? Color.gray : Color.primary))
                 }
                 .disabled(trimmed.isEmpty || saving)
                 .padding(.horizontal, 24).padding(.bottom, 8)
@@ -287,9 +287,11 @@ struct CloudBotCreateSheet: View {
                 if modelOption != nil || effort != .off {
                     try await CloudBotService.setModelChoice(bot.id, option: modelOption, effort: effort)
                 }
+                CloudHaptics.success()
                 await onCreated(bot.id)
                 dismiss()
             } catch {
+                CloudHaptics.warning()
                 errorText = error.localizedDescription
             }
             saving = false

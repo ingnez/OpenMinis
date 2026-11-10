@@ -139,11 +139,20 @@ struct CloudBotHomeRow: View {
     let unread: Bool
 
     var body: some View {
+        let status = CloudBotStatus.of(bot)
         HStack(spacing: 14) {
-            CloudBotBlobAvatar(bot: bot)
+            Group {
+                if status == .working {
+                    CloudBotLivelyAvatar(spec: CloudBotAvatarSpec.of(bot), size: 46)
+                } else {
+                    CloudBotBlinkingIcon(spec: CloudBotAvatarSpec.of(bot), size: 46)
+                }
+            }
+            .frame(width: 46, height: 50)
+            .accessibilityLabel(bot.name)
                 .overlay(alignment: .bottomTrailing) {
-                    if bot.runningTasks > 0 || bot.waitingApprovals > 0 {
-                        Circle().fill(bot.waitingApprovals > 0 ? Color.orange : Color.green)
+                    if status.busy {
+                        Circle().fill(status.color)
                             .frame(width: 12, height: 12)
                             .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
                     }
@@ -155,6 +164,7 @@ struct CloudBotHomeRow: View {
                     Text(CloudBotHome.timeText(bot.lastAt)).font(.footnote).foregroundStyle(.tertiary)
                 }
                 HStack(spacing: 8) {
+                    if status.busy { CloudBotStatusChip(status: status) }
                     Text(previewText).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     Spacer(minLength: 0)
                     if unread {
@@ -168,7 +178,7 @@ struct CloudBotHomeRow: View {
     }
 
     private var previewText: String {
-        if bot.waitingApprovals > 0 { return "⏳ 等待你审批" }
+        if bot.waitingApprovals > 0 && bot.lastPreview.isEmpty { return "等你处理" }
         if bot.runningTasks > 0 && bot.lastPreview.isEmpty { return "正在处理…" }
         if !bot.lastPreview.isEmpty { return bot.lastPreview }
         return bot.summary.isEmpty ? "开始对话" : bot.summary
@@ -182,6 +192,7 @@ struct CloudBotHomeScreen: View {
     @AppStorage(CloudBotHome.initialsKey) private var initials: String = "我"
     @State private var path: [String] = []
     @State private var search = ""
+    @StateObject private var searchModel = CloudSearchModel()
     @State private var showCreate = false
     @State private var showCreateGroup = false
     @State private var showHub = false
@@ -227,6 +238,11 @@ struct CloudBotHomeScreen: View {
                                 .padding(.horizontal, 20)
                             }
                         }
+                        if !search.trimmingCharacters(in: .whitespaces).isEmpty {
+                            CloudSearchResultsSection(model: searchModel, query: search) { target in
+                                if target.hasPrefix("group:") { path = [target] } else { open(target) }
+                            }
+                        }
                         if model.loaded && model.bots.isEmpty && model.bannerText == nil {
                             VStack(spacing: 12) {
                                 Text("还没有 Bot").font(.headline)
@@ -239,6 +255,7 @@ struct CloudBotHomeScreen: View {
                     }
                 }
                 .refreshable { await model.refresh() }
+                .scrollDismissesKeyboard(.interactively)
                 bottomBar
             }
             .background(Color(.systemBackground))
@@ -310,6 +327,7 @@ struct CloudBotHomeScreen: View {
     }
 
     private func open(_ id: String) {
+        CloudHaptics.tap()
         model.markSeen(id)
         path = [id]
     }
@@ -317,7 +335,7 @@ struct CloudBotHomeScreen: View {
     private func hero(_ bot: CloudBot) -> some View {
         Button { open(bot.id) } label: {
             VStack(spacing: 10) {
-                CloudBotBlobAvatar(bot: bot, size: 96, dark: true)
+                CloudBotAliveAvatar(spec: CloudBotAvatarSpec.of(bot), size: 96)
                     .overlay(alignment: .bottomTrailing) {
                         ZStack {
                             Circle().fill(Color(.systemBackground)).frame(width: 30, height: 30)
@@ -330,11 +348,8 @@ struct CloudBotHomeScreen: View {
                         if model.isUnread(bot) { Circle().fill(Color.blue).frame(width: 12, height: 12) }
                     }
                 Text(bot.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary)
-                if bot.waitingApprovals > 0 {
-                    Text("⏳ 等待你审批").font(.caption).foregroundStyle(.orange)
-                } else if bot.runningTasks > 0 {
-                    Text("正在处理…").font(.caption).foregroundStyle(.green)
-                }
+                let status = CloudBotStatus.of(bot)
+                if status.busy { CloudBotStatusChip(status: status) }
             }
             .padding(.top, 8).padding(.bottom, 18)
         }
@@ -375,9 +390,11 @@ struct CloudBotHomeScreen: View {
             .accessibilityLabel("连接应用")
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("搜索", text: $search)
+                TextField("搜索 Bot 与聊天记录", text: $search)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .onChange(of: search) { q in searchModel.update(q) }
                 if !search.isEmpty {
                     Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
                 }
@@ -403,10 +420,14 @@ struct CloudBotHubView: View {
                 NavigationLink(destination: CloudPluginsView()) { Label("插件市场", systemImage: "puzzlepiece.extension") }
                 NavigationLink(destination: CloudRoutinesView()) { Label("例行任务", systemImage: "clock.arrow.circlepath") }
                 NavigationLink(destination: CloudMemoryTimelineView()) { Label("云端记忆", systemImage: "brain") }
+                NavigationLink(destination: CloudSkillsView()) { Label("技能", systemImage: "wand.and.stars") }
+                NavigationLink(destination: CloudDelegationsView()) { Label("委托记录", systemImage: "arrow.triangle.branch") }
                 NavigationLink(destination: CloudPagesView()) { Label("页面", systemImage: "doc.richtext") }
                 NavigationLink(destination: CloudComputerView(botId: nil, sessionId: nil, reason: nil)) { Label("云电脑桌面", systemImage: "display") }
             }
             Section {
+                NavigationLink(destination: CloudUsageView()) { Label("用量与每日上限", systemImage: "chart.bar") }
+                NavigationLink(destination: CloudBackupView()) { Label("备份与恢复", systemImage: "externaldrive") }
                 NavigationLink(destination: CloudAgentSettingsView()) { Label("云电脑设置", systemImage: "server.rack") }
             }
         }

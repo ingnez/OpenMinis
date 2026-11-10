@@ -658,6 +658,14 @@ struct CloudSessionView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
+                        if let theme, messages.isEmpty, !isSubmitting, liveText.isEmpty {
+                            VStack(spacing: 12) {
+                                CloudBotAliveAvatar(spec: theme.spec, size: 120)
+                                Text("和 \(theme.name) 说点什么").font(.subheadline).foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 60)
+                        }
                         ForEach(Array(messages.enumerated()), id: \.offset) { _, msg in
                             let role = msg["role"] as? String ?? "user"
                             let content = msg["content"] as? String ?? ""
@@ -1259,6 +1267,7 @@ struct CloudSessionView: View {
     }
 
     private func decide(approvalId: String, approve: Bool) {
+        if approve { CloudHaptics.success() } else { CloudHaptics.tap() }
         guard let tid = activeTaskId else { return }
         Task {
             do {
