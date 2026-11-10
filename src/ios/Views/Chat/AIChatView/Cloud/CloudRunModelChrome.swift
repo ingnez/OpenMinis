@@ -187,6 +187,7 @@ struct CloudAssistantLongPress: ViewModifier {
     var botId: String? = nil
     /// 「翻译」等需要让 Bot 处理的：把一句话交给对话页发出去
     var onAsk: ((String) -> Void)? = nil
+    @State private var systemTranslate = false
 
     func body(content: Content) -> some View {
         if let id = extras.id {
@@ -208,7 +209,11 @@ struct CloudAssistantLongPress: ViewModifier {
                     Button { onAsk("把下面这段翻译成英文（只给译文）：\n\(excerpt)") } label: { Label("翻译成英文", systemImage: "character.bubble") }
                     Button { onAsk("把下面这段翻译成中文（只给译文）：\n\(excerpt)") } label: { Label("翻译成中文", systemImage: "character.bubble") }
                 }
+                if CloudSystemTranslateSupport.available {
+                    Button { systemTranslate = true } label: { Label("系统翻译（本机，不耗 Bot）", systemImage: "translate") }
+                }
             }
+            .modifier(CloudSystemTranslate(isPresented: $systemTranslate, text: String(CloudMessageText.display(text).text.prefix(4000))))
         } else {
             content
         }
