@@ -17,12 +17,6 @@ struct CloudAgentSettingsView: View {
     @State private var isConnecting = false
     @State private var isInstalling = false
     @State private var errorMessage: String? = nil
-    @State private var followUpNotice: String? = nil
-    @State private var outboxCount = 0
-    @State private var privacyHits: [CloudPrivacyScan.Hit] = []
-    @State private var privacyConfirmed = false
-    @State private var outboxTask: Task<Void, Never>? = nil
-    @State private var memoryOutbox: [String: (String, [String: Any])] = [:]
 
     @AppStorage("OpenMinisCloud_selectedInstanceId") private var selectedProviderInstanceId: String = ""
     @AppStorage("OpenMinisCloud_manualModel") private var manualModel: String = ""
@@ -641,6 +635,12 @@ struct CloudSessionView: View {
     @State private var isPolling = false
     @State private var loadedTaskId: String? = nil
     @State private var errorMessage: String? = nil
+    @State private var followUpNotice: String? = nil
+    @State private var outboxCount = 0
+    @State private var privacyHits: [CloudPrivacyScan.Hit] = []
+    @State private var privacyConfirmed = false
+    @State private var outboxTask: Task<Void, Never>? = nil
+    @State private var memoryOutbox: [String: (String, [String: Any])] = [:]
     @State private var showComputer = false
     @State private var attachments: [CloudPendingAttachment] = []
     /// 服务器上还有更早的消息（分页）
@@ -803,11 +803,9 @@ struct CloudSessionView: View {
             }
         }
         .animation(.spring(response: 0.45, dampingFraction: 0.78), value: call.active)
-        .overlay(alignment: .bottom) { CloudFollowUpToast(text: $followUpNotice) }
-        .overlay(alignment: .top) { CloudOutboxBanner(count: outboxCount, onDiscard: discardOutbox) }
-        .modifier(CloudPrivacyDialog(hits: $privacyHits, onRedact: sendRedacted, onSend: sendAnyway))
-        .onAppear { refreshOutboxCount(); if outboxCount > 0 { flushOutbox() } }
-        .onDisappear { outboxTask?.cancel() }
+        .modifier(CloudSessionExtras(followUp: $followUpNotice, outboxCount: outboxCount, privacyHits: $privacyHits,
+                                     onDiscard: discardOutbox, onRedact: sendRedacted, onSend: sendAnyway,
+                                     onAppear: resumeOutbox, onDisappear: pauseOutbox))
         .onAppear { callDividers = CloudCallDivider.load(sessionId) }
         .onChange(of: call.error) { e in if let e, !call.active { realtimeNotice = e } }
         .sheet(isPresented: $showPhotos) { CloudPhotoPicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
@@ -1830,6 +1828,13 @@ struct CloudSessionView: View {
             }
         }
     }
+
+    private func resumeOutbox() {
+        refreshOutboxCount()
+        if outboxCount > 0 { flushOutbox() }
+    }
+
+    private func pauseOutbox() { outboxTask?.cancel() }
 
     @MainActor
     private func discardOutbox() {

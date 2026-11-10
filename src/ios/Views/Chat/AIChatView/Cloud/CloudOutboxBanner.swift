@@ -39,3 +39,24 @@ struct CloudPrivacyDialog: ViewModifier {
         }
     }
 }
+
+/// 对话页的附加层（回头提醒提示、待发送横幅、隐私提醒）合成一个修饰器，主视图类型检查轻一些
+struct CloudSessionExtras: ViewModifier {
+    @Binding var followUp: String?
+    let outboxCount: Int
+    @Binding var privacyHits: [CloudPrivacyScan.Hit]
+    let onDiscard: () -> Void
+    let onRedact: () -> Void
+    let onSend: () -> Void
+    let onAppear: () -> Void
+    let onDisappear: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .bottom) { CloudFollowUpToast(text: $followUp) }
+            .overlay(alignment: .top) { CloudOutboxBanner(count: outboxCount, onDiscard: onDiscard) }
+            .modifier(CloudPrivacyDialog(hits: $privacyHits, onRedact: onRedact, onSend: onSend))
+            .onAppear(perform: onAppear)
+            .onDisappear(perform: onDisappear)
+    }
+}
