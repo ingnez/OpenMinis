@@ -52,7 +52,9 @@ struct AgentLiveActivityWidget: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    if let session = context.state.currentSession {
+                    if let name = context.state.botCallName {
+                        BotCallRow(name: name, since: context.attributes.startDate).padding(.horizontal, 8)
+                    } else if let session = context.state.currentSession {
                         VStack(alignment: .leading, spacing: 5) {
                             HStack(spacing: 0) {
                                 Image(systemName: "bubble.left.fill")
@@ -144,12 +146,16 @@ struct AgentLiveActivityWidget: Widget {
                     }
                 }
             } compactLeading: {
+                if let name = context.state.botCallName {
+                    BotCallCompact(name: name, since: context.attributes.startDate)
+                } else {
                 HStack(spacing: 3) {
                     Image(systemName: "list.bullet.circle")
                         .font(.callout)
                     Text("\(context.state.activeSessionCount)")
                         .font(.callout.bold())
                         .contentTransition(.numericText())
+                }
                 }
             } compactTrailing: {
                 CompactTrailingView(state: context.state)
@@ -225,7 +231,7 @@ struct AgentLockScreenView: View {
                 .background(.white.opacity(0.15), in: Capsule())
                 // [T-ios-live-activity-audio-toggle] Audio play/pause control on
                 // the Lock Screen too, beside the identity capsule.
-                if state.isAudioLoaded {
+                if state.isAudioLoaded && state.botCallName == nil {
                     AudioTogglePill(isPlaying: state.isAudioPlaying)
                 }
                 Spacer()
@@ -257,6 +263,9 @@ struct AgentLockScreenView: View {
                 }
             }
 
+            if let name = state.botCallName {
+                BotCallRow(name: name, since: attributes.startDate)
+            }
             if let session = state.currentSession {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 5) {
@@ -475,4 +484,40 @@ private func doingSummary(_ count: Int) -> String {
     String(localized: "live_activity.status.doing",
            defaultValue: "\(count) doing",
            comment: "Lock Screen Live Activity badge: how many agent tasks are still running. The number may be placed wherever the language needs it.")
+}
+
+
+// MARK: - Bot 模式实时通话（App 里把 audioTitle 设成 "call:<Bot 名>"）
+
+extension AgentActivityAttributes.ContentState {
+    var botCallName: String? { audioTitle.hasPrefix("call:") ? String(audioTitle.dropFirst(5)) : nil }
+}
+
+@available(iOSApplicationExtension 16.2, *)
+struct BotCallRow: View {
+    let name: String
+    let since: Date
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "waveform").foregroundStyle(.green)
+            Text("和 \(name) 语音通话中").font(.caption.bold()).lineLimit(1)
+            Spacer()
+            Text(since, style: .timer).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+    }
+}
+
+@available(iOSApplicationExtension 16.2, *)
+struct BotCallCompact: View {
+    let name: String
+    let since: Date
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "waveform").font(.callout).foregroundStyle(.green)
+            Text(since, style: .timer).font(.caption2.monospacedDigit()).frame(maxWidth: 40)
+        }
+        .accessibilityLabel("和 \(name) 语音通话中")
+    }
 }

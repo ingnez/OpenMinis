@@ -639,6 +639,10 @@ struct CloudSessionView: View {
     @State private var showCaseNote = false
     @State private var showFiles = false
     @State private var showVoiceCall = false
+    /// 顶部浮动胶囊的实时通话（Bot 模式）
+    @StateObject private var call = CloudBotCallController()
+    @State private var callDividers: [CloudCallDivider] = []
+    @State private var pttHeld = false
     /// 通话方式：realtime = 实时双向（需在实时语音设置里选好服务商）；turns = 听完 → 发送 → 朗读
     @State private var voiceMode = "turns"
     @State private var realtimeNotice: String?
@@ -702,6 +706,8 @@ struct CloudSessionView: View {
                         if let theme {
                             Color.clear.frame(height: 1).id("chat-top")
                             ForEach(threadRows.filter { threadAnchor($0) == -1 }) { CloudBotThreadCollapsedRow(item: $0) }
+                            let stamps = turns.map { ($0.raw["timestamp"] as? NSNumber)?.doubleValue ?? 0 }
+                            ForEach(callDividers.filter { CloudCallDivider.anchor($0, timestamps: stamps) == -1 }) { CloudCallDividerRow(seconds: $0.seconds) }
                             ForEach(Array(turns.enumerated()), id: \.offset) { idx, turn in
                                 let msg = turn.message
                                 if msg.role == .user {
@@ -719,6 +725,7 @@ struct CloudSessionView: View {
                                                          onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 })
                                 }
                                 ForEach(threadRows.filter { threadAnchor($0) == idx }) { CloudBotThreadCollapsedRow(item: $0) }
+                                ForEach(callDividers.filter { CloudCallDivider.anchor($0, timestamps: stamps) == idx }) { CloudCallDividerRow(seconds: $0.seconds) }
                             }
                         }
                         ForEach(Array((theme == nil ? shownItems : []).enumerated()), id: \.offset) { _, item in
@@ -883,6 +890,16 @@ struct CloudSessionView: View {
                 }
             }
         }
+        .overlay(alignment: .top) {
+            if let theme, call.active {
+                CloudCallCapsule(call: call, name: theme.name, tint: theme.accent,
+                                 avatar: CloudBotAvatarView(spec: theme.spec, size: 34, mood: call.speakLevel > 0.05 ? .happy : .calm))
+                    .padding(.top, 4)
+            }
+        }
+        .animation(.spring(response: 0.45, dampingFraction: 0.78), value: call.active)
+        .onAppear { callDividers = CloudCallDivider.load(sessionId) }
+        .onChange(of: call.error) { e in if let e, !call.active { realtimeNotice = e } }
         .sheet(isPresented: $showPhotos) { CloudPhotoPicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showCamera) { CloudCameraPicker { attachments.append($0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showScanner) { CloudDocumentScanner { attachments.append($0) }.ignoresSafeArea() }
@@ -1133,7 +1150,13 @@ struct CloudSessionView: View {
             CloudDesktopPreview(botId: theme.botId) { showComputer = true }
         }
         if running {
-            CloudBotWorkingRow(spec: theme.spec, events: taskEvents, status: activeTaskStatus)
+            CloudTypingStatusRow(text: CloudBotCallText.typingStatus(taskStatus: activeTaskStatus == "" && isSubmitting ? "queued" : activeTaskStatus,
+                                                                     tool: liveTool?.name) ?? "正在输入…",
+                                 tint: theme.accent, avatar: CloudBotAvatarView(spec: theme.spec, size: 22, mood: .focused),
+                                 onStop: activeTaskId == nil ? nil : { cancelActiveTask() })
+        }
+        if call.active {
+            CloudCallLiveLines(lines: call.lines, tint: theme.accent)
         }
         if let streamNotice {
             Label(streamNotice, systemImage: "arrow.triangle.2.circlepath").font(.caption).foregroundStyle(.secondary)
@@ -1248,13 +1271,18 @@ struct CloudSessionView: View {
                     }
                     Button { showFiles = true } label: { Label("选择文件", systemImage: "folder") }
                     Button { showCaseNote = true } label: { Label("口述病例（脱敏后复盘）", systemImage: "stethoscope") }
+                    Button { if !inputPrompt.hasPrefix("/") { inputPrompt = "/" } } label: { Label("斜杠命令", systemImage: "slash.circle") }
+                    Picker("Bot 干活时发消息", selection: $steerInterrupt) {
+                        Label("插话：直接告诉它", systemImage: "arrow.turn.up.right").tag(true)
+                        Label("排队：这一轮做完再发", systemImage: "text.badge.plus").tag(false)
+                    }
                 } label: {
                     Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).foregroundStyle(.primary)
                         .frame(width: 40, height: 40).background(Circle().fill(Color(.systemGray6)))
                 }
                 .accessibilityLabel("添加附件")
                 HStack(alignment: .bottom, spacing: 4) {
-                    TextField(mentionBots.isEmpty ? "发消息，/ 查看命令" : "发消息，@ 交给其他 Bot，/ 查看命令", text: $inputPrompt, axis: .vertical)
+                    TextField(CloudBotComposerAction.placeholder(botName: theme.name, localHint: false), text: $inputPrompt, axis: .vertical)
                         .lineLimit(1...6)
                         .padding(.vertical, 10).padding(.leading, 14)
                         .disabled(isSubmitting)
@@ -1266,45 +1294,15 @@ struct CloudSessionView: View {
                     .accessibilityLabel(dictation.isRecording ? "停止听写" : "听写")
                 }
                 .background(Capsule().fill(Color(.systemGray6)))
-                composerIcon("slash.circle", label: "斜杠命令") {
-                    if !inputPrompt.hasPrefix("/") { inputPrompt = "/" }
-                }
-                Button { openVoiceCall() } label: {
-                    Image(systemName: "waveform").font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(Color(.systemBackground))
-                        .frame(width: 40, height: 40)
-                        .background(Circle().fill(Color.primary))
-                }
-                .accessibilityLabel("和 \(theme.name) 实时语音")
-                // 发送键在最右：空闲发送；运行中有草稿 = 插话（或排队），没草稿 = 停止
-                let steering = working && hasDraft
-                Button {
-                    if dictation.isRecording { dictation.stop() }
-                    if steering { steerOrQueue() } else if working { cancelActiveTask() } else if hasDraft { sendTask() }
-                } label: {
-                    Group {
-                        if isSubmitting || isInjecting {
-                            ProgressView().tint(.white)
-                        } else {
-                            Image(systemName: steering ? (steerInterrupt ? "arrow.turn.up.right" : "text.badge.plus")
-                                  : (working ? "stop.fill" : "arrow.up"))
-                                .font(.system(size: 16, weight: .bold))
-                        }
-                    }
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(working || hasDraft ? theme.accent : Color(.systemGray3)))
-                }
-                .disabled(isSubmitting || isInjecting || (!working && !hasDraft))
-                .contextMenu {
-                    Button { steerInterrupt = true } label: {
-                        Label("插话：运行中直接告诉模型", systemImage: steerInterrupt ? "checkmark" : "arrow.turn.up.right")
-                    }
-                    Button { steerInterrupt = false } label: {
-                        Label("排队：等这一轮做完再发", systemImage: steerInterrupt ? "text.badge.plus" : "checkmark")
-                    }
-                }
-                .accessibilityLabel(steering ? (steerInterrupt ? "插话" : "排队发送") : (working ? "停止" : "发送"))
+                // 最右边一个会变形的圆按钮：没字 = 声波（实时语音，长按按住说话），有字 = 发送；干活时有字 = 插话 / 排队。底色是头像色
+                CloudMorphButton(action: CloudBotComposerAction.of(hasDraft: hasDraft, working: working,
+                                                                   submitting: isSubmitting || isInjecting, steerInterrupt: steerInterrupt),
+                                 tint: theme.accent, inCall: call.active,
+                                 onTap: {
+                                     if dictation.isRecording { dictation.stop() }
+                                     if !hasDraft { openVoiceCall() } else if working { steerOrQueue() } else { sendTask() }
+                                 },
+                                 onPushToTalk: { on in pushToTalk(on, theme: theme) })
             }
             .padding(.horizontal, 12)
         }
@@ -1421,8 +1419,38 @@ struct CloudSessionView: View {
     /// 有附件时先上传（文件存到工作区，图片同时作为图片消息发给模型），再提交任务
     /// 打开通话：选好了实时语音服务就用实时双向，否则轮流模式
     private func openVoiceCall() {
-        voiceMode = CloudBotRealtimeAvailability.isConfigured ? "realtime" : "turns"
-        showVoiceCall = true
+        // 配好了实时语音：顶部浮动胶囊通话，对话留在下面；没配好：轮流通话全屏页
+        guard CloudBotRealtimeAvailability.isConfigured, let theme else {
+            voiceMode = "turns"
+            showVoiceCall = true
+            return
+        }
+        startFloatingCall(theme, pushToTalk: false)
+    }
+
+    private func startFloatingCall(_ theme: CloudBotChatTheme, pushToTalk: Bool) {
+        guard !call.active else { return }
+        CloudBotSpeaker.stop()
+        let sid = sessionId
+        call.onEnded = { start, seconds in
+            CloudCallDivider.add(sid, start: start, seconds: seconds)
+            callDividers = CloudCallDivider.load(sid)
+        }
+        Task {
+            await call.startCloudBot(botName: theme.name, persona: botPersona(theme.botId), sessionId: sessionId,
+                                     history: realtimeHistory(), delegate: { prompt in await delegateFromRealtime(prompt) },
+                                     onSaved: { problem in
+                                         realtimeNotice = problem
+                                         loadSessionDetail()
+                                     }, pushToTalk: pushToTalk)
+            if pushToTalk && pttHeld { call.setTalking(true) }
+        }
+    }
+
+    /// 长按声波：按住说话（没在通话就先以「按住说话」模式接通）
+    private func pushToTalk(_ on: Bool, theme: CloudBotChatTheme) {
+        pttHeld = on
+        if call.active { call.setTalking(on) } else if on, CloudBotRealtimeAvailability.isConfigured { startFloatingCall(theme, pushToTalk: true) }
     }
 
     /// 实时通话里 Bot 要真正动手：走和输入框一样的发送流程，返回新任务 ID（交不出去返回 nil）
@@ -1455,7 +1483,7 @@ struct CloudSessionView: View {
             CloudPhotoRouter.Candidate(id: $0.id, name: $0.name,
                                        text: $0.summary + " " + String($0.instructions.prefix(300)) + " " + ($0.skills ?? []).joined(separator: " "))
         }
-        return CloudPhotoRouter.best(kind: kind, current: theme.botId, bots: bots)
+        return CloudPhotoRouter.best(kind: kind, current: theme?.botId ?? "", bots: bots)
     }
 
     /// 把选好的图片和识别要求原样带到那个 Bot 的对话里（不自动发送，用户看一眼再发）

@@ -18,6 +18,15 @@ final class RealtimeVoiceSession: ObservableObject {
     @Published var error: String?
     @Published var lines: [Line] = []
     @Published var elapsed = 0
+    /// 麦克风 / AI 说话的音量 0…1（平滑过，约 12 次每秒更新）
+    @Published private(set) var micLevel: Float = 0
+    @Published private(set) var speakLevel: Float = 0
+    /// Bot 模式的浮动通话：切到后台不挂断（App 已开后台音频），由灵动岛显示通话
+    var continuesInBackground = false
+    private var micMeter = RealtimeLevelMeter()
+    private var speakMeter = RealtimeLevelMeter()
+    private var lastMicLevelAt = Date.distantPast
+    private var lastSpeakLevelAt = Date.distantPast
     private let host: RealtimeVoiceHost
     private var socket: URLSessionWebSocketTask?
     private var transport: URLSession?
@@ -218,7 +227,7 @@ final class RealtimeVoiceSession: ObservableObject {
             let newItem = ledger.itemID != item
             guard ledger.accept(response: response, item: item, index: event["content_index"] as? Int ?? 0, byteCount: bytes.count) else { return }
             if newItem { audio.markItemStart() }
-            try audio.play(bytes); status = "AI 正在说 · 可以直接插话"
+            try audio.play(bytes); noteSpeakLevel(bytes); status = "AI 正在说 · 可以直接插话"
         case "response.audio_transcript.delta", "response.output_audio_transcript.delta":
             guard let id = event["item_id"] as? String,
                   let response = event["response_id"] as? String, !ignoredResponses.contains(response),
@@ -408,7 +417,7 @@ final class RealtimeVoiceSession: ObservableObject {
                         throw RealtimeConnectionProtocol.ConnectionError.message("Gemini 返回不支持的采样率：\(mime)")
                     }
                     geminiPlaybackID = geminiAssistantID
-                    responseRunning = true; try audio.play(data); status = "AI 正在说 · 可以直接插话"
+                    responseRunning = true; try audio.play(data); noteSpeakLevel(data); status = "AI 正在说 · 可以直接插话"
                 }
             }
         }
@@ -433,6 +442,7 @@ final class RealtimeVoiceSession: ObservableObject {
                 guard let self, self.active, self.epoch == generation else { return }
                 // 静音仍发送同长度的零音频，让服务端正确结束上一句话。
                 let bytes = self.muted ? Data(count: data.count) : data
+                self.noteMicLevel(self.muted ? 0 : RealtimeLevelMeter.level(pcm16: data))
                 self.emit(self.connectionProtocol.audio(bytes))
             }
         }
@@ -488,6 +498,35 @@ final class RealtimeVoiceSession: ObservableObject {
         if active { status = muted ? "麦克风已静音" : "正在听你说" }
     }
 
+    private func noteMicLevel(_ target: Float) {
+        let v = micMeter.feed(target)
+        let now = Date()
+        guard now.timeIntervalSince(lastMicLevelAt) > 0.08 else { return }
+        lastMicLevelAt = now
+        micLevel = v
+    }
+
+    private func noteSpeakLevel(_ pcm: Data) {
+        let v = speakMeter.feed(RealtimeLevelMeter.level(pcm16: pcm))
+        let now = Date()
+        guard now.timeIntervalSince(lastSpeakLevelAt) > 0.08 else { return }
+        lastSpeakLevelAt = now
+        speakLevel = v
+    }
+
+    /// 播放排空后让「说话音量」慢慢落回 0（由界面定时调用）
+    func settleLevels() {
+        if !audio.hasPendingAudio { speakLevel = speakMeter.decay() }
+        if muted { micLevel = micMeter.decay() }
+    }
+
+    /// 按住说话：按下开麦、松开静音
+    func setTalking(_ on: Bool) {
+        guard active else { return }
+        muted = !on
+        status = on ? "正在听你说（松开结束）" : "按住说话"
+    }
+
     func toggleMute() { muted.toggle(); status = muted ? "麦克风已静音" : "正在听你说" }
     private func fail(_ message: String) { error = message; finish(reason: "连接已停止") }
     func finish(reason: String = "通话已结束") {
@@ -507,6 +546,7 @@ final class RealtimeVoiceSession: ObservableObject {
         VoiceModePreference.shared.isCapturing = false
         observers.forEach { NotificationCenter.default.removeObserver($0) }; observers = []
         UIApplication.shared.isIdleTimerDisabled = oldIdleDisabled
+        micLevel = 0; speakLevel = 0; micMeter = RealtimeLevelMeter(); speakMeter = RealtimeLevelMeter()
         status = reason
         let transcript = lines.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .map { RealtimeTranscriptLine(role: $0.role, text: $0.text, interrupted: $0.interrupted) }
@@ -519,7 +559,7 @@ final class RealtimeVoiceSession: ObservableObject {
         let names: [Notification.Name] = [AVAudioSession.interruptionNotification,
             AVAudioSession.routeChangeNotification, AVAudioSession.mediaServicesWereResetNotification,
             UIApplication.didEnterBackgroundNotification, .newChatRequested]
-        for name in names {
+        for name in names where !(continuesInBackground && name == UIApplication.didEnterBackgroundNotification) {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 // 外设插拔或系统来电时明确挂断，避免无声后台录音和旧采样率崩溃。
                 if name == AVAudioSession.routeChangeNotification {

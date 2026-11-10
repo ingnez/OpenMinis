@@ -222,7 +222,17 @@ final class AgentLiveActivityManager {
         var title: String
     }
 
+    /// Bot 模式实时通话中：灵动岛 / 锁屏显示「和 X 语音通话中」（复用纯音频的 Live Activity 通道）
+    static var botCallName: String?
+
+    /// 通话开始 / 结束时调用
+    func botCallChanged(name: String?) {
+        Self.botCallName = name
+        audioStateChanged(source: "botCall")
+    }
+
     static func currentAudioState() -> AudioState {
+        if let name = Self.botCallName { return AudioState(isPlaying: true, isLoaded: true, title: "call:" + name) }
         // [T-ios-live-activity-audio-toggle] Data source is the read-aloud (TTS)
         // engine, NOT the chat audio-attachment player. `VoiceOutputState.shared`
         // mirrors both TTS engines (System AVSpeechSynthesizer + cloud
@@ -237,7 +247,7 @@ final class AgentLiveActivityManager {
     /// True when a reply is being read aloud (playing or paused) — the condition,
     /// alongside active sessions, that should keep a Live Activity on screen.
     static func isAudioActive() -> Bool {
-        VoiceOutputState.shared.isReadingAloud
+        VoiceOutputState.shared.isReadingAloud || botCallName != nil
     }
 
     /// [T-ios-live-activity-audio-toggle] Drive a Live Activity update purely from

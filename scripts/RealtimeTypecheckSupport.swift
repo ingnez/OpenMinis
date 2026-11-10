@@ -60,3 +60,8 @@ extension Notification.Name { static let newChatRequested = Notification.Name("n
  static func waitForResult(taskId: String) async -> String { "" }
  static func saveTranscript(sessionId: String, lines: [[String: Any]]) async -> String? { nil }
 }
+// 灵动岛：真实实现在 Agent/Background/AgentLiveActivityManager.swift
+@MainActor final class AgentLiveActivityManager {
+    static let shared = AgentLiveActivityManager()
+    func botCallChanged(name: String?) {}
+}

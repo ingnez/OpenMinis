@@ -14,6 +14,10 @@ CHECKS = [
     ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudBotRealtimeAvailability", IOS / "Realtime/CloudBotRealtimeCall.swift"),
     ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudBotRealtimeCallView", IOS / "Realtime/CloudBotRealtimeCall.swift"),
     ("scripts/CloudViewsTypecheckSupport.swift", "CloudStepBar", IOS.parent / "CloudStepBarHost.swift"),
+    ("scripts/RealtimeTypecheckSupport.swift", "AgentLiveActivityManager", IOS.parents[2] / "Agent/Background/AgentLiveActivityManager.swift"),
+    ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudBotCallController", IOS / "Realtime/CloudBotCallController.swift"),
+    ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudBotCallLine", IOS / "Realtime/CloudBotCallController.swift"),
+    ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudBotCallSettingsSheet", IOS / "Realtime/CloudBotCallController.swift"),
 ]
 DECL = re.compile(r"^\s*((?:@MainActor\s+)?(?:static\s+)?(?:func|var|init)\b.*)$")
 
