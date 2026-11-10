@@ -29,6 +29,9 @@ struct CloudPathPolicyTests {
             ("/v1/memory?bot=helper&shared=1&limit=200", true),
             ("/v1/bots/helper?purge_memory=1", true),
             ("/v1/bots/helper?soft=1", true),
+            ("/v1/vault/uses?item_id=v_0123456789", true),
+            ("/v1/vault/uses?item_id=../x", false),
+            ("/v1/vault?q=x", false),
             ("/v1/bots/helper?soft=2", false),
             // 不允许的
             ("/v1/notifications?after=1&wait=1&x=2", false),

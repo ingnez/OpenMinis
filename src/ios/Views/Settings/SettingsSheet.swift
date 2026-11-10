@@ -209,6 +209,24 @@ struct SettingsSheet: View {
                                 .background(.blue, in: Circle())
                         }
                     }
+                    NavigationLink {
+                        CloudVaultView()
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("保管库")
+                                Text("Bot 可以使用的登录信息、卡片和联系信息")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "lock.shield")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white)
+                                .frame(width: 21, height: 21)
+                                .background(.teal, in: Circle())
+                        }
+                    }
                 }
 
                 Section("Storage") {
