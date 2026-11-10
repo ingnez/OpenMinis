@@ -38,6 +38,8 @@ struct CloudDesktopPreview: View {
         .buttonStyle(.plain)
         .accessibilityLabel("云电脑实时画面，点按打开")
         .task(id: botId) { await loop() }
+        // 看到实时小画面时很可能马上点开：先把桌面体检做了（「电脑」页 60 秒内直接用）
+        .onAppear { CloudDesktopWarmup.prewarm(botId: botId) }
     }
 
     private func loop() async {

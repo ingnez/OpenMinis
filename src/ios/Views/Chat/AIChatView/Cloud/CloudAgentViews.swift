@@ -255,7 +255,7 @@ struct CloudAgentSettingsView: View {
                             .foregroundColor(.accentColor)
                     }.disabled(manualModel.isEmpty || selectedProviderInstanceId.isEmpty)
 
-                    NavigationLink(destination: CloudDesktopView()) {
+                    NavigationLink(destination: CloudComputerView(botId: nil, sessionId: nil, reason: nil)) {
                         Label("查看 / 接管云电脑桌面", systemImage: "display")
                             .font(.headline)
                             .foregroundColor(.accentColor)

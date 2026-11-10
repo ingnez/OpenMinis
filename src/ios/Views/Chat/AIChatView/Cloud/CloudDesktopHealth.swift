@@ -225,6 +225,10 @@ struct CloudDesktopProblemView: View {
 /// 服务器 noVNC 太旧（没有 ES 模块）时回退到 vnc.html，并注入样式隐藏它的控制栏、连接按钮和状态条。
 final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
     var onState: ((String) -> Void)?
+    /// window.om 发回来的事件（fb 尺寸、剪贴板、截图、录屏、nopointer）
+    var onEvent: (([String: Any]) -> Void)?
+    /// 最近一次连接状态（复用保活的画面时直接知道它是不是还连着）
+    private(set) var lastState = ""
     weak var webView: WKWebView?
     private(set) var current: URL?
     private var fellBack = false
@@ -264,6 +268,7 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
         const post = s => { try { window.webkit.messageHandlers.vncState.postMessage(s); } catch (e) {} };
         let RFB = null;
         try { RFB = (await import('./core/rfb.js')).default; } catch (e) { post('nomodule'); }
+        \(omScript)
         if (RFB) {
           const url = 'ws://127.0.0.1:\(port)/\(safePath)';
           let rfb = null, tries = 0, timer = null;
@@ -276,7 +281,11 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
             rfb.resizeSession = false;
             rfb.viewOnly = \(viewOnly ? "true" : "false");
             rfb.background = '#000';
-            rfb.addEventListener('connect', () => { tries = 0; post('connected'); });
+            // 先低清快速出第一帧（实测首帧字节 -33%），连上后 App 按延迟升级画质
+            try { rfb.qualityLevel = 2; rfb.compressionLevel = 9; } catch (e) {}
+            window.__omRFB = rfb;
+            rfb.addEventListener('clipboard', e => om.send({ type: 'clipboard', text: (e.detail && e.detail.text) || '' }));
+            rfb.addEventListener('connect', () => { tries = 0; post('connected'); setTimeout(om.fb, 50); });
             rfb.addEventListener('securityfailure', e => post('error:security ' + ((e.detail && e.detail.reason) || '')));
             rfb.addEventListener('disconnect', e => {
               post((e.detail && e.detail.clean) ? 'disconnected' : 'error:画面连接断开');
@@ -286,7 +295,8 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
           const retry = () => {
             if (timer) return;
             tries += 1;
-            timer = setTimeout(connect, Math.min(10000, 800 * Math.pow(1.6, tries)));
+            // 与 CloudReconnect.delay 一致：0.3 s 起翻倍，上限 8 s（网络切换时 App 直接调 __omReconnect 立刻重连）
+            timer = setTimeout(connect, Math.min(8000, 300 * Math.pow(2, tries - 1)));
           };
           window.__omReconnect = () => { tries = 0; try { rfb && rfb.disconnect(); } catch (e) {} if (!timer) connect(); };
           connect();
@@ -295,10 +305,71 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
         """
     }
 
+    /// App 控制画面用的 window.om：触控板指针、滚轮、按键、剪贴板、画质、缩放、截图、录屏。
+    /// 指针走 RFB 协议的 PointerEvent（远端像素坐标），noVNC 没有这个接口时报 nopointer，App 退回直接触控。
+    static let omScript = """
+    const om = window.om = {};
+    om.send = o => { try { window.webkit.messageHandlers.om.postMessage(JSON.stringify(o)); } catch (e) {} };
+    const scr = document.getElementById('screen');
+    const cvs = () => scr.querySelector('canvas');
+    const cur = document.createElement('div');
+    cur.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;z-index:9;display:none';
+    cur.innerHTML = '<svg width="18" height="26" viewBox="0 0 18 26" style="position:absolute;left:-1px;top:-1px"><path d="M1 1 L1 20 L6 15 L10 24 L13 23 L9 14 L16 14 Z" fill="#fff" stroke="#000" stroke-width="1.4"/></svg>';
+    scr.appendChild(cur);
+    let view = { s: 1 }, last = { x: 0, y: 0 };
+    const rect = () => {
+      const c = cvs(); if (!c) return null;
+      const a = c.getBoundingClientRect(), b = scr.getBoundingClientRect();
+      return { x: (a.left - b.left) / view.s, y: (a.top - b.top) / view.s, w: a.width / view.s, h: a.height / view.s, fw: c.width, fh: c.height };
+    };
+    const place = () => { const r = rect(); if (!r || !r.fw) return; cur.style.left = (r.x + last.x * r.w / r.fw) + 'px'; cur.style.top = (r.y + last.y * r.h / r.fh) + 'px'; };
+    om.fb = () => { const r = rect(); if (r) om.send({ type: 'fb', w: r.fw, h: r.fh, x: r.x, y: r.y, cw: r.w, ch: r.h }); };
+    window.addEventListener('resize', () => setTimeout(() => { om.fb(); place(); }, 120));
+    const R = () => window.__omRFB;
+    om.ptr = (x, y, mask) => {
+      last = { x, y }; place();
+      const rfb = R(); if (!rfb) return;
+      try {
+        if (typeof RFB !== 'undefined' && RFB && RFB.messages && RFB.messages.pointerEvent && rfb._sock) RFB.messages.pointerEvent(rfb._sock, x, y, mask);
+        else if (rfb._sendMouse) rfb._sendMouse(x, y, mask);
+        else om.send({ type: 'nopointer' });
+      } catch (e) { om.send({ type: 'nopointer' }); }
+    };
+    om.wheel = (x, y, v, h, mask) => {
+      const tap = (b, n) => { for (let i = 0; i < n; i++) { om.ptr(x, y, mask | b); om.ptr(x, y, mask); } };
+      if (v) tap(v > 0 ? 16 : 8, Math.min(20, Math.abs(v)));
+      if (h) tap(h > 0 ? 64 : 32, Math.min(20, Math.abs(h)));
+    };
+    om.keys = list => { const rfb = R(); if (!rfb) return; for (const k of list) { try { rfb.sendKey(k[0], null, !!k[1]); } catch (e) {} } };
+    om.clip = t => { const rfb = R(); try { rfb && rfb.clipboardPasteFrom(t); } catch (e) {} };
+    om.quality = (q, c) => { const rfb = R(); try { if (rfb) { rfb.qualityLevel = q; rfb.compressionLevel = c; } } catch (e) {} };
+    om.viewOnly = v => { const rfb = R(); try { if (rfb) rfb.viewOnly = !!v; } catch (e) {} };
+    om.cursor = v => { cur.style.display = v ? 'block' : 'none'; place(); };
+    om.view = (s, tx, ty) => { view.s = s; scr.style.transformOrigin = '0 0'; scr.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + s + ')'; };
+    om.shot = () => { const c = cvs(); if (!c) { om.send({ type: 'shot', error: 'nocanvas' }); return; } try { om.send({ type: 'shot', data: c.toDataURL('image/png') }); } catch (e) { om.send({ type: 'shot', error: String(e) }); } };
+    let rec = null, chunks = [];
+    om.rec = on => {
+      const c = cvs();
+      if (on) {
+        if (!c || !c.captureStream || !window.MediaRecorder) { om.send({ type: 'rec', error: 'unsupported' }); return; }
+        const mime = ['video/mp4', 'video/webm'].find(m => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
+        try { rec = new MediaRecorder(c.captureStream(10), mime ? { mimeType: mime } : {}); } catch (e) { om.send({ type: 'rec', error: String(e) }); return; }
+        chunks = [];
+        rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+        rec.onstop = () => {
+          const b = new Blob(chunks, { type: (rec && rec.mimeType) || mime || 'video/mp4' });
+          const fr = new FileReader(); fr.onload = () => om.send({ type: 'rec', data: fr.result, mime: b.type }); fr.readAsDataURL(b);
+        };
+        rec.start(1000); om.send({ type: 'rec', started: true });
+      } else if (rec) { const r = rec; r.stop(); setTimeout(() => { rec = null; }, 0); }
+    };
+    """
+
     static func install(on config: WKWebViewConfiguration, bridge: CloudNoVNCBridge) {
         let ctl = config.userContentController
         ctl.addUserScript(WKUserScript(source: hideScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         ctl.add(CloudWeakScriptHandler(bridge), name: "vncState")
+        ctl.add(CloudWeakScriptHandler(bridge), name: "om")
     }
 
     /// 加载画面：优先 App 自己的页面
@@ -312,6 +383,12 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let s = message.body as? String else { return }
+        if message.name == "om" {
+            guard let data = s.data(using: .utf8), let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+            DispatchQueue.main.async { self.onEvent?(obj) }
+            return
+        }
+        if s == "connected" || s.hasPrefix("error") || s == "disconnected" { lastState = s }
         DispatchQueue.main.async {
             if s == "nomodule" {
                 // 服务器 noVNC 没有 core/rfb.js（很旧的版本）：退回 vnc.html + 隐藏控件

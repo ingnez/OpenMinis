@@ -208,6 +208,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift scripts/WatchPayloadTests.swift -o /tmp/watch-payload-tests
           /tmp/watch-payload-tests
+      - name: 云电脑接管纯逻辑测试（触控板 / 缩放跟随 / 按键 / 输入法 / 画质 / 计时）
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopInput.swift scripts/CloudDesktopInputTests.swift -o /tmp/cloud-desktop-input-tests
+          /tmp/cloud-desktop-input-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -227,6 +232,7 @@ jobs:
         run: |
           set -o pipefail
           python3 scripts/check_cloud_query_paths.py
+          bash scripts/check_novnc_page_js.sh
           python3 scripts/test_dashscope_realtime.py
           python3 scripts/test_local_steer_toggle.py
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPathPolicy.swift scripts/CloudPathPolicyTests.swift -o /tmp/cloud-path-tests
@@ -263,6 +269,10 @@ jobs:
           sudo cp cloud-agent/test_browser_real.py /opt/openminis-cloud-agent/test_browser_real.py
           sudo chown root:root /opt/openminis-cloud-agent/test_browser_real.py
           sudo -u openminis env DISPLAY=:99 XAUTHORITY=/var/lib/openminis-cloud-agent/.Xauthority HOME=/var/lib/openminis-cloud-agent PLAYWRIGHT_BROWSERS_PATH=/var/lib/openminis-cloud-agent/ms-playwright OPENMINIS_REAL_BROWSER_TEST=1 /opt/openminis-cloud-agent/venv/bin/python3 /opt/openminis-cloud-agent/test_browser_real.py 2>&1 | tee cloud-browser-real.log
+      - name: 云电脑画面页 window.om 真浏览器端到端（指针 / 点击 / 按键 / 剪贴板 / 滚轮 / 缩放 / 画质 / 截图 / 录屏）
+        run: |
+          set -o pipefail
+          bash scripts/desktop_bridge_e2e.sh 2>&1 | tee cloud-desktop-bridge-e2e.log
       - name: 云电脑首帧实测（回环：连接、RFB 握手、首帧耗时与字节数）
         continue-on-error: true
         run: |
@@ -311,6 +321,7 @@ jobs:
             cloud-browser-agent.log
             cloud-proxy.log
             cloud-desktop-bench.log
+            cloud-desktop-bridge-e2e.log
   build:
     if: ${{ !inputs.quick && !inputs.ui_tests }}
     runs-on: ${{ inputs.mac_runner || 'macos-15' }}
@@ -362,6 +373,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopInput.swift scripts/CloudDesktopInputTests.swift -o /tmp/cloud-desktop-input-tests
+          /tmp/cloud-desktop-input-tests | tee cloud-desktop-input-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift scripts/WatchPayloadTests.swift -o /tmp/watch-payload-tests
           /tmp/watch-payload-tests | tee watch-payload-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudTypingPhase.swift scripts/CloudTypingPhaseTests.swift -o /tmp/cloud-typing-phase-tests
@@ -675,6 +688,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopInput.swift scripts/CloudDesktopInputTests.swift -o /tmp/cloud-desktop-input-tests
+          /tmp/cloud-desktop-input-tests | tee cloud-desktop-input-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift scripts/WatchPayloadTests.swift -o /tmp/watch-payload-tests
           /tmp/watch-payload-tests | tee watch-payload-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudTypingPhase.swift scripts/CloudTypingPhaseTests.swift -o /tmp/cloud-typing-phase-tests
