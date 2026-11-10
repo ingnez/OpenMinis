@@ -10,7 +10,7 @@ let failed = 0;
 const check = (ok, msg) => { console.log((ok ? 'ok   ' : 'FAIL ') + msg); if (!ok) failed++; };
 
 async function cdp(port, match) {
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 150; i++) {
     try {
       const list = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
       const t = list.find(p => p.type === 'page' && match(p));

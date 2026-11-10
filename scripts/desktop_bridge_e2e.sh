@@ -21,5 +21,6 @@ cat > "$W/input.html" <<'HTML'
 HTML
 DISPLAY=:77 "$CHROME" --no-sandbox --no-first-run --disable-gpu --kiosk --window-position=0,0 --window-size=1280,800 --remote-debugging-port=9333 --user-data-dir="$W/t" "file://$W/input.html" >"$W/target.log" 2>&1 &
 "$CHROME" --headless=new --no-sandbox --disable-gpu --remote-debugging-port=9334 --user-data-dir="$W/v" about:blank >"$W/viewer.log" 2>&1 &
-sleep 4
-DISPLAY=:77 node scripts/desktop_bridge_e2e.mjs 9334 http://127.0.0.1:18778/om-test.html 9333 :77
+for i in $(seq 1 60); do curl -fs http://127.0.0.1:9334/json >/dev/null && curl -fs http://127.0.0.1:9333/json >/dev/null && break; sleep 0.5; done
+DISPLAY=:77 node scripts/desktop_bridge_e2e.mjs 9334 http://127.0.0.1:18778/om-test.html 9333 :77 || {
+  echo "--- viewer.log"; tail -20 "$W/viewer.log"; echo "--- target.log"; tail -20 "$W/target.log"; exit 1; }

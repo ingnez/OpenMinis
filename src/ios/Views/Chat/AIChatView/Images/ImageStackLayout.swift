@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics  // macOS 上 CGSize/CGPoint 的 .zero 和 Equatable 在这里
+#endif
 
 /// 用户消息里的图片：一张是一张圆角卡；多张叠成一摞、略微错开旋转，下面写「N 张图片」。
 /// 只有几何，没有视图，所以行高估算和界面读同一组数字（Linux 单测也能跑）。

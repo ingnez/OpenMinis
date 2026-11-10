@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics  // macOS 上 CGSize/CGPoint 的 .zero 和 Equatable 在这里
+#endif
 
 // 图片叠卡的几何、看图页页码、发图压缩规则。纯逻辑，Linux 上跑。
 func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1) } }
