@@ -46,6 +46,7 @@ struct CloudReplayView: View {
     @State private var images: [Int: UIImage] = [:]
     @State private var playing = false
     @State private var error: String?
+    @State private var redoNote: String?
 
     var body: some View {
         VStack(spacing: 12) {
@@ -68,6 +69,11 @@ struct CloudReplayView: View {
                     .disabled(current >= frames.count - 1)
             }
             .font(.title2)
+            if frames.count > 0 {
+                Button { Task { await redo() } } label: { Label("从这一步重做", systemImage: "arrow.counterclockwise.circle") }
+                    .buttonStyle(.bordered)
+            }
+            if let redoNote { Text(redoNote).font(.caption).foregroundStyle(.secondary) }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             Spacer(minLength: 0)
         }
@@ -84,6 +90,23 @@ struct CloudReplayView: View {
             frames = CloudReplayFrame.list(try await CloudConnection.shared.request(method: "GET", path: "/v1/tasks/\(taskId)/replay"))
             if frames.isEmpty { error = "这个任务没有截图" }
         } catch { self.error = error.localizedDescription }
+    }
+
+    /// 让同一个对话的 Bot 从这一帧接着重新做（Bot 自己有模型时直接发；否则提示）
+    private func redo() async {
+        playing = false
+        let f = frames.first { $0.index == current }
+        do {
+            let t = try await CloudConnection.shared.request(method: "GET", path: "/v1/tasks/\(taskId)")
+            guard let sid = t["session_id"] as? String else { redoNote = "找不到这个任务所在的对话"; return }
+            let msg = CloudReplayRedo.message(step: current, total: frames.count, actions: f?.steps ?? [])
+            _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/sessions/\(sid)/messages",
+                                                         body: ["content": msg, "model": "bot", "provider": [String: Any](), "client_nonce": UUID().uuidString])
+            redoNote = "已让 Bot 从第 \(current + 1) 帧重新做，回对话里看进度"
+            CloudHaptics.success()
+        } catch {
+            redoNote = "没发出去：\(error.localizedDescription)"
+        }
     }
 
     private func loadImage(_ i: Int) async {

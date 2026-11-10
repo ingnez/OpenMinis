@@ -20,6 +20,9 @@ struct CloudReplayTests {
         check(CloudReplayClock.durationText(42) == "42 秒" && CloudReplayClock.durationText(125) == "2 分 5 秒", "时长文字")
         let s = CloudReplaySummary.list(["replays": [["task_id": "task_x", "frames": 3, "started_at": 1.0, "ended_at": 5.0]]])
         check(s.first?.taskId == "task_x" && s.first?.frames == 3, "回放列表")
+        let redo = CloudReplayRedo.message(step: 2, total: 5, actions: ["点击 (10,20)", "输入文字"])
+        check(redo.contains("第 3 帧") && redo.contains("点击 (10,20)；输入文字") && redo.contains("先截图"), "从这一步重做")
+        check(CloudReplayRedo.message(step: 0, total: 1, actions: []).contains("没有记录动作"), "没动作")
         if failed > 0 { print("\(failed) 项失败"); exit(1) }
         print("录屏回放测试全部通过")
     }

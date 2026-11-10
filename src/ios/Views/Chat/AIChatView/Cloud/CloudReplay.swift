@@ -46,3 +46,12 @@ enum CloudReplayClock {
         return s < 60 ? "\(s) 秒" : "\(s / 60) 分 \(s % 60) 秒"
     }
 }
+
+/// 回放里「从这一步重做」：告诉 Bot 上次第 N 步做了什么，从这里接着重新执行
+enum CloudReplayRedo {
+    static func message(step: Int, total: Int, actions: [String]) -> String {
+        let did = actions.isEmpty ? "（这一步没有记录动作）" : actions.prefix(5).joined(separator: "；")
+        return "[从这一步重做] 上次任务一共 \(total) 帧，请从第 \(step + 1) 帧重新做。那一步做的是：\(did)。"
+            + "先截图看看现在屏幕的状态，前面已经完成的步骤不要重复；如果状态和当时不一样，先说明再继续。"
+    }
+}
