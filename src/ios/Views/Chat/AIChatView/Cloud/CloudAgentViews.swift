@@ -619,6 +619,7 @@ struct CloudSessionView: View {
     @State private var taskEvents: [[String: Any]] = []
     @State private var isLoading = false
     @State private var isSubmitting = false
+    @AppStorage(CloudWardVoice.doubleTapKey) private var doubleTapVoice = false
     @State private var watchedTasks: Set<String> = []
     /// 与本地模式同一个消息模型：服务器历史转换后的回合、正在进行任务的那条助手消息
     @State private var turns: [CloudHistoryAdapter.Turn] = []
@@ -1493,6 +1494,13 @@ struct CloudSessionView: View {
                 .padding()
             }
             .environment(\.cloudChatActions, chatActions)
+            // 病区语音：打开「双击消息区开语音」后，戴手套也能双击屏幕任意处开始和 Bot 说话（只在 Bot 对话里）
+            .simultaneousGesture(TapGesture(count: 2).onEnded {
+                let drafting = !inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if theme != nil, CloudWardVoice.shouldOpenVoice(enabled: doubleTapVoice, submitting: isSubmitting, editing: drafting) {
+                    CloudHaptics.tap(); openVoiceCall()
+                }
+            })
             .overlay(alignment: .bottomTrailing) {
                 if theme != nil && messages.count > 4 {
                     CloudScrollButtons(onTop: { withAnimation { proxy.scrollTo("chat-top", anchor: .top) } },
