@@ -57,10 +57,17 @@ enum CloudClientMetrics {
 enum CloudEventApplier {
     static let visibleTypes: Set<String> = ["thought", "text", "content", "tool_call", "tool_result", "final", "error", "approval_required"]
 
-    static func apply(_ message: ChatMessage, type: String, payload: [String: Any]) {
+    /// eventId：事件自己的 id，工具调用没给 id 时用它生成稳定的 id（重放同一事件不会多出一步）
+    static func apply(_ message: ChatMessage, type: String, payload: [String: Any], eventId: Int? = nil) {
         switch type {
         case "thought", "text", "content":
             if let content = payload["content"] as? String, !content.isEmpty {
+                // 模型有时在调用最后一个工具前后把同一段结论说两遍：同一回合里一字不差的段落只留一次
+                let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if type == "thought", trimmed.count >= 4, message.blocks.contains(where: {
+                    if case .text = $0.kind { return $0.content.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(trimmed) }
+                    return false
+                }) { return }
                 if let last = message.blocks.last, case .text = last.kind {
                     // 不同轮次的整段话之间空一行，免得两句粘在一起
                     if type == "thought", !last.content.isEmpty, !last.content.hasSuffix("\n") { last.content += "\n\n" }
@@ -70,7 +77,7 @@ enum CloudEventApplier {
                 }
             }
         case "tool_call":
-            let callId = payload["id"] as? String ?? UUID().uuidString
+            let callId = CloudEventLedger.toolCallId(payload["id"], eventId: eventId)
             let toolName = payload["tool"] as? String ?? "tool"
             let args = payload["arguments"] as? [String: Any] ?? [:]
             guard !message.blocks.contains(where: { $0.toolUseId == callId }) else { return }
@@ -91,7 +98,11 @@ enum CloudEventApplier {
             } else {
                 resultStr = "Done"
             }
-            if let block = message.blocks.first(where: { $0.toolUseId == callId }) {
+            // 没有 id 的结果挂到最近一个还在运行的工具上
+            let target = callId.isEmpty
+                ? message.blocks.last(where: { $0.toolUseId != nil && $0.toolStatus == .running })
+                : message.blocks.first(where: { $0.toolUseId == callId })
+            if let block = target {
                 block.content = resultStr
                 block.toolStatus = isErr ? .failed(message: resultStr) : .success
             }

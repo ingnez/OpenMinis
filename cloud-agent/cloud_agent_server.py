@@ -976,6 +976,21 @@ def log_event(task_id, etype, payload):
     with EVENT_COND:
         EVENT_COND.notify_all()
 
+def normalize_tool_call_ids(tool_calls, seen):
+    """有的中转站不给工具调用 id，或每轮都用同一个 id（如 call_0）。
+    在写入历史、执行、记事件之前换成本任务内唯一的 id，手机端才能把结果对上、不把步骤画重或吞掉。"""
+    if not isinstance(tool_calls, list):
+        return tool_calls
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        tid = tc.get("id")
+        if not isinstance(tid, str) or not tid or tid in seen:
+            tid = "call_" + uuid.uuid4().hex[:16]
+            tc["id"] = tid
+        seen.add(tid)
+    return tool_calls
+
 def live_update(task_id, text):
     with EVENT_COND:
         LIVE_SEQ[0] += 1
@@ -1401,6 +1416,14 @@ def purge_stale_incognito(conn, now=None):
     for (sid,) in rows:
         purge_session(conn, sid)
     return len(rows)
+
+
+def approval_mode_for(session_id):
+    """这个对话所属 Bot 的风险操作处理方式：auto = 一律批准（默认），ask = 按规则先问我。"""
+    try:
+        return iso.bot_settings(resource_settings(), session_persona_id(session_id)).get("approval_mode") or "auto"
+    except Exception:
+        return "auto"
 
 
 def session_persona_id(session_id):
@@ -2906,6 +2929,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         effort = "low"
     log_event(task_id, "started", {"message": "Started", "model": model, "reasoning_effort": effort})
     final_status = "completed"
+    seen_tool_ids = set()
     answered = False            # 本任务是否已经给用户写出过回答文字
     rs_perf = resource_settings()
     extra_tools = set()
@@ -2987,6 +3011,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 perf["tool_defs"] = max(perf["tool_defs"], len(tools))
                 live_update(task_id, "")
                 resp, timing = call_with_failover(send_msgs, tools)
+                # 这一轮的文字马上会作为 thought 事件写入：清掉流式草稿，免得手机把同一段话再画一遍
+                live_clear(task_id)
                 perf["llm_calls"].append(timing)
                 u = resp.get("usage") or {}
                 perf["prompt_tokens"] += int(u.get("prompt_tokens") or 0)
@@ -3012,7 +3038,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
 
             msg = choices[0].get("message", {})
             content = msg.get("content")
-            tool_calls = msg.get("tool_calls")
+            tool_calls = normalize_tool_call_ids(msg.get("tool_calls"), seen_tool_ids)
 
             if not content and not tool_calls:
                 if answered:
@@ -3072,7 +3098,12 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                         hit = {"id": "plugin_confirm", "tool": fn_name, "field": "*", "pattern": ".", "category": "outbound",
                                "reason": f"插件 {plugin_map[fn_name][0]} 的写操作 {plugin_map[fn_name][1]}"}
                     decision = None
-                    if hit:
+                    if hit and approval_mode_for(session_id) == "auto":
+                        # 「一律批准」：不暂停，照常执行，事件里留一条记录（对话里能看到批准了什么）
+                        log_event(task_id, "approval_auto", {"tool": fn_name, "rule_id": hit.get("id"), "reason": hit.get("reason"),
+                                                             "category": hit.get("category")})
+                        decision = "approved"
+                    elif hit:
                         decision = request_approval(task_id, session_id, tc_id, fn_name, fn_args, hit, policy.get("timeout_seconds", 1800))
                         if decision == "cancelled" or is_task_cancelled(task_id):
                             return None
@@ -4751,7 +4782,8 @@ class Handler(BaseHTTPRequestHandler):
                 "last_cursor": max_id,
                 "events": events
             }
-            if live and live["text"]:
+            # 只发比手机已有的更新的草稿；旧草稿反复下发会和已写入的文字叠在一起
+            if live and live["text"] and live["seq"] > live_after:
                 out["live"] = live
             self._send(200, out)
             return

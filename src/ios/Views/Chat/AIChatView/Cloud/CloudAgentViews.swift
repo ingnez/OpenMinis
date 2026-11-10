@@ -610,6 +610,11 @@ struct CloudSessionView: View {
     @State private var watchedTasks: Set<String> = []
     /// 与本地模式同一个消息模型：服务器历史转换后的回合、正在进行任务的那条助手消息
     @State private var turns: [CloudHistoryAdapter.Turn] = []
+    /// 已用过的任务事件 id：全量重拉、长轮询、恢复连接重叠时同一事件只用一次
+    @State private var ledger = CloudEventLedger()
+    /// 进行中的任务已写进历史的那几轮暂时不从历史画（实时那一份负责），任务结束重新加载后恢复
+    @State private var historyHidesTask = false
+    @State private var activeTaskCreatedAt: Double?
     @State private var liveMessage = ChatMessage(role: .assistant, content: "")
     /// 连续几次取不到进度时的一行温和提示（不是红色横幅），恢复后自动清除
     @State private var streamNotice: String?
@@ -985,6 +990,30 @@ struct CloudSessionView: View {
         throw lastError ?? URLError(.unknown)
     }
 
+    private var taskIsLive: Bool { ["running", "waiting_user", "queued"].contains(activeTaskStatus) && activeTaskId != nil }
+
+    /// 历史 → 回合。任务进行中时这次任务的几轮只由实时事件那一份显示，避免同一段话、同一步工具画两遍
+    private func rebuildTurns() {
+        let roles = messages.map { $0["role"] as? String ?? "" }
+        let stamps = messages.map { $0["timestamp"] as? Double }
+        let n = CloudEventLedger.visibleHistoryCount(roles: roles, timestamps: stamps, liveShown: taskIsLive, taskStartedAt: activeTaskCreatedAt)
+        historyHidesTask = taskIsLive && n < messages.count
+        turns = CloudHistoryAdapter.turns(from: Array(messages.prefix(n)))
+    }
+
+    /// 新事件只用一次：追加到事件列表并画进实时那一份
+    private func ingest(_ events: [[String: Any]]) -> [[String: Any]] {
+        let fresh = ledger.fresh(events)
+        guard !fresh.isEmpty else { return [] }
+        taskEvents.append(contentsOf: fresh)
+        for ev in fresh {
+            CloudEventApplier.apply(liveMessage, type: ev["type"] as? String ?? "", payload: ev["payload"] as? [String: Any] ?? [:],
+                                    eventId: CloudEventLedger.eventId(ev))
+        }
+        eventCursor = max(eventCursor, fresh.compactMap { CloudEventLedger.eventId($0) }.max() ?? 0)
+        return fresh
+    }
+
     private func loadSessionDetail() {
         isLoading = true
         Task {
@@ -992,7 +1021,6 @@ struct CloudSessionView: View {
                 let res = try await quietly("/v1/sessions/\(sessionId)")
                 await MainActor.run {
                     self.messages = res["messages"] as? [[String: Any]] ?? []
-                    self.turns = CloudHistoryAdapter.turns(from: self.messages)
                     self.tasks = res["tasks"] as? [[String: Any]] ?? []
                     self.isLoading = false
                     if !self.isStreaming { self.liveText = "" }
@@ -1002,11 +1030,16 @@ struct CloudSessionView: View {
                         let needsEvents = self.loadedTaskId != tid
                         self.activeTaskId = tid
                         self.activeTaskStatus = status
+                        self.activeTaskCreatedAt = latestTask["created_at"] as? Double
+                        self.rebuildTurns()
                         if status == "running" || status == "waiting_user" || needsEvents { pollTaskStatus(taskId: tid) }
                     } else {
                         self.activeTaskId = nil
                         self.activeTaskStatus = "idle"
+                        self.activeTaskCreatedAt = nil
                         self.taskEvents = []
+                        self.ledger.reset()
+                        self.rebuildTurns()
                     }
                 }
             } catch {
@@ -1060,8 +1093,9 @@ struct CloudSessionView: View {
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color.orange.opacity(0.1)))
             }
         }
-        let running = activeTaskStatus == "running" || activeTaskStatus == "waiting_user" || isSubmitting
-        if running && (!liveMessage.blocks.isEmpty || !liveText.isEmpty) {
+        let running = activeTaskStatus == "running" || activeTaskStatus == "waiting_user" || activeTaskStatus == "queued" || isSubmitting
+        // 进行中，或刚结束、历史还没重新加载（这次任务的几轮还没出现在历史里）：由实时那一份显示
+        if (running || historyHidesTask) && (!liveMessage.blocks.isEmpty || !liveText.isEmpty) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     CloudBotWatchingAvatar(spec: theme.spec, size: 22)
@@ -1071,8 +1105,6 @@ struct CloudSessionView: View {
                 CloudAssistantTurnView(message: liveMessage, spec: theme.spec, name: theme.name, accent: theme.accent,
                                        showHeader: false, liveText: liveText)
             }
-        } else if !liveText.isEmpty {
-            CloudProseAssistant(spec: theme.spec, name: theme.name, content: liveText, accent: theme.accent)
         }
         if running, liveMessage.blocks.contains(where: { if case .browserTool = $0.kind { return true } else { return false } }) {
             // Bot 正在用浏览器 / 桌面：对话里实时显示小画面，点开进入「电脑」
@@ -1402,9 +1434,11 @@ struct CloudSessionView: View {
                         self.watchedTasks.insert(tid)
                         self.liveMessage = ChatMessage(role: .assistant, content: "")
                         self.taskEvents = []
+                        self.ledger.reset()
                         self.eventCursor = 0
                         self.liveText = ""
                         self.liveSeq = -1
+                        self.activeTaskCreatedAt = nil
                         let row: [String: Any] = ["role": "user", "content": content, "timestamp": Date().timeIntervalSince1970]
                         self.messages.append(row)
                         self.turns.append(CloudHistoryAdapter.Turn(message: ChatMessage(role: .user, content: content), raw: row))
@@ -1432,19 +1466,21 @@ struct CloudSessionView: View {
                 let res = try await quietly("/v1/tasks/\(taskId)")
                 await MainActor.run {
                     self.isPolling = false
-                    self.loadedTaskId = taskId
                     if let status = res["status"] as? String {
                         self.activeTaskStatus = status
                     }
                     if let events = res["events"] as? [[String: Any]] {
-                        self.taskEvents = events
-                        self.eventCursor = events.compactMap { $0["id"] as? Int }.max() ?? 0
-                        let rebuilt = ChatMessage(role: .assistant, content: "")
-                        for ev in events {
-                            CloudEventApplier.apply(rebuilt, type: ev["type"] as? String ?? "", payload: ev["payload"] as? [String: Any] ?? [:])
+                        if self.loadedTaskId != taskId || self.liveMessage.blocks.isEmpty {
+                            // 换了任务（或第一次打开）：从全量事件重建一份
+                            self.liveMessage = ChatMessage(role: .assistant, content: "")
+                            self.taskEvents = []
+                            self.ledger.reset()
+                            self.eventCursor = 0
                         }
-                        self.liveMessage = rebuilt
+                        // 同一个任务：只补上还没用过的事件（之前这里整份重建，又和长轮询的事件叠在一起，文字和步骤会重复）
+                        _ = self.ingest(events)
                     }
+                    self.loadedTaskId = taskId
                     self.errorMessage = nil
                     if ["running", "waiting_user", "queued"].contains(self.activeTaskStatus) {
                         self.streamEvents(taskId: taskId)
@@ -1493,11 +1529,8 @@ struct CloudSessionView: View {
                 shouldStop: { self.activeTaskId != taskId },
                 onBatch: { batch in
                     guard self.activeTaskId == taskId else { return }
-                    if !batch.events.isEmpty {
-                        self.taskEvents.append(contentsOf: batch.events)
-                        for ev in batch.events {
-                            CloudEventApplier.apply(self.liveMessage, type: ev["type"] as? String ?? "", payload: ev["payload"] as? [String: Any] ?? [:])
-                        }
+                    let fresh = self.ingest(batch.events)
+                    if !fresh.isEmpty {
                         // Bot 需要你登录 / 接管：自动打开这个 Bot 的「电脑」页（每个任务只自动打开一次）
                         if batch.events.contains(where: { $0["type"] as? String == "takeover_request" }), !self.autoOpenedComputer.contains(taskId) {
                             self.autoOpenedComputer.insert(taskId)
@@ -1505,14 +1538,15 @@ struct CloudSessionView: View {
                             self.showComputer = true
                         }
                         // 一段话写进了事件或模型开始调用工具：正在生成的那段文字已经结束
-                        if batch.events.contains(where: { ["tool_call", "thought"].contains($0["type"] as? String ?? "") }) { self.liveText = "" }
-                        self.eventCursor = max(self.eventCursor, batch.events.compactMap { ($0["id"] as? Int) ?? ($0["monotonic_id"] as? Int) }.max() ?? 0)
+                        if fresh.contains(where: { ["tool_call", "thought", "final"].contains($0["type"] as? String ?? "") }) { self.liveText = "" }
                     }
                     if let live = batch.live, let t = live["text"] as? String, let s = live["seq"] as? Int {
                         self.liveText = t
                         self.liveSeq = s
                     }
                     if let s = batch.rawStatus { self.activeTaskStatus = s }
+                    // 结束了：正在生成的那段文字已经写进最后一轮，别再单独画一遍
+                    if batch.status?.isTerminal == true { self.liveText = "" }
                 },
                 onTrouble: { text in self.streamNotice = text })
             self.isStreaming = false
