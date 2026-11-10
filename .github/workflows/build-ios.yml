@@ -46,6 +46,8 @@ jobs:
           set -o pipefail
           python3 scripts/test_voice_protocols.py
           python3 scripts/test_realtime_voice.py
+          python3 scripts/test_voice_catalog.py
+          python3 scripts/test_dashscope_realtime.py
           xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/RealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Realtime/*.swift 2>&1 | tee realtime-typecheck.log
       - name: iOS 16 API 兼容预检
         run: |
@@ -170,6 +172,7 @@ jobs:
         run: |
           set -o pipefail
           python3 scripts/check_cloud_query_paths.py
+          python3 scripts/test_dashscope_realtime.py
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPathPolicy.swift scripts/CloudPathPolicyTests.swift -o /tmp/cloud-path-tests
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudEventLedger.swift scripts/CloudEventLedgerTests.swift -o /tmp/cloud-ledger-tests
           /tmp/cloud-ledger-tests
@@ -347,6 +350,7 @@ jobs:
           set -o pipefail
           python3 scripts/test_voice_protocols.py | tee voice-protocols-test.log
           python3 scripts/test_realtime_voice.py | tee realtime-test.log
+          python3 scripts/test_dashscope_realtime.py | tee dashscope-realtime-test.log
           xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/RealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Realtime/*.swift 2>&1 | tee realtime-typecheck.log
 
       - name: 下载并校验官方 VAD 二进制

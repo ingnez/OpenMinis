@@ -2,7 +2,7 @@ from pathlib import Path
 import subprocess,tempfile
 root=Path(__file__).resolve().parents[1]
 folder=root/'src/ios/Views/Chat/AIChatView/Realtime'
-source=(folder/'RealtimeVoiceProtocol.swift').read_text()+'\n'+(folder/'RealtimeConnectionProtocol.swift').read_text()
+source=(folder/'RealtimeVoiceProtocol.swift').read_text()+'\n'+(folder/'RealtimeConnectionProtocol.swift').read_text()+'\n'+(folder/'RealtimeDashScope.swift').read_text()
 source+=r'''
 @main struct Tests {
  static func main() throws {

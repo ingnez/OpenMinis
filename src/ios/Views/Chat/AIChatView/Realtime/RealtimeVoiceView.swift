@@ -14,8 +14,10 @@ struct RealtimeVoiceView: View {
         try? RealtimeConnectionProtocol.resolve(protocolMode, model: model)
     }
     private var availableVoices: [String] {
-        selectedProtocol?.isGemini == true ? RealtimeConnectionProtocol.geminiVoices : RealtimeConnectionProtocol.openAIVoices
+        selectedProtocol?.voices(model: model) ?? RealtimeConnectionProtocol.openAIVoices
     }
+    @AppStorage("realtimeVoice.dashscopeRegion") private var dashscopeRegion = ""
+    @AppStorage("realtimeVoice.dashscopeWorkspace") private var dashscopeWorkspace = ""
     @State private var showSettings = false
     @StateObject private var catalog = RealtimeModelCatalog()
     @AppStorage("realtimeVoice.modelsByProvider") private var modelSelections = "{}"
@@ -121,9 +123,9 @@ struct RealtimeVoiceView: View {
                 var saved = (try? JSONDecoder().decode([String: String].self, from: Data(protocolsByProvider.utf8))) ?? [:]
                 saved[providerID] = value
                 if let data = try? JSONEncoder().encode(saved), let text = String(data: data, encoding: .utf8) { protocolsByProvider = text }
-                voice = selectedProtocol?.normalizedVoice(voice) ?? "alloy"
+                voice = selectedProtocol?.normalizedVoice(voice, model: model) ?? "alloy"
             }
-            .onChange(of: model) { _ in voice = selectedProtocol?.normalizedVoice(voice) ?? "alloy" }
+            .onChange(of: model) { _ in voice = selectedProtocol?.normalizedVoice(voice, model: model) ?? "alloy" }
             .onDisappear { session.finish() }
         }.interactiveDismissDisabled(session.active)
     }
@@ -168,6 +170,9 @@ struct RealtimeVoiceView: View {
                     Picker("声音", selection: $voice) {
                         ForEach(availableVoices, id: \.self) { Text($0).tag($0) }
                     }
+                    if selectedProtocol == .dashScope {
+                        RealtimeDashScopeFields(region: $dashscopeRegion, workspace: $dashscopeWorkspace, model: model)
+                    }
                     Button {
                         Task { await session.start(providerID: providerID, model: model.trimmingCharacters(in: .whitespacesAndNewlines), voice: voice, preview: preview, protocolMode: protocolMode, validateOnly: true) }
                     } label: { Label(session.active ? "验证中…" : "验证实时连接（不开麦）", systemImage: "checkmark.shield") }
@@ -210,7 +215,12 @@ struct RealtimeVoiceView: View {
         protocolMode = protocolMap[providerID] ?? "automatic"
         if let selected = saved[providerID] { model = selected }
         else if switching { model = "" }
-        let local = providers.modelEntries.filter { $0.providerInstanceId == providerID }.map { choice($0.model) }
+        var local = providers.modelEntries.filter { $0.providerInstanceId == providerID }.map { choice($0.model) }
+        // 百炼服务商：补上文档列出的实时对话模型（在线刷新后以账号实际返回为准）
+        if let provider = supportedProviders.first(where: { $0.id == providerID }),
+           RealtimeDashScope.isDashScopeHost(URLComponents(string: provider.resolvedBaseURL(default: "").url)?.host) {
+            local += RealtimeDashScope.documentedModels.map { RealtimeModelChoice(id: $0.id, name: $0.note, audioInput: true, audioOutput: true) }
+        }
         catalog.select(providerID, local: local)
     }
     private func choice(_ value: LLMModel) -> RealtimeModelChoice {

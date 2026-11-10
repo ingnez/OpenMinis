@@ -13,7 +13,10 @@ tests=r'''
   precondition(sorted.count==8)
   precondition(sorted.first?.id=="gpt-realtime")
   precondition(item("custom-123",true,true).kind == .bidirectional)
-  precondition(item("qwen-omni").kind == .audio)
+  // 百炼文档：不带 realtime 的 omni 是非实时模型，不能走实时通话
+  precondition(item("qwen-omni").kind == .nonRealtime && !item("qwen-omni").kind.isRealtimeCandidate)
+  precondition(item("qwen3.5-omni-flash-realtime").kind == .realtime)
+  precondition(item("qwen3-asr-flash-realtime").kind == .singlePurpose)
   precondition(item("gemini-live").kind == .audio)
   precondition(item("whisper").kind == .singlePurpose)
   precondition(sorted.contains { $0.id=="plain-alias" })
@@ -32,7 +35,7 @@ tests=r'''
   precondition(c.models.isEmpty && c.error==nil && c.updatedAt != nil)
   c.select("A",local:[]);c.select("B",local:[item("obsolete")])
   precondition(c.models.isEmpty)
-  print("PASS：别名双向音频、omni/live/audio候选、TTS/ASR分类、完整目录不丢未知模型、去重、跨服务商迟到回包隔离、错误保留旧列表、成功空列表清除及缓存隔离")
+  print("PASS：别名双向音频、非实时 omni 标注、实时 omni / live / audio候选、TTS/ASR分类、完整目录不丢未知模型、去重、跨服务商迟到回包隔离、错误保留旧列表、成功空列表清除及缓存隔离")
  }
 }
 '''

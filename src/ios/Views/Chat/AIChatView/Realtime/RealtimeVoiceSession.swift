@@ -182,19 +182,25 @@ final class RealtimeVoiceSession: ObservableObject {
         switch type {
         case "session.created":
             guard !configured else { return }; configured = true
-            emit(connectionProtocol.setup(model: model, voice: voice, instructions: instructions, tools: voiceTools))
+            let opening = connectionProtocol.isDashScope && !validationOnly
+                ? RealtimeDashScope.instructions(instructions, history: host.historyTurns().map { (role: $0.role, text: $0.text) })
+                : instructions
+            emit(connectionProtocol.setup(model: model, voice: voice, instructions: opening, tools: voiceTools))
         case "session.updated":
             guard !seeded else { return }; seeded = true
             if completeValidation() { return }
             // 仅传递可见文本；已压缩会话携带摘要，不发送工具内部数据或附件。
-            for turn in host.historyTurns() {
-                emit(RealtimeVoiceProtocol.history(role: turn.role, text: turn.text))
+            // 百炼：历史已经在 instructions 里，不逐条插入
+            if !connectionProtocol.isDashScope {
+                for turn in host.historyTurns() {
+                    emit(RealtimeVoiceProtocol.history(role: turn.role, text: turn.text))
+                }
             }
             // 单一发送队列保证历史事件先于麦克风音频送达。
             guard active else { return }
             authorizeAndBeginAudio()
         case "input_audio_buffer.speech_started":
-            interrupt(sendCancel: false); status = muted ? "麦克风已静音" : "正在听你说"
+            interrupt(sendCancel: connectionProtocol.isDashScope); status = muted ? "麦克风已静音" : "正在听你说"
         case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
             status = "正在回应"
             if let id = event["item_id"] as? String, !lines.contains(where: { $0.id == id }) {
@@ -259,6 +265,7 @@ final class RealtimeVoiceSession: ObservableObject {
             // 完成瞬间的取消竞态是允许的；其他服务端错误停止会话。
             if code == "response_cancel_not_active" { return }
             let message = detail["message"] as? String ?? "未提供错误详情"
+            if connectionProtocol.isDashScope && RealtimeDashScope.isBenignError(code: code, message: message) { return }
             fail("实时服务错误（\(String(code.prefix(100)))）：\(RealtimeConnectionProtocol.safeDetail(message, key: diagnosticKey))")
         default: break
         }
@@ -435,7 +442,7 @@ final class RealtimeVoiceSession: ObservableObject {
             guard let self, self.active, !self.responseRunning else { return }
             self.status = self.muted ? "麦克风已静音" : "正在听你说"
         }
-        let stream = try audio.start()
+        let stream = try audio.start(inputSampleRate: Double(connectionProtocol.inputSampleRate))
         VoiceModePreference.shared.isCapturing = true
         microphoneTask = Task { [weak self] in
             for await data in stream {
@@ -487,7 +494,8 @@ final class RealtimeVoiceSession: ObservableObject {
             let item = ownsPlayback ? ledger.itemID : nil
             let truncation = ownsPlayback ? ledger.interrupt(playedFrames: audio.playedFrames) : nil
             audio.interrupt()
-            if let truncation { emit(truncation) }
+            // 百炼没有 conversation.item.truncate：只取消回复、丢掉没播的音频
+            if let truncation, !connectionProtocol.isDashScope { emit(truncation) }
             if let item, let index = lines.firstIndex(where: { $0.id == item }) {
                 // 转写通常领先于播放，没有逐字时间戳时不伪称全部已经播出。
                 lines[index].text = "[这段语音被打断，未保存可能尚未播放的字幕]"

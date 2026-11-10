@@ -140,8 +140,7 @@ struct CloudBotCallSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     private var voices: [String] {
-        (try? RealtimeConnectionProtocol.resolve("automatic", model: model))?.isGemini == true
-            ? RealtimeConnectionProtocol.geminiVoices : RealtimeConnectionProtocol.openAIVoices
+        (try? RealtimeConnectionProtocol.resolve("automatic", model: model))?.voices(model: model) ?? RealtimeConnectionProtocol.openAIVoices
     }
 
     var body: some View {

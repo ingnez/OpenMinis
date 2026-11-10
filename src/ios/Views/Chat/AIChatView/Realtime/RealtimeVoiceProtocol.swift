@@ -88,7 +88,9 @@ enum RealtimeVoiceProtocol {
     }
     static func isConversationModel(_ id: String) -> Bool {
         let s = id.lowercased()
+        // 百炼的 qwen3-asr-flash-realtime（转写）和 qwen3-livetranslate-*-realtime（同传）不是对话模型
         return s.contains("realtime") && !s.contains("tts") && !s.contains("transcri") && !s.contains("paraformer")
+            && !s.contains("asr") && !s.contains("livetranslate")
     }
     enum VoiceProtocolError: LocalizedError {
         case invalidEndpoint

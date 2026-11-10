@@ -9,7 +9,7 @@ struct RealtimeModelPicker: View {
     @State private var showAll = false
     private var filtered: [RealtimeModelChoice] {
         catalog.models.filter { item in
-            let scope = showAll || item.kind != .unknown
+            let scope = showAll || item.kind.isRealtimeCandidate
             return scope && (search.isEmpty || (item.id + " " + item.name).localizedCaseInsensitiveContains(search))
         }
     }
@@ -20,7 +20,7 @@ struct RealtimeModelPicker: View {
                     Text("语音候选").tag(false)
                     Text("全部模型").tag(true)
                 }.pickerStyle(.segmented)
-                Text("候选根据名称与音频能力识别。未标注能力或使用别名的模型可在「全部模型」中查找。支持音频不等于支持本页的 Realtime 通话协议。")
+                Text("候选只列可能支持实时通话的模型（按名称与音频能力识别）。转写、语音合成、非实时模型和未标注能力的模型在「全部模型」里，并标明原因。支持音频不等于支持本页的 Realtime 通话协议。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if catalog.loading {

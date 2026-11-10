@@ -5,14 +5,17 @@ import Foundation
 final class RealtimePCMEncoder: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat
-    init?(source: AVAudioFormat) {
-        guard let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24_000,
+    private let rate: Double
+    /// rate：上行采样率（OpenAI / Gemini 24 kHz，百炼 16 kHz）
+    init?(source: AVAudioFormat, rate: Double = 24_000) {
+        self.rate = rate
+        guard let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: rate,
                                         channels: 1, interleaved: true),
               let converter = AVAudioConverter(from: source, to: target) else { return nil }
         self.converter = converter; self.outputFormat = target
     }
     func encode(_ input: AVAudioPCMBuffer) -> Data? {
-        let capacity = AVAudioFrameCount(ceil(Double(input.frameLength) * 24_000 / input.format.sampleRate) + 32)
+        let capacity = AVAudioFrameCount(ceil(Double(input.frameLength) * rate / input.format.sampleRate) + 32)
         guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return nil }
         var supplied = false
         var error: NSError?
@@ -41,7 +44,7 @@ final class RealtimeVoiceAudio {
     private let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24_000,
                                       channels: 1, interleaved: false)!
 
-    func start() throws -> AsyncStream<Data> {
+    func start(inputSampleRate: Double = 24_000) throws -> AsyncStream<Data> {
         guard AudioSessionCoordinator.shared.beginAndWait(.realtimeConversation, timeout: 2),
               AudioSessionCoordinator.lastApplyError == nil else {
             AudioSessionCoordinator.shared.end(.realtimeConversation)
@@ -54,7 +57,7 @@ final class RealtimeVoiceAudio {
             try engine.inputNode.setVoiceProcessingEnabled(true)
             let inputFormat = engine.inputNode.outputFormat(forBus: 0)
             guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
-                  let encoder = RealtimePCMEncoder(source: inputFormat) else {
+                  let encoder = RealtimePCMEncoder(source: inputFormat, rate: inputSampleRate) else {
                 throw AudioError.start("当前音频设备无法提供有效的麦克风输入。")
             }
             let player = AVAudioPlayerNode(); self.player = player
