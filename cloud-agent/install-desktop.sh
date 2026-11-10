@@ -54,6 +54,7 @@ timeout 1500 apt-get $APT_OPTS install -y \
     x11-utils \
     xauth \
     xclip \
+    xsel \
     openssl
 
 echo "=== [Desktop] 2. 创建或核验专用用户 ($SERVICE_USER) ==="

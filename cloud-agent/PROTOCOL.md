@@ -624,6 +624,14 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 每项可选 `allowed_bots: [bot_id]`（`[]` 或 `null` = 所有 Bot）。不在名单的 Bot 调用会被拒并记一条失败使用记录；`vault_list` 的 `allowed` 按调用的 Bot 计算。
 - `GET /v1/vault`（只给 App）每项多出提示：卡片 `expiry_hint`（MM/YY）、联系信息 `address_hint`（默认地址一行）、登录 `pw_weak` / `pw_reused`（布尔）。服务端解密后只算提示，密码、卡号、CVV 原值不外传；模型看到的 `for_model` 不含这些提示。`?q=` 搜索也覆盖两个提示字段。
 
+## 云电脑中文输入修复（2.45.0）
+
+- 修复：`POST /v1/desktop/input {"action":"type"}` 输入中文等非 ASCII 时卡 5 秒后报 500（`xclip … timed out after 5 seconds`）。原因是 xclip fork 出的常驻进程继承了 PIPE 的 stdout/stderr。现在 xclip / xsel 的输出一律 DEVNULL，只等前台进程退出，并确认剪贴板读回一致后再 `xdotool key ctrl+v`。
+- 自动退路：xclip 不行用 xsel；剪贴板都不行时改用 `xdotool type --file -` 逐字输入，响应里 `method:"xdotool_type"` 和 `fallback` 说明。成功时 `method:"clipboard"`、`via:"xclip"|"xsel"`。
+- 全都失败时仍是 500，但 `error` 是中文说明（不带内部命令），并带 `friendly:true`。
+- `clipboard_set` 有同样的问题（stderr 用了 PIPE），一起修好；`clipboard_get` 也可以用 xsel 读。保管库粘贴走 `xdotool type`（不经剪贴板，值不进剪贴板），这次补上了 XAUTHORITY。
+- 安装脚本多装 `xsel`。
+
 ## 云电脑智能键盘（2.44.0）
 
 - `GET /v1/desktop/focus` → `{"editable","password","kind","available"}`：主屏浏览器（Agent 用的那个 Chromium）当前获得焦点的元素是不是输入框、是不是密码框。只返回类型，从不读取或返回内容；浏览器没开时不会为此启动浏览器（`available:false`）。

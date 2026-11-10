@@ -340,8 +340,9 @@ struct CloudComputerView: View {
                 let r = try await connection.request(method: "POST", path: "/v1/desktop/input", body: payload)
                 onResult?(r)
                 if let done { show(done) }
+                if let note = r["fallback"] as? String { show(note) }
             } catch {
-                show(error.localizedDescription)
+                show(CloudDesktopInputError.message(error.localizedDescription))
             }
         }
     }

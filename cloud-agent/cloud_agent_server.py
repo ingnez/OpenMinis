@@ -638,7 +638,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.44.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.45.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1619,8 +1619,7 @@ def _vault_type_desktop(session_id, values, display=None):
         return {"error": "云电脑没有安装 xdotool，无法在桌面输入"}
     if display is None and session_id:
         _key, _owner, display = browser_route(session_id)
-    env = os.environ.copy()
-    env["DISPLAY"] = display or os.environ.get("DISPLAY", ":99")
+    env = cloud_desktop._x_env(display or os.environ.get("DISPLAY", ":99"))
     for i, (_name, value) in enumerate(values):
         if i:
             subprocess.run(["xdotool", "key", "Tab"], env=env, capture_output=True, timeout=10)
