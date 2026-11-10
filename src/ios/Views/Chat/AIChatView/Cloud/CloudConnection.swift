@@ -293,6 +293,10 @@ public final class CloudConnection: ObservableObject {
         guard (200...299).contains(response.statusCode) else {
             let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             let reason = parsed?["error"] as? String ?? "请检查服务和连接状态"
+            // 旧版服务没有新接口：PUT/DELETE 由 http.server 返回 501，未知 GET/POST 路由返回 404 "Not found"。
+            if response.statusCode == 501 || (response.statusCode == 404 && reason == "Not found") {
+                throw failure("云电脑上的服务版本过旧，请点「安装 / 更新服务器 Agent 服务」后重试")
+            }
             throw failure("云端 HTTP \(response.statusCode)：\(reason)")
         }
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw failure("云端没有返回 JSON 对象") }

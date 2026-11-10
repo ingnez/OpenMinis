@@ -39,7 +39,7 @@ struct CloudAgentSettingsView: View {
     var body: some View {
         Form {
             Section {
-                TextField("连接名称 (如: 我的云端VPS)", text: $connection.name)
+                TextField("连接名称 (如: 我的云电脑)", text: $connection.name)
                     .disabled(isConnecting || isInstalling)
                 TextField("IP地址 / 域名", text: $connection.host)
                     .textInputAutocapitalization(.never)
@@ -62,7 +62,7 @@ struct CloudAgentSettingsView: View {
                 SecureField("Bearer Token (安装后自动写入)", text: $tokenInput)
                     .disabled(isConnecting || isInstalling)
             } header: {
-                Text("VPS 服务器配置")
+                Text("云电脑服务器配置")
             } footer: {
                 Text("密码与凭据保存在本地 Keychain (ThisDeviceOnly)，绝不在日志中明文记录。\n安装服务需要 Debian / Ubuntu 系统且账号具备 root 或免密 sudo 权限。")
             }
@@ -237,30 +237,6 @@ struct CloudAgentSettingsView: View {
                             .foregroundColor(.accentColor)
                     }.disabled(manualModel.isEmpty || selectedProviderInstanceId.isEmpty)
 
-                    NavigationLink(destination: CloudRoutinesView()) {
-                        Label("云端例行任务", systemImage: "calendar.badge.clock")
-                            .font(.headline)
-                            .foregroundColor(.accentColor)
-                    }
-
-                    NavigationLink(destination: CloudPersonasView()) {
-                        Label("云端人格", systemImage: "person.2.crop.square.stack")
-                            .font(.headline)
-                            .foregroundColor(.accentColor)
-                    }
-
-                    NavigationLink(destination: CloudMemoryTimelineView()) {
-                        Label("记忆时间线", systemImage: "brain.head.profile")
-                            .font(.headline)
-                            .foregroundColor(.accentColor)
-                    }
-
-                    NavigationLink(destination: CloudPagesView()) {
-                        Label("云端页面库", systemImage: "doc.richtext")
-                            .font(.headline)
-                            .foregroundColor(.accentColor)
-                    }
-
                     NavigationLink(destination: CloudDesktopView()) {
                         Label("查看 / 接管云电脑桌面", systemImage: "display")
                             .font(.headline)
@@ -269,6 +245,40 @@ struct CloudAgentSettingsView: View {
                     #endif
                 }
             }
+
+            #if os(iOS)
+            Section {
+                NavigationLink(destination: CloudRoutinesView()) {
+                    Label("云端例行任务", systemImage: "calendar.badge.clock")
+                        .font(.headline)
+                        .foregroundColor(.accentColor)
+                }
+
+                NavigationLink(destination: CloudPersonasView()) {
+                    Label("云端人格", systemImage: "person.2.crop.square.stack")
+                        .font(.headline)
+                        .foregroundColor(.accentColor)
+                }
+
+                NavigationLink(destination: CloudMemoryTimelineView()) {
+                    Label("记忆时间线", systemImage: "brain.head.profile")
+                        .font(.headline)
+                        .foregroundColor(.accentColor)
+                }
+
+                NavigationLink(destination: CloudPagesView()) {
+                    Label("云端页面库", systemImage: "doc.richtext")
+                        .font(.headline)
+                        .foregroundColor(.accentColor)
+                }
+            } header: {
+                Text("云电脑功能")
+            } footer: {
+                if !connection.isConnected {
+                    Text("未连接时打开会自动尝试连接；若提示服务版本过旧，请先点「安装 / 更新服务器 Agent 服务」。")
+                }
+            }
+            #endif
 
             if let err = errorMessage ?? (caseErrorString(connection.status)) {
                 Section("错误与状态") {
@@ -282,7 +292,7 @@ struct CloudAgentSettingsView: View {
                 }
             }
         }
-        .navigationTitle("VPS 云端 Agent")
+        .navigationTitle("云电脑设置")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await refreshCloudModels() }
         .onAppear {
@@ -435,7 +445,7 @@ struct CloudSessionsView: View {
                 }
             }
 
-            Section("VPS 会话列表") {
+            Section("云电脑会话列表") {
                 if isLoading {
                     HStack {
                         Spacer()

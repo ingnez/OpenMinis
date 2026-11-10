@@ -100,9 +100,18 @@ struct CloudRoutinesView: View {
     @State private var loading = false
     @State private var errorText: String?
     @State private var showingNew = false
+    @ObservedObject private var connection = CloudConnection.shared
 
     var body: some View {
         List {
+            if !connection.isConnected {
+                Section {
+                    Label("尚未连接云电脑。打开本页会自动尝试连接；如失败，请回到「云电脑设置」填写服务器并连接。若提示服务版本过旧，请点「安装 / 更新服务器 Agent 服务」。", systemImage: "bolt.horizontal.circle")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("重试连接") { Task { await reload() } }
+                }
+            }
             if let errorText {
                 Section { Text(errorText).foregroundStyle(.red).font(.footnote) }
             }
@@ -133,9 +142,9 @@ struct CloudRoutinesView: View {
                     }
                 }
             } header: {
-                Text("VPS 例行任务")
+                Text("云电脑例行任务")
             } footer: {
-                Text("例行任务由 VPS 调度执行，使用加密保存的服务商 Key，手机离线也会运行。左滑可立即运行、启停或删除。")
+                Text("例行任务由云电脑调度执行，使用加密保存的服务商 Key，手机离线也会运行。左滑可立即运行、启停或删除。")
             }
         }
         .navigationTitle("云端例行任务")

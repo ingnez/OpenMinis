@@ -81,7 +81,7 @@ struct CloudCredentialSection: View {
 
     var body: some View {
         Section {
-            Toggle("在 VPS 加密保存所选服务商 Key", isOn: Binding(get: { storeOnVPS }, set: { apply($0) }))
+            Toggle("在云电脑加密保存所选服务商 Key", isOn: Binding(get: { storeOnVPS }, set: { apply($0) }))
                 .disabled(busy || selectedInstanceId.isEmpty)
             if busy { HStack { ProgressView(); Text("正在同步…").foregroundStyle(.secondary) } }
             if let statusText { Text(statusText).font(.footnote).foregroundStyle(.secondary) }
@@ -105,7 +105,7 @@ struct CloudCredentialSection: View {
                 } else {
                     try await CloudCredentialSync.remove(instanceId: selectedInstanceId)
                     storeOnVPS = false
-                    statusText = "VPS 上的副本已删除"
+                    statusText = "云电脑上的副本已删除"
                 }
             } catch {
                 errorText = error.localizedDescription
@@ -120,14 +120,14 @@ struct CloudCredentialSection: View {
             let result = try await CloudCredentialSync.list()
             guard result.available else {
                 statusText = nil
-                errorText = "VPS 加密存储不可用：\(result.reason ?? "未知原因")。请重新安装服务器 Agent。"
+                errorText = "云电脑加密存储不可用：\(result.reason ?? "未知原因")。请重新安装服务器 Agent。"
                 return
             }
             let name = CloudCredentialSync.credentialName(forInstanceId: selectedInstanceId)
             if let item = result.items.first(where: { ($0["name"] as? String) == name }) {
-                statusText = "VPS 已保存（\(item["key_hint"] as? String ?? "…")）"
+                statusText = "云电脑已保存（\(item["key_hint"] as? String ?? "…")）"
             } else {
-                statusText = storeOnVPS ? "VPS 上尚无副本，下次提交任务时自动上传" : nil
+                statusText = storeOnVPS ? "云电脑上尚无副本，下次提交任务时自动上传" : nil
             }
         } catch {
             errorText = error.localizedDescription

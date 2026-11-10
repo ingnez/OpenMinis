@@ -200,7 +200,7 @@ struct SettingsSheet: View {
                         CloudAgentSettingsView()
                     } label: {
                         Label {
-                            Text("VPS 云端 Agent")
+                            Text("云电脑设置")
                         } icon: {
                             Image(systemName: "server.rack")
                                 .font(.system(size: 9))

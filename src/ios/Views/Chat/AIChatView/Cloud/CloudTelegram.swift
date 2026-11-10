@@ -89,7 +89,7 @@ struct CloudTelegramSection: View {
         Task {
             do {
                 _ = try await CloudConnection.shared.request(method: "DELETE", path: "/v1/telegram", body: nil)
-                statusText = "已断开并删除 VPS 上的 Bot Token"
+                statusText = "已断开并删除云电脑上的 Bot Token"
             } catch {
                 errorText = error.localizedDescription
             }

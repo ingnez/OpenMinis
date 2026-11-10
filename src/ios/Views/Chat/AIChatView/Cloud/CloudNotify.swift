@@ -84,7 +84,7 @@ struct CloudNotifySection: View {
     private func remove() {
         run {
             _ = try await CloudConnection.shared.request(method: "DELETE", path: "/v1/notify", body: nil)
-            statusText = "已关闭推送并删除 VPS 上的配置"
+            statusText = "已关闭推送并删除云电脑上的配置"
         }
     }
 
@@ -102,7 +102,7 @@ struct CloudNotifySection: View {
         guard CloudConnection.shared.isConnected,
               let resp = try? await CloudConnection.shared.request(method: "GET", path: "/v1/notify", body: nil) else { return }
         if (resp["available"] as? Bool) == false {
-            errorText = "VPS 加密存储不可用：\(resp["reason"] as? String ?? "未知原因")。请重新安装服务器 Agent。"
+            errorText = "云电脑加密存储不可用：\(resp["reason"] as? String ?? "未知原因")。请重新安装服务器 Agent。"
         }
         guard (resp["configured"] as? Bool) == true, let cfg = resp["config"] as? [String: Any] else {
             configuredText = nil
