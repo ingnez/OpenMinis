@@ -359,3 +359,11 @@
 - 技能白名单：不在 `skills` 中的技能不出现在索引，`skill_load` 也拒绝加载。
 - `GET /v1/sessions?bot=<id>`、`GET /v1/routines?bot=<id>` 按 Bot 过滤，会话列表每项含 `persona_id`。
 - 导出 `GET /v1/bots/{id}/export` → `{format:"openminis-bot/1", bot_id, bot, routines, memory}`（不含凭据）。导入 `POST /v1/bots/import {bundle, bot_id?, credential?, model?}`：id 冲突时自动加后缀；私有记忆写入新 Bot；提供凭据与模型时例行任务以停用状态创建，否则列入 `routines_skipped`。
+
+### 6.2 插件（MCP 连接器 + 技能包）
+- `GET /v1/plugins` → `{installed, catalog}`。内置目录（`cloud_plugin_catalog.py`）含官方参考 MCP（fetch、time、memory、sequential-thinking、filesystem）、公开远程 MCP（DeepWiki、Context7、GitHub）、Brave 搜索与自带技能包。
+- `POST /v1/plugins/install {catalog_id | url | manifest, secrets?, default_grant?, acknowledge_command?}`：非内置的 stdio 清单会在 VPS 上运行命令，首次返回 428 `{error:"confirm_command", command, preview}`，用户确认后带 `acknowledge_command:true` 重试。HTTP 端点必须是 https（仅 localhost 允许 http），禁止重定向。
+- `PUT /v1/plugins/{id} {enabled?, default_grant?, secrets?}`：密钥按清单声明的名称加密保存（`secure_settings`，`plugin:<id>`），空串表示删除；响应只返回 `secrets[].set`。`DELETE /v1/plugins/{id}` 同时删除密钥和技能包写入的技能。`GET /v1/plugins/{id}/tools` 实时连接并列出工具（401/403 → 409 `needs_auth`）。
+- 状态：`ready` / `needs_auth`（缺少必填密钥或远端 401/403）/ `missing_dependency`（缺少 uvx、npx 等）/ `error` / `disabled`。
+- 授权：Bot 的 `plugins` 列表决定可用插件；不属于任何 Bot 的会话使用 `default_grant` 为真的插件。模型看到的工具名为 `mcp__<插件>__<工具>`；不可用的插件会写进系统提示词，让模型提示用户去授权。调用时遇到 401/403 产生 `auth_required` 任务事件。清单的 `confirm_pattern` 命中的工具（例如 GitHub 写操作）每次都先走审批（`rule_id: plugin_confirm`）。
+- `POST /v1/plugins/import-phone {servers:[{id, url, headers} | {id, command, args, env}]}`：复用手机 MCP 配置，请求头与环境变量全部作为加密密钥保存，插件 id 为 `phone-<名称>`。

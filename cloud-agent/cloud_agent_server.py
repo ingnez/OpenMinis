@@ -56,6 +56,8 @@ import cloud_notify
 import cloud_pages
 import cloud_telegram
 import cloud_bots
+import cloud_plugins
+import cloud_mcp
 
 HOST = os.environ.get("OPENMINIS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
@@ -254,6 +256,7 @@ def init_db():
     cloud_memory.ensure_schema(conn)
     cloud_skills.ensure_schema(conn)
     cloud_bots.ensure_schema(conn)
+    cloud_plugins.ensure_schema(conn)
     cloud_notify.ensure_schema(conn)
     cloud_pages.ensure_schema(conn)
     cursor.execute("CREATE TABLE IF NOT EXISTS telegram_chats (chat_id INTEGER PRIMARY KEY, session_id TEXT, updated_at REAL)")
@@ -740,6 +743,25 @@ SERVER_TOOL_NOTES = (
     "\n[生成图片] 用户要图片时调用 image_generate，图片保存在工作区 attachments/。"
     "\n[发消息] send_message 可经 Telegram 或推送给用户发消息；每次都会先作为草稿请用户确认，被拒绝时不要重试同一内容。"
 )
+
+PLUGINS = cloud_plugins.Registry(lambda: get_db_connection(), os.path.join(BASE_DIR, "plugin-files"), cloud_skills)
+import atexit
+atexit.register(PLUGINS.close_all)
+
+def plugin_tools_for_session(session_id, depth):
+    """返回 (工具定义, 名称映射, 系统提示补充)。插件出错不影响任务本身。"""
+    try:
+        defs, mapping, unavailable = PLUGINS.tool_definitions(session_bot(session_id))
+    except Exception as e:
+        print(f"plugin tools failed: {e}")
+        return [], {}, ""
+    note = ""
+    if mapping:
+        note += "\n[插件] 名为 mcp__<插件>__<工具> 的函数来自用户安装的 MCP 插件，结果以插件真实返回为准。"
+    if unavailable:
+        note += "\n[插件不可用] " + "；".join(
+            f"{p['name']}（{'需要授权：请用户在手机“插件”页填写密钥' if 'needs_auth' in err else err[:80]}）" for p, err in unavailable[:10])
+    return defs, mapping, note
 
 PERSONA_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
@@ -1300,7 +1322,8 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
     rows = c.fetchall()
     conn.close()
 
-    system_text = persona_prompt(session_id) + (instructions or "") + server_tool_notes(session_id) + mention_note(session_id, initial_content)
+    plugin_defs, plugin_map, plugin_note = plugin_tools_for_session(session_id, depth)
+    system_text = persona_prompt(session_id) + (instructions or "") + server_tool_notes(session_id) + plugin_note + mention_note(session_id, initial_content)
     messages = [{"role": "system", "content": system_text.lstrip()}]
     for r_role, r_content, r_tc, r_tcid in rows:
         m = {"role": r_role}
@@ -1331,7 +1354,7 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
                 break
             try:
                 resp = call_llm(chat_url, {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}, {
-                    "model": model, "messages": messages, "tools": tools_for_depth(depth), "tool_choice": "auto", "stream": False
+                    "model": model, "messages": messages, "tools": tools_for_depth(depth) + plugin_defs, "tool_choice": "auto", "stream": False
                 })
             except Exception as e:
                 log_event(task_id, "error", {"error": sanitize_err(e)})
@@ -1398,6 +1421,9 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
                     hit = cloud_policy.evaluate(fn_name, fn_args, policy)
                     if not hit and fn_name in ALWAYS_CONFIRM_TOOLS:
                         hit = ALWAYS_CONFIRM_TOOLS[fn_name]
+                    if not hit and fn_name in plugin_map and PLUGINS.needs_confirm(*plugin_map[fn_name]):
+                        hit = {"id": "plugin_confirm", "tool": fn_name, "field": "*", "pattern": ".", "category": "outbound",
+                               "reason": f"插件 {plugin_map[fn_name][0]} 的写操作 {plugin_map[fn_name][1]}"}
                     decision = None
                     if hit:
                         decision = request_approval(task_id, session_id, tc_id, fn_name, fn_args, hit, policy.get("timeout_seconds", 1800))
@@ -1421,6 +1447,10 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
                     elif fn_name == "subagent_task": res = tool_subagent_task(task_id, session_id, fn_args, model, provider_config, depth)
                     elif fn_name == "image_generate": res = tool_image_generate(task_id, session_id, fn_args, provider_config)
                     elif fn_name == "send_message": res = tool_send_message(task_id, session_id, fn_args)
+                    elif fn_name in plugin_map:
+                        res = PLUGINS.call(plugin_map[fn_name][0], plugin_map[fn_name][1], fn_args)
+                        if isinstance(res, dict) and res.get("error") == "needs_auth":
+                            log_event(task_id, "auth_required", {"plugin": res.get("plugin"), "message": res.get("message")})
                     else: res = {"error": f"Unknown tool {fn_name}"}
 
                     log_event(task_id, "tool_result", {"id": tc_id, "tool": fn_name, "result": res})
@@ -2123,7 +2153,8 @@ class Handler(BaseHTTPRequestHandler):
                     "image_generate": True,
                     "telegram": True,
                     "personas": True,
-                    "bots": True
+                    "bots": True,
+                    "plugins": True
                 },
                 "timestamp": time.time()
             })
@@ -2173,6 +2204,37 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/v1/personas":
             self._send(200, {"personas": list_personas()})
+            return
+
+        if path == "/v1/plugins":
+            installed = PLUGINS.list()
+            ids = {p["plugin_id"] for p in installed}
+            cat = [dict(c, installed=c["id"] in ids) for c in cloud_plugins.catalog()]
+            self._send(200, {"installed": installed, "catalog": cat})
+            return
+
+        if path.startswith("/v1/plugins/") and path.endswith("/tools"):
+            pid = path[len("/v1/plugins/"):-len("/tools")]
+            if not PLUGINS.get(pid):
+                self._send(404, {"error": "Plugin not found"})
+                return
+            try:
+                tools = PLUGINS.list_tools(pid, refresh=True)
+            except cloud_mcp.MCPAuthRequired as e:
+                self._send(409, {"error": "needs_auth", "message": str(e), "plugin": PLUGINS.get(pid)})
+                return
+            except (cloud_mcp.MCPError, cloud_plugins.PluginError) as e:
+                self._send(502, {"error": str(e), "plugin": PLUGINS.get(pid)})
+                return
+            self._send(200, {"plugin_id": pid, "tools": [{"name": t["name"], "description": t.get("description", "")} for t in tools]})
+            return
+
+        if path.startswith("/v1/plugins/"):
+            p = PLUGINS.get(path[len("/v1/plugins/"):])
+            if p:
+                self._send(200, p)
+            else:
+                self._send(404, {"error": "Plugin not found"})
             return
 
         if path == "/v1/bots":
@@ -2508,6 +2570,18 @@ class Handler(BaseHTTPRequestHandler):
         if req_json is None:
             return
 
+        if path.startswith("/v1/plugins/"):
+            try:
+                p = PLUGINS.update(path[len("/v1/plugins/"):], req_json)
+            except cloud_plugins.PluginError as e:
+                self._send(400, {"error": str(e)})
+                return
+            if p:
+                self._send(200, p)
+            else:
+                self._send(404, {"error": "Plugin not found"})
+            return
+
         if path.startswith("/v1/bots/"):
             conn = get_db_connection()
             try:
@@ -2654,6 +2728,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.startswith("/v1/bots/"):
             path = "/v1/personas/" + path[len("/v1/bots/"):]
+        if path.startswith("/v1/plugins/"):
+            if PLUGINS.uninstall(path[len("/v1/plugins/"):]):
+                self._send(200, {"deleted": True})
+            else:
+                self._send(404, {"error": "Plugin not found"})
+            return
 
         if path.startswith("/v1/credentials/"):
             name = path[len("/v1/credentials/"):]
@@ -2766,6 +2846,47 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_json = self._read_json_body()
         if req_json is None:
+            return
+
+        if path == "/v1/plugins/install":
+            try:
+                if req_json.get("catalog_id"):
+                    manifest, source = cloud_plugins.catalog_entry(req_json["catalog_id"]), "catalog"
+                    if not manifest:
+                        raise cloud_plugins.PluginError("unknown catalog_id")
+                elif req_json.get("url"):
+                    manifest, source = cloud_plugins.fetch_manifest(req_json["url"]), "url"
+                elif isinstance(req_json.get("manifest"), dict):
+                    manifest, source = req_json["manifest"], "manifest"
+                else:
+                    raise cloud_plugins.PluginError("one of catalog_id, url or manifest is required")
+                checked = cloud_plugins.validate_manifest(manifest)
+                if source != "catalog" and checked["kind"] == "mcp" and checked["mcp"]["transport"] == "stdio" and req_json.get("acknowledge_command") is not True:
+                    # 非内置清单会在 VPS 上运行命令：先返回预览，需用户确认后带 acknowledge_command 重试
+                    self._send(428, {"error": "confirm_command", "preview": checked,
+                                     "command": " ".join([checked["mcp"]["command"]] + checked["mcp"]["args"])})
+                    return
+                p, created = PLUGINS.install(manifest, source, req_json.get("secrets"), req_json.get("default_grant", True) is not False)
+            except cloud_plugins.PluginError as e:
+                self._send(400, {"error": str(e)})
+                return
+            self._send(201 if created else 200, p)
+            return
+
+        if path == "/v1/plugins/import-phone":
+            servers = req_json.get("servers")
+            if not isinstance(servers, list) or len(servers) > 50:
+                self._send(400, {"error": "servers must be a list (max 50)"})
+                return
+            results = []
+            for s in servers:
+                try:
+                    manifest, values = cloud_plugins.phone_manifest(s)
+                    p, _ = PLUGINS.install(manifest, "phone", values, default_grant=True)
+                    results.append({"id": s.get("id"), "plugin_id": p["plugin_id"], "status": p["status"]})
+                except cloud_plugins.PluginError as e:
+                    results.append({"id": s.get("id") if isinstance(s, dict) else None, "error": str(e)})
+            self._send(200, {"results": results})
             return
 
         if path == "/v1/bots/import":
