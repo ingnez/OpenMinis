@@ -123,7 +123,3 @@ struct CloudDutyFocusFilter: SetFocusFilterIntent {
         return .result()
     }
 }
-
-extension Notification.Name {
-    static let cloudFocusFilterChanged = Notification.Name("OpenMinisCloudFocusFilterChanged")
-}

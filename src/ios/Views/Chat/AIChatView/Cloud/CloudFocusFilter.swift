@@ -19,3 +19,7 @@ enum CloudFocusFilter {
         !on || pinned || searching || isMedical(name: name, summary: summary, instructions: instructions)
     }
 }
+
+extension Notification.Name {
+    static let cloudFocusFilterChanged = Notification.Name("OpenMinisCloudFocusFilterChanged")
+}
