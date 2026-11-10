@@ -38,6 +38,8 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import hashlib
+import base64
+import binascii
 import shutil
 from urllib.parse import urlparse, parse_qs, unquote
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -724,6 +726,22 @@ def library_delete(bot_id, item_id):
     return True
 
 ATTACH_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+AVATAR_MAX_BYTES = 400 * 1024
+
+def avatar_path(bot_id):
+    return os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "avatars", f"{bot_id}.jpg")
+
+def avatar_save(bot_id, data):
+    """Bot 照片头像（手机上已缩到 256px 的 JPEG / PNG），返回内容哈希（写进头像编码 av:p<哈希>c<颜色>）。"""
+    if not data or len(data) > AVATAR_MAX_BYTES:
+        raise ValueError("头像图片需小于 400 KB")
+    if not (data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("头像只支持 JPEG 或 PNG")
+    p = avatar_path(bot_id)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "wb") as f:
+        f.write(data)
+    return hashlib.sha256(data).hexdigest()[:10]
 
 def save_upload(session_id, filename, data):
     """手机上传的附件存到会话工作区 attachments/，文件名去掉危险字符并加随机前缀。"""
@@ -3943,6 +3961,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"items": bot_library(bid)})
             return
 
+        m_av = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/avatar$", path)
+        if m_av:
+            p = avatar_path(m_av.group(1))
+            if not get_persona(m_av.group(1)) or not os.path.isfile(p):
+                self._send(404, {"error": "没有照片头像"})
+                return
+            with open(p, "rb") as f:
+                data = f.read()
+            self._send(200, {"data_base64": base64.b64encode(data).decode(), "hash": hashlib.sha256(data).hexdigest()[:10]})
+            return
+
         m_media = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/library/media/(\d+)/(\d+)$", path)
         if m_media:
             url = library_media(m_media.group(1), int(m_media.group(2)), int(m_media.group(3)))
@@ -4467,6 +4496,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_json = self._read_json_body()
         if req_json is None:
+            return
+
+        m_av = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/avatar$", path)
+        if m_av:
+            if not get_persona(m_av.group(1)):
+                self._send(404, {"error": "Bot not found"})
+                return
+            try:
+                data = base64.b64decode(req_json.get("data_base64") or "", validate=True)
+                h = avatar_save(m_av.group(1), data)
+            except (ValueError, TypeError, binascii.Error) as e:
+                self._send(400, {"error": str(e) or "图片数据无效"})
+                return
+            self._send(200, {"hash": h})
             return
 
         if path.startswith("/v1/bots/") and path.endswith("/notify"):

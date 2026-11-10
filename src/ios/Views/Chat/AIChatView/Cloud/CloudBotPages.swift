@@ -230,6 +230,7 @@ struct CloudBotEditSheet: View {
         Task {
             do {
                 try await CloudBotService.save(updated)
+                try await CloudAvatarImages.uploadIfNeeded(spec, botId: bot.id)
                 if let modelPick {
                     try await CloudBotService.setModelChoice(bot.id, option: modelPick.option, effort: modelPick.effort)
                     updated.model = modelPick.option?.model ?? ""

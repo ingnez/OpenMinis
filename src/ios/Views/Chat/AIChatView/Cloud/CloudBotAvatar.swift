@@ -8,6 +8,14 @@ import SwiftUI
 struct CloudBotAvatarSpec: Hashable {
     var shape: Int
     var color: Int
+    /// 表情头像（彩色圆底 + 表情）；nil = 形状头像
+    var emoji: String? = nil
+    /// 照片头像的内容哈希（服务器 /v1/bots/<id>/avatar 保存图片）；nil = 不是照片
+    var photo: String? = nil
+    /// 照片属于哪个 Bot（取图用）；of(bot) 时填入
+    var owner: String? = nil
+    /// 刚在手机上选的照片（还没上传）：保存 Bot 后上传
+    var pendingPhoto: Data? = nil
 
     static let shapeCount = 13
     static let colors: [Color] = [
@@ -25,10 +33,23 @@ struct CloudBotAvatarSpec: Hashable {
         Color(red: 0.47, green: 0.47, blue: 0.49),  // 灰
     ]
 
-    var encoded: String { "av:s\(shape)c\(color)" }
+    var encoded: String {
+        if let photo { return "av:p\(photo)c\(color)" }
+        if let emoji, !emoji.isEmpty { return "av:e\(emoji)c\(color)" }
+        return "av:s\(shape)c\(color)"
+    }
     var fill: Color { Self.colors[min(max(color, 0), Self.colors.count - 1)] }
 
     static func parse(_ text: String) -> CloudBotAvatarSpec? {
+        if text.hasPrefix("av:e") || text.hasPrefix("av:p"), let cIdx = text.lastIndex(of: "c"), cIdx > text.index(text.startIndex, offsetBy: 4) {
+            let body = String(text[text.index(text.startIndex, offsetBy: 4)..<cIdx])
+            guard let c = Int(text[text.index(after: cIdx)...]), (0..<colors.count).contains(c), !body.isEmpty else { return nil }
+            if text.hasPrefix("av:p") {
+                guard body.range(of: "^[a-f0-9]{6,16}$", options: .regularExpression) != nil else { return nil }
+                return CloudBotAvatarSpec(shape: 0, color: c, photo: body)
+            }
+            return CloudBotAvatarSpec(shape: 0, color: c, emoji: body)
+        }
         guard text.hasPrefix("av:s"), let cIdx = text.firstIndex(of: "c") else { return nil }
         let s = Int(text[text.index(text.startIndex, offsetBy: 4)..<cIdx])
         let c = Int(text[text.index(after: cIdx)...])
@@ -45,8 +66,17 @@ struct CloudBotAvatarSpec: Hashable {
     }
 
     static func of(_ bot: CloudBot) -> CloudBotAvatarSpec {
-        parse(bot.emoji) ?? .default(for: bot.id, primary: bot.isPrimary)
+        var spec = parse(bot.emoji) ?? .default(for: bot.id, primary: bot.isPrimary)
+        // 模板 / 旧版存的是单个表情（如 🧭）：显示为表情头像
+        if !bot.emoji.isEmpty, !bot.emoji.hasPrefix("av:"), bot.emoji.count <= 2,
+           bot.emoji.unicodeScalars.contains(where: { $0.properties.isEmojiPresentation }) {
+            spec.emoji = bot.emoji
+        }
+        spec.owner = bot.id
+        return spec
     }
+
+    var isShape: Bool { emoji == nil && photo == nil }
 }
 
 /// 13 种头像形状（单位方框内绘制后缩放）
@@ -146,6 +176,23 @@ struct CloudBotAvatarView: View {
     var eyeOpen: CGFloat = 1
 
     var body: some View {
+        if spec.photo != nil {
+            CloudAvatarPhotoView(spec: spec, size: size)
+        } else if let emoji = spec.emoji {
+            ZStack {
+                Circle().fill(spec.fill.opacity(0.2))
+                Circle().stroke(spec.fill.opacity(0.35), lineWidth: max(1, size * 0.03))
+                Text(emoji).font(.system(size: size * 0.56))
+                    .scaleEffect(y: 0.92 + 0.08 * max(eyeOpen, 0.1))   // 眨眼时表情轻轻一缩
+                    .offset(x: size * 0.04 * gaze.width, y: size * 0.04 * gaze.height)
+            }
+            .frame(width: size, height: size)
+        } else {
+            shapeBody
+        }
+    }
+
+    private var shapeBody: some View {
         ZStack {
             CloudBotShape(kind: spec.shape).fill(spec.fill)
             HStack(spacing: size * 0.13) {
@@ -162,20 +209,42 @@ struct CloudBotAvatarView: View {
 /// 形状网格 + 颜色点；创建页与编辑页共用
 struct CloudBotAvatarPicker: View {
     @Binding var spec: CloudBotAvatarSpec
+    @State private var mode = 0
 
     var body: some View {
         VStack(spacing: 22) {
+            Picker("头像类型", selection: $mode) {
+                Text("形状").tag(0)
+                Text("表情").tag(1)
+                Text("照片").tag(2)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 24)
+            .onAppear { mode = spec.photo != nil ? 2 : spec.emoji != nil ? 1 : 0 }
+            switch mode {
+            case 1: CloudEmojiAvatarPicker(spec: $spec)
+            case 2: CloudPhotoAvatarPicker(spec: $spec)
+            default: shapeGrid
+            }
+            colorGrid
+        }
+    }
+
+    private var shapeGrid: some View {
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(52), spacing: 10), count: 5), spacing: 12) {
                 ForEach(0..<CloudBotAvatarSpec.shapeCount, id: \.self) { k in
-                    Button { CloudHaptics.selection(); spec.shape = k } label: {
+                    Button { CloudHaptics.selection(); spec.shape = k; spec.emoji = nil; spec.photo = nil; spec.pendingPhoto = nil } label: {
                         CloudBotBlinkingIcon(spec: CloudBotAvatarSpec(shape: k, color: spec.color), size: 38)
                             .frame(width: 50, height: 50)
-                            .overlay(Circle().stroke(Color.gray.opacity(spec.shape == k ? 0.45 : 0), lineWidth: 2))
+                            .overlay(Circle().stroke(Color.gray.opacity(spec.isShape && spec.shape == k ? 0.45 : 0), lineWidth: 2))
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("形状 \(k + 1)")
                 }
             }
+    }
+
+    private var colorGrid: some View {
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(44), spacing: 14), count: 6), spacing: 14) {
                 ForEach(0..<CloudBotAvatarSpec.colors.count, id: \.self) { c in
                     Button { CloudHaptics.selection(); spec.color = c } label: {
@@ -187,7 +256,6 @@ struct CloudBotAvatarPicker: View {
                     .accessibilityLabel("颜色 \(c + 1)")
                 }
             }
-        }
     }
 }
 
@@ -284,6 +352,7 @@ struct CloudBotCreateSheet: View {
             do {
                 try await CloudConnection.shared.ensureConnected()
                 try await CloudBotService.save(bot)
+                try await CloudAvatarImages.uploadIfNeeded(spec, botId: bot.id)
                 if modelOption != nil || effort != .off {
                     try await CloudBotService.setModelChoice(bot.id, option: modelOption, effort: effort)
                 }

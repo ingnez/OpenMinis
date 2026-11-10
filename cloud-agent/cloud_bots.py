@@ -106,7 +106,7 @@ def validate(body, existing=None, credential_exists=None):
     instr = _str(body, "instructions", 20000, required=existing is None, allow_empty=False)
     if instr is not None:
         out["instructions"] = instr
-    for key, maxlen in (("emoji", 16), ("description", 500), ("model", 200)):
+    for key, maxlen in (("emoji", 40), ("description", 500), ("model", 200)):
         if key in body:
             v = _str(body, key, maxlen)
             out[key] = v if v else None

@@ -174,6 +174,21 @@ class EfficiencyServerTests(CloudServerTestCase):
         self.assertEqual(self.request("DELETE", "/v1/bots/ghost/library/x")[0], 404)
 
 
+    def test_08_photo_avatar(self):
+        import base64
+        self.request("PUT", "/v1/bots/pic", {"name": "照片", "instructions": "x", "emoji": "av:e🧑‍⚕️c5"})
+        self.assertEqual(self.request("GET", "/v1/bots/pic")[1].get("emoji"), "av:e🧑‍⚕️c5")
+        self.assertEqual(self.request("GET", "/v1/bots/pic/avatar")[0], 404)
+        jpg = b"\xff\xd8\xff\xe0" + b"0" * 100
+        st, r = self.request("PUT", "/v1/bots/pic/avatar", {"data_base64": base64.b64encode(jpg).decode()})
+        self.assertEqual(st, 200, r)
+        got = self.request("GET", "/v1/bots/pic/avatar")[1]
+        self.assertEqual(base64.b64decode(got["data_base64"]), jpg)
+        self.assertEqual(got["hash"], r["hash"])
+        self.assertEqual(self.request("PUT", "/v1/bots/pic/avatar", {"data_base64": base64.b64encode(b"GIF89a").decode()})[0], 400)
+        self.assertEqual(self.request("PUT", "/v1/bots/pic/avatar", {"data_base64": "!!"})[0], 400)
+        self.assertEqual(self.request("PUT", "/v1/bots/ghost/avatar", {"data_base64": base64.b64encode(jpg).decode()})[0], 404)
+
 
 if __name__ == "__main__":
     unittest.main()
