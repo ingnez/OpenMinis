@@ -555,3 +555,15 @@
 ## 每周自我改进（2.26.0）
 
 例行任务的 prompt 里写 `{{weekly_stats}}`，触发时会换成这个 Bot 最近 7 天的统计：任务数和失败、「今日」动态的赞踩和评论、用户对回答点的负面表情（附回答开头 80 字）、最近 5 条错误（打码）。App 的「每周自我改进」开关就是一个每周日 21:00 的这种例行任务。
+
+## 事件触发（2.27.0）
+
+- `GET /v1/event-triggers` → `{"triggers": [{id, kind, config, routine_id, enabled, cursor, last_poll, last_fired, fired_count, last_error}]}`（不含 token / 密码）
+- `POST /v1/event-triggers {"kind": "github"|"email"|"telegram", "routine_id", "config"}`
+  - github：`{repo: "owner/name", events: [issues, pull_request, push, release, issue_comment], token?}`
+  - email：`{host, user, password, folder?, from?, subject?}`（IMAP SSL，只读，不改已读状态）
+  - telegram：`{keywords: [...]}`
+  token / password 用 `secure_settings`（`event:<id>`）加密保存。
+- `PUT /v1/event-triggers/<id> {"enabled": bool}`、`DELETE /v1/event-triggers/<id>`
+
+GitHub 和邮件每 5 分钟轮询一次；第一次只记位置。新事件（最多合并 5 条，打码截短）作为工作流「上一步的结果」启动例行任务，trigger 为 `event:<kind>`。

@@ -841,6 +841,7 @@ struct CloudBotHubView: View {
                 NavigationLink(destination: CloudBotsView()) { Label("我的 Bot（模板、导入导出）", systemImage: "person.3") }
                 NavigationLink(destination: CloudPluginsView()) { Label("插件市场", systemImage: "puzzlepiece.extension") }
                 NavigationLink(destination: CloudRoutinesView()) { Label("例行任务", systemImage: "clock.arrow.circlepath") }
+                NavigationLink(destination: CloudEventTriggersView()) { Label("事件触发（GitHub、邮件、Telegram）", systemImage: "bolt.badge.clock") }
                 NavigationLink(destination: CloudMemoryTimelineView()) { Label("云端记忆", systemImage: "brain") }
                 NavigationLink(destination: CloudSkillsView()) { Label("技能", systemImage: "wand.and.stars") }
                 NavigationLink(destination: CloudDelegationsView()) { Label("委托记录", systemImage: "arrow.triangle.branch") }

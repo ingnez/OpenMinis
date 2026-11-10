@@ -71,6 +71,7 @@ import cloud_handoff
 import cloud_botstatus
 import cloud_botthreads
 import cloud_duty
+import cloud_events
 import cloud_exams
 import cloud_sysnap
 import cloud_secrets
@@ -326,6 +327,7 @@ def init_db():
     cloud_botthreads.ensure_schema(conn)
     cloud_duty.ensure_schema(conn)
     cloud_exams.ensure_schema(conn)
+    cloud_events.ensure_schema(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS feed_feedback (run_id TEXT PRIMARY KEY, liked INTEGER NOT NULL DEFAULT 0, "
                  "comment TEXT NOT NULL DEFAULT '', at REAL NOT NULL, memory_id INTEGER)")
     cloud_vault.set_loader(get_db_connection)
@@ -623,7 +625,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.26.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.27.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -3270,6 +3272,98 @@ def _duty_record(kind, title, body, bot_id=None, session_id=None, suppressed=Fal
         print(f"duty record failed: {type(e).__name__}", flush=True)
 
 
+_events_running = set()
+_events_lock = threading.Lock()
+EVENT_FETCHERS = {"github": cloud_events.http_json, "email": cloud_events.imap_fetch}
+
+
+def _event_secret(tid):
+    conn = get_db_connection()
+    try:
+        v = cloud_notify.load_setting(conn, "event:" + tid)
+        return (v or {}).get("secret")
+    finally:
+        conn.close()
+
+
+def event_fire(trig, summaries, source):
+    """把事件交给绑定的例行任务：最多合并 5 条，打码截短后作为「上一步的结果」"""
+    routine = get_routine(trig["routine_id"])
+    if not routine or not summaries:
+        return None
+    ctx = scrub_text("\n\n".join(summaries[-5:]))[:4000]
+    if len(summaries) > 5:
+        ctx = f"（共 {len(summaries)} 条，只给最近 5 条）\n" + ctx
+    return launch_routine_run(routine, "event:" + source, context=ctx)
+
+
+def _event_poll(trig):
+    conn = None
+    try:
+        secret = _event_secret(trig["id"])
+        if trig["kind"] == "github":
+            items, cursor = cloud_events.poll_github(trig, secret, fetch=EVENT_FETCHERS["github"])
+        else:
+            items, cursor = cloud_events.poll_email(trig, secret or "", fetch=EVENT_FETCHERS["email"])
+        conn = get_db_connection()
+        cloud_events.mark(conn, trig["id"], cursor=cursor, fired=1 if items else 0)
+        conn.close()
+        conn = None
+        if items:
+            event_fire(trig, items, trig["kind"])
+        return items
+    except Exception as e:
+        conn = conn or get_db_connection()
+        cloud_events.mark(conn, trig["id"], error=scrub_text(f"{type(e).__name__}: {e}"))
+        note_server_error("event:" + trig["kind"], e)
+        return None
+    finally:
+        if conn:
+            conn.close()
+        with _events_lock:
+            _events_running.discard(trig["id"])
+
+
+def events_check(now=None, wait=False):
+    """调度器每轮调用：GitHub / 邮件触发器每 5 分钟轮询一次（后台线程，不卡调度器）"""
+    now = time.time() if now is None else now
+    conn = get_db_connection()
+    try:
+        due = [t for t in cloud_events.list_all(conn) if t["enabled"] and t["kind"] in ("github", "email")
+               and now - t["last_poll"] >= cloud_events.POLL_SECONDS]
+    finally:
+        conn.close()
+    results = {}
+    for t in due:
+        with _events_lock:
+            if t["id"] in _events_running:
+                continue
+            _events_running.add(t["id"])
+        if wait:
+            results[t["id"]] = _event_poll(t)
+        else:
+            threading.Thread(target=_event_poll, args=(t,), name="event-poll", daemon=True).start()
+    return results
+
+
+def events_on_telegram(text):
+    """Telegram 收到消息：包含关键词的触发对应例行任务（消息照常交给 Bot 处理）"""
+    try:
+        conn = get_db_connection()
+        try:
+            trigs = [t for t in cloud_events.list_all(conn) if t["enabled"] and t["kind"] == "telegram" and cloud_events.telegram_matches(t, text)]
+            for t in trigs:
+                cloud_events.mark(conn, t["id"], fired=1)
+        finally:
+            conn.close()
+        for t in trigs:
+            event_fire(t, [f"[Telegram 消息] {text[:800]}"], "telegram")
+        return len(trigs)
+    except Exception as e:
+        note_server_error("event:telegram", e)
+        return 0
+
+
 _relay_watch_running = threading.Event()
 RELAY_WATCH_NEEDLE = 3000
 
@@ -5371,6 +5465,11 @@ def _scheduler_main():
             sys.stderr.write(f"[duty] check error: {sanitize_err(e)}\n")
             note_server_error("duty", e)
         try:
+            events_check()
+        except Exception as e:
+            sys.stderr.write(f"[events] check error: {sanitize_err(e)}\n")
+            note_server_error("events", e)
+        try:
             relay_watch_check()
         except Exception as e:
             sys.stderr.write(f"[relay] watch error: {sanitize_err(e)}\n")
@@ -5571,6 +5670,8 @@ def telegram_handle_message(cfg, msg):
             _telegram_safe_send(cfg, chat_id, f"这个会话尚未授权。chat id：{chat_id}\n请在 OpenMinis 云电脑设置 → Telegram 中把它加入允许列表。")
         return
     text = (msg.get("text") or msg.get("caption") or "").strip()
+    if text:
+        events_on_telegram(text)
     if not text:
         _telegram_safe_send(cfg, chat_id, "目前只支持文字消息。")
         return
@@ -6130,6 +6231,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, proxy_mgr().status())
             except Exception as e:
                 self._send(500, {"error": f"读取代理设置失败：{type(e).__name__}"})
+            return
+        if path == "/v1/event-triggers":
+            conn = get_db_connection()
+            try:
+                self._send(200, {"triggers": cloud_events.list_all(conn)})
+            finally:
+                conn.close()
             return
         if path == "/v1/exams":
             conn = get_db_connection()
@@ -6848,6 +6956,19 @@ class Handler(BaseHTTPRequestHandler):
         if req_json is None:
             return
 
+        m_ev = re.match(r"^/v1/event-triggers/(evt_[0-9a-f]{10})$", path)
+        if m_ev:
+            conn = get_db_connection()
+            try:
+                if not cloud_events.get(conn, m_ev.group(1)) or not isinstance(req_json.get("enabled"), bool):
+                    self._send(404 if not cloud_events.get(conn, m_ev.group(1)) else 400, {"error": "需要 enabled: true/false"})
+                    return
+                cloud_events.set_enabled(conn, m_ev.group(1), req_json["enabled"])
+                self._send(200, {"trigger": cloud_events.get(conn, m_ev.group(1))})
+            finally:
+                conn.close()
+            return
+
         m_ex = re.match(r"^/v1/exams/(exam_[0-9a-f]{10})$", path)
         if m_ex:
             conn = get_db_connection()
@@ -7189,6 +7310,16 @@ class Handler(BaseHTTPRequestHandler):
         query_params = parse_qs(urlparse(self.path).query)
         if not self._authorized():
             return
+        m_ev = re.match(r"^/v1/event-triggers/(evt_[0-9a-f]{10})$", path)
+        if m_ev:
+            conn = get_db_connection()
+            try:
+                ok = cloud_events.delete(conn, m_ev.group(1))
+                cloud_notify.delete_setting(conn, "event:" + m_ev.group(1))
+            finally:
+                conn.close()
+            self._send(200 if ok else 404, {"deleted": ok})
+            return
         m_ex = re.match(r"^/v1/exams/(exam_[0-9a-f]{10})$", path)
         if m_ex:
             conn = get_db_connection()
@@ -7477,6 +7608,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": str(e)})
                 return
             self._send(200, stats)
+            return
+
+        if path == "/v1/event-triggers":
+            kind, rid = req_json.get("kind"), req_json.get("routine_id")
+            try:
+                cfg, secret = cloud_events.validate(kind, req_json.get("config") or {})
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            if not isinstance(rid, str) or not get_routine(rid):
+                self._send(400, {"error": "routine_id 不存在（先建一个例行任务，触发时运行它）"})
+                return
+            conn = get_db_connection()
+            try:
+                tid = cloud_events.create(conn, kind, cfg, rid)
+                if secret:
+                    cloud_notify.save_setting(conn, "event:" + tid, {"secret": secret})
+                self._send(200, {"trigger": cloud_events.get(conn, tid)})
+            finally:
+                conn.close()
             return
 
         if path == "/v1/exams":
