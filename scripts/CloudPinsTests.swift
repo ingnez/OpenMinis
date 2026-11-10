@@ -19,7 +19,10 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(CloudSmartReplies.suggest("一句话：去甲 0.1 μg/kg/min\n\n细节").contains("给出处"), "医学没出处")
         check(!CloudSmartReplies.suggest("一句话：x mg\n依据：示例｜把握度：中").contains("给出处"), "有出处不再要")
         check(CloudSmartReplies.suggest("").isEmpty && CloudSmartReplies.suggest("好的").last == "继续", "空 / 一般")
+        check(CloudTips.shouldShow("t1", defaults: d), "新提示要显示")
+        CloudTips.markUsed("t1", defaults: d); CloudTips.markUsed("t1", defaults: d)
+        check(!CloudTips.shouldShow("t1", defaults: d) && CloudTips.shouldShow("t2", defaults: d), "用过就不再显示")
         d.removePersistentDomain(forName: suite)
-        print("PASS：要点板与智能快捷回复")
+        print("PASS：要点板、智能快捷回复、新手提示")
     }
 }

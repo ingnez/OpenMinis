@@ -252,7 +252,7 @@ jobs:
       - name: 要点板与快捷回复单测
         run: |
           set -o pipefail
-          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPins.swift scripts/CloudPinsTests.swift -o /tmp/cloud_pins_tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPins.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTips.swift scripts/CloudPinsTests.swift -o /tmp/cloud_pins_tests
           /tmp/cloud_pins_tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
@@ -414,7 +414,7 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
-          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPins.swift scripts/CloudPinsTests.swift -o /tmp/cloud_pins_tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPins.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTips.swift scripts/CloudPinsTests.swift -o /tmp/cloud_pins_tests
           /tmp/cloud_pins_tests | tee cloud_pins_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDrafts.swift scripts/CloudDraftsTests.swift -o /tmp/cloud_drafts_tests
           /tmp/cloud_drafts_tests | tee cloud_drafts_tests.log
@@ -743,7 +743,7 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
-          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPins.swift scripts/CloudPinsTests.swift -o /tmp/cloud_pins_tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPins.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTips.swift scripts/CloudPinsTests.swift -o /tmp/cloud_pins_tests
           /tmp/cloud_pins_tests | tee cloud_pins_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDrafts.swift scripts/CloudDraftsTests.swift -o /tmp/cloud_drafts_tests
           /tmp/cloud_drafts_tests | tee cloud_drafts_tests.log

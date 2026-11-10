@@ -198,8 +198,8 @@ struct CloudAssistantLongPress: ViewModifier {
                 Button { UIPasteboard.general.string = text } label: { Label("复制", systemImage: "doc.on.doc") }
                 Button { onReply(CloudReplyTarget(id: id, excerpt: text)) } label: { Label("回复", systemImage: "arrowshape.turn.up.left") }
                 if let botId {
-                    Button { CloudBotSpeaker.speak(CloudMessageText.display(text).text, botId: botId) } label: { Label("朗读", systemImage: "speaker.wave.2") }
-                    Button { if CloudPins.add(botId, text: CloudMessageText.display(text).text) { CloudHaptics.success() } } label: {
+                    Button { CloudTips.markUsed("longpress-reply"); CloudBotSpeaker.speak(CloudMessageText.display(text).text, botId: botId) } label: { Label("朗读", systemImage: "speaker.wave.2") }
+                    Button { CloudTips.markUsed("longpress-reply"); if CloudPins.add(botId, text: CloudMessageText.display(text).text) { CloudHaptics.success() } } label: {
                         Label("钉到要点板", systemImage: "pin")
                     }
                 }

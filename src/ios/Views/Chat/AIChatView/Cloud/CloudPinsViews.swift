@@ -8,6 +8,8 @@ struct CloudSmartReplyBar: View {
 
     var body: some View {
         let items = CloudSmartReplies.suggest(text)
+        VStack(alignment: .leading, spacing: 6) {
+        CloudTipView(id: "longpress-reply", text: "长按 Bot 的回复：朗读、翻译、钉到要点板")
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(items, id: \.self) { s in
@@ -21,6 +23,7 @@ struct CloudSmartReplyBar: View {
                 }
             }
             .padding(.horizontal, 16)
+        }
         }
     }
 }
@@ -56,6 +59,29 @@ struct CloudPinsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
             .onAppear { pins = CloudPins.list(botId) }
+        }
+    }
+}
+
+/// 一行新手提示；点 × 或用过对应功能后消失
+struct CloudTipView: View {
+    let id: String
+    let text: String
+    @State private var visible = true
+
+    var body: some View {
+        if visible && CloudTips.shouldShow(id) {
+            HStack(spacing: 6) {
+                Image(systemName: "lightbulb").foregroundStyle(.yellow)
+                Text(text).font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Button { CloudTips.markUsed(id); withAnimation { visible = false } } label: {
+                    Image(systemName: "xmark").font(.caption2.weight(.bold)).foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("不再提示")
+            }
+            .padding(.horizontal, 16)
         }
     }
 }
