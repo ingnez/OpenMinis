@@ -15,6 +15,7 @@ enum CloudPathPolicy {
         if r(#"^/v1/bot-threads/[a-z0-9_][a-z0-9_-]{0,31}/[a-z0-9_][a-z0-9_-]{0,31}$"#) {
             return q(#"^after=[0-9]{1,18}(&wait=[0-9]{1,2})?(&working=[a-z0-9_,-]{0,200})?$"#)
         }
+        if r(#"^/v1/sessions/[A-Za-z0-9_-]{1,64}$"#) { return q(#"^limit=[0-9]{1,4}(&before_id=[0-9]{1,18})?$"#) }
         if route.hasPrefix("/v1/personas/") || route.hasPrefix("/v1/bots/") { return query == "purge_memory=1" || query == "soft=1" }
         switch route {
         case "/v1/notifications": return q(#"^after=[0-9]{1,18}&wait=[0-9]{1,2}$"#)
