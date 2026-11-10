@@ -52,6 +52,7 @@ struct CloudGroupMessage: Identifiable, Equatable {
     }
 }
 
+@MainActor
 enum CloudGroupService {
     static func conn() async throws -> CloudConnection {
         let c = CloudConnection.shared
