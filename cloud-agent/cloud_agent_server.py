@@ -630,7 +630,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.31.1"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.32.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -6621,10 +6621,30 @@ class Handler(BaseHTTPRequestHandler):
                     conn.close()
                     self._send(404, {"error": "Session not found"})
                     return
-                c.execute("SELECT role, content, tool_calls, tool_call_id, timestamp, meta, id FROM messages WHERE session_id = ? ORDER BY id ASC", (sid,))
+                # 分页（2.32.0）：带 limit 时只回最近 limit 条（before_id 之前），并告诉手机还有没有更早的；不带时照旧全回
+                page_limit = page_before = None
+                try:
+                    if query_params.get("limit"):
+                        page_limit = max(1, min(int(query_params["limit"][0]), 1000))
+                    if query_params.get("before_id"):
+                        page_before = int(query_params["before_id"][0])
+                except ValueError:
+                    conn.close()
+                    self._send(400, {"error": "limit / before_id must be integers"})
+                    return
+                if page_limit:
+                    c.execute("SELECT role, content, tool_calls, tool_call_id, timestamp, meta, id FROM messages WHERE session_id = ? AND id < ? "
+                              "ORDER BY id DESC LIMIT ?", (sid, page_before if page_before is not None else 2 ** 62, page_limit + 1))
+                    page_rows = c.fetchall()
+                    has_more = len(page_rows) > page_limit
+                    page_rows = list(reversed(page_rows[:page_limit]))
+                else:
+                    c.execute("SELECT role, content, tool_calls, tool_call_id, timestamp, meta, id FROM messages WHERE session_id = ? ORDER BY id ASC", (sid,))
+                    page_rows = c.fetchall()
+                    has_more = False
                 reactions = cloud_runmodel.reactions_for(conn, sid)
                 msgs = []
-                for mr in c.fetchall():
+                for mr in page_rows:
                     m = {"id": mr[6], "role": mr[0], "content": mr[1], "timestamp": mr[4]}
                     if mr[6] in reactions:
                         m["reactions"] = reactions[mr[6]]
@@ -6660,7 +6680,7 @@ class Handler(BaseHTTPRequestHandler):
                         t_["timings"] = tmap[t_["task_id"]]
                 conn.close()
                 self._send(200, {"session_id": s[0], "local_session_id": s[1], "title": s[2], "instructions": s[3], "created_at": s[4], "messages": msgs, "tasks": tasks,
-                                 "incognito": bool(s[5])})
+                                 "incognito": bool(s[5]), "has_more": has_more})
                 return
 
         if path == "/v1/routines":

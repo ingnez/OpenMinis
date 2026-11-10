@@ -602,6 +602,10 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 
 - 修复：`GET /v1/tasks/<id>/replay/<i>` 里多余的局部 `import base64` 让整个 `do_GET` 把 `base64` 当成局部变量，`GET /v1/bots/<id>/avatar` 因此 500。接口形状不变。
 
+## 对话分页（2.32.0）
+
+- `GET /v1/sessions/<id>?limit=N&before_id=M`：只回 `id < M` 的最近 N 条（N 最大 1000，按时间正序），并带 `has_more`（还有没有更早的）。不带 `limit` 时和以前一样回全部，`has_more` 为 false。
+
 ## 卡片账单地址与提示（2.31.1）
 
 - 卡片的机密字段新增 `billing`（账单地址）和 `hint`（提示），和卡号、安全码一样加密存放，只在 App 里 Face ID 后 `reveal` 才返回，列表和 Bot 都看不到。
