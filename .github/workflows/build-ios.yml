@@ -126,6 +126,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudErrorLogFormat.swift src/ios/Views/Chat/AIChatView/Cloud/CloudReconnectPolicy.swift scripts/CloudErrorLogTests.swift -o /tmp/cloud-errorlog-tests
           /tmp/cloud-errorlog-tests
+      - name: 拍照分派测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPhotoRouter.swift scripts/CloudPhotoRouterTests.swift -o /tmp/cloud-photo-router-tests
+          /tmp/cloud-photo-router-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -271,6 +276,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPhotoRouter.swift scripts/CloudPhotoRouterTests.swift -o /tmp/cloud-photo-router-tests
+          /tmp/cloud-photo-router-tests | tee cloud-photo-router-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudErrorLogFormat.swift src/ios/Views/Chat/AIChatView/Cloud/CloudReconnectPolicy.swift scripts/CloudErrorLogTests.swift -o /tmp/cloud-errorlog-tests
           /tmp/cloud-errorlog-tests | tee cloud-errorlog-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotMood.swift scripts/CloudBotMoodTests.swift -o /tmp/cloud-mood-tests

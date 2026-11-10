@@ -631,6 +631,8 @@ struct CloudSessionView: View {
     @State private var errorMessage: String? = nil
     @State private var showComputer = false
     @State private var attachments: [CloudPendingAttachment] = []
+    /// 点了哪个拍照识别要求（用来找更对口的 Bot）
+    @State private var photoKind: String?
     @State private var showPhotos = false
     @State private var showCamera = false
     @State private var showScanner = false
@@ -1170,12 +1172,23 @@ struct CloudSessionView: View {
                     }
                     .padding(.horizontal, 14)
                 }
+                if let kind = photoKind, attachments.contains(where: { $0.isImage }), let target = photoTarget(kind) {
+                    // 识别后分给对应的 Bot：比如药品图交给药师 Bot，带着图片和要求过去
+                    Button { handPhoto(to: target.id) } label: {
+                        Label("交给「\(target.name)」处理（更对口）", systemImage: "arrowshape.turn.up.right.fill")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Capsule().fill(theme.accent.opacity(0.18)))
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 14)
+                }
                 if attachments.contains(where: { $0.isImage }), inputPrompt.trimmingCharacters(in: .whitespaces).isEmpty {
                     // 拍照识别：选了图片还没写字时，一键填好常用的识别要求
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             ForEach(CloudPhotoPrompts.all, id: \.0) { item in
-                                Button { CloudHaptics.selection(); inputPrompt = item.1 } label: {
+                                Button { CloudHaptics.selection(); inputPrompt = item.1; photoKind = item.0 } label: {
                                     Text(item.0).font(.caption.weight(.medium))
                                         .padding(.horizontal, 10).padding(.vertical, 6)
                                         .background(Capsule().fill(theme.accent.opacity(0.12)))
@@ -1432,6 +1445,25 @@ struct CloudSessionView: View {
                   let text = row["content"] as? String, !text.isEmpty else { return nil }
             return ["role": role, "text": CloudMessageText.display(text).text]
         }
+    }
+
+    private func photoTarget(_ kind: String) -> CloudPhotoRouter.Candidate? {
+        let bots = CloudBotHomeModel.shared.bots.filter { !CloudBotLock.shared.isLocked($0.id) }.map {
+            CloudPhotoRouter.Candidate(id: $0.id, name: $0.name,
+                                       text: $0.summary + " " + String($0.instructions.prefix(300)) + " " + ($0.skills ?? []).joined(separator: " "))
+        }
+        return CloudPhotoRouter.best(kind: kind, current: theme.botId, bots: bots)
+    }
+
+    /// 把选好的图片和识别要求原样带到那个 Bot 的对话里（不自动发送，用户看一眼再发）
+    private func handPhoto(to botId: String) {
+        CloudHaptics.selection()
+        let home = CloudBotHomeModel.shared
+        home.pendingPrompt = CloudBotPendingPrompt(botId: botId, text: inputPrompt, send: false, attachments: attachments)
+        attachments = []
+        inputPrompt = ""
+        photoKind = nil
+        home.pendingOpen = botId
     }
 
     /// 实时通话用的完整设定：灵魂设定 + 指令 + 这个 Bot 的语音设置（语速、语言）
