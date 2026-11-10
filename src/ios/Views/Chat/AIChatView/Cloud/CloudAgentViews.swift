@@ -243,6 +243,12 @@ struct CloudAgentSettingsView: View {
                             .foregroundColor(.accentColor)
                     }
 
+                    NavigationLink(destination: CloudMemoryTimelineView()) {
+                        Label("记忆时间线", systemImage: "brain.head.profile")
+                            .font(.headline)
+                            .foregroundColor(.accentColor)
+                    }
+
                     NavigationLink(destination: CloudPagesView()) {
                         Label("云端页面库", systemImage: "doc.richtext")
                             .font(.headline)
