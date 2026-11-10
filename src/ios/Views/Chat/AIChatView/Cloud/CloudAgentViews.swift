@@ -831,12 +831,17 @@ struct CloudSessionView: View {
                               sessionId: sessionId, reason: takeoverReason)
         }
         .onAppear {
+            CloudLinkSupervisor.shared.visibleSessionId = sessionId
+            CloudLinkSupervisor.shared.pageOpened()
             loadSessionDetail()
             warmUp()
             if CloudComputerHandoff.consume(sessionId) { sendFinished() }
         }
         .onChange(of: inputPrompt.isEmpty) { empty in
             if !empty { warmUp() }
+        }
+        .onDisappear {
+            if CloudLinkSupervisor.shared.visibleSessionId == sessionId { CloudLinkSupervisor.shared.visibleSessionId = nil }
         }
         .onReceive(NotificationCenter.default.publisher(for: CloudComputerHandoff.finished)) { note in
             guard note.userInfo?["session_id"] as? String == sessionId else { return }

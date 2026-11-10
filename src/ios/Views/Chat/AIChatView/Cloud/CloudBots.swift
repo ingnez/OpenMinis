@@ -133,9 +133,21 @@ enum CloudBotService {
         return conn
     }
 
+    static let cacheKey = "OpenMinisCloud_botListCache"
+
     static func list() async throws -> [CloudBot] {
         let resp = try await connected().request(method: "GET", path: "/v1/bots", body: nil)
         let items = resp["bots"] as? [[String: Any]] ?? []
+        // 记下最近一次的列表：重连期间首页照常显示，不会一片空白
+        if let data = try? JSONSerialization.data(withJSONObject: items) {
+            UserDefaults.standard.set(data, forKey: cacheKey)
+        }
+        return items.compactMap { CloudBot($0) }
+    }
+
+    static func cachedList() -> [CloudBot] {
+        guard let data = UserDefaults.standard.data(forKey: cacheKey),
+              let items = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
         return items.compactMap { CloudBot($0) }
     }
 

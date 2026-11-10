@@ -69,14 +69,39 @@ public final class CloudConnection: ObservableObject {
     public var canAutoConnect: Bool {
         !host.isEmpty && !(getPassword() ?? "").isEmpty && !(getToken() ?? "").isEmpty
     }
-    /// 已连接直接返回；正在连接则等待同一次连接，避免多处同时调用 connect() 互相断开。
+    /// 最近一次 API 成功应答的时间：超过 20 秒没有成功请求时，先用 2 秒的 /health 探测隧道是否还活着
+    public private(set) var lastOK = Date.distantPast
+    /// 已连接且隧道活着直接返回；隧道已死（App 被挂起后常见）就拆掉重建；正在连接则等待同一次连接。
     public func ensureConnected() async throws {
-        if isConnected { return }
-        if let task = connectTask { return try await task.value }
-        let task = Task { @MainActor in try await self.connect() }
-        connectTask = task
-        defer { connectTask = nil }
-        try await task.value
+        if isConnected {
+            if Date().timeIntervalSince(lastOK) < 20 { return }
+            if await probeAlive() { return }
+            try await reconnect()
+            return
+        }
+        try await connect()
+    }
+    /// 隧道是否还通：2 秒内 /health 应答才算活着
+    public func probeAlive(timeout: TimeInterval = 2) async -> Bool {
+        guard isConnected, let url = URL(string: "http://127.0.0.1:\(apiPort)/health") else { return false }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = timeout
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (data, resp) = try? await http.data(for: req), (resp as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              obj["service"] as? String == "openminis-cloud-agent" else { return false }
+        lastHealth = obj
+        lastOK = Date()
+        return true
+    }
+    /// 最近一次 /health 的内容（Agent 版本、桌面状态），连接状态点和「更新服务器」横幅用
+    @Published public private(set) var lastHealth: [String: Any] = [:]
+    /// App 回到前台 / 进入后台时调用：之后的第一次请求必须先探测隧道
+    public func markStale() { lastOK = .distantPast }
+    /// 强制拆掉旧隧道重新建立；并发调用共享同一次
+    public func reconnect() async throws {
+        isConnected = false
+        try await connect()
     }
     private func failure(_ text: String) -> NSError {
         NSError(domain: "OpenMinisCloud", code: 1, userInfo: [NSLocalizedDescriptionKey: text])
@@ -198,7 +223,15 @@ public final class CloudConnection: ObservableObject {
         return file
     }
     private func cleanup(_ path: String) async { _ = try? await shell("rm -f \(quote(path))", timeout: 10) }
+    /// 建立连接；已有连接过程在进行时等待同一次，避免多处同时调用互相断开（之前「连接已取消」的来源）
     public func connect() async throws {
+        if let task = connectTask { return try await task.value }
+        let task = Task { @MainActor in try await self.connectNow() }
+        connectTask = task
+        defer { if connectTask == task { connectTask = nil } }
+        try await task.value
+    }
+    private func connectNow() async throws {
         disconnect()
         let expected = generation
         status = .connecting
@@ -386,7 +419,11 @@ public final class CloudConnection: ObservableObject {
         _ = try? await shell(ssh("\(sudo); $S rm -rf \(dir)"), timeout: 30)
     }
     /// 「电脑」页 … 菜单：通过 SSH 重启云电脑桌面（显示器、VNC、noVNC 三个服务）
+    /// 重启桌面服务：先请服务器自己重启（新版安装带 root path 单元），不行再经 SSH systemctl
     public func restartDesktop() async throws {
+        if isConnected, let r = try? await requestRaw(method: "POST", path: "/v1/desktop/restart", body: [:]), r["restarted"] as? Bool == true {
+            return
+        }
         let password = try await passwordFile()
         let remote = "if [ \"$(id -u)\" = 0 ]; then S=''; else S='sudo -n'; fi; $S systemctl restart openminis-display openminis-vnc openminis-novnc && echo restarted"
         do {
@@ -414,19 +451,24 @@ public final class CloudConnection: ObservableObject {
         return false
     }
     public func request(method: String, path: String, body: [String: Any]? = nil) async throws -> [String: Any] {
-        guard isConnected else { throw failure("云端连接已断开，请返回设置重新连接；VPS 上已接受的任务仍会继续") }
+        if !isConnected || Date().timeIntervalSince(lastOK) > 20 {
+            guard isConnected || canAutoConnect else { throw failure("云端连接已断开，请返回设置重新连接；VPS 上已接受的任务仍会继续") }
+            try await ensureConnected()
+        }
         do {
             return try await requestRaw(method: method, path: path, body: body)
         } catch let error as URLError where Self.tunnelDropped(error) && canAutoConnect {
-            // SSH 隧道断了（切网络、后台被挂起）：自动重连一次再重试，用户不用回设置页
-            isConnected = false
-            try await ensureConnected()
+            // SSH 隧道断了（切网络、后台被挂起）：自动重连再重试，用户不用回设置页
+            if error.code == .timedOut, await probeAlive() { throw error }   // 隧道是好的，只是这次请求慢
+            try await reconnect()
+            // 请求肯定没发出去（连不上本机端口）或是只读请求时才自动重发，避免重复发送消息
+            guard method == "GET" || error.code == .cannotConnectToHost else { throw error }
             return try await requestRaw(method: method, path: path, body: body)
         }
     }
 
-    private static func tunnelDropped(_ e: URLError) -> Bool {
-        [.cannotConnectToHost, .networkConnectionLost, .cannotFindHost].contains(e.code)
+    static func tunnelDropped(_ e: URLError) -> Bool {
+        [.cannotConnectToHost, .networkConnectionLost, .cannotFindHost, .timedOut, .notConnectedToInternet].contains(e.code)
     }
     /// 下载会话工作区里的附件（资料库预览、分享）；只允许 /v1/sessions/<id>/attachments/<文件名>
     public func downloadAttachment(path: String) async throws -> Data {
@@ -478,6 +520,7 @@ public final class CloudConnection: ObservableObject {
             throw failure("云端 HTTP \(response.statusCode)：\(reason)")
         }
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw failure("云端没有返回 JSON 对象") }
+        lastOK = Date()
         return object
     }
 }
@@ -485,5 +528,119 @@ public final class CloudConnection: ObservableObject {
 private final class CloudRedirectDelegate: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
+    }
+}
+
+// MARK: - 连接诊断：逐段检查，每一步给出中文结论；日志不含密码 / Token
+
+public struct CloudDiagStep: Identifiable, Equatable {
+    public enum Result: Equatable { case pass, fail, skip }
+    public let id: String
+    public let title: String
+    public let result: Result
+    public let detail: String
+}
+
+extension CloudConnection {
+    public func runDiagnostics(networkAvailable: Bool) async -> [CloudDiagStep] {
+        var steps: [CloudDiagStep] = []
+        func add(_ id: String, _ title: String, _ r: CloudDiagStep.Result, _ detail: String) {
+            steps.append(CloudDiagStep(id: id, title: title, result: r, detail: CloudLogRedactor.redact(detail)))
+        }
+        add("network", "手机网络", networkAvailable ? .pass : .fail, networkAvailable ? "网络可用" : "手机当前没有网络")
+        let configured = !host.isEmpty && !(getPassword() ?? "").isEmpty
+        add("config", "连接信息", configured ? .pass : .fail,
+            configured ? "\(username)@\(host):\(sshPort)" : "还没有填写服务器地址或 SSH 密码")
+        guard configured, networkAvailable else { return steps }
+
+        // SSH 端口是否可达
+        let tcp = await Self.tcpReachable(host: host, port: sshPort, timeout: 6)
+        add("ssh_port", "SSH 端口 \(sshPort)", tcp == nil ? .pass : .fail,
+            tcp == nil ? "服务器端口可以连通" : "连不上：\(tcp!)。请检查服务器是否开机、IP 是否变化、防火墙 / 安全组是否放行 \(sshPort)")
+        guard tcp == nil else { return steps }
+
+        // SSH 登录 + 服务器上的服务状态（一次 SSH 完成）
+        var remoteOK = false
+        do {
+            try validate(); try await prepare()
+            let password = try await passwordFile()
+            defer { Task { await self.cleanup(password) } }
+            let remote = "echo __LOGIN_OK__; for u in openminis-cloud-agent openminis-display openminis-vnc openminis-novnc; do echo \"$u=$(systemctl is-active $u 2>/dev/null)\"; done; "
+                + "python3 -c \"import urllib.request,json;print('__API__=' + json.load(urllib.request.urlopen('http://127.0.0.1:18765/health', timeout=3)).get('agent_version', 'old'))\" 2>/dev/null || echo __API__=down"
+            let r = try await shell("sshpass -f \(quote(password)) ssh \(options()) -n \(destination) \(quote(remote))", timeout: 40)
+            let out = r.output + "\n" + r.errorOutput
+            if out.contains("__LOGIN_OK__") {
+                remoteOK = true
+                add("ssh_auth", "SSH 登录", .pass, "用户名和密码正确，主机指纹已确认")
+                var units: [String: String] = [:]
+                for line in out.split(separator: "\n") where line.contains("=") && line.hasPrefix("openminis-") {
+                    let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
+                    units[parts[0]] = parts.count > 1 ? parts[1] : ""
+                }
+                let agent = units["openminis-cloud-agent"] ?? ""
+                let api = out.components(separatedBy: "__API__=").last?.split(separator: "\n").first.map(String.init) ?? "down"
+                add("agent", "服务器 Agent", agent == "active" && api != "down" ? .pass : .fail,
+                    agent == "active" && api != "down" ? "运行中，版本 \(api)" : "服务状态 \(agent.isEmpty ? "未安装" : agent)，本机 API \(api == "down" ? "无应答" : api)。请点「安装 / 更新服务器」")
+                let desk = ["openminis-display", "openminis-vnc", "openminis-novnc"].map { "\($0.replacingOccurrences(of: "openminis-", with: ""))=\(units[$0].map { $0.isEmpty ? "未安装" : $0 } ?? "未安装")" }
+                let deskOK = ["openminis-display", "openminis-vnc", "openminis-novnc"].allSatisfy { units[$0] == "active" }
+                add("desktop_services", "桌面服务", deskOK ? .pass : .fail, desk.joined(separator: "  ") + (deskOK ? "" : "。可点「重启桌面」或「安装 / 更新桌面环境」"))
+            } else {
+                let cause = CloudLinkCause.classify(out)
+                add("ssh_auth", "SSH 登录", .fail, cause.message + "：" + String(out.trimmingCharacters(in: .whitespacesAndNewlines).suffix(200)))
+            }
+        } catch {
+            add("ssh_auth", "SSH 登录", .fail, CloudLinkCause.classify(error.localizedDescription).message + "：" + error.localizedDescription)
+        }
+        guard remoteOK else { return steps }
+
+        // 本机隧道与 API
+        if !isConnected { try? await ensureConnected() }
+        let apiAlive = await probeAlive(timeout: 3)
+        add("tunnel_api", "隧道 · API 端口 \(apiPort)", apiAlive ? .pass : .fail, apiAlive ? "本机端口可以访问服务器 API" : "隧道没有建立或已断开（\(status)）")
+        let deskAlive = await checkDesktopReachable()
+        add("tunnel_desktop", "隧道 · 桌面端口 \(desktopPort)", deskAlive ? .pass : .fail, deskAlive ? "noVNC 页面可以打开" : "桌面网页打不开：桌面服务未运行或未安装")
+        if apiAlive {
+            do {
+                _ = try await requestRaw(method: "GET", path: "/v1/sessions", body: nil)
+                add("token", "服务 Token", .pass, "Token 有效")
+            } catch {
+                add("token", "服务 Token", .fail, error.localizedDescription.contains("401") ? "Token 不对：请在云电脑设置里重新填写，或重新安装服务器后自动获取" : error.localizedDescription)
+            }
+            if let d = lastHealth["desktop"] as? [String: Any] {
+                let ok = d["ok"] as? Bool ?? false
+                add("desktop", "云电脑桌面", ok ? .pass : .fail, d["message"] as? String ?? "")
+            }
+        }
+        return steps
+    }
+
+    static func tcpReachable(host: String, port: Int, timeout: TimeInterval) async -> String? {
+        await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+            DispatchQueue.global().async {
+                var hints = addrinfo(ai_flags: 0, ai_family: AF_UNSPEC, ai_socktype: SOCK_STREAM, ai_protocol: 0,
+                                     ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
+                var res: UnsafeMutablePointer<addrinfo>?
+                guard getaddrinfo(host, String(port), &hints, &res) == 0, let first = res else {
+                    cont.resume(returning: "域名解析失败")
+                    return
+                }
+                defer { freeaddrinfo(res) }
+                let fd = socket(first.pointee.ai_family, first.pointee.ai_socktype, first.pointee.ai_protocol)
+                guard fd >= 0 else { cont.resume(returning: "无法创建网络连接"); return }
+                defer { close(fd) }
+                let flags = fcntl(fd, F_GETFL, 0)
+                _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+                let rc = Darwin.connect(fd, first.pointee.ai_addr, first.pointee.ai_addrlen)
+                if rc == 0 { cont.resume(returning: nil); return }
+                guard errno == EINPROGRESS else { cont.resume(returning: String(cString: strerror(errno))); return }
+                var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                let n = poll(&pfd, 1, Int32(timeout * 1000))
+                if n <= 0 { cont.resume(returning: "连接超时"); return }
+                var err: Int32 = 0
+                var len = socklen_t(MemoryLayout<Int32>.size)
+                getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len)
+                cont.resume(returning: err == 0 ? nil : String(cString: strerror(err)))
+            }
+        }
     }
 }

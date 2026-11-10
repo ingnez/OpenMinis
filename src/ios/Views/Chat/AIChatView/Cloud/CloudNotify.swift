@@ -19,9 +19,20 @@ struct CloudNotifySection: View {
     @State private var statusText: String?
     @State private var errorText: String?
     @State private var busy = false
+    @AppStorage(CloudLinkSupervisor.barkFallbackKey) private var barkFallback = "auto"
+
+    private var fallbackOn: Binding<Bool> {
+        Binding(get: { barkFallback == "on" || (barkFallback == "auto" && configuredText != nil) },
+                set: { v in
+                    barkFallback = v ? "on" : "off"
+                    Task { _ = try? await CloudConnection.shared.request(method: "PUT", path: "/v1/resources", body: ["bark_fallback": barkFallback]) }
+                })
+    }
 
     var body: some View {
         Section {
+            Toggle("应用关闭时用 Bark 兜底", isOn: fallbackOn)
+                .disabled(configuredText == nil)
             Picker("推送服务", selection: $provider) {
                 Text("Bark").tag("bark")
                 Text("ntfy").tag("ntfy")
@@ -54,7 +65,7 @@ struct CloudNotifySection: View {
         } header: {
             Text("完成推送")
         } footer: {
-            Text("由 VPS 直接推送到 Bark 或 ntfy，手机离线、App 未运行时也能收到。推送地址与令牌在 VPS 上加密保存，读取时只显示脱敏地址；推送内容会包含任务标题与结果摘要。")
+            Text("App 在线时用系统通知提醒 Bot 回复和任务完成，不会重复推送；App 被关闭后才由 VPS 推送到 Bark 或 ntfy 兜底。推送地址与令牌在 VPS 上加密保存，读取时只显示脱敏地址；推送内容会包含任务标题与结果摘要。")
         }
         .task { await refresh() }
     }

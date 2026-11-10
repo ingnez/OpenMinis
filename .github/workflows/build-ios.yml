@@ -30,6 +30,11 @@ jobs:
         run: |
           set -o pipefail
           xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift 2>&1 | tee cloud-typecheck.log
+      - name: 断线重连逻辑测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReconnectPolicy.swift scripts/CloudReconnectTests.swift -o /tmp/cloud-reconnect-tests
+          /tmp/cloud-reconnect-tests
 
   cloud-computer-linux:
     if: ${{ !inputs.quick }}
@@ -99,6 +104,8 @@ jobs:
           python3 scripts/test_cloud_send_gate.py | tee cloud-send-gate-test.log
           swiftc -swift-version 5 src/ios/Views/Chat/AIChatView/Cloud/CloudModelCatalog.swift scripts/CloudModelCatalogTests.swift -o /tmp/cloud-model-tests
           /tmp/cloud-model-tests | tee cloud-model-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReconnectPolicy.swift scripts/CloudReconnectTests.swift -o /tmp/cloud-reconnect-tests
+          /tmp/cloud-reconnect-tests | tee cloud-reconnect-test.log
           swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift -o /tmp/cloud-chat-tests
           /tmp/cloud-chat-tests | tee cloud-chat-test.log
           xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift 2>&1 | tee cloud-connection-typecheck.log

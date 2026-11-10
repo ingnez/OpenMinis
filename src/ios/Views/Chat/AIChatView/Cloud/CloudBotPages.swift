@@ -90,7 +90,7 @@ struct CloudBotEditSheet: View {
             Form {
                 Section {
                     Button { showAvatar = true } label: {
-                        CloudBotAvatarView(spec: spec, size: 110)
+                        CloudBotAliveAvatar(spec: spec, size: 110)
                             .overlay(alignment: .bottomTrailing) {
                                 Image(systemName: "pencil").font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary)
                                     .frame(width: 36, height: 36)
@@ -115,7 +115,7 @@ struct CloudBotEditSheet: View {
                     NavigationLink {
                         ScrollView {
                             VStack(spacing: 24) {
-                                CloudBotAvatarView(spec: spec, size: 130).padding(.top, 16)
+                                CloudBotAliveAvatar(spec: spec, size: 130).padding(.top, 16)
                                 CloudBotAvatarPicker(spec: $spec)
                             }
                         }
@@ -194,7 +194,7 @@ struct CloudBotEditSheet: View {
                 NavigationStack {
                     ScrollView {
                         VStack(spacing: 24) {
-                            CloudBotAvatarView(spec: spec, size: 130).padding(.top, 16)
+                            CloudBotAliveAvatar(spec: spec, size: 130).padding(.top, 16)
                             CloudBotAvatarPicker(spec: $spec)
                         }
                     }

@@ -58,6 +58,8 @@ final class CloudBotHomeModel: ObservableObject {
 
     private init() {
         seen = UserDefaults.standard.dictionary(forKey: "OpenMinisCloud_botSeen") as? [String: Double] ?? [:]
+        bots = CloudBotService.cachedList()
+        if !bots.isEmpty { loaded = true }
     }
 
     var primary: CloudBot? { bots.first(where: { $0.isPrimary }) }
@@ -83,31 +85,36 @@ final class CloudBotHomeModel: ObservableObject {
     func bot(_ id: String) -> CloudBot? { bots.first(where: { $0.id == id }) }
     func botId(forSession sid: String) -> String? { bots.first(where: { $0.latestSessionId == sid })?.id }
 
-    /// 后台自动连接（复用已保存的连接信息）后刷新 Bot 列表；失败只显示横幅。
-    func refresh() async {
+    /// 后台自动连接（复用已保存的连接信息）后刷新 Bot 列表。连接问题交给 CloudLinkSupervisor 静默重连，
+    /// 首页先显示上次的列表；只有非连接类错误才显示横幅。forceReconnect：用户点了重试，拆掉旧隧道重建。
+    func refresh(forceReconnect: Bool = false) async {
         let conn = CloudConnection.shared
-        if !conn.isConnected {
-            guard conn.canAutoConnect else {
-                bannerText = "还没有连接云电脑：点左上角头像 › 云电脑设置，填写 VPS 并安装服务"
-                loaded = true
-                return
-            }
-            connecting = true
-            do {
-                try await conn.ensureConnected()
-            } catch {
-                connecting = false
-                bannerText = "云电脑连接失败：\(error.localizedDescription.prefix(160))"
-                loaded = true
-                return
-            }
-            connecting = false
+        let link = CloudLinkSupervisor.shared
+        guard conn.canAutoConnect || conn.isConnected else {
+            bannerText = "还没有连接云电脑：点左上角头像 › 云电脑设置，填写 VPS 并安装服务"
+            loaded = true
+            return
         }
+        connecting = !conn.isConnected
+        do {
+            if forceReconnect { try await conn.reconnect() } else { try await conn.ensureConnected() }
+        } catch {
+            connecting = false
+            bannerText = nil
+            link.handle(.requestFailed)      // 横幅由连接守护在静默重试失败后显示
+            loaded = true
+            return
+        }
+        connecting = false
+        link.handle(.pageOpened)
         do {
             bots = try await CloudBotService.list()
             bannerText = nil
             // 旧版服务器没有群聊接口：忽略错误
             groups = (try? await CloudGroupService.list()) ?? groups
+        } catch let error as URLError where CloudConnection.tunnelDropped(error) {
+            bannerText = nil
+            link.handle(.requestFailed)
         } catch {
             bannerText = "读取 Bot 失败：\(error.localizedDescription.prefix(160))"
         }
@@ -185,8 +192,10 @@ struct CloudBotHomeScreen: View {
             ZStack(alignment: .bottom) {
                 ScrollView {
                     VStack(spacing: 0) {
+                        CloudLinkBanner(onOpenSettings: onOpenSettings)
+                            .padding(.horizontal, 16).padding(.bottom, 8)
                         if let banner = model.bannerText {
-                            Button { Task { await model.refresh() } } label: {
+                            Button { Task { await model.refresh(forceReconnect: true) } } label: {
                                 Text(banner + "（点此重试）")
                                     .font(.footnote).foregroundStyle(.orange)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -196,7 +205,7 @@ struct CloudBotHomeScreen: View {
                             .buttonStyle(.plain)
                             .padding(.horizontal, 16).padding(.bottom, 8)
                         }
-                        if model.connecting {
+                        if model.connecting && model.bots.isEmpty {
                             Text("正在连接云电脑…").font(.caption).foregroundStyle(.secondary).padding(.bottom, 6)
                         }
                         if let primary = model.primary, search.isEmpty {
@@ -237,14 +246,17 @@ struct CloudBotHomeScreen: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { avatarMenu }
                 ToolbarItem(placement: .principal) {
-                    Menu {
-                        modeButtons
-                    } label: {
-                        HStack(spacing: 3) {
-                            Text("多 Bot").font(.caption.weight(.semibold))
-                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                    HStack(spacing: 2) {
+                        Menu {
+                            modeButtons
+                        } label: {
+                            HStack(spacing: 3) {
+                                Text("多 Bot").font(.caption.weight(.semibold))
+                                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                            }
+                            .foregroundStyle(.secondary)
                         }
-                        .foregroundStyle(.secondary)
+                        CloudLinkDot(onOpenSettings: onOpenSettings)
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {

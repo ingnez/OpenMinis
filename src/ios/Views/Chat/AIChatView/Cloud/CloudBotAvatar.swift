@@ -168,7 +168,7 @@ struct CloudBotAvatarPicker: View {
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(52), spacing: 10), count: 5), spacing: 12) {
                 ForEach(0..<CloudBotAvatarSpec.shapeCount, id: \.self) { k in
                     Button { spec.shape = k } label: {
-                        CloudBotAvatarView(spec: CloudBotAvatarSpec(shape: k, color: spec.color), size: 38)
+                        CloudBotBlinkingIcon(spec: CloudBotAvatarSpec(shape: k, color: spec.color), size: 38)
                             .frame(width: 50, height: 50)
                             .overlay(Circle().stroke(Color.gray.opacity(spec.shape == k ? 0.45 : 0), lineWidth: 2))
                     }
@@ -208,7 +208,7 @@ struct CloudBotCreateSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 26) {
-                    CloudBotAvatarView(spec: spec, size: 150).padding(.top, 12)
+                    CloudBotAliveAvatar(spec: spec, size: 150).padding(.top, 12)
                     TextField("为 Bot 取个名字", text: $name)
                         .multilineTextAlignment(.center)
                         .font(.system(size: 20, weight: .semibold))
@@ -294,5 +294,97 @@ struct CloudBotCreateSheet: View {
             }
             saving = false
         }
+    }
+}
+
+/// 创建 / 编辑页的大头像：轻轻呼吸起伏、随机眨眼、眼睛四处张望并跟随手指，换形状或颜色时弹一下。
+/// 「减弱动态效果」开启时只保留眨眼。
+struct CloudBotAliveAvatar: View {
+    let spec: CloudBotAvatarSpec
+    var size: CGFloat = 150
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var gaze: CGSize = .zero
+    @State private var eyeOpen: CGFloat = 1
+    @State private var touching = false
+    @State private var bounce: CGFloat = 1
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate
+            let breath = reduceMotion ? 0 : sin(t * 1.6)
+            CloudBotAvatarView(spec: spec, size: size, gaze: gaze, eyeOpen: eyeOpen)
+                .scaleEffect(x: (1 + 0.015 * breath) * bounce, y: (1 - 0.02 * breath) * (2 - bounce), anchor: .bottom)
+                .rotationEffect(.degrees(reduceMotion ? 0 : 2.5 * sin(t * 0.7)))
+                .offset(y: reduceMotion ? 0 : -4 * (0.5 + 0.5 * sin(t * 1.6)))
+        }
+        .frame(width: size, height: size + 8)
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { v in
+                    touching = true
+                    let dx = (v.location.x - size / 2) / (size / 2)
+                    let dy = (v.location.y - size / 2) / (size / 2)
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                        gaze = CGSize(width: max(-1, min(1, dx)), height: max(-1, min(1, dy)))
+                    }
+                }
+                .onEnded { _ in
+                    touching = false
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) { gaze = .zero }
+                }
+        )
+        .onChange(of: spec) { _ in
+            guard !reduceMotion else { return }
+            bounce = 1.12
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.45)) { bounce = 1 }
+        }
+        .task(id: reduceMotion) { await live() }
+        .accessibilityHidden(true)
+    }
+
+    private func live() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: UInt64.random(in: 1_200_000_000...3_200_000_000))
+            if Task.isCancelled { return }
+            if Int.random(in: 0..<3) > 0 {
+                withAnimation(.easeInOut(duration: 0.07)) { eyeOpen = 0.1 }
+                try? await Task.sleep(nanoseconds: 110_000_000)
+                withAnimation(.easeInOut(duration: 0.1)) { eyeOpen = 1 }
+                if Int.random(in: 0..<5) == 0 {     // 偶尔连眨两下
+                    try? await Task.sleep(nanoseconds: 160_000_000)
+                    withAnimation(.easeInOut(duration: 0.07)) { eyeOpen = 0.1 }
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    withAnimation(.easeInOut(duration: 0.1)) { eyeOpen = 1 }
+                }
+            }
+            if !reduceMotion && !touching {
+                let looks = [CGSize(width: -0.9, height: 0), CGSize(width: 0.9, height: 0), CGSize(width: 0, height: -0.8),
+                             CGSize(width: 0.6, height: 0.5), CGSize(width: -0.5, height: -0.6), .zero, .zero]
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) { gaze = looks.randomElement() ?? .zero }
+            }
+        }
+    }
+}
+
+/// 形状网格里的小图标：偶尔眨一下眼（各自错开，开销很小）
+struct CloudBotBlinkingIcon: View {
+    let spec: CloudBotAvatarSpec
+    var size: CGFloat = 38
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var eyeOpen: CGFloat = 1
+
+    var body: some View {
+        CloudBotAvatarView(spec: spec, size: size, eyeOpen: eyeOpen)
+            .task(id: reduceMotion) {
+                guard !reduceMotion else { return }
+                try? await Task.sleep(nanoseconds: UInt64.random(in: 300_000_000...4_000_000_000))
+                while !Task.isCancelled {
+                    withAnimation(.easeInOut(duration: 0.07)) { eyeOpen = 0.1 }
+                    try? await Task.sleep(nanoseconds: 120_000_000)
+                    withAnimation(.easeInOut(duration: 0.1)) { eyeOpen = 1 }
+                    try? await Task.sleep(nanoseconds: UInt64.random(in: 4_000_000_000...11_000_000_000))
+                }
+            }
     }
 }

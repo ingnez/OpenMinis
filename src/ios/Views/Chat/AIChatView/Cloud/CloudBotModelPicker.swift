@@ -23,15 +23,25 @@ enum CloudEffort: String, CaseIterable, Identifiable {
     static let defaultKey = "OpenMinisCloud_reasoningEffort"
     static var globalDefault: CloudEffort { CloudEffort(rawValue: UserDefaults.standard.string(forKey: defaultKey) ?? "") ?? .off }
 
-    /// 按模型名判断是否支持思考参数（中转的模型名各不相同，按常见前缀判断）
-    static func supported(for model: String) -> [CloudEffort] {
+    /// 所有模型都可以选思考深度：服务器按模型换参数写法，服务商不接受时自动去掉并记住（见 knownUnsupported）
+    static func supported(for model: String) -> [CloudEffort] { Array(allCases) }
+
+    /// 按模型名判断是否“已知”是推理模型（只用来显示小脑袋图标，不再限制选择）
+    static func isKnownReasoning(_ model: String) -> Bool {
         let m = model.lowercased()
         let reasoning = ["o1", "o3", "o4", "gpt-5", "gpt-oss", "claude-3-7", "claude-3.7", "claude-sonnet-4", "claude-opus-4", "claude-4",
                          "claude-haiku-4", "sonnet-4", "opus-4", "gemini-2.5", "gemini-3", "deepseek-r1", "deepseek-reasoner", "qwq",
                          "qwen3", "grok-3-mini", "grok-4", "thinking", "glm-4.5", "glm-4.6", "glm-5", "kimi-k2", "doubao-seed", "minimax-m"]
-        guard reasoning.contains(where: { m.contains($0) }) else { return [.off] }
-        let extra = m.contains("gpt-5") || m.contains("o3") || m.contains("o4") || m.contains("claude") || m.contains("opus") || m.contains("sonnet")
-        return extra ? Array(allCases) : [.off, .low, .medium, .high]
+        return reasoning.contains(where: { m.contains($0) }) || m.contains("deepseek") || m.contains("-high") || m.contains("reason")
+    }
+
+    /// 服务器记下的“服务商不接受思考参数”的模型
+    @MainActor static var knownUnsupported: Set<String> = []
+
+    @MainActor static func refreshUnsupported() async {
+        guard CloudConnection.shared.isConnected,
+              let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/models/effort") else { return }
+        knownUnsupported = Set(r["unsupported"] as? [String] ?? [])
     }
 
     static func short(_ model: String) -> String {
@@ -105,23 +115,22 @@ struct CloudModelEffortSheet: View {
     @State private var selected: CloudModelOption?
     @State private var followDefault = false
     @State private var effort: CloudEffort = .off
+    @State private var unsupportedModels: Set<String> = CloudEffort.knownUnsupported
 
     var body: some View {
         NavigationStack {
             List {
                 Section("思考深度") {
-                    let options = CloudEffort.supported(for: selectedModelName)
                     Picker("思考深度", selection: $effort) {
                         ForEach(CloudEffort.allCases) { e in
                             Text(e.label).tag(e)
                         }
                     }
                     .pickerStyle(.segmented)
-                    .disabled(options.count <= 1)
-                    if options.count <= 1 {
-                        Text("这个模型不支持调节思考深度").font(.caption).foregroundStyle(.secondary)
-                    } else if !options.contains(effort) {
-                        Text("这个模型最高支持「\(options.last?.label ?? "高")」，会自动降一级").font(.caption).foregroundStyle(.orange)
+                    if unsupportedModels.contains(selectedModelName) && effort != .off {
+                        Text("上次服务商没有接受思考参数，已自动去掉后照常回答；换了中转或模型升级后会再试").font(.caption).foregroundStyle(.secondary)
+                    } else if effort == .xhigh {
+                        Text("不支持「极高」的模型会自动降到「高」").font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 if allowFollowDefault {
@@ -158,7 +167,7 @@ struct CloudModelEffortSheet: View {
                                 } label: {
                                     HStack {
                                         Text(option.model).foregroundStyle(.primary).lineLimit(1)
-                                        if CloudEffort.supported(for: option.model).count > 1 {
+                                        if CloudEffort.isKnownReasoning(option.model) {
                                             Image(systemName: "brain").font(.caption2).foregroundStyle(.secondary)
                                         }
                                         Spacer()
@@ -197,6 +206,8 @@ struct CloudModelEffortSheet: View {
                 if !current.instanceId.isEmpty {
                     selected = CloudModelOption(instanceId: current.instanceId, providerLabel: "", model: current.model)
                 }
+                await CloudEffort.refreshUnsupported()
+                unsupportedModels = CloudEffort.knownUnsupported
                 await catalog.load()
                 if let sel = selected, let match = catalog.groups.flatMap(\.models).first(where: { $0.instanceId == sel.instanceId && $0.model == sel.model }) {
                     selected = match
