@@ -518,3 +518,9 @@
 
 `resources.strong_model`（与当前任务同一服务商的模型 ID，空 = 不换模型）。`auto_model` 开着时，看起来要深想的问题（推导、证明、鉴别诊断、机制、架构设计、根因排查等措辞，或很长的提问）
 换用 `strong_model`，并把思考深度从 默认 / low / medium 调到 `high`（快速模式和值班中不调）。强模型出错时本任务回到主模型。事件流里有一条 `status`：「难题：换用强模型 …，思考深度 high」。
+
+## 中转站定期体检（2.20.0）
+
+`GET /v1/relays/watch` → `{"watch": {"credential", "model", "hours", "last_run", "history": [{at, ok, failed: [项目名], error}]}}`（最近 10 次）。
+`PUT /v1/relays/watch {"credential", "model", "hours"}`：hours ∈ 0 / 6 / 12 / 24 / 72 / 168，0 = 关闭；换了凭据或模型会清空历史。
+调度器到间隔就在后台跑一次 `relay_check`（长上下文探针约 3000 token）。结果变差（第一次就不合格、从合格变不合格、不合格项目变了）时推一条 `relay_watch` 通知。

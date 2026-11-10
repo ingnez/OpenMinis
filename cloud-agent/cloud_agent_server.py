@@ -580,7 +580,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.19.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.20.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -3218,6 +3218,61 @@ def _duty_record(kind, title, body, bot_id=None, session_id=None, suppressed=Fal
         print(f"duty record failed: {type(e).__name__}", flush=True)
 
 
+_relay_watch_running = threading.Event()
+RELAY_WATCH_NEEDLE = 3000
+
+
+def relay_watch_config():
+    return _settings_get("relay_watch") or {"credential": "", "model": "", "hours": 0, "last_run": 0, "history": []}
+
+
+def _relay_watch_run(cfg, now):
+    try:
+        prov, _st, err = resolve_provider({"protocol": "chat", "credential": cfg["credential"]})
+        if err:
+            result = {"checks": [], "ok": False, "error": str(err)[:120]}
+        else:
+            url = f"{prov['base_url'].rstrip('/')}/chat/completions"
+            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {prov['api_key']}"}
+            result = eff.relay_check(lambda body: cloud_llm.chat_completion(url, headers, body, stream=False, timeout=18),
+                                     cfg["model"], RELAY_WATCH_NEEDLE)
+        bad = [c["name"] for c in result.get("checks", []) if c.get("ok") is False]
+        entry = {"at": now, "ok": bool(result.get("ok")), "failed": bad, "error": scrub_text(result.get("error") or "")}
+        cur = relay_watch_config()
+        prev = (cur.get("history") or [{}])[-1] if cur.get("history") else {}
+        cur["history"] = (cur.get("history") or [])[-9:] + [entry]
+        cur["last_run"] = now
+        _settings_put("relay_watch", cur)
+        # 只在变差时提醒（第一次就不合格也提醒）；一直不合格不重复刷屏
+        if not entry["ok"] and (not prev or prev.get("ok") or set(prev.get("failed") or []) != set(bad)):
+            why = "、".join(bad) or entry["error"] or "请求失败"
+            user_notify(current_notify_config(), "relay_watch", f"中转站定期体检没通过：{cfg['model']}"[:120],
+                        f"没通过的项目：{why}。可能掺水、换模型、注入提示词或截断上下文，打开「中转站体检」看详情。")
+        return entry
+    except Exception as e:
+        print(f"relay watch failed: {type(e).__name__}", flush=True)
+        return None
+    finally:
+        _relay_watch_running.clear()
+
+
+def relay_watch_check(now=None, wait=False):
+    """调度器每轮调用：到了间隔就在后台跑一次体检（只用一个小的长上下文探针，省 token）"""
+    now = time.time() if now is None else now
+    cfg = relay_watch_config()
+    if not cfg.get("hours") or not cfg.get("credential") or not cfg.get("model"):
+        return None
+    if now - float(cfg.get("last_run") or 0) < float(cfg["hours"]) * 3600 or _relay_watch_running.is_set():
+        return None
+    _relay_watch_running.set()
+    cfg["last_run"] = now           # 先占位，失败也不会每 15 秒重试
+    _settings_put("relay_watch", cfg)
+    if wait:
+        return _relay_watch_run(cfg, now)
+    threading.Thread(target=_relay_watch_run, args=(cfg, now), name="relay-watch", daemon=True).start()
+    return "started"
+
+
 def duty_check(now=None):
     """值班开始 / 结束检测：调度器每轮调用，改值班设置时也立即调用。下班时推一份「错过了什么」。"""
     now = time.time() if now is None else now
@@ -5160,6 +5215,10 @@ def _scheduler_main():
             duty_check()
         except Exception as e:
             sys.stderr.write(f"[duty] check error: {sanitize_err(e)}\n")
+        try:
+            relay_watch_check()
+        except Exception as e:
+            sys.stderr.write(f"[relay] watch error: {sanitize_err(e)}\n")
 
 def start_scheduler():
     global _scheduler_thread
@@ -5915,6 +5974,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, proxy_mgr().status())
             except Exception as e:
                 self._send(500, {"error": f"读取代理设置失败：{type(e).__name__}"})
+            return
+        if path == "/v1/relays/watch":
+            cfg = relay_watch_config()
+            self._send(200, {"watch": {k: cfg.get(k) for k in ("credential", "model", "hours", "last_run", "history")}})
             return
         if path == "/v1/duty/digest":
             conn = get_db_connection()
@@ -6679,6 +6742,22 @@ class Handler(BaseHTTPRequestHandler):
             except cloud_proxy.ProxyError as e:
                 self._send(400, {"error": str(e)})
             return
+        if path == "/v1/relays/watch":
+            cred, model, hours = req_json.get("credential", ""), req_json.get("model", ""), req_json.get("hours", 0)
+            if not isinstance(hours, (int, float)) or hours not in (0, 6, 12, 24, 72, 168) \
+                    or not isinstance(cred, str) or not re.match(r"^[A-Za-z0-9_.:-]{0,64}$", cred) \
+                    or not isinstance(model, str) or not re.match(r"^[A-Za-z0-9._:/@+-]{0,120}$", model) or (hours and not (cred and model)):
+                self._send(400, {"error": "hours 只能是 0 / 6 / 12 / 24 / 72 / 168；开启时需要 credential 和 model"})
+                return
+            cfg = relay_watch_config()
+            changed = (cfg.get("credential"), cfg.get("model")) != (cred, model)
+            cfg.update({"credential": cred, "model": model, "hours": hours})
+            if changed:
+                cfg["history"], cfg["last_run"] = [], 0
+            _settings_put("relay_watch", cfg)
+            self._send(200, {"watch": {k: cfg.get(k) for k in ("credential", "model", "hours", "last_run", "history")}})
+            return
+
         if path == "/v1/resources":
             try:
                 new = update_resource_settings(req_json)

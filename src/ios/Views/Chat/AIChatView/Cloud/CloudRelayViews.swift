@@ -137,6 +137,7 @@ struct CloudRelayCheckView: View {
                     Text((result["ok"] as? Bool) == true ? "未发现问题" : "发现可疑之处")
                 }
             }
+            CloudRelayWatchSection(credential: credential, model: model.trimmingCharacters(in: .whitespaces))
             if let e = creds.error { Text(e).font(.caption).foregroundStyle(.orange) }
         }
         .navigationTitle("中转站体检")
@@ -165,6 +166,65 @@ struct CloudRelayCheckView: View {
                 if (result?["ok"] as? Bool) == true { CloudHaptics.success() } else { CloudHaptics.warning() }
             } catch {
                 self.error = "体检失败：\(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+/// 定期自动体检：用上面选的凭据和模型，按间隔在云电脑上自动跑（长上下文只测约 3000 token），变差时推送提醒
+struct CloudRelayWatchSection: View {
+    let credential: String
+    let model: String
+    @State private var hours = 0
+    @State private var watched = ""
+    @State private var history: [[String: Any]] = []
+    @State private var error: String?
+    private static let options = [0, 6, 12, 24, 72, 168]
+
+    var body: some View {
+        Section {
+            Picker("定期自动体检", selection: $hours) {
+                ForEach(Self.options, id: \.self) { h in Text(h == 0 ? "关闭" : h < 24 ? "每 \(h) 小时" : h == 24 ? "每天" : h == 72 ? "每 3 天" : "每周").tag(h) }
+            }
+            .onChange(of: hours) { h in save(h) }
+            .disabled(credential.isEmpty || model.isEmpty)
+            if !watched.isEmpty { LabeledContent("正在盯", value: watched) }
+            ForEach(Array(history.reversed().prefix(5).enumerated()), id: \.offset) { _, h in
+                let ok = h["ok"] as? Bool ?? false
+                let failed = (h["failed"] as? [String] ?? []).joined(separator: "、")
+                Label {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(Date(timeIntervalSince1970: h["at"] as? Double ?? 0).formatted(date: .abbreviated, time: .shortened))
+                        if !ok { Text(failed.isEmpty ? (h["error"] as? String ?? "请求失败") : "没通过：" + failed).font(.caption).foregroundStyle(.secondary) }
+                    }
+                } icon: { Image(systemName: ok ? "checkmark.circle.fill" : "xmark.octagon.fill").foregroundStyle(ok ? .green : .red) }
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+        } header: { Text("定期体检") } footer: {
+            Text("按间隔在云电脑上自动体检上面选的凭据和模型（每次 3 个小请求，长上下文约 3000 token）。结果变差时推送一次提醒，一直不合格不重复打扰。")
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/relays/watch"),
+              let w = r["watch"] as? [String: Any] else { return }
+        let h = (w["hours"] as? Int) ?? Int((w["hours"] as? Double) ?? 0)
+        hours = Self.options.contains(h) ? h : 0
+        let m = w["model"] as? String ?? ""
+        watched = h > 0 && !m.isEmpty ? "\(w["credential"] as? String ?? "") · \(m)" : ""
+        history = w["history"] as? [[String: Any]] ?? []
+    }
+
+    private func save(_ h: Int) {
+        let body: [String: Any] = ["credential": h == 0 ? "" : credential, "model": h == 0 ? "" : model, "hours": h]
+        Task { @MainActor in
+            do {
+                _ = try await CloudConnection.shared.request(method: "PUT", path: "/v1/relays/watch", body: body)
+                error = nil
+                await load()
+            } catch {
+                self.error = "没保存成功：\(error.localizedDescription.prefix(80))"
             }
         }
     }
