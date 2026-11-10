@@ -638,6 +638,10 @@ struct CloudSessionView: View {
     @State private var showModelPicker = false
     /// 模型正在生成的文字（服务器流式推送，长轮询拿到）
     @State private var liveText = ""
+    @State private var liveReasoning = ""
+    @State private var liveTool: CloudLiveTool?
+    @AppStorage(CloudSteerMode.key) private var steerInterrupt = true
+    @State private var isInjecting = false
     @State private var liveSeq = -1
     @State private var eventCursor = 0
     @State private var isStreaming = false
@@ -1095,7 +1099,7 @@ struct CloudSessionView: View {
         }
         let running = activeTaskStatus == "running" || activeTaskStatus == "waiting_user" || activeTaskStatus == "queued" || isSubmitting
         // 进行中，或刚结束、历史还没重新加载（这次任务的几轮还没出现在历史里）：由实时那一份显示
-        if (running || historyHidesTask) && (!liveMessage.blocks.isEmpty || !liveText.isEmpty) {
+        if (running || historyHidesTask) && (!liveMessage.blocks.isEmpty || !liveText.isEmpty || !liveReasoning.isEmpty) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     CloudBotWatchingAvatar(spec: theme.spec, size: 22)
@@ -1103,7 +1107,7 @@ struct CloudSessionView: View {
                 }
                 // 与本地模式同一条管线：事件 → liveMessage 的消息块，正在生成的文字接在后面
                 CloudAssistantTurnView(message: liveMessage, spec: theme.spec, name: theme.name, accent: theme.accent,
-                                       showHeader: false, liveText: liveText)
+                                       showHeader: false, liveText: liveText, liveReasoning: liveReasoning)
             }
         }
         if running, liveMessage.blocks.contains(where: { if case .browserTool = $0.kind { return true } else { return false } }) {
@@ -1126,6 +1130,9 @@ struct CloudSessionView: View {
     private func themedComposer(_ theme: CloudBotChatTheme) -> some View {
         let working = activeTaskStatus == "running" || activeTaskStatus == "waiting_user"
         VStack(spacing: 6) {
+            if working, let tool = liveTool {
+                CloudLiveTerminalCard(tool: tool)
+            }
             if !attachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -1229,23 +1236,6 @@ struct CloudSessionView: View {
                 composerIcon("slash.circle", label: "斜杠命令") {
                     if !inputPrompt.hasPrefix("/") { inputPrompt = "/" }
                 }
-                composerIcon("phone", label: "和 \(theme.name) 通话") { openVoiceCall() }
-                Button {
-                    if working { cancelActiveTask() } else if hasDraft { if dictation.isRecording { dictation.stop() }; sendTask() }
-                } label: {
-                    Group {
-                        if isSubmitting {
-                            ProgressView().tint(.white)
-                        } else {
-                            Image(systemName: working ? "stop.fill" : "arrow.up").font(.system(size: 16, weight: .bold))
-                        }
-                    }
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(working || hasDraft ? theme.accent : Color(.systemGray3)))
-                }
-                .disabled(isSubmitting || (!working && !hasDraft))
-                .accessibilityLabel(working ? "停止" : "发送")
                 Button { openVoiceCall() } label: {
                     Image(systemName: "waveform").font(.system(size: 17, weight: .bold))
                         .foregroundStyle(Color(.systemBackground))
@@ -1253,6 +1243,35 @@ struct CloudSessionView: View {
                         .background(Circle().fill(Color.primary))
                 }
                 .accessibilityLabel("和 \(theme.name) 实时语音")
+                // 发送键在最右：空闲发送；运行中有草稿 = 插话（或排队），没草稿 = 停止
+                let steering = working && hasDraft
+                Button {
+                    if dictation.isRecording { dictation.stop() }
+                    if steering { steerOrQueue() } else if working { cancelActiveTask() } else if hasDraft { sendTask() }
+                } label: {
+                    Group {
+                        if isSubmitting || isInjecting {
+                            ProgressView().tint(.white)
+                        } else {
+                            Image(systemName: steering ? (steerInterrupt ? "arrow.turn.up.right" : "text.badge.plus")
+                                  : (working ? "stop.fill" : "arrow.up"))
+                                .font(.system(size: 16, weight: .bold))
+                        }
+                    }
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(working || hasDraft ? theme.accent : Color(.systemGray3)))
+                }
+                .disabled(isSubmitting || isInjecting || (!working && !hasDraft))
+                .contextMenu {
+                    Button { steerInterrupt = true } label: {
+                        Label("插话：运行中直接告诉模型", systemImage: steerInterrupt ? "checkmark" : "arrow.turn.up.right")
+                    }
+                    Button { steerInterrupt = false } label: {
+                        Label("排队：等这一轮做完再发", systemImage: steerInterrupt ? "text.badge.plus" : "checkmark")
+                    }
+                }
+                .accessibilityLabel(steering ? (steerInterrupt ? "插话" : "排队发送") : (working ? "停止" : "发送"))
             }
             .padding(.horizontal, 12)
         }
@@ -1281,7 +1300,75 @@ struct CloudSessionView: View {
         case "/记住": inputPrompt = "记住："
         case "/总结": inputPrompt = "请总结一下我们这段对话的要点和待办"; sendTask()
         case "/停止": cancelActiveTask()
+        case "/reset": resetContext()
         default: break
+        }
+    }
+
+    /// 运行中发消息：插话模式交给正在跑的任务（模型下一步就看到）；任务刚好结束或选了排队，就等它结束再普通发送
+    private func steerOrQueue() {
+        let content = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let tid = activeTaskId, !content.isEmpty, attachments.isEmpty, steerInterrupt else {
+            queueAfterCurrent()
+            return
+        }
+        isInjecting = true
+        let nonce = UUID().uuidString
+        Task { @MainActor in
+            let outcome = await CloudInjector.inject(taskId: tid, content: content, nonce: nonce)
+            isInjecting = false
+            switch outcome {
+            case .injected:
+                CloudHaptics.success()
+                if inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines) == content { inputPrompt = "" }
+            case .notRunning:
+                queueAfterCurrent()
+            case .failed(let why):
+                errorMessage = "插话没送到：\(why)（输入已保留）"
+            }
+        }
+    }
+
+    /// 排队：等当前任务结束（最多约 10 分钟）再走普通发送；输入框里的内容保留到发出为止
+    private func queueAfterCurrent() {
+        CloudHaptics.tap()
+        Task { @MainActor in
+            for _ in 0..<1200 {
+                if !["running", "waiting_user", "queued"].contains(activeTaskStatus) && !isSubmitting { break }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            sendTask()
+        }
+    }
+
+    /// /reset：先存对话快照，再清空模型上下文（旧消息留在屏幕上，下面一条分隔线可点开看快照）
+    private func resetContext() {
+        let sid = sessionId
+        var body: [String: Any] = [:]
+        if !botHasOwnModel, let inst = ProviderConfigStore.shared.instance(for: selectedInstanceId),
+           inst.providerType == .openAI, inst.credentialType == .apiKey, !inst.azureMode,
+           let key = ProviderKeychainHelper.loadAPIKey(instanceId: inst.id), !key.isEmpty {
+            let resolved = inst.resolvedBaseURL(default: "https://api.openai.com")
+            body = ["model": model, "provider": ["base_url": resolved.appendV1 ? "\(resolved.url)/v1" : resolved.url, "api_key": key]]
+        }
+        isSubmitting = true
+        Task { @MainActor in
+            do {
+                _ = try await CloudQuiet.retry {
+                    try await connection.request(method: "POST", path: "/v1/sessions/\(sid)/reset", body: body)
+                }
+                CloudHaptics.success()
+                activeTaskId = nil
+                activeTaskStatus = "idle"
+                liveMessage = ChatMessage(role: .assistant, content: "")
+                liveText = ""
+                liveReasoning = ""
+                liveTool = nil
+            } catch {
+                errorMessage = "重置失败：\(error.localizedDescription)"
+            }
+            isSubmitting = false
+            loadSessionDetail()
         }
     }
 
@@ -1379,6 +1466,11 @@ struct CloudSessionView: View {
     private func sendTask() {
         let content = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty || !attachments.isEmpty, !isSubmitting else { return }
+        if content == "/reset" && attachments.isEmpty {
+            inputPrompt = ""
+            resetContext()
+            return
+        }
         if botHasOwnModel {
             // Bot 已固定模型与加密保存的凭据：由服务器选择，不需要手机上的 Key
             submitPrepared(content: content, body: ["content": content, "model": model.isEmpty ? "bot" : model, "provider": [String: Any]()])
@@ -1539,14 +1631,19 @@ struct CloudSessionView: View {
                         }
                         // 一段话写进了事件或模型开始调用工具：正在生成的那段文字已经结束
                         if fresh.contains(where: { ["tool_call", "thought", "final"].contains($0["type"] as? String ?? "") }) { self.liveText = "" }
+                        if fresh.contains(where: { ["reasoning", "tool_call", "thought", "final"].contains($0["type"] as? String ?? "") }) { self.liveReasoning = "" }
                     }
                     if let live = batch.live, let t = live["text"] as? String, let s = live["seq"] as? Int {
                         self.liveText = t
+                        self.liveReasoning = live["reasoning"] as? String ?? ""
+                        self.liveTool = CloudLiveTool(live["tool"])
                         self.liveSeq = s
+                    } else if !fresh.isEmpty, fresh.contains(where: { $0["type"] as? String == "tool_result" }) {
+                        self.liveTool = nil
                     }
                     if let s = batch.rawStatus { self.activeTaskStatus = s }
                     // 结束了：正在生成的那段文字已经写进最后一轮，别再单独画一遍
-                    if batch.status?.isTerminal == true { self.liveText = "" }
+                    if batch.status?.isTerminal == true { self.liveText = ""; self.liveReasoning = ""; self.liveTool = nil }
                 },
                 onTrouble: { text in self.streamNotice = text })
             self.isStreaming = false

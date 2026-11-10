@@ -31,6 +31,8 @@ final class AssistantBlock: ObservableObject {
  var toolUseId: String?
  var toolStatus: ToolBlockStatus?
  var toolInputArgs: String?
+ @Published var toolSummary: String?
+ @Published var toolDuration: TimeInterval?
  var toolDescription: String { "工具" }
  init(kind: AssistantBlockKind, content: String, toolStatus: ToolBlockStatus? = nil, toolUseId: String? = nil) {
   self.kind=kind; self.content=content; self.toolStatus=toolStatus; self.toolUseId=toolUseId

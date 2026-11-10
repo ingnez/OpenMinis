@@ -55,7 +55,11 @@ enum CloudClientMetrics {
 
 /// 任务事件 → ChatMessage 的消息块（文字 / 工具胶囊 / 错误），两种模式完全相同
 enum CloudEventApplier {
-    static let visibleTypes: Set<String> = ["thought", "text", "content", "tool_call", "tool_result", "final", "error", "approval_required"]
+    static let visibleTypes: Set<String> = ["thought", "text", "content", "tool_call", "tool_result", "final", "error", "approval_required",
+                                            "reasoning", "user_message_applied"]
+    /// 插话（运行中发出、模型已收到的消息）和 /reset 分隔线都用 info 块，toolUseId 带这两个前缀
+    static let injectPrefix = "inject-"
+    static let resetPrefix = "reset-"
 
     /// eventId：事件自己的 id，工具调用没给 id 时用它生成稳定的 id（重放同一事件不会多出一步）
     static func apply(_ message: ChatMessage, type: String, payload: [String: Any], eventId: Int? = nil) {
@@ -76,6 +80,17 @@ enum CloudEventApplier {
                     message.blocks.append(AssistantBlock(kind: .text, content: content))
                 }
             }
+        case "reasoning":
+            // 思考过程：一段一个「深度思考」气泡，出现在这一步正文 / 工具之前
+            if let content = payload["content"] as? String, !content.isEmpty {
+                message.blocks.append(AssistantBlock(kind: .thinking, content: content))
+            }
+        case "user_message_applied":
+            let nonce = payload["nonce"] as? String ?? "\(eventId ?? 0)"
+            let id = injectPrefix + nonce
+            guard let content = payload["content"] as? String, !content.isEmpty,
+                  !message.blocks.contains(where: { $0.toolUseId == id }) else { return }
+            message.blocks.append(AssistantBlock(kind: .info, content: content, toolUseId: id))
         case "tool_call":
             let callId = CloudEventLedger.toolCallId(payload["id"], eventId: eventId)
             let toolName = payload["tool"] as? String ?? "tool"
@@ -103,6 +118,8 @@ enum CloudEventApplier {
                 ? message.blocks.last(where: { $0.toolUseId != nil && $0.toolStatus == .running })
                 : message.blocks.first(where: { $0.toolUseId == callId })
             if let block = target {
+                if let ms = payload["duration_ms"] as? Double { block.toolDuration = ms / 1000 }
+                else if let ms = payload["duration_ms"] as? Int { block.toolDuration = Double(ms) / 1000 }
                 block.content = resultStr
                 block.toolStatus = isErr ? .failed(message: resultStr) : .success
             }
@@ -168,6 +185,16 @@ enum CloudHistoryAdapter {
             let role = m["role"] as? String ?? ""
             let content = m["content"] as? String ?? ""
             switch role {
+            case "user" where m["injected"] as? Bool == true && current != nil:
+                // 插话：留在这一轮里原来的位置
+                CloudEventApplier.apply(current!, type: "user_message_applied", payload: ["content": content, "nonce": "h\(out.count)-\(content.count)"])
+            case "context_reset":
+                flush()
+                let note = ChatMessage(role: .assistant, content: "")
+                let snap = m["snapshot_id"] as? String ?? ""
+                note.blocks.append(AssistantBlock(kind: .info, content: m["title"] as? String ?? content,
+                                                  toolUseId: CloudEventApplier.resetPrefix + snap))
+                out.append(Turn(message: note, raw: m))
             case "user":
                 flush()
                 guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
@@ -176,6 +203,9 @@ enum CloudHistoryAdapter {
                 let msg = current ?? ChatMessage(role: .assistant, content: "")
                 current = msg
                 currentRaw = m
+                if let r = m["reasoning"] as? String, !r.isEmpty {
+                    CloudEventApplier.apply(msg, type: "reasoning", payload: ["content": r])
+                }
                 if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     CloudEventApplier.apply(msg, type: "thought", payload: ["content": content])
                     msg.content += (msg.content.isEmpty ? "" : "\n\n") + content
@@ -193,7 +223,9 @@ enum CloudHistoryAdapter {
             case "tool":
                 guard let msg = current else { continue }
                 let parsed: Any = content.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) } ?? content
-                CloudEventApplier.apply(msg, type: "tool_result", payload: ["id": m["tool_call_id"] as? String ?? "", "result": parsed])
+                var payload: [String: Any] = ["id": m["tool_call_id"] as? String ?? "", "result": parsed]
+                if let ms = m["duration_ms"] { payload["duration_ms"] = ms }
+                CloudEventApplier.apply(msg, type: "tool_result", payload: payload)
             default:
                 continue
             }

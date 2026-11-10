@@ -216,6 +216,7 @@ struct CloudSlashCommand: Identifiable {
         CloudSlashCommand(id: "/记住", title: "让 Bot 记住一件事", icon: "brain"),
         CloudSlashCommand(id: "/总结", title: "总结这段对话", icon: "text.alignleft"),
         CloudSlashCommand(id: "/停止", title: "停止当前任务", icon: "stop.circle"),
+        CloudSlashCommand(id: "/reset", title: "存快照并重置上下文（省 token）", icon: "arrow.counterclockwise.circle"),
     ]
 
     static func matching(_ input: String) -> [CloudSlashCommand] {
