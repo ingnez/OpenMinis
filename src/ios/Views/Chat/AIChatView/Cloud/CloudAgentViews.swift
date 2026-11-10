@@ -19,6 +19,8 @@ struct CloudAgentSettingsView: View {
     @State private var errorMessage: String? = nil
     @State private var followUpNotice: String? = nil
     @State private var outboxCount = 0
+    @State private var privacyHits: [CloudPrivacyScan.Hit] = []
+    @State private var privacyConfirmed = false
     @State private var outboxTask: Task<Void, Never>? = nil
     @State private var memoryOutbox: [String: (String, [String: Any])] = [:]
 
@@ -803,6 +805,14 @@ struct CloudSessionView: View {
         .animation(.spring(response: 0.45, dampingFraction: 0.78), value: call.active)
         .overlay(alignment: .bottom) { CloudFollowUpToast(text: $followUpNotice) }
         .overlay(alignment: .top) { CloudOutboxBanner(count: outboxCount, onDiscard: discardOutbox) }
+        .confirmationDialog("发现可能的病人身份信息", isPresented: Binding(get: { !privacyHits.isEmpty }, set: { if !$0 { privacyHits = [] } }),
+                            titleVisibility: .visible) {
+            Button("隐去后发送") { inputPrompt = CloudPrivacyScan.redact(inputPrompt); privacyHits = []; privacyConfirmed = true; sendTask() }
+            Button("照原样发送") { privacyHits = []; privacyConfirmed = true; sendTask() }
+            Button("取消", role: .cancel) { privacyHits = [] }
+        } message: {
+            Text(CloudPrivacyScan.summary(privacyHits) + "。只在手机上检查，不会上传。")
+        }
         .onAppear { refreshOutboxCount(); if outboxCount > 0 { flushOutbox() } }
         .onDisappear { outboxTask?.cancel() }
         .onAppear { callDividers = CloudCallDivider.load(sessionId) }
@@ -1654,6 +1664,15 @@ struct CloudSessionView: View {
             resetContext()
             return
         }
+        // 病区隐私自查：疑似身份信息先在手机上提醒（本地正则，不上传）
+        if !privacyConfirmed, CloudPrivacyScan.enabled {
+            let hits = CloudPrivacyScan.hits(content)
+            if !hits.isEmpty {
+                privacyHits = hits
+                return
+            }
+        }
+        privacyConfirmed = false
         if botHasOwnModel {
             // Bot 已固定模型与加密保存的凭据：由服务器选择，不需要手机上的 Key
             submitPrepared(content: content, body: ["content": content, "model": model.isEmpty ? "bot" : model, "provider": [String: Any]()])
