@@ -25,11 +25,26 @@ enum CloudWorkContext {
         guard memory || skills else { return ["instructions": instructions, "files": []] }
         let skillsRoot = AIChatViewModel.minisSkillsPersistentDir
         let memoryRoot = AIChatViewModel.minisMemoryPersistentDir
+        // 技能优先走 VPS 技能库（只注入索引，按需 skill_load）；旧版服务端回退为随会话上传说明文件。
+        var skillsLazy = false
+        if skills { skillsLazy = await CloudSkillSync.sync(skillsRoot: skillsRoot) }
+        let uploadSkillFiles = skills && !skillsLazy
         let files = try await Task.detached(priority: .userInitiated) {
             try CloudContextFiles.collect(skillsRoot: skillsRoot, memoryRoot: memoryRoot,
-                                          skills: skills, memory: memory)
+                                          skills: uploadSkillFiles, memory: memory)
         }.value
-        instructions += "\n工作区中 skills/<技能名>/SKILL.md 是已同步的技能说明，memory/ 是用户工作记忆；记忆已建立全文索引，优先用 memory_search 检索，需要整文件时再用文件工具读取。只同步了说明文件，引用脚本或其他资产未同步时应明确缺少依赖，不要假定存在。\n"
+        if skillsLazy {
+            instructions += "\n用户技能已同步到 VPS 技能库：系统消息末尾的技能索引只有名称与描述，与任务相关时先调用 skill_load 读取完整说明。"
+        } else if skills {
+            instructions += "\n工作区中 skills/<技能名>/SKILL.md 是已同步的技能说明，需要时通过文件工具读取。"
+        }
+        if memory {
+            instructions += "\nmemory/ 是用户工作记忆，已建立全文索引，优先用 memory_search 检索，需要整文件时再用文件工具读取。"
+        }
+        if skills {
+            instructions += "只同步了说明文件，引用脚本或其他资产未同步时应明确缺少依赖，不要假定存在。"
+        }
+        instructions += "\n"
         return ["instructions": instructions, "files": files]
     }
 }

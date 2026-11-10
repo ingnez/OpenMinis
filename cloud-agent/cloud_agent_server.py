@@ -16,6 +16,7 @@ OpenMinis Cloud Computer & Agent Service (cloud_agent_server.py) v2.0
 - Approval cards: risky tool calls pause the task in waiting_user until the user approves or denies
 - Routines: cron / interval / once saved prompts run by a scheduler thread with stored encrypted credentials
 - Structured memory: memory_write / memory_search over SQLite FTS5 (trigram), shared Markdown format with the phone
+- Skills lazy-load: only a name + description index goes into the prompt; skill_load reads the full SKILL.md
 """
 
 import os
@@ -31,7 +32,7 @@ import tempfile
 import mimetypes
 import urllib.request
 import urllib.error
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 # Import sub-modules
@@ -46,6 +47,7 @@ import cloud_secrets
 import cloud_policy
 import cloud_cron
 import cloud_memory
+import cloud_skills
 
 HOST = os.environ.get("OPENMINIS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
@@ -230,6 +232,7 @@ def init_db():
     # 结构化记忆（FTS5 trigram，不可用时退化为 LIKE）
     conn.commit()
     cloud_memory.ensure_schema(conn)
+    cloud_skills.ensure_schema(conn)
 
     # Server restart: mark interrupted
     cursor.execute("UPDATE tasks SET status = 'interrupted' WHERE status IN ('running', 'queued', 'waiting_user')")
@@ -655,8 +658,31 @@ SERVER_TOOL_NOTES = (
 )
 
 def server_tool_notes(session_id):
-    """追加到 system 消息的服务端工具说明（客户端 instructions 不了解服务端新增工具）。"""
-    return SERVER_TOOL_NOTES
+    """追加到 system 消息的服务端工具说明（客户端 instructions 不了解服务端新增工具）与技能索引。"""
+    conn = get_db_connection()
+    try:
+        skills_index = cloud_skills.index_text(conn)
+    except Exception as e:
+        print(f"skills index failed: {e}")
+        skills_index = ""
+    finally:
+        conn.close()
+    return SERVER_TOOL_NOTES + skills_index
+
+def tool_skill_load(task_id, session_id, args):
+    if is_task_cancelled(task_id):
+        return {"error": "Cancelled"}
+    name = args.get("name")
+    conn = get_db_connection()
+    try:
+        skill = cloud_skills.load(conn, name) if isinstance(name, str) else None
+        if not skill:
+            names = [s["name"] for s in cloud_skills.list_index(conn)]
+            close = [n for n in names if isinstance(name, str) and name.lower() in n.lower()][:10]
+            return {"error": f"技能不存在：{name}", "similar": close}
+    finally:
+        conn.close()
+    return {"name": skill["name"], "description": skill["description"], "content": skill["content"]}
 
 TOOL_DEFINITIONS = [
     {
@@ -784,6 +810,18 @@ TOOL_DEFINITIONS = [
                     "limit": {"type": "integer", "description": "1-50, default 10"}
                 },
                 "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill_load",
+            "description": "Load the full SKILL.md of one skill from the index in the system prompt. Call it before following a skill.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "Exact skill name from the index."}},
+                "required": ["name"]
             }
         }
     }
@@ -933,6 +971,7 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
                     elif fn_name == "desktop_action": res = tool_desktop_action(task_id, session_id, fn_args)
                     elif fn_name == "memory_write": res = tool_memory_write(task_id, session_id, fn_args)
                     elif fn_name == "memory_search": res = tool_memory_search(task_id, session_id, fn_args)
+                    elif fn_name == "skill_load": res = tool_skill_load(task_id, session_id, fn_args)
                     else: res = {"error": f"Unknown tool {fn_name}"}
 
                     log_event(task_id, "tool_result", {"id": tc_id, "tool": fn_name, "result": res})
@@ -1353,7 +1392,8 @@ class Handler(BaseHTTPRequestHandler):
                     "credential_store": cloud_secrets.status()[0],
                     "approvals": True,
                     "routines": True,
-                    "memory_search": True
+                    "memory_search": True,
+                    "skills_lazy_load": True
                 },
                 "timestamp": time.time()
             })
@@ -1399,6 +1439,27 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer ") or auth[7:].strip() != SERVER_TOKEN:
             self._send(401, {"error": "Unauthorized"})
+            return
+
+        if path == "/v1/skills":
+            conn = get_db_connection()
+            try:
+                self._send(200, {"skills": cloud_skills.list_index(conn)})
+            finally:
+                conn.close()
+            return
+
+        if path.startswith("/v1/skills/"):
+            name = unquote(path[len("/v1/skills/"):])
+            conn = get_db_connection()
+            try:
+                skill = cloud_skills.load(conn, name)
+            finally:
+                conn.close()
+            if skill:
+                self._send(200, skill)
+            else:
+                self._send(404, {"error": "Skill not found"})
             return
 
         if path == "/v1/memory":
@@ -1687,6 +1748,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Credential not found"})
             return
 
+        if path.startswith("/v1/skills/"):
+            name = unquote(path[len("/v1/skills/"):])
+            conn = get_db_connection()
+            try:
+                ok = cloud_skills.delete(conn, name)
+            finally:
+                conn.close()
+            if ok:
+                self._send(200, {"name": name, "deleted": True})
+            else:
+                self._send(404, {"error": "Skill not found"})
+            return
+
         if path.startswith("/v1/memory/"):
             raw = path[len("/v1/memory/"):]
             conn = get_db_connection()
@@ -1790,6 +1864,7 @@ class Handler(BaseHTTPRequestHandler):
             # Process workspace_files (skills, memory, etc. with size & path safety check)
             imported_files_count = 0
             memory_indexed = 0
+            skills_indexed = 0
             if isinstance(workspace_files, list):
                 ws = get_session_workspace(sid)
                 for wf in workspace_files:
@@ -1813,6 +1888,16 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                     # 手机记忆文件同时写入全局记忆索引（同一来源文件整体替换）
                     norm = fpath.lstrip("/").replace("\\", "/")
+                    skill_parts = norm.split("/")
+                    if len(skill_parts) == 3 and skill_parts[0] == "skills" and skill_parts[2] == "SKILL.md":
+                        sconn = get_db_connection()
+                        try:
+                            cloud_skills.upsert(sconn, skill_parts[1], fcontent, source="phone")
+                            skills_indexed += 1
+                        except Exception as e:
+                            print(f"skill import failed for {norm}: {e}")
+                        finally:
+                            sconn.close()
                     if norm.startswith("memory/") and norm.endswith(".md"):
                         mconn = get_db_connection()
                         try:
@@ -1830,6 +1915,7 @@ class Handler(BaseHTTPRequestHandler):
                 "imported_messages_count": len(history) if isinstance(history, list) else 0,
                 "imported_files_count": imported_files_count,
                 "memory_entries_indexed": memory_indexed,
+                "skills_indexed": skills_indexed,
                 "created_at": created_at
             })
             return
@@ -1960,6 +2046,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 # BrokenPipeError / Client disconnected immediately after sending - task is already running!
                 pass
+            return
+
+        if path == "/v1/skills/sync":
+            conn = get_db_connection()
+            try:
+                counts = cloud_skills.sync(conn, req_json.get("skills"), prune=bool(req_json.get("prune")))
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            self._send(200, counts)
             return
 
         if path == "/v1/memory":

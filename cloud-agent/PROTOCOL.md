@@ -302,3 +302,11 @@
 - **GET /v1/memory**: 带 `query` 或 `category` 时为检索（`limit` 默认 20）；否则按 `since`（unix 秒，取 `created_at` 更大的）与 `source` 列出（`limit` 默认 200）。响应 `{"entries": [{"id", "category", "content", "source", "origin", "entry_time", "session_id", "created_at"}], "fts": bool, "server_time"}`。
 - **POST /v1/memory**: `{"content", "category"?}` 新建 `201`，重复返回已有条目 `200`；**DELETE /v1/memory/{id}**: `200` / `404`。
 - **iOS**: 手机 `memory_write` 新增可选 `category`；`memory_get` 可按分类过滤；新增 `memory_search`（内存 SQLite FTS5 trigram，规则同上）。开启“同步工作记忆”时，每次提交云端任务前先 `GET /v1/memory?source=cloud&since=…` 把云端写入的条目按共享格式写回当天日志并加入 iCloud 同步，再上传记忆文件。
+
+### 4.5 技能按需加载 (Skills)
+- **作用**: 技能全文保存在 VPS `skills` 表；每次运行只在 system 消息末尾注入“名称: 描述”索引（描述截断 240 字，索引上限约 24K 字符），模型通过 `skill_load {name}` 读取完整 SKILL.md。名称不存在时返回 `{"error", "similar": [...]}`。`capabilities.skills_lazy_load = true`。
+- **描述来源**: SKILL.md YAML frontmatter 的 `description`（支持 `>`/`|` 多行块），否则取首个非标题段落。
+- **POST /v1/skills/sync**: `{"skills": [{"name", "content", "description"?}], "prune": true}`。名称 1–80 字符，不含 `/`、`\` 与控制字符，单个 ≤300KB，最多 1000 个；整批校验通过才写入。`prune` 删除来源为 `phone` 且不在列表中的技能。返回 `{"added", "updated", "unchanged", "removed", "total"}`。
+- **GET /v1/skills**: `{"skills": [{"name", "description", "size", "source", "updated_at"}]}`（不含全文）；**GET /v1/skills/{name}**（名称 URL 编码）返回全文；**DELETE /v1/skills/{name}**。
+- **兼容**: `POST /v1/sessions/import` 中 `skills/<名称>/SKILL.md` 仍写入会话工作区，同时更新技能库（响应 `skills_indexed`）。
+- **iOS**: 开启“同步技能”时先 `GET /v1/skills` 比对，本地内容哈希未变且服务端名称一致则跳过上传，否则 `POST /v1/skills/sync`（`prune: true`）；成功后会话导入不再携带技能文件。旧版服务端（无此接口）回退为随会话上传说明文件。
