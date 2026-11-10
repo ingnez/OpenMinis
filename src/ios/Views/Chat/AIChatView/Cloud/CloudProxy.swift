@@ -237,7 +237,7 @@ struct CloudProxyView: View {
             apply(try await CloudProxyService.call("GET", "/v1/proxy"))
             errorText = nil
         } catch {
-            errorText = "读取代理设置失败：\(error.localizedDescription)（服务器需要 2.5.1 以上，可在云电脑页更新服务器）"
+            errorText = "读取代理设置失败：\(error.localizedDescription)（服务器需要 2.5.2 以上，可在云电脑页更新服务器）"
         }
     }
 

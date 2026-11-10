@@ -381,7 +381,7 @@
 - 依赖安装下载源：Node.js 依次尝试 nodejs.org → npmmirror；uv 依次尝试 GitHub Releases → PyPI / 阿里云 / 清华镜像的 wheel（sha256 取自索引）。
 - 服务启动时定时任务与 Telegram 轮询在后台线程启动，网络不通不影响 `/health`。安装脚本健康检查改为最长 45 秒轮询，失败时输出 `systemctl status` 与 journalctl；apt / pip / Playwright 下载均带超时并回退国内镜像。手机端以 nohup + setsid 在服务器后台运行安装脚本并轮询日志，SSH 中断不会打断安装。
 
-## 8. 云电脑代理（服务器 2.5.1+）
+## 8. 云电脑代理（服务器 2.5.2+）
 
 用 sing-box 在 `127.0.0.1:17890`（`OPENMINIS_PROXY_PORT` 可改）开 http + socks 混合端口。节点、订阅地址整体用主密钥加密保存（`proxy_state.bin`），接口只返回名称、类型、地址、端口、加密方式。
 
