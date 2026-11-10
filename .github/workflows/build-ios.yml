@@ -52,6 +52,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReconnectPolicy.swift scripts/CloudReconnectTests.swift -o /tmp/cloud-reconnect-tests
           /tmp/cloud-reconnect-tests
+      - name: Bot 对话步骤条模型测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudStepFeed.swift scripts/CloudStepFeedTests.swift -o /tmp/cloud-step-tests
+          /tmp/cloud-step-tests
       - name: 云端 API 路径规则测试
         run: |
           set -o pipefail
@@ -160,7 +165,9 @@ jobs:
           /tmp/cloud-model-tests | tee cloud-model-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReconnectPolicy.swift scripts/CloudReconnectTests.swift -o /tmp/cloud-reconnect-tests
           /tmp/cloud-reconnect-tests | tee cloud-reconnect-test.log
-          swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTaskPump.swift src/ios/Views/Chat/AIChatView/Cloud/CloudEventLedger.swift -o /tmp/cloud-chat-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudStepFeed.swift scripts/CloudStepFeedTests.swift -o /tmp/cloud-step-tests
+          /tmp/cloud-step-tests | tee cloud-step-test.log
+          swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTaskPump.swift src/ios/Views/Chat/AIChatView/Cloud/CloudEventLedger.swift src/ios/Views/Chat/AIChatView/Cloud/CloudStepFeed.swift -o /tmp/cloud-chat-tests
           /tmp/cloud-chat-tests | tee cloud-chat-test.log
           xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift 2>&1 | tee cloud-connection-typecheck.log
 

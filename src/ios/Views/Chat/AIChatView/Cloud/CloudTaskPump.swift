@@ -122,6 +122,9 @@ enum CloudEventApplier {
                 else if let ms = payload["duration_ms"] as? Int { block.toolDuration = Double(ms) / 1000 }
                 block.content = resultStr
                 block.toolStatus = isErr ? .failed(message: resultStr) : .success
+                if let id = block.toolUseId, let preview = CloudStepPreview(payload["preview"]) {
+                    CloudStepPreviews.shared.put(id, preview)
+                }
             }
         case "error":
             if let err = payload["error"] as? String { message.error = err }

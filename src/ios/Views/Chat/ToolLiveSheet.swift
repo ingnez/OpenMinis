@@ -294,6 +294,8 @@ struct FloatingToolBar: View {
     var browserPool: BrowserTabPool?
     var onBrowserTakeover: (() -> Void)?
     var onTakeoverDone: (() -> Void)?
+    /// Bot 对话用：值一变就清掉手动翻页、回到最新一步（新步骤到来时由宿主递增）。本地模式不传，保持原样。
+    var followResetToken: Int = 0
     @State private var selectedIdx: Int? = nil
     /// [T-agent-follow-change] Which sub agent the bar is following, and when
     /// it was last allowed to change.
@@ -695,6 +697,10 @@ struct FloatingToolBar: View {
         // running) and is immune to how SwiftUI schedules re-evaluation, so a
         // change can be missed for at most one second.
         .onAppear { lastAgentActivity = agentActivity }
+        .onChange(of: followResetToken) { _ in
+            selectedIdx = nil
+            selectedAt = .distantPast
+        }
         .sheet(isPresented: $expanded) {
             // [T-agent-tool-sheet-unified] An agent block is a tool like any
             // other: the same ToolLiveSheet (HelperDetailCard inside), which

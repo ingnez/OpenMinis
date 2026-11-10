@@ -1123,9 +1123,9 @@ struct CloudSessionView: View {
     private func themedComposer(_ theme: CloudBotChatTheme) -> some View {
         let working = activeTaskStatus == "running" || activeTaskStatus == "waiting_user"
         VStack(spacing: 6) {
-            if working, let tool = liveTool {
-                CloudLiveTerminalCard(tool: tool)
-            }
+            // 与本地模式同一个步骤条（预览卡 + 状态胶囊 + N/M 翻页），数据来自 Bot 的实时工具事件
+            CloudStepBar(message: liveMessage, liveToolId: liveTool?.id, liveOutput: liveTool?.output ?? "", working: working)
+                .padding(.horizontal, 12)
             if let r = replyTarget {
                 CloudReplyBanner(excerpt: r.excerpt) { replyTarget = nil }
             }

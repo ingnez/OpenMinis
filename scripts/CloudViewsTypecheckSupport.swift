@@ -33,3 +33,12 @@ struct SelectableMarkdownView: View {
     let markdown: String
     var body: some View { Text(markdown) }
 }
+
+/// 替身：真实实现在 Views/Chat/CloudStepBarHost.swift（复用本地模式的 FloatingToolBar）
+struct CloudStepBar: View {
+ @ObservedObject var message: ChatMessage
+ let liveToolId: String?
+ let liveOutput: String
+ let working: Bool
+ var body: some View { EmptyView() }
+}

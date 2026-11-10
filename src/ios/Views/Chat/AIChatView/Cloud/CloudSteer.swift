@@ -74,37 +74,3 @@ struct CloudLiveTool: Equatable {
         output.split(separator: "\n", omittingEmptySubsequences: false).suffix(6).map(String.init)
     }
 }
-
-/// 输入框上方的小黑卡：当前工具 + 实时输出的最后几行
-struct CloudLiveTerminalCard: View {
-    let tool: CloudLiveTool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Circle().fill(Color.green).frame(width: 6, height: 6)
-                Text(tool.label).font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.85))
-                Spacer()
-                ProgressView().controlSize(.mini).tint(.white)
-            }
-            if tool.output.isEmpty {
-                Text("运行中…").font(.system(size: 11, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
-            } else {
-                ForEach(Array(tool.lines.enumerated()), id: \.offset) { _, line in
-                    Text(line.isEmpty ? " " : line)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.75))
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.88)))
-        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
-        .padding(.horizontal, 12)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("正在运行 \(tool.label)")
-    }
-}

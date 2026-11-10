@@ -13,6 +13,7 @@ CHECKS = [
     ("scripts/RealtimeTypecheckSupport.swift", "CloudVoiceBridge", IOS / "Cloud/CloudVoiceBridge.swift"),
     ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudBotRealtimeAvailability", IOS / "Realtime/CloudBotRealtimeCall.swift"),
     ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudBotRealtimeCallView", IOS / "Realtime/CloudBotRealtimeCall.swift"),
+    ("scripts/CloudViewsTypecheckSupport.swift", "CloudStepBar", IOS.parent / "CloudStepBarHost.swift"),
 ]
 DECL = re.compile(r"^\s*((?:@MainActor\s+)?(?:static\s+)?(?:func|var|init)\b.*)$")
 
