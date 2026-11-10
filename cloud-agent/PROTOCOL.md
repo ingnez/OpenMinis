@@ -602,6 +602,10 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 
 - 修复：`GET /v1/tasks/<id>/replay/<i>` 里多余的局部 `import base64` 让整个 `do_GET` 把 `base64` 当成局部变量，`GET /v1/bots/<id>/avatar` 因此 500。接口形状不变。
 
+## 首页「正在回复」（2.33.0）
+
+- `GET /v1/bots` 和 `GET /v1/bots/<id>` 每个 Bot 多一个 `activity`：没有运行中的任务时为 `null`；否则是最近开始的那个运行中任务此刻的阶段 `{phase, task_id, tool?, peer?, preview?}`。`phase` 取值：`thinking`（还没出字）、`tool`（`tool` = 工具名）、`replying`（`preview` = 正在生成的文字最后一行，最多 60 字，先做保管库脱敏）、`delegating`（`peer` = 正在等的那个 Bot 的名字）。来自内存里的实时状态，不额外写库。
+
 ## 工作流不能绕圈（2.32.1）
 
 - `PUT /v1/routines/<id>` 把 schedule 改成 `after` 时，如果上一步是它自己或它下游的任务，返回 400（工作流画布连线用）。

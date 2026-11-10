@@ -68,6 +68,7 @@ from collections import deque
 import cloud_desktop
 import cloud_vision
 import cloud_handoff
+import cloud_activity
 import cloud_botstatus
 import cloud_botthreads
 import cloud_duty
@@ -630,7 +631,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.32.1"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.33.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1979,6 +1980,24 @@ def get_persona(persona_id):
 def credential_exists(name):
     return bool(CREDENTIAL_NAME_RE.match(name)) and any(c["name"] == name for c in list_credentials())
 
+def bot_activity(conn, pid):
+    """首页「正在思考 / 正在用工具 / 正在回复 / 正在委派」：取这个 Bot 最近开始的那个运行中任务的实时状态。没在跑返回 None。"""
+    row = conn.execute("SELECT t.task_id FROM tasks t JOIN sessions s ON s.session_id = t.session_id "
+                       "WHERE s.persona_id = ? AND t.status = 'running' AND COALESCE(s.incognito, 0) = 0 "
+                       "ORDER BY t.created_at DESC LIMIT 1", (pid,)).fetchone()
+    if not row:
+        return None
+    evs = []
+    for etype, payload in conn.execute("SELECT event_type, payload FROM task_events WHERE task_id = ? AND event_type IN "
+                                       "('delegation_started', 'delegation_finished') ORDER BY id", (row[0],)).fetchall():
+        try:
+            evs.append((etype, json.loads(payload)))
+        except (TypeError, ValueError):
+            pass
+    out = cloud_activity.describe(live_get(row[0]), cloud_activity.pending_delegation(evs), cloud_vault.redact)
+    out["task_id"] = row[0]
+    return out
+
 def bot_detail(bot):
     conn = get_db_connection()
     try:
@@ -2015,6 +2034,7 @@ def bot_detail(bot):
         out["prefs"] = cloud_admin.prefs(conn, pid)
         out["running_tasks"] = counts.get("running", 0) + counts.get("queued", 0)
         out["waiting_approvals"] = counts.get("waiting_user", 0)
+        out["activity"] = bot_activity(conn, pid)
         # 首页状态：未读数、待回答卡片、最近一次任务是否出错、例行任务在跑 → status {state, unread, flags}
         cloud_botstatus.fill(conn, out, "COALESCE(s.incognito, 0) = 0 AND s.session_id NOT IN (SELECT worker_session FROM bot_workers)")
         # 存了密钥的 Bot：有自己的 API 凭据，或用过保管库里的条目 → App 默认给它上 Face ID 锁
