@@ -486,6 +486,9 @@ struct CloudBotHomeScreen: View {
     let onSwitchToLocal: () -> Void
     @ObservedObject private var model = CloudBotHomeModel.shared
     @State private var path: [String] = []
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    /// iPad / Mac 三栏里选中的对话
+    @State private var splitSelection: String?
     @State private var search = ""
     @StateObject private var searchModel = CloudSearchModel()
     @State private var showCreate = false
@@ -519,7 +522,7 @@ struct CloudBotHomeScreen: View {
             edit: { bot in path = ["detail:" + bot.id] })
     }
 
-    var body: some View {
+    private var compactStack: some View {
         NavigationStack(path: $path) {
             ZStack(alignment: .bottom) {
                 ScrollView {
@@ -648,6 +651,16 @@ struct CloudBotHomeScreen: View {
                 }
             }
         }
+    }
+
+    var body: some View {
+        Group {
+            if sizeClass == .regular {
+                CloudBotSplitHome(model: model, openHub: { hubOpensCloud = false; showHub = true }, newBot: { showCreate = true }, selection: $splitSelection)
+            } else {
+                compactStack
+            }
+        }
         .sheet(isPresented: $showCreate) {
             CloudBotCreateSheet(onCreated: { id in
                 await model.refresh()
@@ -684,6 +697,7 @@ struct CloudBotHomeScreen: View {
         .onChange(of: model.pendingOpen) { target in
             guard let target else { return }
             model.pendingOpen = nil
+            if sizeClass == .regular { splitSelection = target; return }
             if path == [target] {
                 // 已经在这个对话里：退出再进，让对话页取走新的文字
                 path = []
@@ -694,7 +708,7 @@ struct CloudBotHomeScreen: View {
         }
         .task {
             CloudTouchTracker.shared.install()
-            if let target = model.pendingOpen { model.pendingOpen = nil; path = [target] }
+            if let target = model.pendingOpen { model.pendingOpen = nil; path = [target]; splitSelection = target }
             // 进入多 Bot 模式即后台连接并定期刷新（列表的运行 / 待审批 / 未读状态）
             while !Task.isCancelled {
                 await model.refresh()
