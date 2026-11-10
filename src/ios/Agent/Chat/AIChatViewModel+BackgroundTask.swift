@@ -896,9 +896,45 @@ extension AIChatViewModel {
             default: return nil
             }
         }
-        if let snap = LocalResetSnapshot.make(snapshotTurns) {
-            LocalResetSnapshot.save(snap, memoryDir: Self.minisMemoryPersistentDir)
+        guard let snap = LocalResetSnapshot.make(snapshotTurns),
+              let file = LocalResetSnapshot.save(snap, memoryDir: Self.minisMemoryPersistentDir) else { return }
+        LocalResetSnapshot.remember(title: snap.title, file: file)
+        // 后台用副模型补一段「模型总结」；不阻塞重置，失败保留规则版
+        guard let entry = resolveSubEntry() else { return }
+        let prompt = LocalResetSnapshot.summaryPrompt(snapshotTurns)
+        Task.detached(priority: .utility) {
+            do {
+                let summary = try await withThrowingTaskGroup(of: String.self) { group -> String in
+                    group.addTask { try await AIChatViewModel.summarizeForResetSnapshot(prompt: prompt, entry: entry) }
+                    group.addTask { try await Task.sleep(nanoseconds: 60_000_000_000); throw CancellationError() }
+                    let first = try await group.next() ?? ""
+                    group.cancelAll()
+                    return first
+                }
+                guard let md = try? String(contentsOf: file, encoding: .utf8) else { return }
+                try LocalResetSnapshot.merge(markdown: md, summary: summary).write(to: file, atomically: true, encoding: .utf8)
+                logger.info("[ResetSnapshot] model summary merged (\(summary.count) chars)")
+            } catch {
+                logger.info("[ResetSnapshot] model summary skipped: \(error.localizedDescription)")
+            }
         }
+    }
+
+    /// /reset 快照的模型总结：走副模型、关掉思考，只要文字
+    nonisolated static func summarizeForResetSnapshot(prompt: String, entry: ModelEntry) async throws -> String {
+        let provider = await AIChatViewModel.makeAgentProvider(for: entry, sessionId: nil)
+        let stream = try await provider.streamAgentMessage(
+            messages: [AgentMessage(role: .user, parts: [.text(prompt)])],
+            systemPrompt: "你负责给即将重置的对话写交接总结。只输出要点列表。",
+            tools: [],
+            maxTokens: 1024,
+            thinkingLevel: .off
+        )
+        var text = ""
+        for try await event in stream {
+            if case .textDelta(let d) = event { text += d }
+        }
+        return text
     }
 
     /// 本地命令：旧实例停止后退出界面，迟到回调不能进入新会话。

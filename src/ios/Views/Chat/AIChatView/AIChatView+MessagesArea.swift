@@ -101,6 +101,16 @@ extension AIChatView {
                 EmptyChatDirectoryTimeline(onBrowse: { showFileBrowser = true })
                     .padding(.horizontal, 24)
             }
+            // 刚 /reset 过：新对话顶部显示可点开的快照提示（10 分钟内）
+            if vm.sessionId == nil && vm.messages.isEmpty && !vm.isLoadingSession,
+               let recent = LocalResetSnapshot.recent() {
+                VStack {
+                    LocalResetSnapshotChip(recent: recent) { LocalResetSnapshot.dismissRecent(); vm.objectWillChange.send() }
+                        .padding(.horizontal, 16).padding(.top, 12)
+                    Spacer()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
         .overlay(alignment: .bottom) {
             // Open the overlay only when at least one button will actually
