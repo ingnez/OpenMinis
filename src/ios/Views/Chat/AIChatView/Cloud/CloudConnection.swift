@@ -143,8 +143,13 @@ public final class CloudConnection: ObservableObject {
     public func markStale() { lastOK = .distantPast }
     /// 强制拆掉旧隧道重新建立；并发调用共享同一次
     public func reconnect() async throws {
-        isConnected = false
         let t0 = Date()
+        // SSH 主连接（ControlMaster）还在：转发多半只是暂时没应答（刚从后台回来），再给一次 3 秒探测，通了就直接复用
+        if isConnected, connectTask == nil, await masterAlive(), await probeAlive(timeout: 3) {
+            CloudClientMetrics.record(mode: "link", kind: "reuse", ms: Date().timeIntervalSince(t0) * 1000)
+            return
+        }
+        isConnected = false
         try await connect()
         // 性能页实测：拆掉旧隧道到新隧道可用的耗时（两种模式共用同一条隧道）
         CloudClientMetrics.record(mode: "link", kind: "reconnect", ms: Date().timeIntervalSince(t0) * 1000)
@@ -259,7 +264,7 @@ public final class CloudConnection: ObservableObject {
         throw failure("请先核对并确认下方 SSH 主机指纹")
     }
     private func options() -> String {
-        "-p \(sshPort) -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=\(quote(knownHosts)) -o GlobalKnownHostsFile=/dev/null -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password,keyboard-interactive -o LogLevel=ERROR"
+        "-p \(sshPort) -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=\(quote(knownHosts)) -o GlobalKnownHostsFile=/dev/null -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password,keyboard-interactive -o LogLevel=ERROR"
     }
     private var destination: String { quote(username + "@" + host) }
     private func passwordFile() async throws -> String {
@@ -383,6 +388,11 @@ public final class CloudConnection: ObservableObject {
             }
             throw failure("\(text)\n若尚未安装，请点「安装 / 更新服务器 Agent 服务」或「安装 / 更新云电脑桌面环境 (Xvfb/noVNC)」；已安装的请核对 Token。")
         }
+    }
+    /// ssh -O check：本机的 SSH 主连接进程是否还在（不发网络请求）
+    private func masterAlive() async -> Bool {
+        guard let control = controlPath else { return false }
+        return (try? await shell("ssh -S \(quote(control)) -O check placeholder >/dev/null 2>&1", timeout: 5))?.exitCode == 0
     }
     public func disconnect() {
         generation = UUID(); isConnected = false; status = .disconnected
