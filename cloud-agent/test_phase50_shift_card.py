@@ -1,5 +1,5 @@
 """交班卡 /v1/shift-card（2.36.0）：按 Bot 分组、状态判定、无痕不进卡、时间窗口（假数据）"""
-import sqlite3, time, unittest
+import re, sqlite3, time, unittest
 import cloud_shift_card as sc
 
 
@@ -43,7 +43,8 @@ class ShiftCardTests(unittest.TestCase):
         import os
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cloud_agent_server.py"), encoding="utf-8").read()
         self.assertIn('"/v1/shift-card"', src)
-        self.assertRegex(src, r'AGENT_VERSION = "2\.3[6-9]')
+        ver = tuple(int(x) for x in re.search(r'AGENT_VERSION = "([\d.]+)"', src).group(1).split("."))
+        self.assertGreaterEqual(ver, (2, 36, 0))
 
 
 if __name__ == "__main__":
