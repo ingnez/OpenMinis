@@ -775,15 +775,7 @@ struct ScheduledTaskDetailView: View {
 
     private var actions: some View {
         VStack(spacing: 10) {
-            if AgentJobRegistry.shared.isLiveScheduled(jobId: store.callback.jobId), cloudSchedule() != nil {
-                Button { confirmMoveToCloud = true } label: {
-                    Label(movingToCloud ? "正在移到云端…" : "移到云端运行", systemImage: "icloud.and.arrow.up")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(cardBackground)
-                }
-                .disabled(movingToCloud)
-            }
+            // 本地就是本地：「移到云端运行」入口已去掉；云端例行任务在 Bot 模式里建
             if AgentJobRegistry.shared.isLiveScheduled(jobId: store.callback.jobId) {
                 Button(role: .destructive) { confirmCancel = true } label: {
                     Label(AppLocalized("Cancel scheduled task"), systemImage: "calendar.badge.minus")

@@ -144,6 +144,8 @@ extension AIChatView {
         if !afterVoice, deferSendUntilVoiceFinished() { return }
         // Intercept slash commands — execute instead of sending to LLM
         if vm.tryExecuteInputAsSlashCommand() { return }
+        // 「交给 Bot」：本地做不完的工作打包转给云端 Bot，不发给本地模型
+        if vm.tryHandoffToBot() { return }
 
         minisLogger.info("🔑DRAFT performSend vm=\(vm.vmInstanceId) vm.sessionId=\(vm.sessionId ?? "nil") draftId=\(draftId ?? "nil") inputText='\(String(vm.inputText.prefix(50)))' isProcessing=\(vm.isProcessing)")
         // Keep SwiftUI focus when a hardware keyboard is connected — dropping

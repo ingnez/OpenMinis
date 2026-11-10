@@ -619,6 +619,12 @@ struct AIChatView: View {
                                 }
                         }
                         VStack(spacing: 0) {
+                            // 交给 Bot 的卡片（本地做不完转云端）
+                            LocalBotHandoffCards(sessionKey: vm.sessionId ?? "draft")
+                                .frame(maxWidth: maxContentWidth)
+                                .padding(.horizontal, 12)
+                                .padding(.bottom, 6)
+                                .modifier(ChatSearchComposerHider(hidden: isChatSearchActive))
                             floatingToolPreview
                                 // [T-in-chat-search] Leaves with the composer while searching.
                                 .modifier(ChatSearchComposerHider(hidden: isChatSearchActive))

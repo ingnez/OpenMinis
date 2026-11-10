@@ -45,6 +45,10 @@ extension AIChatView {
                 Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
                 Button { showPhotoPicker = true } label: { Label("Choose Photos & Videos", systemImage: "photo.on.rectangle") }
                 Button { showDocumentPicker = true } label: { Label("Add File", systemImage: "doc") }
+                // 本地做不完：打包交给主 Bot（它决定谁接手），在云端继续
+                Button { vm.handoffToBot(instruction: vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines), target: nil) } label: {
+                    Label("交给 Bot 在云端继续", systemImage: "arrow.up.forward.circle")
+                }
             } label: {
                 icon
             }
@@ -56,55 +60,12 @@ extension AIChatView {
                 Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
                 Button { showPhotoPicker = true } label: { Label("Choose Photos & Videos", systemImage: "photo.on.rectangle") }
                 Button { showDocumentPicker = true } label: { Label("Add File", systemImage: "doc") }
+                // 本地做不完：打包交给主 Bot（它决定谁接手），在云端继续
+                Button { vm.handoffToBot(instruction: vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines), target: nil) } label: {
+                    Label("交给 Bot 在云端继续", systemImage: "arrow.up.forward.circle")
+                }
             }
         }
-    }
-
-    /// Execution location switch button (本机 / 云电脑)
-    @ViewBuilder
-    private var executionLocationMenuButton: some View {
-        let isCloud = vm.isCloudExecutionActive
-        let labelIcon = isCloud ? "cloud.fill" : "iphone"
-        let labelText = isCloud ? "云电脑" : "本机"
-
-        Menu {
-            Button {
-                if let sid = vm.sessionId {
-                    CloudChatBridge.shared.setCloudExecutionEnabled(false, for: sid)
-                } else {
-                    UserDefaults.standard.set(false, forKey: "OpenMinisCloud_DefaultExecution")
-                }
-                vm.objectWillChange.send()
-            } label: {
-                Label("本机执行 (iSH)", systemImage: "iphone")
-            }
-
-            Button {
-                if let sid = vm.sessionId {
-                    CloudChatBridge.shared.setCloudExecutionEnabled(true, for: sid)
-                } else {
-                    UserDefaults.standard.set(true, forKey: "OpenMinisCloud_DefaultExecution")
-                }
-                vm.objectWillChange.send()
-            } label: {
-                Label("云电脑执行 (VPS 常驻)", systemImage: "cloud.fill")
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: labelIcon)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(labelText)
-                    .font(.system(size: 12, weight: .medium))
-            }
-            .foregroundStyle(isCloud ? Color.accentColor : ChatColors.secondaryText)
-            .padding(.horizontal, 8)
-            .frame(height: 34)
-            .background(ChatColors.inputIconBg)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(isCloud ? Color.accentColor.opacity(0.5) : ChatColors.inputIconBorder, lineWidth: 0.5))
-        }
-        .accessibilityLabel(Text("执行位置：\(labelText)"))
-        .disabled(vm.isProcessing)
     }
 
     /// Bottom toolbar under the text field (+ / edit-exit / mic / send).
@@ -115,10 +76,7 @@ extension AIChatView {
             attachmentMenuButton
             slashMenuButton
             if vm.editingMessageIndex != nil { editExitButton }
-            
-            // [CloudComputer] Execution location switch (本机 / 云电脑)
-            executionLocationMenuButton
-            
+
             Spacer()
             // Mutually exclusive with editExitButton: while editing a past
             // message the exit capsule owns this row — showing both capsules
@@ -452,7 +410,7 @@ extension AIChatView {
             // `%@` form ("Message %@ (@ to mention files)") as the lookup
             // key in Localizable.xcstrings, so translators get one
             // parameterized entry per locale instead of one per soul name.
-            placeholder: AppLocalized("Message \(soulName) (@ to mention files)"),
+            placeholder: "给 \(soulName) 发消息（@ 提及文件，@ 交给其他 Bot）",
             // [T-ios-composer-placeholder-rotation] Feature hints cycled
             // while the composer sits empty. Same parameterized-`%@` rule as
             // the default above: the soul name is interpolated INTO the
