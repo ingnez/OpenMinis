@@ -1093,6 +1093,22 @@ struct CloudSessionView: View {
                     }
                     .padding(.horizontal, 14)
                 }
+                if attachments.contains(where: { $0.isImage }), inputPrompt.trimmingCharacters(in: .whitespaces).isEmpty {
+                    // 拍照识别：选了图片还没写字时，一键填好常用的识别要求
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(CloudPhotoPrompts.all, id: \.0) { item in
+                                Button { CloudHaptics.selection(); inputPrompt = item.1 } label: {
+                                    Text(item.0).font(.caption.weight(.medium))
+                                        .padding(.horizontal, 10).padding(.vertical, 6)
+                                        .background(Capsule().fill(theme.accent.opacity(0.12)))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                    }
+                }
             }
             if let err = dictation.errorText { Text(err).font(.caption).foregroundStyle(.red) }
             let slash = CloudSlashCommand.matching(inputPrompt)
@@ -1706,4 +1722,15 @@ struct CloudStepsLine: View {
         }
         .padding(.horizontal, 4)
     }
+}
+
+/// 图片识别的常用要求（选图后输入框上方的小标签）
+enum CloudPhotoPrompts {
+    static let all: [(String, String)] = [
+        ("识别药品", "识别图中的药品：通用名、规格、常用剂量、主要禁忌与相互作用；看不清的地方直接说明，不要猜。"),
+        ("读化验单", "读这张化验单：列出异常项（数值、参考范围、偏高/偏低），按临床意义排序，给出需要关注或复查的点。"),
+        ("看心电图", "描述这张心电图：心率、节律、电轴、间期与 ST-T 改变，给出可能的判读；图像不清楚时说明哪里看不清。"),
+        ("提取文字", "把图中的文字完整提取出来，保持原有分段和表格结构。"),
+        ("这是什么", "这是什么？简单说明并告诉我需要注意什么。"),
+    ]
 }
