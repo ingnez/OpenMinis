@@ -631,6 +631,9 @@ struct CloudSessionView: View {
     @State private var errorMessage: String? = nil
     @State private var showComputer = false
     @State private var attachments: [CloudPendingAttachment] = []
+    /// 服务器上还有更早的消息（分页）
+    @State private var hasOlderHistory = false
+    @State private var loadingOlder = false
     /// 每个附件的上传状态（托盘卡片上的进度圈 / 重试）
     @State private var uploadStates: [UUID: ImageStackSource.Upload] = [:]
     /// 点了哪个拍照识别要求（用来找更对口的 Bot）
@@ -941,14 +944,16 @@ struct CloudSessionView: View {
         }
         Task {
             do {
-                let res = try await quietly("/v1/sessions/\(sessionId)")
+                let res = try await quietly(CloudHistoryPager.firstPath(sessionId))
                 await MainActor.run {
                     let fresh = res["messages"] as? [[String: Any]] ?? []
                     let freshTasks = res["tasks"] as? [[String: Any]] ?? []
                     if let theme = self.theme, (res["incognito"] as? Bool) != true, !CloudBotLock.isLockedStored(theme.botId) {
                         CloudChatCache.save(self.sessionId, messages: fresh, tasks: freshTasks)
                     }
-                    self.messages = fresh
+                    // 分页：之前翻出来的更早消息留着；旧服务器不认 limit 时 has_more 缺省为 false
+                    self.messages = CloudHistoryPager.merge(current: self.messages, fresh: fresh)
+                    if self.messages.count == fresh.count { self.hasOlderHistory = res["has_more"] as? Bool ?? false }
                     self.tasks = freshTasks
                     self.isLoading = false
                     if !self.isStreaming { self.liveText = "" }
@@ -1355,6 +1360,17 @@ struct CloudSessionView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
+                    if hasOlderHistory {
+                        Button { loadOlder() } label: {
+                            HStack(spacing: 6) {
+                                if loadingOlder { ProgressView().controlSize(.small) }
+                                Text(loadingOlder ? "正在加载…" : "加载更早的消息").font(.footnote)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(loadingOlder)
+                    }
                     if let theme, messages.isEmpty, !isSubmitting, liveText.isEmpty {
                         VStack(spacing: 12) {
                             CloudBotAliveAvatar(spec: theme.spec, size: 120)
@@ -1467,6 +1483,24 @@ struct CloudSessionView: View {
         }
         // 看图页「问问这张图」：图片放回附件，输入框起个头
         .environment(\.cloudAskImage, askAboutImage)
+    }
+
+    /// 往前翻一页：接在最前面
+    private func loadOlder() {
+        guard hasOlderHistory, !loadingOlder, let oldest = CloudHistoryPager.oldestId(messages) else { return }
+        loadingOlder = true
+        Task {
+            let res = try? await quietly(CloudHistoryPager.olderPath(sessionId, before: oldest))
+            await MainActor.run {
+                loadingOlder = false
+                guard let res else { return }
+                let page = res["messages"] as? [[String: Any]] ?? []
+                hasOlderHistory = (res["has_more"] as? Bool ?? false) && !page.isEmpty
+                guard !page.isEmpty else { return }
+                messages = CloudHistoryPager.prepend(page, to: messages)
+                rebuildTurns()
+            }
+        }
     }
 
     private func askAboutImage(_ img: UIImage) {
