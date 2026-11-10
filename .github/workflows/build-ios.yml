@@ -7,6 +7,10 @@ on:
         description: "只跑几分钟的云端 Swift 快速类型检查（推送前预检），不构建 IPA"
         type: boolean
         default: false
+      ui_tests:
+        description: "只在 iOS 模拟器上跑 XCUITest 端到端冒烟（MinisSmokeUITests），不出 IPA。模拟器依赖只有 arm64 版，固定用 macos-15（arm64）机器"
+        type: boolean
+        default: false
       mac_runner:
         description: "macOS 机器标签。arm64 机器紧张时 GitHub 会在约 15 分钟后报「job was not acquired by Runner of type hosted」并取消；那时换 macos-15-intel（Intel 机器池，同样有 Xcode 26）"
         type: choice
@@ -291,7 +295,7 @@ jobs:
             cloud-browser-agent.log
             cloud-proxy.log
   build:
-    if: ${{ !inputs.quick }}
+    if: ${{ !inputs.quick && !inputs.ui_tests }}
     runs-on: ${{ inputs.mac_runner || 'macos-15' }}
     timeout-minutes: 350
 
@@ -579,3 +583,237 @@ jobs:
             realtime-typecheck.log
           if-no-files-found: ignore
           retention-days: 30
+
+  ui-tests:
+    if: ${{ inputs.ui_tests && !inputs.quick }}
+    runs-on: macos-15
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: 选择 Xcode 26（macos-15 / latest 镜像上默认可能是 Xcode 16）
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$X" ]; then sudo xcode-select -s "$X/Contents/Developer"; fi
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcodebuild -version | head -1 | grep -qE 'Xcode 2[6-9]' || { echo "::error::这台机器上没有 Xcode 26（$(xcodebuild -version | head -1)），换 mac_runner 再试"; exit 1; }
+
+      - name: iOS 16 API 兼容预检
+        run: |
+          # 部署目标是 iOS 16：禁止双参数 onChange（iOS 17+）；云端页面里禁止未加 #available 的 iOS 17 专属 API
+          if grep -rnE --include='*.swift' 'onChange\(of:[^)]*\) \{ *[_a-zA-Z]+ *, ' src/ios | grep -v '/MinisTests/'; then
+            echo "::error::发现 iOS 17 才有的双参数 onChange，请改成 .onChange(of: x) { newValue in ... }"; exit 1
+          fi
+          if grep -rnE --include='*.swift' 'AVAudioApplication|navigationDestination\(item:|@Observable\b|ContentUnavailableView|\.sensoryFeedback|\.symbolEffect|\.scrollPosition\(' src/ios/Views/Chat/AIChatView/Cloud src/ios/Views/ContentView; then
+            echo "::error::云端 / 首页代码使用了 iOS 17+ API，请改用 iOS 16 写法或用 #available 包起来"; exit 1
+          fi
+          echo "iOS 16 API 预检通过"
+
+      - name: 云端 Agent 服务集成验证与资源打包
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s cloud-agent -p 'test*.py' -v 2>&1 | tee cloud-agent-test.log
+          python3 scripts/prepare_cloud_agent.py
+          swiftc -swift-version 5 src/ios/Views/Chat/AIChatView/Cloud/CloudContextFiles.swift scripts/CloudContextFilesTests.swift -o /tmp/cloud-context-tests
+          /tmp/cloud-context-tests | tee cloud-context-test.log
+          python3 scripts/test_cloud_send_gate.py | tee cloud-send-gate-test.log
+          swiftc -swift-version 5 src/ios/Views/Chat/AIChatView/Cloud/CloudModelCatalog.swift scripts/CloudModelCatalogTests.swift -o /tmp/cloud-model-tests
+          /tmp/cloud-model-tests | tee cloud-model-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReconnectPolicy.swift scripts/CloudReconnectTests.swift -o /tmp/cloud-reconnect-tests
+          /tmp/cloud-reconnect-tests | tee cloud-reconnect-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudStepFeed.swift scripts/CloudStepFeedTests.swift -o /tmp/cloud-step-tests
+          /tmp/cloud-step-tests | tee cloud-step-test.log
+          swiftc -swift-version 5 -parse-as-library scripts/CloudHandoffTestSupport.swift src/ios/Views/Chat/AIChatView/Cloud/CloudLocalHandoff.swift scripts/CloudLocalHandoffTests.swift -o /tmp/cloud-handoff-tests
+          /tmp/cloud-handoff-tests | tee cloud-handoff-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotPresence.swift scripts/CloudBotPresenceTests.swift -o /tmp/cloud-presence-tests
+          /tmp/cloud-presence-tests | tee cloud-presence-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
+          /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudTypingPhase.swift scripts/CloudTypingPhaseTests.swift -o /tmp/cloud-typing-phase-tests
+          /tmp/cloud-typing-phase-tests | tee cloud-typing-phase-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudServerProfiles.swift scripts/CloudServerProfilesTests.swift -o /tmp/cloud-server-profiles-tests
+          /tmp/cloud-server-profiles-tests | tee cloud-server-profiles-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWorkflowGraph.swift scripts/CloudWorkflowGraphTests.swift -o /tmp/cloud-workflow-graph-tests
+          /tmp/cloud-workflow-graph-tests | tee cloud-workflow-graph-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudGroupVoiceRules.swift scripts/CloudGroupVoiceTests.swift -o /tmp/cloud-group-voice-tests
+          /tmp/cloud-group-voice-tests | tee cloud-group-voice-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudHistoryPager.swift scripts/CloudHistoryPagerTests.swift -o /tmp/cloud-history-pager-tests
+          /tmp/cloud-history-pager-tests | tee cloud-history-pager-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/LocalCallDivider.swift scripts/LocalCallDividerTests.swift -o /tmp/local-call-divider-tests
+          /tmp/local-call-divider-tests | tee local-call-divider-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Images/ImageStackLayout.swift scripts/ImageStackLayoutTests.swift -o /tmp/image-stack-tests
+          /tmp/image-stack-tests | tee image-stack-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudVaultModel.swift scripts/CloudVaultModelTests.swift -o /tmp/cloud-vault-model-tests
+          /tmp/cloud-vault-model-tests | tee cloud-vault-model-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotComposerAction.swift src/ios/Views/Chat/AIChatView/Realtime/RealtimeLevelMeter.swift scripts/CloudBotComposerTests.swift -o /tmp/cloud-composer-tests
+          /tmp/cloud-composer-tests | tee cloud-composer-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudCaseRedactor.swift scripts/CloudCaseRedactorTests.swift -o /tmp/cloud-caseredact-tests
+          /tmp/cloud-caseredact-tests | tee cloud-caseredact-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReplay.swift scripts/CloudReplayTests.swift -o /tmp/cloud-replay-tests
+          /tmp/cloud-replay-tests | tee cloud-replay-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudLiveStats.swift scripts/CloudLiveStatsTests.swift -o /tmp/cloud-livestats-tests
+          /tmp/cloud-livestats-tests | tee cloud-livestats-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPhotoRouter.swift scripts/CloudPhotoRouterTests.swift -o /tmp/cloud-photo-router-tests
+          /tmp/cloud-photo-router-tests | tee cloud-photo-router-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudErrorLogFormat.swift src/ios/Views/Chat/AIChatView/Cloud/CloudReconnectPolicy.swift scripts/CloudErrorLogTests.swift -o /tmp/cloud-errorlog-tests
+          /tmp/cloud-errorlog-tests | tee cloud-errorlog-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotMood.swift scripts/CloudBotMoodTests.swift -o /tmp/cloud-mood-tests
+          /tmp/cloud-mood-tests | tee cloud-mood-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudUsageSeries.swift scripts/CloudUsageSeriesTests.swift -o /tmp/cloud-usage-series-tests
+          /tmp/cloud-usage-series-tests | tee cloud-usage-series-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudChatCache.swift scripts/CloudChatCacheTests.swift -o /tmp/cloud-chatcache-tests
+          /tmp/cloud-chatcache-tests | tee cloud-chatcache-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotThreads.swift scripts/CloudBotThreadsTests.swift -o /tmp/cloud-threads-tests
+          /tmp/cloud-threads-tests | tee cloud-threads-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReactionLogic.swift scripts/CloudReactionLogicTests.swift -o /tmp/cloud-reaction-tests
+          /tmp/cloud-reaction-tests | tee cloud-reaction-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotEditPatch.swift scripts/CloudBotEditPatchTests.swift -o /tmp/cloud-editpatch-tests
+          /tmp/cloud-editpatch-tests | tee cloud-editpatch-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudAvatarPalette.swift scripts/CloudAvatarPaletteTests.swift -o /tmp/cloud-avatar-tests
+          /tmp/cloud-avatar-tests | tee cloud-avatar-test.log
+          swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTaskPump.swift src/ios/Views/Chat/AIChatView/Cloud/CloudEventLedger.swift src/ios/Views/Chat/AIChatView/Cloud/CloudStepFeed.swift -o /tmp/cloud-chat-tests
+          /tmp/cloud-chat-tests | tee cloud-chat-test.log
+          xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift 2>&1 | tee cloud-connection-typecheck.log
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          sw_vers
+
+      - name: 语音模型目录刷新回归
+        run: |
+          set -o pipefail
+          python3 scripts/test_voice_catalog.py | tee voice-catalog-test.log
+
+      - name: 无上限子代理与实际通话入口回归
+        run: |
+          set -o pipefail
+          python3 scripts/test_build6.py | tee build6-test.log
+
+      - name: 实时语音协议回归与 iOS 类型检查
+        run: |
+          set -o pipefail
+          python3 scripts/test_voice_protocols.py | tee voice-protocols-test.log
+          python3 scripts/test_realtime_voice.py | tee realtime-test.log
+          python3 scripts/test_dashscope_realtime.py | tee dashscope-realtime-test.log
+          python3 scripts/test_local_steer_toggle.py
+          xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/RealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Realtime/*.swift 2>&1 | tee realtime-typecheck.log
+
+      - name: 下载并校验官方 VAD 二进制
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/prepare_vad.py
+
+      - name: 校验并准备固定版本 SwiftMath 源码
+        run: python3 scripts/prepare_swiftmath.py
+
+      - name: Resolve Swift packages
+        run: |
+          set -o pipefail
+          git config --global http.version HTTP/1.1
+          for attempt in 1 2 3; do
+            if xcodebuild -resolvePackageDependencies \
+              -project src/ios/Minis.xcodeproj -scheme Minis \
+              -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
+              -scmProvider system -disablePackageRepositoryCache \
+              2>&1 | tee package-resolve.log; then
+              exit 0
+            fi
+            rm -rf "$GITHUB_WORKSPACE/build/SourcePackages"
+          done
+          exit 1
+
+      - name: 验证启动修复和本轮功能
+        run: |
+          set -euo pipefail
+          git diff --check
+          xcrun swiftc -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 -application-extension src/ios/Shared/PendingShare.swift src/ios/Shared/SharedContainerStore.swift
+          swiftc src/ios/Shared/PendingShare.swift src/ios/Shared/SharedContainerStore.swift scripts/StorageFallbackTests.swift -o /tmp/storage-test
+          /tmp/storage-test | tee storage-test.log
+          python3 scripts/test_reset.py | tee reset-test.log
+          python3 scripts/test_soul_unlimited.py | tee soul-test.log
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: false
+
+      - name: Install build dependencies
+        run: |
+          brew install ninja llvm lld libarchive pkg-config
+          python3 -m pip install --break-system-packages meson
+          echo "LLVM prefix: $(brew --prefix llvm)"
+          meson --version
+
+      - name: Ensure Metal toolchain
+        run: |
+          if ! xcrun --sdk iphoneos metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk iphoneos metal --version
+
+      - name: Prepare build config
+        run: |
+          cp src/ios/Configs/ProviderCustomization.xcconfig.example \
+             src/ios/Configs/ProviderCustomization.xcconfig
+
+      - name: Build LAME
+        run: ./deps/build_lame.sh --simulator
+
+      - name: Cache FFmpeg source tarball
+        uses: actions/cache@v4
+        with:
+          path: deps/.cache/ffmpeg-6.1.2.tar.xz
+          key: ffmpeg-src-6.1.2-3b624649
+
+      - name: Build FFmpeg
+        run: ./deps/build_ffmpeg.sh --simulator
+
+      - name: Build iSH
+        run: |
+          export PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$PATH"
+          ld.lld --version
+          ./deps/build_ish.sh release --simulator
+
+      - name: Prepare Alpine rootfs
+        run: ./deps/prepare_alpine_rootfs.sh
+
+      - name: Build rclone
+        run: ./deps/build_rclone_ios.sh
+
+      - name: XCUITest 端到端冒烟（模拟器）
+        run: |
+          set -o pipefail
+          DEV=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          echo "模拟器：$DEV"
+          xcrun simctl boot "$DEV" || true
+          xcodebuild test \
+            -project src/ios/Minis.xcodeproj \
+            -scheme Minis \
+            -configuration Debug \
+            -destination "id=$DEV" \
+            -derivedDataPath build \
+            -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
+            -scmProvider system \
+            -disableAutomaticPackageResolution \
+            -only-testing:MinisUITests/MinisSmokeUITests \
+            -resultBundlePath ui-tests.xcresult \
+            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= | tee ui-tests.log
+
+      - name: Upload UI test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-tests
+          path: |
+            ui-tests.log
+            ui-tests.xcresult
+          retention-days: 14
