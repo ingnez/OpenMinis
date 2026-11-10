@@ -715,6 +715,7 @@ struct CloudBotHomeScreen: View {
             CloudShareBotPicker(prompt: model.pendingPrompt, bots: model.bots) { model.deliverShare(to: $0) }
                 .presentationDetents([.medium, .large])
         }
+        .overlay { CloudMiniDesktopOverlay() }
         .modifier(CloudNightModeModifier(dutyUntil: model.dutyUntil))
         .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
         .sheet(isPresented: $showWorkbench) { CloudWorkbenchSheet() }

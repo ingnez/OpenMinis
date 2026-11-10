@@ -20,6 +20,7 @@ struct CloudComputerTopBar: View {
     let onRestart: () -> Void
     let onImmersive: () -> Void
     let onBrowser: () -> Void
+    var onMini: (() -> Void)? = nil
 
     var body: some View {
         HStack {
@@ -50,6 +51,7 @@ struct CloudComputerTopBar: View {
 
     @ViewBuilder private var menuItems: some View {
         Button(action: onImmersive) { Label("横屏全屏", systemImage: "arrow.up.left.and.arrow.down.right") }
+        if let onMini { Button(action: onMini) { Label("小窗继续看（去别处聊天）", systemImage: "pip.enter") } }
         Button { ctl.screenshot() } label: { Label("截图存相册", systemImage: "camera") }
         Button { ctl.toggleRecording() } label: {
             Label(ctl.recording ? "停止录屏" : "录屏", systemImage: ctl.recording ? "stop.circle" : "record.circle")

@@ -109,7 +109,8 @@ struct CloudComputerView: View {
     private var topBar: some View {
         CloudComputerTopBar(bot: bot, ownDisplay: ownDisplay, ctl: ctl, onBack: { dismiss() }, onHelp: { showHelp = true },
                             onReload: reload, onRestart: restartDesktop, onImmersive: { setImmersive(true) },
-                            onBrowser: { if let streamURL { openURL(streamURL) } })
+                            onBrowser: { if let streamURL { openURL(streamURL) } },
+                            onMini: botId.map { id in { CloudMiniDesktop.shared.show(botId: id); dismiss() } })
     }
 
     private var bottomArea: some View {
