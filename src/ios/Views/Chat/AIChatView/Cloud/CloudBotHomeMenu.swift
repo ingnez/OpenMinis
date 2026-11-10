@@ -169,3 +169,62 @@ extension View {
         modifier(CloudBotContextMenu(bot: bot, model: model, actions: actions))
     }
 }
+
+/// 首页长按菜单用到的弹窗（单独拆出来，首页 body 的修饰链太长编译器会超时）
+struct CloudBotHomeMenuSheets: ViewModifier {
+    @ObservedObject var model: CloudBotHomeModel
+    @Binding var showPrimaryPicker: Bool
+    @Binding var showHidden: Bool
+    @Binding var renaming: CloudBot?
+    @Binding var renameText: String
+    @Binding var deleting: CloudBot?
+    @Binding var shareURL: URL?
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: $showPrimaryPicker) {
+                CloudPrimaryPicker(model: model, onDone: { showPrimaryPicker = false })
+            }
+            .sheet(isPresented: $showHidden) {
+                CloudHiddenBotsSheet(model: model, onDone: { showHidden = false })
+            }
+            .sheet(isPresented: shareShown) {
+                if let url = shareURL { CloudActivitySheet(items: [url]) }
+            }
+            .alert("重命名", isPresented: renameShown) {
+                TextField("名字", text: $renameText)
+                Button("取消", role: .cancel) { renaming = nil }
+                Button("保存") { saveRename() }
+            }
+            .confirmationDialog("删除这个 Bot？", isPresented: deleteShown, titleVisibility: .visible) {
+                Button("删除（放进回收站）", role: .destructive) { confirmDelete() }
+            } message: {
+                Text("记忆和聊天记录会保留，可以在操作记录里撤销恢复。")
+            }
+    }
+
+    private var shareShown: Binding<Bool> {
+        Binding(get: { shareURL != nil }, set: { if !$0 { shareURL = nil } })
+    }
+
+    private var renameShown: Binding<Bool> {
+        Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })
+    }
+
+    private var deleteShown: Binding<Bool> {
+        Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
+    }
+
+    private func saveRename() {
+        if let bot = renaming {
+            let name = renameText
+            Task { await model.rename(bot.id, to: name) }
+        }
+        renaming = nil
+    }
+
+    private func confirmDelete() {
+        if let bot = deleting { Task { await model.softDelete(bot.id) } }
+        deleting = nil
+    }
+}

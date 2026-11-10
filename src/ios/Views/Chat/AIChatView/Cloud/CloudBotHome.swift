@@ -541,32 +541,8 @@ struct CloudBotHomeScreen: View {
         .sheet(isPresented: $showHub) {
             NavigationStack { CloudBotHubView(onDone: { showHub = false }) }
         }
-        .sheet(isPresented: $showPrimaryPicker) {
-            CloudPrimaryPicker(model: model, onDone: { showPrimaryPicker = false })
-        }
-        .sheet(isPresented: $showHidden) {
-            CloudHiddenBotsSheet(model: model, onDone: { showHidden = false })
-        }
-        .sheet(isPresented: Binding(get: { shareURL != nil }, set: { if !$0 { shareURL = nil } })) {
-            if let url = shareURL { CloudActivitySheet(items: [url]) }
-        }
-        .alert("重命名", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
-            TextField("名字", text: $renameText)
-            Button("取消", role: .cancel) { renaming = nil }
-            Button("保存") {
-                if let bot = renaming { Task { await model.rename(bot.id, to: renameText) } }
-                renaming = nil
-            }
-        }
-        .confirmationDialog("删除这个 Bot？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
-                            titleVisibility: .visible) {
-            Button("删除（放进回收站）", role: .destructive) {
-                if let bot = deleting { Task { await model.softDelete(bot.id) } }
-                deleting = nil
-            }
-        } message: {
-            Text("记忆和聊天记录会保留，可以在操作记录里撤销恢复。")
-        }
+        .modifier(CloudBotHomeMenuSheets(model: model, showPrimaryPicker: $showPrimaryPicker, showHidden: $showHidden,
+                                         renaming: $renaming, renameText: $renameText, deleting: $deleting, shareURL: $shareURL))
         .sheet(isPresented: $showConnectApps) {
             CloudConnectAppsSheet(onClose: { showConnectApps = false })
                 .presentationDetents([.large])
