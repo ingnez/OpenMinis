@@ -15,6 +15,22 @@ struct CloudBotVoiceSettings: Codable, Equatable {
     var voice: String = ""      // AVSpeechSynthesisVoice.identifier，空 = 系统默认
     var speed: Double = 1.0     // 0.75 / 1 / 1.25 / 1.5
     var language: String = ""   // 空 = 自动
+    /// 朗读引擎：空 = 系统语音（上面的语音）；"phone" = 手机「语音」设置里配的语音服务（豆包 / Azure / OpenAI 等，失败自动回落系统语音）
+    var engine: String = ""
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        voice = try c.decodeIfPresent(String.self, forKey: .voice) ?? ""
+        speed = try c.decodeIfPresent(Double.self, forKey: .speed) ?? 1.0
+        language = try c.decodeIfPresent(String.self, forKey: .language) ?? ""
+        engine = try c.decodeIfPresent(String.self, forKey: .engine) ?? ""
+    }
+
+    @MainActor static var phoneEngineLabel: String? {
+        VoiceProviderResolver.resolvedOutputCandidates().first.map { $0.model.displayName }
+    }
 
     static let speeds: [Double] = [0.75, 1.0, 1.25, 1.5]
     static let languages: [(String, String)] = [("", "自动"), ("zh-CN", "中文"), ("en-US", "English"), ("ja-JP", "日本語"),
@@ -44,10 +60,41 @@ struct CloudBotVoiceSettings: Codable, Equatable {
 @MainActor
 enum CloudBotSpeaker {
     private static let synth = AVSpeechSynthesizer()
+    private static var player: AVAudioPlayer?
+    private static var cloudTask: Task<Void, Never>?
 
     static func speak(_ text: String, botId: String) {
         let settings = CloudBotVoiceSettings.load(botId)
-        synth.stopSpeaking(at: .immediate)
+        stop()
+        guard settings.engine == "phone", !VoiceProviderResolver.resolvedOutputCandidates().isEmpty else {
+            speakSystem(text, settings: settings)
+            return
+        }
+        let clean = String(VoiceTextSanitizer.sanitize(text).prefix(1500))
+        cloudTask = Task { @MainActor in
+            for entry in VoiceProviderResolver.resolvedOutputCandidates() {
+                guard let p = VoiceProviderResolver.outputProvider(for: entry) else { continue }
+                do {
+                    let data = try await p.synthesize(VoiceOutputRequest(input: clean, model: entry.model.id, voice: entry.model.id,
+                                                                         speed: Float(settings.speed), resolvedModel: entry.model))
+                    if Task.isCancelled { return }
+                    try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+                    let pl = try AVAudioPlayer(data: data)
+                    player = pl
+                    pl.play()
+                    cloudTask = nil
+                    return
+                } catch {
+                    if Task.isCancelled { return }
+                    continue   // 换下一个服务，全部失败再用系统语音
+                }
+            }
+            cloudTask = nil
+            speakSystem(text, settings: settings)
+        }
+    }
+
+    private static func speakSystem(_ text: String, settings: CloudBotVoiceSettings) {
         let u = AVSpeechUtterance(string: String(text.prefix(4000)))
         if !settings.voice.isEmpty, let v = AVSpeechSynthesisVoice(identifier: settings.voice) {
             u.voice = v
@@ -60,8 +107,14 @@ enum CloudBotSpeaker {
         synth.speak(u)
     }
 
-    static func stop() { synth.stopSpeaking(at: .immediate) }
-    static var isSpeaking: Bool { synth.isSpeaking }
+    static func stop() {
+        cloudTask?.cancel()
+        cloudTask = nil
+        player?.stop()
+        player = nil
+        synth.stopSpeaking(at: .immediate)
+    }
+    static var isSpeaking: Bool { synth.isSpeaking || cloudTask != nil || (player?.isPlaying ?? false) }
 }
 
 // MARK: - 编辑 Bot
@@ -127,6 +180,11 @@ struct CloudBotEditSheet: View {
                     }
                 }
                 Section {
+                    Picker("朗读引擎", selection: $voice.engine) {
+                        Text("系统语音").tag("")
+                        Text(CloudBotVoiceSettings.phoneEngineLabel.map { "语音服务 · \($0)" } ?? "语音服务（未配置）").tag("phone")
+                    }
+                    .pickerStyle(.menu)
                     Picker("语音", selection: $voice.voice) {
                         Text("系统默认").tag("")
                         ForEach(CloudBotVoiceSettings.voices, id: \.identifier) { v in
