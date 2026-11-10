@@ -15,6 +15,7 @@ OpenMinis Cloud Computer & Agent Service (cloud_agent_server.py) v2.0
 - Encrypted provider credential store (AES-256-GCM, /v1/credentials; names only are ever listed)
 - Approval cards: risky tool calls pause the task in waiting_user until the user approves or denies
 - Routines: cron / interval / once saved prompts run by a scheduler thread with stored encrypted credentials
+- Structured memory: memory_write / memory_search over SQLite FTS5 (trigram), shared Markdown format with the phone
 """
 
 import os
@@ -44,6 +45,7 @@ import cloud_desktop
 import cloud_secrets
 import cloud_policy
 import cloud_cron
+import cloud_memory
 
 HOST = os.environ.get("OPENMINIS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
@@ -224,6 +226,10 @@ def init_db():
     )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_routine_runs ON routine_runs(routine_id, started_at)")
+
+    # 结构化记忆（FTS5 trigram，不可用时退化为 LIKE）
+    conn.commit()
+    cloud_memory.ensure_schema(conn)
 
     # Server restart: mark interrupted
     cursor.execute("UPDATE tasks SET status = 'interrupted' WHERE status IN ('running', 'queued', 'waiting_user')")
@@ -610,6 +616,48 @@ def tool_desktop_action(task_id, session_id, args):
     ws = get_session_workspace(session_id)
     return cloud_desktop.execute_desktop_action(session_id, ws, args)
 
+def tool_memory_write(task_id, session_id, args):
+    if is_task_cancelled(task_id):
+        return {"error": "Cancelled"}
+    conn = get_db_connection()
+    try:
+        entry, created = cloud_memory.write(conn, args.get("content"), args.get("category"), source="cloud", session_id=session_id)
+    except ValueError as e:
+        return {"error": str(e)}
+    finally:
+        conn.close()
+    return {"saved": created, "duplicate": not created, "id": entry["id"], "category": entry["category"], "entry_time": entry["entry_time"]}
+
+def tool_memory_search(task_id, session_id, args):
+    if is_task_cancelled(task_id):
+        return {"error": "Cancelled"}
+    conn = get_db_connection()
+    try:
+        results = cloud_memory.search(conn, args.get("query", ""), args.get("category") or None, args.get("limit", 10))
+    except (ValueError, TypeError) as e:
+        return {"error": str(e)}
+    finally:
+        conn.close()
+    total = 0
+    out = []
+    for r in results:
+        text = r["content"] if len(r["content"]) <= 4000 else r["content"][:4000] + "…"
+        total += len(text)
+        out.append({"id": r["id"], "category": r["category"], "entry_time": r["entry_time"], "source": r["source"], "content": text})
+        if total > 30000:
+            break
+    return {"count": len(out), "results": out}
+
+SERVER_TOOL_NOTES = (
+    "\n\n[云端记忆] memory_search 按关键词检索用户的长期记忆（手机同步的 memory/ 日志与 GLOBAL.md，以及云端写入的条目），"
+    "开始新话题或需要用户偏好、人物、项目背景时先检索；memory_write 保存值得长期记住的新事实，category 取 "
+    "profile（用户本人）/ rules（偏好与约定）/ people（人物）/ workstreams（项目进展）/ note（其他）。不要写入密码、密钥等凭据。"
+)
+
+def server_tool_notes(session_id):
+    """追加到 system 消息的服务端工具说明（客户端 instructions 不了解服务端新增工具）。"""
+    return SERVER_TOOL_NOTES
+
 TOOL_DEFINITIONS = [
     {
         "type": "function",
@@ -707,6 +755,37 @@ TOOL_DEFINITIONS = [
                 "required": ["action"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_write",
+            "description": "Save one long-term memory entry (shared with the user's phone). Keep it concise and self-contained; never store secrets.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "Concise Markdown, ideally with a short '## Topic' heading."},
+                    "category": {"type": "string", "enum": list(cloud_memory.CATEGORIES), "description": "profile / rules / people / workstreams / note (default note)."}
+                },
+                "required": ["content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_search",
+            "description": "Full-text search over the user's long-term memory (phone daily logs, GLOBAL.md and cloud entries). Space-separated keywords; Chinese substrings work. Empty query returns the most recent entries.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "category": {"type": "string", "enum": list(cloud_memory.CATEGORIES)},
+                    "limit": {"type": "integer", "description": "1-50, default 10"}
+                },
+                "required": ["query"]
+            }
+        }
     }
 ]
 
@@ -740,7 +819,8 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
     rows = c.fetchall()
     conn.close()
 
-    messages = [{"role": "system", "content": instructions}] if instructions else []
+    system_text = (instructions or "") + server_tool_notes(session_id)
+    messages = [{"role": "system", "content": system_text.lstrip()}]
     for r_role, r_content, r_tc, r_tcid in rows:
         m = {"role": r_role}
         if r_content is not None:
@@ -851,6 +931,8 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
                     elif fn_name == "file_edit": res = tool_file_edit(task_id, session_id, fn_args)
                     elif fn_name == "browser_action": res = tool_browser_action(task_id, session_id, fn_args)
                     elif fn_name == "desktop_action": res = tool_desktop_action(task_id, session_id, fn_args)
+                    elif fn_name == "memory_write": res = tool_memory_write(task_id, session_id, fn_args)
+                    elif fn_name == "memory_search": res = tool_memory_search(task_id, session_id, fn_args)
                     else: res = {"error": f"Unknown tool {fn_name}"}
 
                     log_event(task_id, "tool_result", {"id": tc_id, "tool": fn_name, "result": res})
@@ -1270,7 +1352,8 @@ class Handler(BaseHTTPRequestHandler):
                     "novnc_port": 18766,
                     "credential_store": cloud_secrets.status()[0],
                     "approvals": True,
-                    "routines": True
+                    "routines": True,
+                    "memory_search": True
                 },
                 "timestamp": time.time()
             })
@@ -1316,6 +1399,26 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer ") or auth[7:].strip() != SERVER_TOKEN:
             self._send(401, {"error": "Unauthorized"})
+            return
+
+        if path == "/v1/memory":
+            def qp(name, default=None):
+                v = query_params.get(name)
+                return v[0] if v else default
+            conn = get_db_connection()
+            try:
+                if qp("query") is not None or qp("category"):
+                    entries = cloud_memory.search(conn, qp("query", ""), qp("category"), int(qp("limit", "20")), source=qp("source"))
+                else:
+                    since = qp("since")
+                    entries = cloud_memory.list_entries(conn, since=float(since) if since else None, source=qp("source"), limit=int(qp("limit", "200")))
+                fts = cloud_memory.fts_enabled(conn)
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            self._send(200, {"entries": entries, "fts": fts, "server_time": time.time()})
             return
 
         if path == "/v1/credentials":
@@ -1584,6 +1687,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Credential not found"})
             return
 
+        if path.startswith("/v1/memory/"):
+            raw = path[len("/v1/memory/"):]
+            conn = get_db_connection()
+            try:
+                ok = raw.isdigit() and cloud_memory.delete(conn, int(raw))
+            finally:
+                conn.close()
+            if ok:
+                self._send(200, {"id": int(raw), "deleted": True})
+            else:
+                self._send(404, {"error": "Memory entry not found"})
+            return
+
         if path.startswith("/v1/routines/"):
             rid = path[len("/v1/routines/"):]
             if ROUTINE_ID_RE.match(rid) and delete_routine(rid):
@@ -1673,6 +1789,7 @@ class Handler(BaseHTTPRequestHandler):
 
             # Process workspace_files (skills, memory, etc. with size & path safety check)
             imported_files_count = 0
+            memory_indexed = 0
             if isinstance(workspace_files, list):
                 ws = get_session_workspace(sid)
                 for wf in workspace_files:
@@ -1694,6 +1811,16 @@ class Handler(BaseHTTPRequestHandler):
                         imported_files_count += 1
                     except Exception:
                         pass
+                    # 手机记忆文件同时写入全局记忆索引（同一来源文件整体替换）
+                    norm = fpath.lstrip("/").replace("\\", "/")
+                    if norm.startswith("memory/") and norm.endswith(".md"):
+                        mconn = get_db_connection()
+                        try:
+                            memory_indexed += cloud_memory.import_file(mconn, norm, fcontent, source="phone")
+                        except Exception as e:
+                            print(f"memory import failed for {norm}: {e}")
+                        finally:
+                            mconn.close()
 
             self._send(200 if existing else 201, {
                 "session_id": sid,
@@ -1702,6 +1829,7 @@ class Handler(BaseHTTPRequestHandler):
                 "status": "ready",
                 "imported_messages_count": len(history) if isinstance(history, list) else 0,
                 "imported_files_count": imported_files_count,
+                "memory_entries_indexed": memory_indexed,
                 "created_at": created_at
             })
             return
@@ -1832,6 +1960,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 # BrokenPipeError / Client disconnected immediately after sending - task is already running!
                 pass
+            return
+
+        if path == "/v1/memory":
+            conn = get_db_connection()
+            try:
+                entry, created = cloud_memory.write(conn, req_json.get("content"), req_json.get("category"), source=req_json.get("source") if req_json.get("source") in ("phone", "cloud") else "phone")
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            self._send(201 if created else 200, dict(entry, created=created))
             return
 
         if path == "/v1/routines":

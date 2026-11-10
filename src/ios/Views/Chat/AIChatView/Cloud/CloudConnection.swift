@@ -274,7 +274,9 @@ public final class CloudConnection: ObservableObject {
     private func requestRaw(method: String, path: String, body: [String: Any]?) async throws -> [String: Any] {
         let components = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         let route = String(components[0])
-        let queryAllowed = components.count == 1 || (route.hasPrefix("/v1/tasks/") && route.hasSuffix("/events") && String(components[1]).range(of: #"^after=[0-9]{1,18}$"#, options: .regularExpression) != nil)
+        let queryAllowed = components.count == 1
+            || (route.hasPrefix("/v1/tasks/") && route.hasSuffix("/events") && String(components[1]).range(of: #"^after=[0-9]{1,18}$"#, options: .regularExpression) != nil)
+            || (route == "/v1/memory" && String(components[1]).range(of: #"^source=cloud&since=[0-9]{1,12}\.[0-9]{6}$"#, options: .regularExpression) != nil)
         guard (route == "/health" || route.hasPrefix("/v1/")), queryAllowed, !path.contains(".."), !path.contains("#"), !path.contains("\\"), !path.contains("//"), let url = URL(string: "http://127.0.0.1:18765" + path), url.host == "127.0.0.1", url.port == 18765 else {
             throw failure("云端 API 路径无效")
         }

@@ -669,6 +669,8 @@ extension ChatStore {
             return cap("browser_use \(action)")
         case "memory_write":
             if let content = str("content") { return cap("memory_write: " + content) }
+        case "memory_search":
+            if let q = str("query") { return cap("memory_search: " + q) }
         case "memory_get":
             if let kw = input["keywords"] as? [Any] {
                 let joined = kw.compactMap { $0 as? String }.joined(separator: ", ")

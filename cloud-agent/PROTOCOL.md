@@ -293,3 +293,12 @@
 - **运行记录**: `{"run_id", "routine_id", "task_id", "session_id", "trigger": "schedule|manual", "status", "result", "error", "started_at", "finished_at"}`。`status` 与任务状态一致（`running` / `waiting_user` / `completed` / `failed` / `cancelled` / `limit_reached`），另有 `skipped` 与 `interrupted`（服务重启时未结束的运行）。`result` 为最后一条助手消息。
 - **调度规则**: 每 `OPENMINIS_SCHEDULER_TICK` 秒（默认 15）检查一次到期任务；服务停机错过的多次触发只补跑一次；达到 `max_runs` 自动停用。运行中命中 §4.2 审批规则时同样挂起，可在会话列表中打开该会话审批。
 - **iOS**: 云电脑设置 → “云端例行任务”可新建、启停、立即运行、删除与查看结果；本机定时任务详情页“移到云端运行”把 cron / loop / once 触发器转换为对应计划（Calendar weekday 1–7 → cron 周 0–6，loop 剩余次数 → `max_runs`），创建成功后取消本机任务。
+
+### 4.4 结构化记忆 (Memory)
+- **共享格式**（手机 `memory/YYYY-MM-DD.md` 与云端一致）：每条以 `<!-- yyyy-MM-dd HH:mm:ss [#分类] -->` 开头，直到下一条注释头。分类 ∈ `profile`（用户本人）/ `rules`（偏好与约定）/ `people` / `workstreams`（进行中的项目）/ `note`（默认，可省略标签）。旧条目（无分类）按 `note` 读取。`GLOBAL.md` 无注释头，按 `## ` 小节切分，记为 `profile`。
+- **存储**: `memory_entries` 表 + FTS5 `trigram` 索引（中文子串可检索）。≥3 字符的词走 FTS5（bm25 排序），更短的词与不支持 trigram 的旧版 SQLite 退化为 `LIKE`。排序：命中词数 → bm25 → 时间。同分类同内容按 SHA-256 去重。
+- **导入**: `POST /v1/sessions/import` 的 `workspace_files` 中 `memory/GLOBAL.md`、`memory/YYYY-MM-DD.md` 除写入工作区外同时建立索引（`source = "phone"`），同一来源文件的旧条目整体替换，响应新增 `memory_entries_indexed`。
+- **工具**: 云端 Agent 新增 `memory_write {content, category?}`（`source = "cloud"`）与 `memory_search {query, category?, limit?}`（最多 50 条、约 30KB）。服务端在 system 消息末尾追加工具说明。
+- **GET /v1/memory**: 带 `query` 或 `category` 时为检索（`limit` 默认 20）；否则按 `since`（unix 秒，取 `created_at` 更大的）与 `source` 列出（`limit` 默认 200）。响应 `{"entries": [{"id", "category", "content", "source", "origin", "entry_time", "session_id", "created_at"}], "fts": bool, "server_time"}`。
+- **POST /v1/memory**: `{"content", "category"?}` 新建 `201`，重复返回已有条目 `200`；**DELETE /v1/memory/{id}**: `200` / `404`。
+- **iOS**: 手机 `memory_write` 新增可选 `category`；`memory_get` 可按分类过滤；新增 `memory_search`（内存 SQLite FTS5 trigram，规则同上）。开启“同步工作记忆”时，每次提交云端任务前先 `GET /v1/memory?source=cloud&since=…` 把云端写入的条目按共享格式写回当天日志并加入 iCloud 同步，再上传记忆文件。

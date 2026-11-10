@@ -163,3 +163,7 @@ src/android/app/libs/rclone.aar
 deps/aot/*.S
 deps/aot/.build/
 deps/aot/.build-iphonesimulator/
+
+# cloud-agent 本地运行/测试产生的数据
+cloud-agent/data/
+cloud-agent/workspace/

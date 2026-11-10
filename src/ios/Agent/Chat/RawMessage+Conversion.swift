@@ -265,7 +265,7 @@ extension RawMessage {
                     let path = extractStringParam("path", from: tu.input)
                     kind = .readImageTool(path: path)
                     content = "Reading image \(path)..."
-                case "memory_write", "memory_get":
+                case "memory_write", "memory_get", "memory_search":
                     kind = .memoryTool(action: tu.name)
                     content = tu.name == "memory_write" ? "Writing memory..." : "Reading memory..."
                 case SubAgentDefinition.toolName:

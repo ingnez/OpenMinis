@@ -20,6 +20,8 @@ enum CloudWorkContext {
         }
         let memory = enabled(memoryKey)
         let skills = enabled(skillsKey)
+        // 先把云端写入的记忆拉回手机日志，再上传，两端保持同一份。
+        if memory { await CloudMemorySync.pullCloudEntries() }
         guard memory || skills else { return ["instructions": instructions, "files": []] }
         let skillsRoot = AIChatViewModel.minisSkillsPersistentDir
         let memoryRoot = AIChatViewModel.minisMemoryPersistentDir
@@ -27,7 +29,7 @@ enum CloudWorkContext {
             try CloudContextFiles.collect(skillsRoot: skillsRoot, memoryRoot: memoryRoot,
                                           skills: skills, memory: memory)
         }.value
-        instructions += "\n工作区中 skills/<技能名>/SKILL.md 是已同步的技能说明，memory/ 是用户工作记忆；需要时通过文件工具读取。只同步了说明文件，引用脚本或其他资产未同步时应明确缺少依赖，不要假定存在。\n"
+        instructions += "\n工作区中 skills/<技能名>/SKILL.md 是已同步的技能说明，memory/ 是用户工作记忆；记忆已建立全文索引，优先用 memory_search 检索，需要整文件时再用文件工具读取。只同步了说明文件，引用脚本或其他资产未同步时应明确缺少依赖，不要假定存在。\n"
         return ["instructions": instructions, "files": files]
     }
 }

@@ -43,3 +43,10 @@ enum UserAskCardModel {
  static func results(_ content: String) -> [Result] { [] }
  static func questionsSummary(_ block: AssistantBlock) -> String { "" }
 }
+// Phase 1 / 4：云端记忆回流引用的主工程符号（ChatStore+SyncDirty.swift、MemoryManagementView.swift）。
+extension ChatStore {
+ func markDirty(recordType: String, recordId: String) {}
+}
+extension Notification.Name {
+ static let memoryFilesDidChange = Notification.Name("com.openminis.app.memoryFilesDidChange")
+}

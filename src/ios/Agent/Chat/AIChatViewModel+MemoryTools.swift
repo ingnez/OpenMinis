@@ -1,8 +1,69 @@
 import Foundation
+import SQLite3
 
 // MARK: - Memory Tools
 
+/// One entry of the shared memory format (phone daily logs and the cloud agent):
+/// `<!-- yyyy-MM-dd HH:mm:ss [#category] -->` followed by the body, up to the
+/// next `<!-- ` line. GLOBAL.md has no headers; its sections count as profile.
+struct MemoryEntryRecord {
+    let fileLabel: String
+    let timestamp: String?
+    let category: String
+    let text: String
+}
+
 extension AIChatViewModel {
+
+    /// Categories of the shared memory format; same list as cloud-agent/cloud_memory.py.
+    nonisolated static let memoryCategories = ["profile", "rules", "people", "workstreams", "note"]
+
+    /// Parses an entry header line. Old headers without a category read as note;
+    /// any other `<!-- ` line still starts an entry (legacy boundary rule).
+    nonisolated static func parseMemoryHeader(_ line: String) -> (timestamp: String?, category: String)? {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard t.hasPrefix("<!--") else { return nil }
+        var inner = String(t.dropFirst(4))
+        if inner.hasSuffix("-->") { inner = String(inner.dropLast(3)) }
+        var category = "note"
+        var rest: [Substring] = []
+        for part in inner.split(separator: " ") {
+            if part.hasPrefix("#") {
+                let c = part.dropFirst().lowercased()
+                if memoryCategories.contains(c) { category = c }
+            } else {
+                rest.append(part)
+            }
+        }
+        let ts = rest.prefix(2).joined(separator: " ")
+        let valid = ts.range(of: #"^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}(:\d{2})?)?$"#, options: .regularExpression) != nil
+        return (valid ? ts : nil, category)
+    }
+
+    /// Splits one memory file into entries of the shared format.
+    nonisolated static func parseMemoryEntries(_ content: String, fileLabel: String) -> [MemoryEntryRecord] {
+        let isGlobal = fileLabel == "GLOBAL.md"
+        var entries: [MemoryEntryRecord] = []
+        var header: (timestamp: String?, category: String)? = nil
+        var lines: [String] = []
+        func flush() {
+            let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { return }
+            entries.append(MemoryEntryRecord(fileLabel: fileLabel, timestamp: header?.timestamp,
+                                             category: header?.category ?? (isGlobal ? "profile" : "note"), text: body))
+        }
+        for line in content.components(separatedBy: "\n") {
+            if !isGlobal, line.hasPrefix("<!-- "), let h = parseMemoryHeader(line) {
+                flush(); header = h; lines = []
+            } else if isGlobal, line.hasPrefix("## "), lines.contains(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+                flush(); lines = [line]
+            } else {
+                lines.append(line)
+            }
+        }
+        flush()
+        return entries
+    }
 
     // MARK: - Memory Tools
 
@@ -70,6 +131,14 @@ extension AIChatViewModel {
               let content = dict["content"] as? String else {
             return FileToolResult(output: "Error: Missing required 'content' parameter", success: false)
         }
+        var categoryTag = ""
+        if let raw = dict["category"] as? String, !raw.isEmpty {
+            let c = raw.lowercased()
+            guard Self.memoryCategories.contains(c) else {
+                return FileToolResult(output: "Error: category must be one of \(Self.memoryCategories.joined(separator: ", "))", success: false)
+            }
+            if c != "note" { categoryTag = " #\(c)" }
+        }
 
         let fm = FileManager.default
         let persistDir = Self.minisMemoryPersistentDir
@@ -84,7 +153,7 @@ extension AIChatViewModel {
         let timeFmt = DateFormatter()
         timeFmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
         let timestamp = timeFmt.string(from: Date())
-        let entry = "<!-- \(timestamp) -->\n\(content)\n\n"
+        let entry = "<!-- \(timestamp)\(categoryTag) -->\n\(content)\n\n"
 
         // Prepend to existing file
         var existing = ""
@@ -142,6 +211,7 @@ extension AIChatViewModel {
         }
 
         let scope = (dict["scope"] as? String) ?? "all"
+        let categoryFilter = (dict["category"] as? String).map { $0.lowercased() }.flatMap { Self.memoryCategories.contains($0) ? $0 : nil }
         let keywords = ((dict["keywords"] as? String) ?? "")
             .components(separatedBy: .whitespaces)
             .map { $0.lowercased() }
@@ -182,8 +252,8 @@ extension AIChatViewModel {
             return FileToolResult(output: globalNote + "No memory files found.", success: true)
         }
 
-        // If no keywords, return full file contents (truncated)
-        if keywords.isEmpty {
+        // If no keywords (and no category filter), return full file contents (truncated)
+        if keywords.isEmpty && categoryFilter == nil {
             let maxTotalLines = 500
             var results: [String] = []
             var totalLines = 0
@@ -253,11 +323,11 @@ extension AIChatViewModel {
         }()
 
         func extractTimestamp(from entryText: String, fileLabel: String) -> Date {
-            // Try <!-- 2026-03-04 17:00:00 --> in first line
+            // Try <!-- 2026-03-04 17:00:00 [#category] --> in first line
             if let firstLine = entryText.components(separatedBy: "\n").first,
                firstLine.hasPrefix("<!-- "),
-               let end = firstLine.range(of: " -->"),
-               let ts = tsFormatter.date(from: String(firstLine[firstLine.index(firstLine.startIndex, offsetBy: 5)..<end.lowerBound])) {
+               let raw = Self.parseMemoryHeader(firstLine)?.timestamp,
+               let ts = tsFormatter.date(from: raw) ?? dateFormatter.date(from: String(raw.prefix(10))) {
                 return ts
             }
             // Fall back to file label date (e.g. "2026-03-04.md")
@@ -275,8 +345,13 @@ extension AIChatViewModel {
             let entries = splitIntoEntries(content, fileLabel: label)
             totalEntryCount += entries.count
             for (fileLabel, entryText) in entries {
+                if let categoryFilter {
+                    let firstLine = entryText.components(separatedBy: "\n").first ?? ""
+                    let category = fileLabel == "GLOBAL.md" ? "profile" : (Self.parseMemoryHeader(firstLine)?.category ?? "note")
+                    if category != categoryFilter { continue }
+                }
                 let lower = entryText.lowercased()
-                let matchedCount = keywords.filter { lower.contains($0) }.count
+                let matchedCount = keywords.isEmpty ? 1 : keywords.filter { lower.contains($0) }.count
                 if matchedCount > 0 {
                     let ts = extractTimestamp(from: entryText, fileLabel: fileLabel)
                     allEntries.append(ScoredEntry(
@@ -362,6 +437,102 @@ extension AIChatViewModel {
 
         let summary = "Found \(sortedScored.count) matching entries (scanned \(totalEntryCount) total), sorted by combined score (50% confidence + 50% recency):"
         return FileToolResult(output: globalNote + summary + "\n\n" + output + truncatedNote, success: true)
+    }
+
+    /// Execute a memory_search tool call: full-text search over all memory
+    /// entries with an in-memory SQLite FTS5 trigram index (CJK substrings
+    /// work). Terms shorter than 3 characters, or a missing FTS5, fall back to
+    /// substring matching. Ranked by distinct terms hit, then bm25, then recency.
+    func executeMemorySearch(from json: String) -> FileToolResult {
+        guard memoryEnabled else {
+            return FileToolResult(output: "Memory is disabled for this session. Use /memory to re-enable, or open Settings to change the default.", success: false)
+        }
+        let dict = (json.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) ?? [:]
+        let terms = ((dict["query"] as? String) ?? "")
+            .components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.prefix(12).map { $0 }
+        let categoryFilter = (dict["category"] as? String)?.lowercased()
+        let limit = max(1, min((dict["limit"] as? Int) ?? 10, 50))
+
+        let memDir = Self.minisMemoryPersistentDir
+        let files = ((try? FileManager.default.contentsOfDirectory(at: memDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? [])
+            .filter { $0.pathExtension == "md" }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+        var entries: [MemoryEntryRecord] = []
+        for file in files {
+            guard let content = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            entries += Self.parseMemoryEntries(content, fileLabel: file.lastPathComponent)
+        }
+        if let categoryFilter { entries = entries.filter { $0.category == categoryFilter } }
+        if entries.isEmpty { return FileToolResult(output: "No memory entries found.", success: true) }
+
+        func sortKey(_ e: MemoryEntryRecord) -> String {
+            e.timestamp ?? ((e.fileLabel as NSString).deletingPathExtension == "GLOBAL" ? "" : (e.fileLabel as NSString).deletingPathExtension)
+        }
+        var ranked: [(index: Int, hits: Int, rank: Double)] = []
+        if terms.isEmpty {
+            ranked = entries.indices.map { (index: $0, hits: 0, rank: 0.0) }
+        } else {
+            let ftsRank = Self.memoryFTSRank(entries.map(\.text), terms: terms.filter { $0.count >= 3 })
+            for (i, e) in entries.enumerated() {
+                let lower = e.text.lowercased()
+                let hits = terms.filter { lower.contains($0.lowercased()) }.count
+                if hits > 0 { ranked.append((index: i, hits: hits, rank: ftsRank[i] ?? 0)) }
+            }
+        }
+        ranked.sort {
+            if $0.hits != $1.hits { return $0.hits > $1.hits }
+            if $0.rank != $1.rank { return $0.rank < $1.rank }  // bm25: lower is better
+            return sortKey(entries[$0.index]) > sortKey(entries[$1.index])
+        }
+        if ranked.isEmpty {
+            return FileToolResult(output: "No matches for: \(terms.joined(separator: " ")) (searched \(entries.count) entries)", success: true)
+        }
+        var blocks: [String] = []
+        var bytes = 0
+        for r in ranked.prefix(limit) {
+            let e = entries[r.index]
+            let block = "[\(e.fileLabel) | \(e.timestamp ?? "-") | #\(e.category) | hits \(r.hits)/\(max(terms.count, 1))]\n\(e.text)"
+            blocks.append(block)
+            bytes += block.utf8.count
+            if bytes >= 30 * 1024 { break }
+        }
+        let header = "Found \(ranked.count) matching entries (searched \(entries.count)), showing \(blocks.count):"
+        return FileToolResult(output: header + "\n\n" + blocks.joined(separator: "\n\n---\n\n"), success: true)
+    }
+
+    /// bm25 rank per entry index from an in-memory FTS5 trigram table; empty
+    /// when there are no 3+ character terms or SQLite lacks FTS5/trigram.
+    nonisolated static func memoryFTSRank(_ texts: [String], terms: [String]) -> [Int: Double] {
+        guard !terms.isEmpty else { return [:] }
+        var handle: OpaquePointer?
+        guard sqlite3_open(":memory:", &handle) == SQLITE_OK, let db = handle else {
+            sqlite3_close(handle)
+            return [:]
+        }
+        defer { sqlite3_close(db) }
+        guard sqlite3_exec(db, "CREATE VIRTUAL TABLE m USING fts5(body, tokenize='trigram')", nil, nil, nil) == SQLITE_OK else { return [:] }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        var insert: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT INTO m(rowid, body) VALUES (?, ?)", -1, &insert, nil) == SQLITE_OK else { return [:] }
+        sqlite3_exec(db, "BEGIN", nil, nil, nil)
+        for (i, text) in texts.enumerated() {
+            sqlite3_bind_int64(insert, 1, Int64(i))
+            sqlite3_bind_text(insert, 2, text, -1, transient)
+            sqlite3_step(insert)
+            sqlite3_reset(insert)
+        }
+        sqlite3_finalize(insert)
+        sqlite3_exec(db, "COMMIT", nil, nil, nil)
+        let match = terms.map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }.joined(separator: " OR ")
+        var query: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT rowid, bm25(m) FROM m WHERE m MATCH ?", -1, &query, nil) == SQLITE_OK else { return [:] }
+        defer { sqlite3_finalize(query) }
+        sqlite3_bind_text(query, 1, match, -1, transient)
+        var out: [Int: Double] = [:]
+        while sqlite3_step(query) == SQLITE_ROW {
+            out[Int(sqlite3_column_int64(query, 0))] = sqlite3_column_double(query, 1)
+        }
+        return out
     }
 
     /// Escape single quotes for shell arguments.

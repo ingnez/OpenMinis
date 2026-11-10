@@ -139,9 +139,10 @@ extension AIChatViewModel {
                 parameters: [
                     "tool_title": AgentToolParam(type: .string, description: "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Save user preference for Python', 'Note today's project context'). Use the same language as the user."),
                     "content": AgentToolParam(type: .string, description: "The memory content to write. Use concise Markdown with a short heading (## Topic) and context about what was done/learned."),
+                    "category": AgentToolParam(type: .string, description: "Optional kind of memory: profile (about the user), rules (preferences and conventions), people, workstreams (ongoing projects), note (default).", enumValues: Self.memoryCategories),
                 ],
                 required: ["tool_title", "content"],
-                propertyOrdering: ["tool_title", "content"]
+                propertyOrdering: ["tool_title", "content", "category"]
             ))
             tools.append(AgentToolDefinition(
                 name: "memory_get",
@@ -150,9 +151,22 @@ extension AIChatViewModel {
                     "tool_title": AgentToolParam(type: .string, description: "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Recall user preferences', 'Search past notes'). Use the same language as the user."),
                     "scope": AgentToolParam(type: .string, description: "Memory scope to search: 'daily' for daily logs only, 'all' for daily logs + GLOBAL.md.", enumValues: ["daily", "all"]),
                     "keywords": AgentToolParam(type: .string, description: "Space-separated keywords for fuzzy matching (e.g. 'python preference' or 'API key setup'). All keywords must appear in a line or its surrounding context for a match. Leave empty to return full memory files."),
+                    "category": AgentToolParam(type: .string, description: "Optional: only entries of this category.", enumValues: Self.memoryCategories),
                 ],
                 required: ["tool_title"],
-                propertyOrdering: ["tool_title", "scope", "keywords"]
+                propertyOrdering: ["tool_title", "scope", "keywords", "category"]
+            ))
+            tools.append(AgentToolDefinition(
+                name: "memory_search",
+                description: "Full-text search over all memory entries (daily logs and GLOBAL.md sections), ranked by how many terms match, then relevance and recency. Chinese and other substrings work. Prefer this over memory_get to find specific facts.",
+                parameters: [
+                    "tool_title": AgentToolParam(type: .string, description: "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Search memory for project deadline'). Use the same language as the user."),
+                    "query": AgentToolParam(type: .string, description: "Space-separated search terms. Empty returns the most recent entries."),
+                    "category": AgentToolParam(type: .string, description: "Optional: only entries of this category.", enumValues: Self.memoryCategories),
+                    "limit": AgentToolParam(type: .integer, description: "Maximum results, 1-50 (default 10)."),
+                ],
+                required: ["tool_title", "query"],
+                propertyOrdering: ["tool_title", "query", "category", "limit"]
             ))
         }
 

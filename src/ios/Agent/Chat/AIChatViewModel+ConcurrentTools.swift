@@ -975,6 +975,14 @@ extension AIChatViewModel {
             toolOutput = memResult.output
             toolSuccess = memResult.success
 
+        case "memory_search":
+            let memResult = executeMemorySearch(from: argsJson)
+            if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
+                messages[msgIdx].blocks[blockIdx].content = memResult.output
+            }
+            toolOutput = memResult.output
+            toolSuccess = memResult.success
+
         case "memory_get":
             let memResult = executeMemoryGet(from: argsJson)
             if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {

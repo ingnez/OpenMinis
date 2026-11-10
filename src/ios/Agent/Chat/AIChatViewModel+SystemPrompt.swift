@@ -95,7 +95,7 @@ extension AIChatViewModel {
             // enumValues use, so a name can never appear in one and not the other.
             + ((isHelper || !Self.toolEnabled(.agents)) ? "" : Self.subAgentRosterSection())
             + "- memory_write: Save a memory entry to today's daily log (YYYY-MM-DD.md). Use proactively to note user preferences, project patterns, and important context.\n"
-            + "- memory_get: Recall memories with keyword search. Check memory at the start of new topics to leverage past knowledge.\n"
+            + "- memory_get: Recall memories with keyword search. Check memory at the start of new topics to leverage past knowledge.\n- memory_search: Full-text search across all memory entries (substring match, works for Chinese); best for finding a specific fact, person, or project.\n"
             // [T-user-ask-prompt-consolidated] The only user_ask text in the
             // system prompt, and only when the tool is in this run (switch on,
             // not a sub agent). Everything else travels with the tool itself.
@@ -243,7 +243,7 @@ extension AIChatViewModel {
             + "- To check if a variable is set, use `[ -n \"$VAR\" ] && echo 'set' || echo 'not set'`. "
             + "NEVER use echo $VAR, printenv VAR, or any command that would output the actual value into the conversation context.\n\n"
             + "Memory system:\n"
-            + "- memory_write writes to today's daily log (YYYY-MM-DD.md) — use it for session notes, key facts, project context, things learned, and action items.\n"
+            + "- memory_write writes to today's daily log (YYYY-MM-DD.md) — use it for session notes, key facts, project context, things learned, and action items. Set category when it fits: profile (about the user), rules (preferences, conventions), people, workstreams (ongoing projects); otherwise leave it as note.\n"
             + "- GLOBAL.md (/var/minis/memory/GLOBAL.md) stores persistent preferences, settings, and general-purpose conventions. To read it, use file_read (NOT memory_get). To update it, use file_read first then file_edit. If GLOBAL.md does not exist yet, use file_write to create it directly.\n"
             + "- IMPORTANT: Only write to GLOBAL.md when the user explicitly asks (e.g. 'remember this globally', 'save to global memory'). Before editing, deduplicate and clean up — avoid ambiguity, repetition, or daily-log-style entries. GLOBAL.md should contain only concise, reusable knowledge (preferences, settings, conventions), NOT session logs or transient context.\n"
             + "- Use memory_get to recall past knowledge before starting tasks — check if there are relevant memories that can help.\n"
@@ -270,13 +270,13 @@ extension AIChatViewModel {
     /// be injected, and what to tell the user if they ask about memory.
     var memoryStatusFragment: String {
         if memoryEnabled {
-            return "\n\nMemory status: ENABLED for this session. GLOBAL.md and recent daily logs have been injected above (if non-empty), and memory_get / memory_write are available in the tool list."
+            return "\n\nMemory status: ENABLED for this session. GLOBAL.md and recent daily logs have been injected above (if non-empty), and memory_get / memory_write / memory_search are available in the tool list."
         } else {
             return "\n\nMemory status: DISABLED for this session. "
                 + "The user has turned off memory for this conversation. "
                 + "Despite any earlier mentions in this prompt:\n"
                 + "- GLOBAL.md and daily logs have NOT been injected — you do not have access to past memories.\n"
-                + "- The memory_get and memory_write tools are NOT registered — do not attempt to call them; they will not appear in your tool list.\n"
+                + "- The memory_get, memory_write and memory_search tools are NOT registered — do not attempt to call them; they will not appear in your tool list.\n"
                 + "- If the user asks you to recall memories, save a memory, or wonders why earlier memories aren't visible, tell them memory is currently disabled for this session and they can re-enable it via the /memory slash command or in Settings.\n"
                 + "- This toggle is per-session. Other sessions may still have memory enabled.\n"
                 + "- SOUL.md (your persona / identity) is unaffected and remains active above."

@@ -563,7 +563,7 @@ extension AIChatViewModel {
                     case "file_edit": .fileEditTool(path: "")
                     case "browser_use": .browserTool(action: "")
                     case "read_image": .readImageTool(path: "")
-                    case "memory_write", "memory_get": .memoryTool(action: name)
+                    case "memory_write", "memory_get", "memory_search": .memoryTool(action: name)
                     case SubAgentDefinition.toolName: .delegateTool(title: "")
                     case UserAskTool.name: .userAskTool  // [T-user-ask]
                     default: .shellTool(command: name)
