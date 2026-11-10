@@ -106,6 +106,7 @@ struct CloudExamListView: View {
                     Task { for id in ids { await CloudExamService.delete(id) } }
                 }
             } footer: { Text("Bot 每一轮都会看到 30 天内的考试，排复习计划、出题、排班时会考虑。结束 3 天后自动从看板消失。") }
+            CloudDrillSection()
         }
         .navigationTitle("考试倒计时")
         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Image(systemName: "plus") } } }
@@ -158,5 +159,38 @@ struct CloudExamEditor: View {
                 day = f.date(from: exam.day) ?? day
             }
         }
+    }
+}
+
+/// 碎片复习：一键建一个例行任务，每天 10:00 / 15:00 / 22:00 推一道和考试科目、最近病例相关的选择题（通知点开就答）
+struct CloudDrillSection: View {
+    @State private var state: String? = nil
+    @State private var busy = false
+
+    static let prompt = "碎片复习：出 1 道单选题（4 个选项），优先结合我登记的考试科目和最近对话里复盘过的病例；题干不超过 3 行。"
+        + "用 ask_choice 给选项卡片，不要先给答案。我选完后说对错、给一句话解析和出处；答错的题用一句话记进记忆的「错题本」。"
+        + "不要使用任何真实病人身份信息。"
+
+    var body: some View {
+        Section {
+            Button {
+                busy = true
+                Task {
+                    do {
+                        try await CloudRoutineService.create(name: "碎片复习", prompt: Self.prompt,
+                                                             schedule: ["kind": "cron", "expr": "0 10,15,22 * * *", "timezone": TimeZone.current.identifier])
+                        state = "已建好：每天 10:00、15:00、22:00 推一道题（在「例行任务」里可暂停或改时间）"
+                        CloudHaptics.success()
+                    } catch {
+                        state = "没建成：\(error.localizedDescription)"
+                    }
+                    busy = false
+                }
+            } label: {
+                Label(busy ? "正在创建…" : "每天推 3 道碎片复习题", systemImage: "brain.head.profile")
+            }
+            .disabled(busy)
+            if let state { Text(state).font(.caption).foregroundStyle(.secondary) }
+        } footer: { Text("值班空闲时答一道：选项卡片作答，答错的自动进错题本。") }
     }
 }
