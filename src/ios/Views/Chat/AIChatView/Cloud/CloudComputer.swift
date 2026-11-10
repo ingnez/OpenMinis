@@ -50,7 +50,7 @@ struct CloudComputerView: View {
         .overlay(alignment: .topTrailing) { if immersive { exitImmersive } }
         .overlay(alignment: .bottomTrailing) { if !immersive, !ctl.controlling, sessionId != nil, phase == .live { pointButton } }
         .overlay(alignment: .top) { toastView }
-        .overlay(alignment: .topLeading) { CloudMacroBar(ctl: ctl, onSaved: { show($0) }).padding(.top, immersive ? 12 : 64).padding(.leading, 12) }
+        .overlay(alignment: .topLeading) { CloudMacroBar(ctl: ctl, onSaved: { show($0) }).sheet(isPresented: $ctl.showFiles) { CloudDesktopFilesSheet() }.padding(.top, immersive ? 12 : 64).padding(.leading, 12) }
         .overlay(alignment: .bottom) { if dictation.isRecording || !dictation.transcript.isEmpty { dictationBar } }
         .toolbar(.hidden, for: .navigationBar)
         .statusBarHidden(immersive)

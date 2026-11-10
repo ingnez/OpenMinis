@@ -41,6 +41,7 @@ import urllib.parse
 import hashlib
 import hmac
 import base64
+_B64 = base64   # 处理函数里有局部 import base64，新代码用这个别名免得变成局部变量
 import binascii
 import shutil
 from urllib.parse import urlparse, parse_qs, unquote
@@ -93,6 +94,7 @@ import cloud_workers
 import cloud_runmodel
 import cloud_shift_card
 import cloud_workbench
+import cloud_desktop_files
 import cloud_plugins
 import cloud_oauth
 import cloud_mcp
@@ -635,7 +637,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.40.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.41.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -6290,6 +6292,27 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"items": items, "last_id": last})
             return
 
+        if path == "/v1/desktop/files":
+            # 云电脑「下载」文件夹里最近的文件（取回手机用）
+            self._send(200, {"files": cloud_desktop_files.listing()})
+            return
+
+        if path.startswith("/v1/desktop/files/"):
+            fid = path[len("/v1/desktop/files/"):]
+            if not re.match(r"^[a-f0-9]{12}$", fid):
+                self._send(400, {"error": "bad id"})
+                return
+            try:
+                name, data = cloud_desktop_files.read(fid)
+            except ValueError as e:
+                self._send(413, {"error": str(e)})
+                return
+            if name is None:
+                self._send(404, {"error": "文件不在了"})
+                return
+            self._send(200, {"name": name, "bytes": len(data), "data_base64": _B64.b64encode(data).decode()})
+            return
+
         if path == "/v1/desktop/health":
             # 手机打开桌面页前先查链路；独立屏幕挂了会在这里自动重启
             bid = (query_params.get("bot_id") or [None])[0]
@@ -8082,6 +8105,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             res = cloud_desktop.execute_desktop_action("phone", GLOBAL_WORKSPACE, args, display_override=display)
             self._send(200 if not res.get("error") else 500, res)
+            return
+
+        if path == "/v1/desktop/files":
+            # 手机照片 / 文件 → 云电脑「下载」文件夹
+            try:
+                data = _B64.b64decode(req_json.get("data_base64") or "", validate=True)
+                saved = cloud_desktop_files.save(req_json.get("filename") or "file", data)
+            except (ValueError, TypeError) as e:
+                self._send(400, {"error": str(e) or "data_base64 不是合法的 base64"})
+                return
+            self._send(201, saved)
             return
 
         if path == "/v1/desktop/control":

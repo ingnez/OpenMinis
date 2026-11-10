@@ -63,6 +63,7 @@ struct CloudComputerTopBar: View {
             }
         } label: { Label("画质", systemImage: "dial.medium") }
         CloudLowDataMenu(ctl: ctl)
+        Button { ctl.showFiles = true } label: { Label("文件：发照片过去 / 取回下载", systemImage: "arrow.up.arrow.down.square") }
         if ctl.macro == nil {
             Button { ctl.macro = CloudMacro(); ctl.controlling = true } label: { Label("录制宏（存成 Bot 技能）", systemImage: "record.circle.fill") }
         }
