@@ -49,6 +49,8 @@ final class RealtimeVoiceSession: ObservableObject {
     private var geminiPlaybackID: String?
     private var connectionLabel = ""
     private var audioStarted = false
+    private var pendingResponseCreate = false
+    private var cloudWatchers: [Task<Void, Never>] = []
     @Published var validationResult: String?
 
     init(chat: AIChatViewModel) { self.chat = chat }
@@ -74,6 +76,7 @@ final class RealtimeVoiceSession: ObservableObject {
         active = true; connected = false; error = nil; lines = []; elapsed = 0; muted = false
         ledger = RealtimePlaybackLedger(); ignoredResponses = []; transcriptIDs = []
         seeded = false; configured = false; responseRunning = false; currentResponse = nil
+        pendingResponseCreate = false
         oldIdleDisabled = UIApplication.shared.isIdleTimerDisabled
         status = "正在验证实时接口"
         // 握手成功之前不申请或启动麦克风，验证模式不传聊天内容。
@@ -138,7 +141,7 @@ final class RealtimeVoiceSession: ObservableObject {
                 }
             }
             if connectionProtocol.isGemini {
-                emit(connectionProtocol.setup(model: model, voice: voice, instructions: instructions))
+                emit(connectionProtocol.setup(model: model, voice: voice, instructions: instructions, tools: voiceTools))
             }
             timeoutTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 25_000_000_000)
@@ -171,7 +174,7 @@ final class RealtimeVoiceSession: ObservableObject {
         switch type {
         case "session.created":
             guard !configured else { return }; configured = true
-            emit(connectionProtocol.setup(model: model, voice: voice, instructions: instructions))
+            emit(connectionProtocol.setup(model: model, voice: voice, instructions: instructions, tools: voiceTools))
         case "session.updated":
             guard !seeded else { return }; seeded = true
             if completeValidation() { return }
@@ -240,6 +243,13 @@ final class RealtimeVoiceSession: ObservableObject {
                 fail("实时模型生成失败，请检查模型权限、余额和服务商状态。"); return
             }
             if !audio.hasPendingAudio { status = muted ? "麦克风已静音" : "正在听你说" }
+            if pendingResponseCreate {
+                pendingResponseCreate = false
+                emit(["type": "response.create"])
+            }
+        case "response.function_call_arguments.done":
+            guard let callId = event["call_id"] as? String, let name = event["name"] as? String else { return }
+            runCloudTool(callId: callId, name: name, args: Self.parseArguments(event["arguments"] as? String))
         case "error":
             let detail = event["error"] as? [String: Any] ?? [:]
             let code = detail["code"] as? String ?? "unknown"
@@ -253,7 +263,59 @@ final class RealtimeVoiceSession: ObservableObject {
 
     private var instructions: String {
         if validationOnly { return "Connection validation only. Do not generate a response." }
+        if !voiceTools.isEmpty {
+            return SystemPromptBuilder.identitySection() + "\n你正在实时语音通话。默认中文，回答简洁自然。需要真实执行的工作（查资料、上网、跑代码、处理文件）用 cloud_task_start 交给用户的云电脑在后台完成，先口头说明已交给云电脑；收到“云电脑任务完成通知”后用一两句话转述结果。用户问进度时调用 cloud_task_status；cloud_routine_run 可运行已保存的例行任务。没有工具结果之前不得声称已完成。"
+        }
         return SystemPromptBuilder.identitySection() + "\n你正在实时语音通话。默认中文，回答简洁自然。没有可执行工具，不得声称已执行外部操作。"
+    }
+    private var voiceTools: [[String: Any]] {
+        (validationOnly || !CloudVoiceBridge.isAvailable) ? [] : RealtimeVoiceProtocol.cloudTools
+    }
+    private static func parseArguments(_ text: String?) -> [String: Any] {
+        guard let text, let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        return object
+    }
+    private func runCloudTool(callId: String, name: String, args: [String: Any]) {
+        let generation = epoch
+        let lineID = "tool-" + callId
+        updateLine(id: lineID, role: "assistant", text: "[已调用云电脑：\(name)]", append: false)
+        status = "正在调用云电脑"
+        Task { [weak self] in
+            let result = await CloudVoiceBridge.call(name: name, arguments: args)
+            guard let self, self.active, self.epoch == generation else { return }
+            self.deliverToolOutput(callId: callId, name: name, output: result.output)
+            if let taskId = result.watchTaskId { self.watchCloudTask(taskId, generation: generation) }
+        }
+    }
+    private func deliverToolOutput(callId: String, name: String, output: String) {
+        if connectionProtocol.isGemini {
+            let response: [String: Any] = ["id": callId, "name": name, "response": ["result": output]]
+            emit(["toolResponse": ["functionResponses": [response]]])
+        } else {
+            emit(RealtimeVoiceProtocol.functionOutput(callId: callId, output: output))
+            requestResponse()
+        }
+    }
+    private func requestResponse() {
+        if responseRunning { pendingResponseCreate = true } else { emit(["type": "response.create"]) }
+    }
+    private func watchCloudTask(_ taskId: String, generation: UUID) {
+        let watcher = Task { [weak self] in
+            let summary = await CloudVoiceBridge.waitForResult(taskId: taskId)
+            guard !summary.isEmpty, let self, self.active, self.epoch == generation else { return }
+            self.announce("[云电脑任务完成通知] " + summary + "\n请用一两句话口头告诉用户。")
+        }
+        cloudWatchers.append(watcher)
+    }
+    private func announce(_ text: String) {
+        if connectionProtocol.isGemini {
+            let turn: [String: Any] = ["role": "user", "parts": [["text": text]]]
+            emit(["clientContent": ["turns": [turn], "turnComplete": true]])
+        } else {
+            emit(RealtimeVoiceProtocol.history(role: "user", text: text))
+            requestResponse()
+        }
     }
     private func completeValidation() -> Bool {
         guard validationOnly else { return false }
@@ -325,6 +387,14 @@ final class RealtimeVoiceSession: ObservableObject {
             authorizeAndBeginAudio(); return
         }
         guard audioStarted else { return }
+        if let toolCall = event["toolCall"] as? [String: Any], let calls = toolCall["functionCalls"] as? [[String: Any]] {
+            for call in calls {
+                guard let name = call["name"] as? String else { continue }
+                let callId = call["id"] as? String ?? UUID().uuidString
+                runCloudTool(callId: callId, name: name, args: call["args"] as? [String: Any] ?? [:])
+            }
+            return
+        }
         if event["goAway"] != nil { fail("Gemini Live 会话即将到期，请重新连接。"); return }
         guard let content = event["serverContent"] as? [String: Any] else { return }
         if content["interrupted"] as? Bool == true {
@@ -439,6 +509,7 @@ final class RealtimeVoiceSession: ObservableObject {
         connected = false; epoch = UUID()
         receiveTask?.cancel(); senderTask?.cancel(); microphoneTask?.cancel()
         timeoutTask?.cancel(); clockTask?.cancel()
+        cloudWatchers.forEach { $0.cancel() }; cloudWatchers = []; pendingResponseCreate = false
         outbound?.finish(); outbound = nil
         socket?.cancel(with: .normalClosure, reason: nil); socket = nil
         transport?.invalidateAndCancel(); transport = nil

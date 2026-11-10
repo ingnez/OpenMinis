@@ -47,17 +47,20 @@ enum RealtimeConnectionProtocol: String, CaseIterable, Identifiable {
         guard let result = c.url else { throw ConnectionError.message("无法生成 Gemini Live 地址。") }
         return result
     }
-    func setup(model: String, voice: String, instructions: String) -> [String: Any] {
+    func setup(model: String, voice: String, instructions: String, tools: [[String: Any]] = []) -> [String: Any] {
         if !isGemini {
-            return RealtimeVoiceProtocol.configuration(model: model, voice: normalizedVoice(voice), instructions: instructions, preview: self == .openAIPreview)
+            return RealtimeVoiceProtocol.configuration(model: model, voice: normalizedVoice(voice), instructions: instructions, preview: self == .openAIPreview, tools: tools)
         }
-        return ["setup": [
+        var setup: [String: Any] = [
             "model": model.hasPrefix("models/") ? model : "models/" + model,
             "generationConfig": ["responseModalities": ["AUDIO"], "speechConfig": ["voiceConfig": ["prebuiltVoiceConfig": ["voiceName": normalizedVoice(voice)]]]],
             "systemInstruction": ["parts": [["text": instructions]]],
             "inputAudioTranscription": [:], "outputAudioTranscription": [:],
             "realtimeInputConfig": ["automaticActivityDetection": ["disabled": false, "silenceDurationMs": 600], "activityHandling": "START_OF_ACTIVITY_INTERRUPTS"]
-        ]]
+        ]
+        let declarations = RealtimeVoiceProtocol.geminiTools(tools)
+        if !declarations.isEmpty { setup["tools"] = declarations }
+        return ["setup": setup]
     }
     func audio(_ data: Data) -> [String: Any] {
         if isGemini { return ["realtimeInput": ["audio": ["data": data.base64EncodedString(), "mimeType": "audio/pcm;rate=24000"]]] }

@@ -19,7 +19,40 @@ enum RealtimeVoiceProtocol {
         return url
     }
 
-    static func configuration(model: String, voice: String, instructions: String, preview: Bool) -> [String: Any] {
+    /// 实时通话可调用的云电脑工具（OpenAI Realtime 函数格式）；Gemini Live 由 geminiTools 转换。
+    static let cloudTools: [[String: Any]] = [
+        ["type": "function", "name": "cloud_task_start",
+         "description": "把需要真实执行的工作（查资料、浏览网页、运行代码、整理文件等）交给用户云电脑上的 Agent 在后台执行。立即返回 task_id；完成后会收到“云电脑任务完成通知”。",
+         "parameters": ["type": "object",
+                        "properties": ["prompt": ["type": "string", "description": "完整的任务说明，云端 Agent 看不到本次通话"]],
+                        "required": ["prompt"]]],
+        ["type": "function", "name": "cloud_task_status",
+         "description": "查询云电脑任务的进度与结果；不传 task_id 时查询本次通话最近的任务。",
+         "parameters": ["type": "object",
+                        "properties": ["task_id": ["type": "string"]]]],
+        ["type": "function", "name": "cloud_routine_run",
+         "description": "立即运行一个已保存的云端例行任务（按名称匹配）。",
+         "parameters": ["type": "object",
+                        "properties": ["name": ["type": "string", "description": "例行任务名称"]],
+                        "required": ["name"]]],
+    ]
+
+    static func geminiTools(_ tools: [[String: Any]]) -> [[String: Any]] {
+        let declarations: [[String: Any]] = tools.map { tool in
+            var d: [String: Any] = [:]
+            d["name"] = tool["name"]
+            d["description"] = tool["description"]
+            d["parameters"] = tool["parameters"]
+            return d
+        }
+        return declarations.isEmpty ? [] : [["functionDeclarations": declarations]]
+    }
+
+    static func functionOutput(callId: String, output: String) -> [String: Any] {
+        ["type": "conversation.item.create", "item": ["type": "function_call_output", "call_id": callId, "output": output]]
+    }
+
+    static func configuration(model: String, voice: String, instructions: String, preview: Bool, tools: [[String: Any]] = []) -> [String: Any] {
         let turn: [String: Any] = ["type": "server_vad", "threshold": 0.5,
             "prefix_padding_ms": 300, "silence_duration_ms": 600,
             "create_response": true, "interrupt_response": true]
@@ -35,6 +68,10 @@ enum RealtimeVoiceProtocol {
                 "audio": ["input": ["format": pcm, "transcription": ["model": "gpt-4o-mini-transcribe"],
                                      "turn_detection": turn, "noise_reduction": ["type": "near_field"]],
                           "output": ["format": pcm, "voice": voice]]]) { _, new in new }
+        }
+        if !tools.isEmpty {
+            session["tools"] = tools
+            session["tool_choice"] = "auto"
         }
         return ["type": "session.update", "session": session]
     }
