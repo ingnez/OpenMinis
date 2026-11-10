@@ -12,7 +12,7 @@ enum CloudPathPolicy {
             return q(#"^after=[0-9]{1,18}(&wait=[0-9]{1,2})?(&live_after=-?[0-9]{1,18})?$"#)
         }
         if r(#"^/v1/groups/grp_[a-f0-9]{10}/messages$"#) { return q(#"^after=[0-9]{1,18}(&wait=[0-9]{1,2})?$"#) }
-        if route.hasPrefix("/v1/personas/") || route.hasPrefix("/v1/bots/") { return query == "purge_memory=1" }
+        if route.hasPrefix("/v1/personas/") || route.hasPrefix("/v1/bots/") { return query == "purge_memory=1" || query == "soft=1" }
         switch route {
         case "/v1/notifications": return q(#"^after=[0-9]{1,18}&wait=[0-9]{1,2}$"#)
         case "/v1/search": return q(#"^q=[A-Za-z0-9%._~-]{1,900}$"#)

@@ -136,18 +136,100 @@ final class CloudBotHomeModel: ObservableObject {
 
     func others(matching query: String) -> [CloudBot] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        return bots.filter { !$0.isPrimary }
+        return bots.filter { !$0.isPrimary && (!$0.hidden || !q.isEmpty) }
             .filter { q.isEmpty || $0.name.lowercased().contains(q) || $0.lastPreview.lowercased().contains(q) || $0.id.contains(q) }
-            .sorted { $0.lastAt != $1.lastAt ? $0.lastAt > $1.lastAt : $0.name < $1.name }
+            .sorted {
+                if $0.pinned != $1.pinned { return $0.pinned }
+                if $0.pinned && $0.pinnedAt != $1.pinnedAt { return $0.pinnedAt > $1.pinnedAt }
+                return $0.lastAt != $1.lastAt ? $0.lastAt > $1.lastAt : $0.name < $1.name
+            }
     }
 
+    var hiddenBots: [CloudBot] { bots.filter { $0.hidden && !$0.isPrimary } }
+
     func isUnread(_ bot: CloudBot) -> Bool {
-        bot.lastRole == "assistant" && bot.lastAt > (seen[bot.id] ?? 0) + 0.5
+        bot.markedUnread || (bot.lastRole == "assistant" && bot.lastAt > max(seen[bot.id] ?? 0, bot.seenAt) + 0.5)
+    }
+
+    /// 长按菜单改设置：先改本机显示，再交给服务器；失败静默重试，最后才提示
+    func setPrefs(_ botId: String, _ body: [String: Any]) {
+        if let i = bots.firstIndex(where: { $0.id == botId }) {
+            if let v = body["pinned"] as? Bool { bots[i].pinned = v; if v { bots[i].pinnedAt = Date().timeIntervalSince1970 } }
+            if let v = body["hidden"] as? Bool { bots[i].hidden = v }
+            if let v = body["unread"] as? Bool { bots[i].markedUnread = v }
+            if let v = body["seen_at"] as? Double { bots[i].seenAt = max(bots[i].seenAt, v) }
+        }
+        if body["unread"] as? Bool == true { seen[botId] = 0; UserDefaults.standard.set(seen, forKey: "OpenMinisCloud_botSeen") }
+        Task {
+            do {
+                _ = try await CloudQuiet.retry { try await CloudBotService.setPrefs(botId, body) }
+            } catch {
+                bannerText = "没能保存到云端：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func markUnread(_ botId: String, _ unread: Bool) {
+        if unread {
+            setPrefs(botId, ["unread": true])
+        } else {
+            markSeen(botId)
+        }
+    }
+
+    /// 换主 Bot：服务器一次事务里转移主 Bot（管理权限跟着走），并记进操作记录
+    func makePrimary(_ botId: String) async {
+        do {
+            try await CloudQuiet.retry { try await CloudBotService.update(botId, ["is_primary": true]) }
+            CloudHaptics.success()
+        } catch {
+            bannerText = "替换主 Bot 失败：\(error.localizedDescription)"
+        }
+        await refresh()
+    }
+
+    func rename(_ botId: String, to name: String) async {
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !n.isEmpty else { return }
+        if let i = bots.firstIndex(where: { $0.id == botId }) { bots[i].name = n }
+        do {
+            try await CloudQuiet.retry { try await CloudBotService.update(botId, ["name": n]) }
+        } catch {
+            bannerText = "重命名失败：\(error.localizedDescription)"
+        }
+        await refresh()
+    }
+
+    func softDelete(_ botId: String) async {
+        do {
+            try await CloudQuiet.retry { try await CloudBotService.softDelete(botId) }
+            bots.removeAll { $0.id == botId }
+            CloudHaptics.success()
+        } catch {
+            bannerText = "删除失败：\(error.localizedDescription)"
+        }
+        await refresh()
+    }
+
+    /// 长按菜单的 /reset：给这个 Bot 最近的对话存快照并清上下文（用 Bot 自己的模型，没有就按规则整理）
+    func resetContext(_ botId: String) async {
+        guard let sid = bot(botId)?.latestSessionId else { return }
+        do {
+            _ = try await CloudQuiet.retry {
+                try await CloudConnection.shared.request(method: "POST", path: "/v1/sessions/\(sid)/reset", body: [:])
+            }
+            CloudHaptics.success()
+        } catch {
+            bannerText = "重置失败：\(error.localizedDescription)"
+        }
     }
 
     func markSeen(_ botId: String) {
         let at = bots.first(where: { $0.id == botId })?.lastAt ?? 0
         seen[botId] = max(Date().timeIntervalSince1970, at)
+        if let b = bots.first(where: { $0.id == botId }), b.markedUnread || b.seenAt < at {
+            setPrefs(botId, ["unread": false, "seen_at": seen[botId] ?? at])
+        }
         UserDefaults.standard.set(seen, forKey: "OpenMinisCloud_botSeen")
         objectWillChange.send()
     }
@@ -289,6 +371,29 @@ struct CloudBotHomeScreen: View {
     @State private var showCreateGroup = false
     @State private var showHub = false
     @State private var showConnectApps = false
+    @State private var showPrimaryPicker = false
+    @State private var showHidden = false
+    @State private var renaming: CloudBot?
+    @State private var renameText = ""
+    @State private var deleting: CloudBot?
+    @State private var shareURL: URL?
+
+    private var menuActions: CloudBotMenuActions {
+        CloudBotMenuActions(
+            rename: { bot in renameText = bot.name; renaming = bot },
+            edit: { bot in path = ["detail:" + bot.id] },
+            pickPrimary: { showPrimaryPicker = true },
+            share: { bot in
+                Task { @MainActor in
+                    do {
+                        shareURL = try await CloudQuiet.retry { try await CloudBotService.exportFile(bot.id) }
+                    } catch {
+                        model.bannerText = "导出失败：\(error.localizedDescription)"
+                    }
+                }
+            },
+            delete: { bot in deleting = bot })
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -340,6 +445,7 @@ struct CloudBotHomeScreen: View {
                                     CloudBotHomeRow(bot: bot, unread: model.isUnread(bot))
                                 }
                                 .buttonStyle(.plain)
+                                .cloudBotMenu(bot, model: model, actions: menuActions)
                                 .padding(.horizontal, 20)
                             }
                         }
@@ -385,6 +491,9 @@ struct CloudBotHomeScreen: View {
                     Menu {
                         Button { showCreate = true } label: { Label("新 Bot", systemImage: "person.crop.circle.badge.plus") }
                         Button { showCreateGroup = true } label: { Label("新群聊", systemImage: "person.3") }
+                        if !model.hiddenBots.isEmpty {
+                            Button { showHidden = true } label: { Label("已隐藏的 Bot（\(model.hiddenBots.count)）", systemImage: "eye.slash") }
+                        }
                             .disabled(model.bots.isEmpty)
                         Menu {
                             Button("8 小时") { Task { await model.setDuty(hours: 8) } }
@@ -401,6 +510,10 @@ struct CloudBotHomeScreen: View {
             .navigationDestination(for: String.self) { id in
                 if id.hasPrefix("group:") {
                     CloudGroupChatView(groupId: String(id.dropFirst(6)))
+                } else if id.hasPrefix("detail:") {
+                    if let bot = model.bot(String(id.dropFirst(7))) {
+                        CloudBotDetailView(bot: bot, onChanged: { await model.refresh() })
+                    }
                 } else {
                     CloudBotChatView(botId: id)
                 }
@@ -427,6 +540,32 @@ struct CloudBotHomeScreen: View {
         }
         .sheet(isPresented: $showHub) {
             NavigationStack { CloudBotHubView(onDone: { showHub = false }) }
+        }
+        .sheet(isPresented: $showPrimaryPicker) {
+            CloudPrimaryPicker(model: model, onDone: { showPrimaryPicker = false })
+        }
+        .sheet(isPresented: $showHidden) {
+            CloudHiddenBotsSheet(model: model, onDone: { showHidden = false })
+        }
+        .sheet(isPresented: Binding(get: { shareURL != nil }, set: { if !$0 { shareURL = nil } })) {
+            if let url = shareURL { CloudActivitySheet(items: [url]) }
+        }
+        .alert("重命名", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("名字", text: $renameText)
+            Button("取消", role: .cancel) { renaming = nil }
+            Button("保存") {
+                if let bot = renaming { Task { await model.rename(bot.id, to: renameText) } }
+                renaming = nil
+            }
+        }
+        .confirmationDialog("删除这个 Bot？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                            titleVisibility: .visible) {
+            Button("删除（放进回收站）", role: .destructive) {
+                if let bot = deleting { Task { await model.softDelete(bot.id) } }
+                deleting = nil
+            }
+        } message: {
+            Text("记忆和聊天记录会保留，可以在操作记录里撤销恢复。")
         }
         .sheet(isPresented: $showConnectApps) {
             CloudConnectAppsSheet(onClose: { showConnectApps = false })
@@ -491,6 +630,7 @@ struct CloudBotHomeScreen: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .cloudBotMenu(bot, model: model, actions: menuActions)
         .accessibilityLabel("打开 \(bot.name)")
     }
 

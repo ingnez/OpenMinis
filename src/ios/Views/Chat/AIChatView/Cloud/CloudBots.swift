@@ -36,6 +36,12 @@ struct CloudBot: Identifiable, Hashable {
     var routinesEnabled: Int
     var reasoningEffort: String
     var fastMode: Bool
+    /// 首页长按菜单的设置（服务器保存）：置顶、隐藏、手动标为未读、已读到的时间
+    var pinned = false
+    var pinnedAt: Double = 0
+    var hidden = false
+    var markedUnread = false
+    var seenAt: Double = 0
 
     init(id: String, name: String, emoji: String, summary: String, instructions: String, isPrimary: Bool = false) {
         self.id = id
@@ -93,6 +99,12 @@ struct CloudBot: Identifiable, Hashable {
         routinesEnabled = d["routines_enabled"] as? Int ?? 0
         reasoningEffort = d["reasoning_effort"] as? String ?? ""
         fastMode = d["fast_mode"] as? Bool ?? false
+        let prefs = d["prefs"] as? [String: Any] ?? [:]
+        pinned = prefs["pinned"] as? Bool ?? false
+        pinnedAt = (prefs["pinned_at"] as? NSNumber)?.doubleValue ?? 0
+        hidden = prefs["hidden"] as? Bool ?? false
+        markedUnread = prefs["unread"] as? Bool ?? false
+        seenAt = (prefs["seen_at"] as? NSNumber)?.doubleValue ?? 0
     }
 
     /// 这个 Bot 自己固定了模型与凭据：对话不依赖手机当前选择的服务商
@@ -191,6 +203,17 @@ enum CloudBotService {
         _ = try await CloudCredentialSync.upload(instanceId: instanceId)
         d.set(true, forKey: CloudCredentialSync.enabledKey)
         try await update(id, ["model": model, "credential": CloudCredentialSync.credentialName(forInstanceId: instanceId)])
+    }
+
+    /// 置顶 / 隐藏 / 标为未读 / 已读到（服务器 2.6.0+）
+    @discardableResult
+    static func setPrefs(_ id: String, _ body: [String: Any]) async throws -> [String: Any] {
+        try await connected().request(method: "PUT", path: "/v1/bots/\(id)/prefs", body: body)
+    }
+
+    /// 删除进回收站（保留记忆和会话，可恢复）
+    static func softDelete(_ id: String) async throws {
+        _ = try await connected().request(method: "DELETE", path: "/v1/bots/\(id)?soft=1", body: nil)
     }
 
     static func delete(_ id: String, purgeMemory: Bool) async throws {

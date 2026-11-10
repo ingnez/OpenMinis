@@ -28,6 +28,8 @@ struct CloudPathPolicyTests {
             ("/v1/backup?messages=1", true),
             ("/v1/memory?bot=helper&shared=1&limit=200", true),
             ("/v1/bots/helper?purge_memory=1", true),
+            ("/v1/bots/helper?soft=1", true),
+            ("/v1/bots/helper?soft=2", false),
             // 不允许的
             ("/v1/notifications?after=1&wait=1&x=2", false),
             ("/v1/audit?bot=../etc", false),
