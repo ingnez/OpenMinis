@@ -136,8 +136,17 @@ struct CloudBotThreadView: View {
         .task { await follow() }
     }
 
+    /// 打开过的线程留在内存里：再次打开立刻显示，网络回来再补新消息
+    static var memo: [String: (messages: [CloudBotThreadMessage], names: [String: String], lastId: Int)] = [:]
+    private var memoKey: String { CloudBotThreadRules.route(a, b) }
+
     /// 先取全部，之后长轮询：有新消息或「正在处理」变化立刻更新
     private func follow() async {
+        if messages.isEmpty, let m = Self.memo[memoKey] {
+            messages = m.messages
+            names = m.names
+            lastId = m.lastId
+        }
         while !Task.isCancelled {
             do {
                 let r = try await CloudBotThreadService.thread(a, b, after: lastId, wait: loaded ? 20 : 0, working: loaded ? working : nil)
@@ -147,6 +156,7 @@ struct CloudBotThreadView: View {
                 lastId = max(lastId, r.lastId)
                 working = r.working
                 loaded = true
+                Self.memo[memoKey] = (messages, names, lastId)
                 errorText = nil
             } catch {
                 if Task.isCancelled { return }
@@ -339,5 +349,31 @@ struct CloudBotThreadsSection: View {
         .task {
             threads = (try? await CloudBotThreadService.list(botId: botId)) ?? threads
         }
+    }
+}
+
+/// 还没有任何缓存时的占位：几条灰色骨架气泡（不整页转圈）
+struct CloudChatSkeleton: View {
+    @State private var dim = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            ForEach(0..<4, id: \.self) { i in
+                HStack {
+                    if i % 2 == 1 { Spacer(minLength: 60) }
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(.secondarySystemBackground))
+                        .frame(width: [220, 150, 260, 120][i], height: [44, 36, 64, 36][i])
+                    if i % 2 == 0 { Spacer(minLength: 60) }
+                }
+            }
+            Spacer()
+        }
+        .padding(16)
+        .opacity(dim ? 0.55 : 1)
+        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dim)
+        .onAppear { dim = true }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("正在载入对话")
     }
 }

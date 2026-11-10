@@ -1022,12 +1022,23 @@ struct CloudSessionView: View {
 
     private func loadSessionDetail() {
         isLoading = true
+        // 先画手机上缓存的对话（不等连接），网络回来再静默替换
+        if messages.isEmpty, theme != nil, let cached = CloudChatCache.load(sessionId) {
+            messages = cached.messages
+            if tasks.isEmpty { tasks = cached.tasks }
+            rebuildTurns()
+        }
         Task {
             do {
                 let res = try await quietly("/v1/sessions/\(sessionId)")
                 await MainActor.run {
-                    self.messages = res["messages"] as? [[String: Any]] ?? []
-                    self.tasks = res["tasks"] as? [[String: Any]] ?? []
+                    let fresh = res["messages"] as? [[String: Any]] ?? []
+                    let freshTasks = res["tasks"] as? [[String: Any]] ?? []
+                    if let theme = self.theme, (res["incognito"] as? Bool) != true, !CloudBotLock.isLockedStored(theme.botId) {
+                        CloudChatCache.save(self.sessionId, messages: fresh, tasks: freshTasks)
+                    }
+                    self.messages = fresh
+                    self.tasks = freshTasks
                     self.isLoading = false
                     if !self.isStreaming { self.liveText = "" }
                     if let latestTask = self.tasks.first,

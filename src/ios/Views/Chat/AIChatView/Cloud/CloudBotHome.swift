@@ -298,6 +298,24 @@ final class CloudBotHomeModel: ObservableObject {
 
     /// 后台自动连接（复用已保存的连接信息）后刷新 Bot 列表。连接问题交给 CloudLinkSupervisor 静默重连，
     /// 首页先显示上次的列表；只有非连接类错误才显示横幅。forceReconnect：用户点了重试，拆掉旧隧道重建。
+    /// 预取前几个 Bot 最近的对话存进手机缓存，点开时直接显示（缓存 1 分钟内的不重取）
+    private var prefetching = false
+    func prefetchChats(limit: Int = 6) {
+        guard !prefetching else { return }
+        let targets = bots.filter { !CloudBotLock.isLockedStored($0.id) }.compactMap(\.latestSessionId)
+            .filter { (CloudChatCache.age($0) ?? .infinity) > 60 }.prefix(limit)
+        guard !targets.isEmpty else { return }
+        prefetching = true
+        Task { @MainActor in
+            defer { prefetching = false }
+            for sid in targets {
+                guard let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/sessions/\(sid)"),
+                      (r["incognito"] as? Bool) != true else { continue }
+                CloudChatCache.save(sid, messages: r["messages"] as? [[String: Any]] ?? [], tasks: r["tasks"] as? [[String: Any]] ?? [])
+            }
+        }
+    }
+
     func refresh(forceReconnect: Bool = false) async {
         let conn = CloudConnection.shared
         let link = CloudLinkSupervisor.shared
@@ -322,6 +340,7 @@ final class CloudBotHomeModel: ObservableObject {
             bots = try await CloudQuiet.retry { try await CloudBotService.list() }
             bannerText = nil
             publishToWidget()
+            prefetchChats()
             // 旧版服务器没有群聊接口：忽略错误
             groups = (try? await CloudGroupService.list()) ?? groups
             if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/bot_sections"),
@@ -830,7 +849,8 @@ struct CloudBotChatView: View {
                 }
                 .padding()
             } else {
-                ProgressView("正在打开对话…")
+                // 还没拿到对话编号（新 Bot 第一次打开）：骨架气泡，不整页转圈
+                CloudChatSkeleton()
             }
         }
         .toolbar {
@@ -907,6 +927,10 @@ struct CloudBotChatView: View {
 
     private func prepare() async {
         errorText = nil
+        // 先用本地已知的对话编号直接打开（首页缓存的 Bot 列表 / 上次打开的），不等连接
+        if sessionId == nil {
+            sessionId = model.bot(botId)?.latestSessionId ?? UserDefaults.standard.string(forKey: Self.lastSessionKey(botId))
+        }
         do {
             try await CloudQuiet.retry { try await CloudConnection.shared.ensureConnected() }
             if model.bot(botId) == nil { await model.refresh() }
@@ -923,10 +947,14 @@ struct CloudBotChatView: View {
                 }
             }
             model.markSeen(botId)
+            if let sid = sessionId, incognito?.id != sid { UserDefaults.standard.set(sid, forKey: Self.lastSessionKey(botId)) }
         } catch {
-            errorText = error.localizedDescription
+            // 已经在显示缓存的对话时不盖住它；对话页自己会提示在重连
+            if sessionId == nil { errorText = error.localizedDescription }
         }
     }
+
+    static func lastSessionKey(_ botId: String) -> String { "OpenMinisCloud_lastSession_" + botId }
 
     private func startIncognito() async {
         guard let bot = model.bot(botId) else { return }
@@ -946,6 +974,7 @@ struct CloudBotChatView: View {
         incognito = nil
         incognitoGuard.sessionId = nil
         if restore, sessionId == current.id { sessionId = current.previous }
+        CloudChatCache.remove(current.id)
         Task { await CloudBotService.deleteIncognito(current.id) }
     }
 

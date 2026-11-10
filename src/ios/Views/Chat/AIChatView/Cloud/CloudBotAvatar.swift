@@ -52,7 +52,8 @@ struct CloudBotAvatarSpec: Hashable {
 
     /// 没有保存头像时按 Bot ID 生成稳定的默认值；主 Bot 默认黑色圆形
     static func `default`(for id: String, primary: Bool) -> CloudBotAvatarSpec {
-        if primary { return CloudBotAvatarSpec(shape: 0, color: 0) }
+        // 主 Bot 默认用靛蓝（以前是黑色，小尺寸下像一团黑影）；用户自己选了黑色照样尊重
+        if primary { return CloudBotAvatarSpec(shape: 0, color: 10) }
         var h: UInt32 = 5381
         for b in id.utf8 { h = (h &* 33) &+ UInt32(b) }
         return CloudBotAvatarSpec(shape: Int(h % 13), color: 1 + Int((h / 13) % 11))
