@@ -50,6 +50,7 @@ DEFAULTS = {
     "parallel_tools": True,            # 互不依赖的只读工具并行执行
     "prompt_cache": True,              # Claude 系模型给系统提示加缓存标记
     "context_trim_tokens": 48000,      # 上下文估算超过这么多 token 时自动精简，0 = 不精简
+    "bark_fallback": "auto",           # App 关闭时用 Bark 兜底：auto（配置了 Bark 就兜底）/ on / off
 }
 
 RESERVED_PORTS = (18765, 18766, 5901)
@@ -156,6 +157,10 @@ def validate(patch, current):
             s[k] = _int(v, k, 0, 100)
         elif k == "delegation_max_hops":
             s[k] = _int(v, k, 0, 10)
+        elif k == "bark_fallback":
+            if v not in ("auto", "on", "off"):
+                raise SettingsError("bark_fallback 只能是 auto、on 或 off")
+            s[k] = v
         elif k == "group_activity":
             if v not in ("quiet", "normal", "lively"):
                 raise SettingsError("group_activity 只能是 quiet、normal 或 lively")

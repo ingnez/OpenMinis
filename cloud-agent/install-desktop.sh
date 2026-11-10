@@ -125,6 +125,7 @@ cat << EOF > /etc/systemd/system/openminis-display.service
 [Unit]
 Description=OpenMinis Virtual X11 Display (:99)
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -147,6 +148,7 @@ cat << EOF > /etc/systemd/system/openminis-vnc.service
 Description=OpenMinis Openbox & x11vnc Service
 After=openminis-display.service
 Requires=openminis-display.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -188,11 +190,24 @@ else
     rm -f "$TOKEN_DIR/main"  # 旧版 websockify 不支持 token：手机端回退到只看主屏
 fi
 
+# noVNC 网页目录覆盖一层 defaults.json：没带 path 的旧版客户端在 token 模式下也默认连主屏（token=main）
+NOVNC_OVERLAY="$VAR_LIB_DIR/novnc-web"
+rm -rf "$NOVNC_OVERLAY"
+cp -rL "$NOVNC_WEB_PATH" "$NOVNC_OVERLAY"
+if [ "$WEBSOCKIFY_TARGET" != "127.0.0.1:5901" ]; then
+    echo '{"path": "websockify?token=main", "autoconnect": true, "reconnect": true, "resize": "scale"}' > "$NOVNC_OVERLAY/defaults.json"
+else
+    echo '{"autoconnect": true, "reconnect": true, "resize": "scale"}' > "$NOVNC_OVERLAY/defaults.json"
+fi
+chown -R "$SERVICE_USER:$SERVICE_USER" "$NOVNC_OVERLAY"
+NOVNC_WEB_PATH="$NOVNC_OVERLAY"
+
 cat << EOF > /etc/systemd/system/openminis-novnc.service
 [Unit]
 Description=OpenMinis noVNC Web & Websockify Proxy
 After=openminis-vnc.service
-Requires=openminis-vnc.service
+Wants=openminis-vnc.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -215,6 +230,7 @@ cat << EOF > "$SERVICE_FILE"
 [Unit]
 Description=OpenMinis Cloud Agent Core Service
 After=network.target openminis-novnc.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -224,6 +240,9 @@ WorkingDirectory=$VAR_LIB_DIR
 ExecStart=$VENV_DIR/bin/python3 $INSTALL_DIR/cloud_agent_server.py
 Restart=always
 RestartSec=5
+# Agent 每 15 秒自查 /health 后喂狗；HTTP 卡死 90 秒没喂狗时 systemd 重启它
+WatchdogSec=90
+NotifyAccess=main
 
 Environment=DISPLAY=:99
 Environment=XAUTHORITY=$AUTH_FILE
@@ -250,9 +269,83 @@ EOF
 chown -R "$SERVICE_USER:$SERVICE_USER" "$VAR_LIB_DIR"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$PW_BROWSERS"
 
+# 4.5 自检定时器：每分钟检查 Xvfb / x11vnc / websockify / Agent，哪段不通就重启哪段；
+#     手机点「重启桌面」时 Agent 写入请求文件，由 root 的 path 单元执行重启——Agent 本身不需要 sudo
+RUN_DIR="$VAR_LIB_DIR/run"
+mkdir -p "$RUN_DIR"
+chown "$SERVICE_USER:$SERVICE_USER" "$RUN_DIR"
+mkdir -p /usr/local/lib/openminis
+cat << 'EOF' > /usr/local/lib/openminis/desktop-check.sh
+#!/bin/bash
+# OpenMinis 桌面与 Agent 自检：不通就重启对应服务（幂等，可随时运行）
+port_open() { timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null; }
+log() { echo "[openminis-check] $*"; }
+REQ=/var/lib/openminis-cloud-agent/run/desktop-restart.request
+if [ -f "$REQ" ]; then
+    log "收到手机的重启桌面请求"
+    rm -f "$REQ"
+    systemctl restart openminis-display openminis-vnc openminis-novnc
+    exit 0
+fi
+if [ ! -S /tmp/.X11-unix/X99 ] || ! systemctl is-active --quiet openminis-display; then
+    log "Xvfb :99 未运行，重启桌面"
+    systemctl restart openminis-display openminis-vnc openminis-novnc
+    exit 0
+fi
+if ! port_open 5901; then
+    log "x11vnc 5901 不通，重启 VNC"
+    systemctl restart openminis-vnc openminis-novnc
+    exit 0
+fi
+if ! port_open 18766; then
+    log "websockify 18766 不通，重启 noVNC"
+    systemctl restart openminis-novnc
+fi
+if ! curl -fsS --max-time 5 http://127.0.0.1:18765/health >/dev/null 2>&1; then
+    sleep 10
+    if ! curl -fsS --max-time 5 http://127.0.0.1:18765/health >/dev/null 2>&1; then
+        log "Agent 无应答，重启 Agent"
+        systemctl restart openminis-cloud-agent
+    fi
+fi
+EOF
+chmod 755 /usr/local/lib/openminis/desktop-check.sh
+cat << EOF > /etc/systemd/system/openminis-check.service
+[Unit]
+Description=OpenMinis desktop & agent self-check
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/openminis/desktop-check.sh
+EOF
+cat << EOF > /etc/systemd/system/openminis-check.timer
+[Unit]
+Description=OpenMinis self-check every minute
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target
+EOF
+cat << EOF > /etc/systemd/system/openminis-desktop-restart.path
+[Unit]
+Description=OpenMinis desktop restart request from the app
+
+[Path]
+PathExists=$RUN_DIR/desktop-restart.request
+Unit=openminis-check.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 echo "=== [Desktop] 5. 重新加载并启用所有 Systemd 服务 ==="
 systemctl daemon-reload
 systemctl enable openminis-display openminis-vnc openminis-novnc openminis-cloud-agent
+systemctl enable --now openminis-check.timer openminis-desktop-restart.path
 systemctl restart openminis-display
 systemctl restart openminis-vnc
 systemctl restart openminis-novnc

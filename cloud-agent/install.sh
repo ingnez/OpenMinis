@@ -115,6 +115,7 @@ cat << EOF > "$SERVICE_FILE"
 [Unit]
 Description=OpenMinis Cloud Agent Service
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -123,6 +124,8 @@ WorkingDirectory=$VAR_LIB_DIR
 ExecStart=/usr/bin/python3 $INSTALL_DIR/cloud_agent_server.py
 Restart=always
 RestartSec=5
+WatchdogSec=90
+NotifyAccess=main
 Environment=OPENMINIS_HOST=127.0.0.1
 Environment=OPENMINIS_PORT=18765
 Environment=OPENMINIS_DB=$VAR_LIB_DIR/data/openminis_agent.db

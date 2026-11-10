@@ -48,6 +48,15 @@ class FakeModelHandler(BaseHTTPRequestHandler):
             return
         script = FakeModelHandler.scripts.get(data.get("model"))
         message = script(data) if script else {"role": "assistant", "content": "ok"}
+        if isinstance(message, dict) and message.get("_status"):
+            # 模拟服务商报错（如不认识的参数）
+            body = json.dumps({"error": message.get("error") or {"message": "bad request"}}).encode("utf-8")
+            self.send_response(int(message["_status"]))
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if isinstance(message, dict) and message.get("_chunks") is not None:
             # 流式回复：按 _chunks 逐块发 SSE，每块间隔 _delay 秒
             chunks, delay = message["_chunks"], message.get("_delay", 0.05)
@@ -133,6 +142,8 @@ class CloudServerTestCase(unittest.TestCase):
         if hasattr(srv, "configure_paths"):
             srv.configure_paths(os.path.join(td, "data"))
         srv.init_db()
+        if getattr(srv, "APP_FEED", None) is not None:      # 在线状态是模块级的，别串到下一个测试类
+            srv.APP_FEED.presence.update(last_seen=0.0, foreground=False, local_notifications=False)
         FakeModelHandler.scripts = {}
         FakeModelHandler.requests = []
         FakeModelHandler.auth_headers = []

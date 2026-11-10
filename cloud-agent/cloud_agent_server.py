@@ -38,6 +38,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import hashlib
+import shutil
 from urllib.parse import urlparse, parse_qs, unquote
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -52,6 +53,7 @@ import cloud_delegation as deleg
 import cloud_groups
 import cloud_usage
 import cloud_llm
+import cloud_appfeed
 import gzip
 from collections import deque
 import cloud_desktop
@@ -281,6 +283,7 @@ def init_db():
     except Exception as e:
         print(f"timezone setting ignored: {e}")
     cloud_notify.ensure_schema(conn)
+    cloud_appfeed.ensure_schema(conn)
     cloud_pages.ensure_schema(conn)
     cursor.execute("CREATE TABLE IF NOT EXISTS telegram_chats (chat_id INTEGER PRIMARY KEY, session_id TEXT, updated_at REAL)")
     cursor.execute("CREATE TABLE IF NOT EXISTS telegram_tasks (task_id TEXT PRIMARY KEY, chat_id INTEGER, created_at REAL)")
@@ -496,6 +499,81 @@ def current_approval_policy():
 pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
+APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
+AGENT_VERSION = "2.1.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
+
+def _desktop_health_brief():
+    if not desktop_installed():
+        return {"installed": False, "ok": False, "diagnosis": "not_installed", "message": "服务器还没有安装云电脑桌面环境"}
+    h = cloud_displays.diagnose()
+    return {"installed": True, "ok": h["ok"], "diagnosis": h["diagnosis"], "message": h["message"],
+            "xvfb": h["xvfb"], "vnc": h["vnc"], "websockify": h["websockify"], "websockify_mode": h["websockify_mode"]}
+
+def desktop_installed():
+    return all(shutil.which(b) for b in ("Xvfb", "x11vnc", "websockify"))
+
+RESTART_REQUEST = os.environ.get("OPENMINIS_RESTART_REQUEST", "/var/lib/openminis-cloud-agent/run/desktop-restart.request")
+RESTART_PATH_UNIT = "/etc/systemd/system/openminis-desktop-restart.path"
+
+def restart_desktop_services(wait_s=20):
+    """Agent 以普通用户运行（NoNewPrivileges，不能 sudo）：写入重启请求文件，由安装脚本装的 root path 单元执行重启。
+    没装这个单元（旧版安装）时返回原因，App 改用 SSH 重启。"""
+    if not os.path.exists(RESTART_PATH_UNIT) or not os.path.isdir(os.path.dirname(RESTART_REQUEST)):
+        return False, "no_restart_unit"
+    try:
+        with open(RESTART_REQUEST, "w") as f:
+            f.write(str(time.time()))
+    except OSError as e:
+        return False, type(e).__name__
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        if not os.path.exists(RESTART_REQUEST):
+            return True, None
+        time.sleep(0.5)
+    return False, "timeout"
+
+def start_watchdog():
+    """systemd WatchdogSec：每 15 秒自查一次 /health 能否应答，能才喂狗；HTTP 卡死时 systemd 会重启服务。"""
+    sock_path = os.environ.get("NOTIFY_SOCKET")
+    if not sock_path:
+        return
+    import socket
+    addr = "\0" + sock_path[1:] if sock_path.startswith("@") else sock_path
+    def notify(msg):
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+                s.connect(addr)
+                s.sendall(msg.encode())
+        except OSError:
+            pass
+    def loop():
+        notify("READY=1")
+        while True:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=8) as r:
+                    if r.status == 200:
+                        notify("WATCHDOG=1")
+            except Exception:
+                pass
+            time.sleep(15)
+    threading.Thread(target=loop, name="watchdog", daemon=True).start()
+
+def user_notify(cfg, event, title, body, session_id=None, bot_id=None):
+    """通知用户：先记进 App 通知流（App 在线时用系统本地通知显示），App 不在线且允许兜底时再发 Bark。"""
+    try:
+        if APP_FEED is not None:
+            APP_FEED.add(event, title, body, session_id=session_id, bot_id=bot_id or (session_persona_id(session_id) if session_id else None))
+    except Exception as e:
+        print(f"app feed add failed: {type(e).__name__}", flush=True)
+    if not cfg:
+        return False
+    pref = resource_settings().get("bark_fallback", "auto")
+    fallback = None if pref == "auto" else pref == "on"
+    if APP_FEED is not None and not APP_FEED.should_bark(True, fallback):
+        return False
+    return cloud_notify.notify_async(cfg, event, title, body)
+
 def current_notify_config():
     """解密推送配置；未配置或加密存储不可用时返回 None。"""
     conn = get_db_connection()
@@ -638,11 +716,11 @@ def on_approval_required(task_id, session_id, approval):
     except Exception as e:
         print(f"telegram approval notify failed: {type(e).__name__}")
     cfg = current_notify_config()
-    if not cfg or _bot_muted(session_id):
+    if _bot_muted(session_id):
         return None
     args = json.dumps(approval.get("arguments"), ensure_ascii=False)
     body = f"{approval.get('reason', '')}\n工具：{approval.get('tool')}  {args[:300]}\n会话：{_session_title(session_id)}"
-    cloud_notify.notify_async(cfg, "approval_required", "云电脑等待你的审批", body)
+    user_notify(cfg, "approval_required", "云电脑等待你的审批", body, session_id=session_id)
 
 def on_task_finished(task_id, session_id, final_status):
     """对话任务结束时推送（例行任务由 on_routine_finished 推送；用户主动取消不推送）。"""
@@ -656,11 +734,16 @@ def on_task_finished(task_id, session_id, final_status):
     finally:
         conn.close()
     cfg = current_notify_config()
-    if not cfg or _bot_muted(session_id):
+    if _bot_muted(session_id):
         return None
-    label = {"completed": "已完成", "failed": "失败", "limit_reached": "达到轮数上限"}[final_status]
     body = ((row[0] if row else "") or "").strip()[:600] or "（无文字回复）"
-    cloud_notify.notify_async(cfg, "task_completed", f"云电脑任务{label}：{_session_title(session_id)}"[:120], body)
+    bot = session_bot(session_id)
+    if bot and final_status == "completed":
+        title = bot.get("name") or "Bot"
+    else:
+        label = {"completed": "已完成", "failed": "失败", "limit_reached": "达到轮数上限"}[final_status]
+        title = f"云电脑任务{label}：{_session_title(session_id)}"
+    user_notify(cfg, "task_completed", title[:120], body, session_id=session_id)
 
 def request_approval(task_id, session_id, tool_call_id, tool_name, args, rule, timeout_seconds):
     """挂起任务直到用户批准、拒绝、超时或取消。返回 approved / denied / expired / cancelled。"""
@@ -1013,8 +1096,8 @@ def on_background_done(job, log_tail):
     finally:
         conn.close()
     cfg = current_notify_config()
-    if cfg and not _bot_muted(sid):
-        cloud_notify.notify_async(cfg, "task_completed", f"后台命令完成：{_session_title(sid)}"[:120], text[:600])
+    if not _bot_muted(sid):
+        user_notify(cfg, "task_completed", f"后台命令完成：{_session_title(sid)}"[:120], text[:600], session_id=sid)
 
 def tool_background_jobs(task_id, session_id, args):
     action = (args or {}).get("action", "list")
@@ -1743,8 +1826,8 @@ def _report_delegation(did):
     text = deleg.result_text(_bot_label(target), row["status"], row["result"])
     _post_when_idle(row["from_session"], text)
     cfg = current_notify_config()
-    if cfg and not _bot_muted(row["from_session"]):
-        cloud_notify.notify_async(cfg, "task_completed", f"{_bot_label(target)} 完成了委托"[:120], (row["result"] or "")[:600])
+    if not _bot_muted(row["from_session"]):
+        user_notify(cfg, "task_completed", f"{_bot_label(target)} 完成了委托"[:120], (row["result"] or "")[:600], session_id=row["from_session"])
 
 def tool_send_to_bot(task_id, session_id, args, model, provider_config):
     try:
@@ -1847,7 +1930,7 @@ def call_chat(url, headers, body, effort, stream=True, on_text=None):
     model = body.get("model")
     use_stream = bool(stream) and (url, model) not in _STREAM_UNSUPPORTED
     use_cache = True
-    for _attempt in range(5):
+    for _attempt in range(7):
         payload = apply_reasoning(body, model, effort, url)
         cached = _with_prompt_cache(payload, url) if use_cache else payload
         try:
@@ -1860,11 +1943,11 @@ def call_chat(url, headers, body, effort, stream=True, on_text=None):
                 _CACHE_UNSUPPORTED.add((url, model))
                 continue
             if payload is not body:
-                if effort == "xhigh" and "claude" not in (model or "").lower():
-                    effort = "high"
-                    continue
-                _EFFORT_UNSUPPORTED.add((url, model))
+                effort, _ = effort_rejected(url, model, effort)
                 continue
+            if (url, model) in _EFFORT_UNSUPPORTED and effort not in (None, "", "off") and not use_stream:
+                _EFFORT_UNSUPPORTED.discard((url, model))   # 不带思考参数也失败：问题不在参数
+                raise
             if use_stream:
                 use_stream = False
                 _STREAM_UNSUPPORTED.add((url, model))
@@ -1991,8 +2074,9 @@ def _group_start_task(group, bot, task, msg_id):
                 c2.close()
             GROUPS.notify()
             cfg = current_notify_config()
-            if cfg and not _bot_muted(persona_id=bot["persona_id"]):
-                cloud_notify.notify_async(cfg, "task_completed", f"{bot.get('name')} 在「{group['name']}」完成了任务"[:120], result[:600])
+            if not _bot_muted(persona_id=bot["persona_id"]):
+                user_notify(cfg, "task_completed", f"{bot.get('name')} 在「{group['name']}」完成了任务"[:120], result[:600],
+                            bot_id=bot["persona_id"])
 
     threading.Thread(target=worker, daemon=True, name="group-task").start()
     return tid
@@ -2384,20 +2468,52 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 TASK_EFFORT = {}          # task_id -> 本次任务的思考深度（例行任务覆盖、客户端指定）
 _EFFORT_UNSUPPORTED = set()  # (base_url, model)：服务商拒绝思考参数后不再发送
 
+_EFFORT_STYLE = {}            # (base_url, model) -> 当前使用的参数写法序号（上一种被拒后换下一种）
+_BUDGET = {"low": 2048, "medium": 8192, "high": 24576, "xhigh": 48000}
+
+def effort_styles(model):
+    """各家思考参数写法，按优先级排列。所有模型都可以调；服务商拒绝一种就换下一种，全被拒才记为不支持。"""
+    name = (model or "").lower()
+    if "claude" in name or "sonnet" in name or "opus" in name:
+        return ["claude_thinking", "reasoning_effort"]
+    if "qwen" in name or "qwq" in name:
+        return ["reasoning_effort", "qwen_enable_thinking"]
+    if any(k in name for k in ("deepseek", "glm", "kimi", "doubao", "minimax")):
+        return ["reasoning_effort", "thinking_enabled"]
+    return ["reasoning_effort"]
+
 def apply_reasoning(body, model, effort, chat_url):
-    """把思考深度映射成服务商参数：Claude 系（OpenAI 兼容层）用 thinking.budget_tokens，
-    其余（OpenAI / Gemini 兼容 / 大多数中转）用 reasoning_effort。off 或不支持时不发送。"""
+    """把思考深度映射成服务商参数（Claude 用 thinking.budget_tokens，Qwen 用 enable_thinking，DeepSeek / GLM 等可用 thinking.type，
+    其余用 reasoning_effort）。off 或已确认不支持时不发送。"""
     if not effort or effort == "off" or (chat_url, model) in _EFFORT_UNSUPPORTED:
         return body
+    styles = effort_styles(model)
+    style = styles[min(_EFFORT_STYLE.get((chat_url, model), 0), len(styles) - 1)]
     out = dict(body)
-    name = (model or "").lower()
-    if "claude" in name:
-        budget = {"low": 2048, "medium": 8192, "high": 24576, "xhigh": 48000}[effort]
+    budget = _BUDGET.get(effort, 8192)
+    if style == "claude_thinking":
         out["thinking"] = {"type": "enabled", "budget_tokens": budget}
         out["max_tokens"] = max(int(out.get("max_tokens") or 0), budget + 4096)
+    elif style == "qwen_enable_thinking":
+        out["enable_thinking"] = True
+        out["thinking_budget"] = budget
+    elif style == "thinking_enabled":
+        out["thinking"] = {"type": "enabled"}
     else:
         out["reasoning_effort"] = effort
     return out
+
+def effort_rejected(url, model, effort):
+    """服务商拒绝了当前写法：返回新的 effort（xhigh 先降到 high），换下一种写法，或标记为不支持。返回 (effort, changed)。"""
+    if effort == "xhigh" and "claude" not in (model or "").lower():
+        return "high", True
+    styles = effort_styles(model)
+    idx = _EFFORT_STYLE.get((url, model), 0)
+    if idx + 1 < len(styles):
+        _EFFORT_STYLE[(url, model)] = idx + 1
+        return effort, True
+    _EFFORT_UNSUPPORTED.add((url, model))
+    return effort, True
 
 def call_llm_with_effort(url, headers, body, effort):
     payload = apply_reasoning(body, body.get("model"), effort, url)
@@ -2408,14 +2524,19 @@ def call_llm_with_effort(url, headers, body, effort):
     except urllib.error.HTTPError as e:
         if e.code not in (400, 422):
             raise
-        # 模型不支持思考参数（或不支持 xhigh）：降级一次，再不行就不发送
-        if effort == "xhigh" and "claude" not in (body.get("model") or "").lower():
+        # 思考参数被拒：依次降级（xhigh→high、换写法），都不行就不发送；不带参数也失败说明不是参数的问题，撤销标记
+        model = body.get("model")
+        for _ in range(4):
+            effort, _changed = effort_rejected(url, model, effort)
+            p = apply_reasoning(body, model, effort, url)
             try:
-                return call_llm_pooled(url, headers, apply_reasoning(body, body.get("model"), "high", url))
+                return call_llm_pooled(url, headers, p)
             except urllib.error.HTTPError as e2:
                 if e2.code not in (400, 422):
                     raise
-        _EFFORT_UNSUPPORTED.add((url, body.get("model")))
+                if p is body:
+                    _EFFORT_UNSUPPORTED.discard((url, model))
+                    raise
         return call_llm_pooled(url, headers, body)
 
 def call_llm_pooled(url, headers, body):
@@ -2977,12 +3098,11 @@ def on_routine_finished(routine, run):
     if not routine.get("notify", True) or run.get("status") == "skipped" or _bot_muted(persona_id=routine.get("persona_id") or ""):
         return None
     cfg = current_notify_config()
-    if not cfg:
-        return None
     label = {"completed": "完成", "failed": "失败", "limit_reached": "达到轮数上限", "cancelled": "已取消",
              "interrupted": "中断"}.get(run.get("status"), run.get("status"))
     body = (run.get("result") or run.get("error") or "（无文字结果）").strip()[:600]
-    cloud_notify.notify_async(cfg, "routine_finished", f"例行任务「{routine['name']}」{label}"[:120], body)
+    user_notify(cfg, "routine_finished", f"例行任务「{routine['name']}」{label}"[:120], body,
+                session_id=run.get("session_id"), bot_id=routine.get("persona_id"))
 
 def launch_routine_run(routine, trigger="schedule"):
     """启动一次例行任务。返回 run dict（含 run_id / task_id / status）。"""
@@ -3524,6 +3644,8 @@ class Handler(BaseHTTPRequestHandler):
                 "service": "openminis-cloud-agent",
                 "mode": "cloud-computer",
                 "version": "2.0.0",
+                "agent_version": AGENT_VERSION,
+                "desktop": _desktop_health_brief(),
                 "capabilities": {
                     "shell": True,
                     "files": True,
@@ -3675,6 +3797,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"url": url})
             return
 
+        if path == "/v1/notifications":
+            # App 在线时长轮询：取走新的通知，用系统本地通知显示（同时算作 App 在线，服务器就不再发 Bark）
+            try:
+                after = int((query_params.get("after") or ["0"])[0])
+                wait_s = float((query_params.get("wait") or ["0"])[0])
+            except ValueError:
+                self._send(400, {"error": "after / wait 必须是数字"})
+                return
+            APP_FEED.touch()
+            items, last = APP_FEED.wait_after(after, wait_s)
+            APP_FEED.touch()
+            self._send(200, {"items": items, "last_id": last})
+            return
+
         if path == "/v1/desktop/health":
             # 手机打开桌面页前先查链路；独立屏幕挂了会在这里自动重启
             bid = (query_params.get("bot_id") or [None])[0]
@@ -3759,6 +3895,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "q 必须是 1–100 个字符"})
                 return
             self._send(200, {"results": search_everything(q)})
+            return
+
+        if path == "/v1/models/effort":
+            # 哪些模型的服务商不接受思考参数（自动去掉后记住的），手机在「模型与思考深度」里给出提示
+            self._send(200, {"unsupported": sorted({m for _u, m in _EFFORT_UNSUPPORTED if m}),
+                             "styles": {m: effort_styles(m)[min(i, len(effort_styles(m)) - 1)] for (_u, m), i in _EFFORT_STYLE.items() if m}})
             return
 
         if path == "/v1/perf":
@@ -4520,6 +4662,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, stats)
             return
 
+        if path == "/v1/presence":
+            p = APP_FEED.touch(foreground=req_json.get("foreground"), local_notifications=req_json.get("local_notifications"))
+            self._send(200, {"presence": p, "bark_fallback": resource_settings().get("bark_fallback", "auto")})
+            return
+
+        if path == "/v1/desktop/restart":
+            ok, why = restart_desktop_services()
+            if ok:
+                time.sleep(2)
+                self._send(200, {"restarted": True, "desktop": _desktop_health_brief()})
+            else:
+                self._send(409, {"error": "服务器上的 Agent 没有重启桌面的权限，请用 SSH 重启", "reason": why})
+            return
+
         m_warm = re.match(r"^/v1/sessions/([A-Za-z0-9_-]{1,80})/warm$", path)
         if m_warm:
             # 打开对话 / 开始输入时调用：提前建好到模型服务商的连接、拉起浏览器，真正发送时少等一次握手
@@ -5126,7 +5282,7 @@ def run_server():
 
     def start_background():
         # 后台服务（定时任务、Telegram 长轮询）放在独立线程启动：任何一项出错或网络不通都不影响 /health 与 API 立即可用
-        for name, fn in (("scheduler", start_scheduler), ("telegram", start_telegram), ("browser-warm", warm_browser)):
+        for name, fn in (("watchdog", start_watchdog), ("scheduler", start_scheduler), ("telegram", start_telegram), ("browser-warm", warm_browser)):
             try:
                 fn()
             except Exception as e:
