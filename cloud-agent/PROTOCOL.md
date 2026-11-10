@@ -348,3 +348,4 @@
 - `POST /v1/sessions`、`POST /v1/routines`、`PUT /v1/telegram` 可带 `persona_id`（必须是已存在的人格）。子代理继承父会话人格。
 - 系统提示词以 `[人格：<name>]\n<instructions>` 开头。`memory_write` 写入该人格的私有范围；`memory_search` 只返回共享记忆（`persona = ''`）与本人格记忆。`GET /v1/memory?persona=<id>` 同样过滤；不带时返回全部（每条含 `persona` 字段）。
 - `/health` 的 capabilities 增加 `personas: true`。
+- 人格互询：`subagent_task` 可带 `persona`（persona_id），子代理以该人格的指令与私有记忆运行，结果含 `persona`；不存在时返回错误与可用列表。存在其他人格时，系统提示词会列出它们供模型询问。

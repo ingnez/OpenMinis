@@ -791,7 +791,16 @@ def server_tool_notes(session_id):
         skills_index = ""
     finally:
         conn.close()
-    return SERVER_TOOL_NOTES + skills_index
+    try:
+        own = session_persona_id(session_id)
+        others = [p for p in list_personas() if p["persona_id"] != own]
+    except Exception:
+        others = []
+    personas_note = ""
+    if others:
+        personas_note = "\n[其他人格] 需要其他人格的专长或它们的私有记忆时，用 subagent_task 并传 persona 询问：" + "；".join(
+            f"{p['persona_id']}（{p['name']}）" for p in others[:20])
+    return SERVER_TOOL_NOTES + personas_note + skills_index
 
 def tool_skill_load(task_id, session_id, args):
     if is_task_cancelled(task_id):
@@ -836,6 +845,15 @@ def tool_subagent_task(task_id, session_id, args, model, provider_config, depth)
     if not isinstance(prompt, str) or not prompt.strip():
         return {"error": "task must be a non-empty string"}
     title = (args.get("title") or prompt.strip().splitlines()[0])[:60]
+    target_persona = args.get("persona")
+    if target_persona in (None, ""):
+        target_persona = session_persona_id(session_id)
+        title_prefix = "子代理："
+    else:
+        target = get_persona(target_persona) if isinstance(target_persona, str) else None
+        if not target:
+            return {"error": f"人格不存在：{target_persona}", "personas": [p["persona_id"] for p in list_personas()]}
+        title_prefix = "询问" + target["name"] + "："
     with active_tasks_lock:
         parent_entry = active_tasks.get(task_id)
         if parent_entry is not None:
@@ -850,7 +868,7 @@ def tool_subagent_task(task_id, session_id, args, model, provider_config, depth)
     try:
         c = conn.cursor()
         c.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, NULL, ?, ?, ?, ?)",
-                  (sid, "子代理：" + title, SUBAGENT_INSTRUCTIONS, now, session_persona_id(session_id)))
+                  (sid, title_prefix + title, SUBAGENT_INSTRUCTIONS, now, target_persona))
         c.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
                   (tid, sid, model, now))
         c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (sid, prompt, now))
@@ -870,7 +888,7 @@ def tool_subagent_task(task_id, session_id, args, model, provider_config, depth)
         conn.close()
     result = (last[0] if last else "") or ""
     log_event(task_id, "subagent_finished", {"task_id": tid, "session_id": sid, "status": status})
-    out = {"status": status, "subagent_task_id": tid, "subagent_session_id": sid, "result": result[:20000]}
+    out = {"status": status, "subagent_task_id": tid, "subagent_session_id": sid, "persona": target_persona, "result": result[:20000]}
     if status != "completed":
         out["error"] = f"子代理结束状态：{status}"
     return out
@@ -1118,7 +1136,8 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {
                     "task": {"type": "string", "description": "Complete instructions; the sub agent cannot see this conversation."},
-                    "title": {"type": "string", "description": "Short label."}
+                    "title": {"type": "string", "description": "Short label."},
+                    "persona": {"type": "string", "description": "Optional persona_id: run the sub agent as another persona (its instructions and private memory) to consult that bot. Defaults to the current persona."}
                 },
                 "required": ["task"]
             }
