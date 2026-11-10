@@ -260,7 +260,7 @@ enum CloudStreamQuality {
 }
 
 /// 延迟指示：绿 / 黄 / 红
-enum CloudLatency {
+enum CloudDesktopLatency {
     enum Level: Equatable { case good, fair, poor }
     static func level(_ ms: Double) -> Level { ms < 120 ? .good : (ms < 300 ? .fair : .poor) }
     static func text(_ ms: Double) -> String { ms >= 1000 ? String(format: "%.1f s", ms / 1000) : "\(Int(ms.rounded())) ms" }

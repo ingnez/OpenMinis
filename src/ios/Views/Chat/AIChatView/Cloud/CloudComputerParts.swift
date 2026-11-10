@@ -56,7 +56,7 @@ struct CloudComputerTopBar: View {
         }
         Menu {
             Button { ctl.pinnedQuality = nil } label: { checked("自动（按延迟）", ctl.pinnedQuality == nil) }
-            ForEach([CloudStreamQuality.high, .balanced, .saver], id: \.label) { level in
+            ForEach([CloudStreamQuality.high, CloudStreamQuality.balanced, CloudStreamQuality.saver], id: \.label) { level in
                 Button { ctl.pinnedQuality = level } label: { checked(level.label, ctl.pinnedQuality == level) }
             }
         } label: { Label("画质", systemImage: "dial.medium") }
@@ -79,7 +79,7 @@ struct CloudLatencyChip: View {
     var body: some View {
         HStack(spacing: 4) {
             Circle().fill(color).frame(width: 6, height: 6)
-            Text(ms.map(CloudLatency.text) ?? "测延迟…").monospacedDigit()
+            Text(ms.map(CloudDesktopLatency.text) ?? "测延迟…").monospacedDigit()
             Text("· \(quality)\(pinned ? "" : "（自动）")")
         }
         .font(.caption2).foregroundStyle(.white.opacity(0.75))
@@ -88,7 +88,7 @@ struct CloudLatencyChip: View {
 
     private var color: Color {
         guard let ms else { return .gray }
-        switch CloudLatency.level(ms) {
+        switch CloudDesktopLatency.level(ms) {
         case .good: return .green
         case .fair: return .yellow
         case .poor: return .red

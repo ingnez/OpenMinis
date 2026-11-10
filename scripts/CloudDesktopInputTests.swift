@@ -79,8 +79,8 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         let h = CloudStreamQuality.high, sv = CloudStreamQuality.saver
         check(CloudStreamQuality.shouldSwitch(current: h, history: [h, sv]) == nil, "只差一次不切")
         check(CloudStreamQuality.shouldSwitch(current: h, history: [sv, sv]) == sv, "连续两次才切")
-        check(CloudLatency.level(80) == .good && CloudLatency.level(200) == .fair && CloudLatency.level(900) == .poor, "延迟颜色")
-        check(CloudLatency.text(85.4) == "85 ms" && CloudLatency.text(1500) == "1.5 s", "延迟文字")
+        check(CloudDesktopLatency.level(80) == .good && CloudDesktopLatency.level(200) == .fair && CloudDesktopLatency.level(900) == .poor, "延迟颜色")
+        check(CloudDesktopLatency.text(85.4) == "85 ms" && CloudDesktopLatency.text(1500) == "1.5 s", "延迟文字")
 
         // 重连
         check(CloudReconnect.delay(attempt: 5, networkChanged: true) == 0, "网络切换立刻重连")
