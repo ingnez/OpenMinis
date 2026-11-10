@@ -243,8 +243,11 @@ def init_db():
     )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_routine_runs ON routine_runs(routine_id, started_at)")
-    if "persona_id" not in {row[1] for row in cursor.execute("PRAGMA table_info(routines)")}:
+    routine_cols = {row[1] for row in cursor.execute("PRAGMA table_info(routines)")}
+    if "persona_id" not in routine_cols:
         cursor.execute("ALTER TABLE routines ADD COLUMN persona_id TEXT")
+    if "reasoning_effort" not in routine_cols:
+        cursor.execute("ALTER TABLE routines ADD COLUMN reasoning_effort TEXT")
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS personas (
         persona_id TEXT PRIMARY KEY,
@@ -1674,6 +1677,43 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise urllib.error.HTTPError(req.full_url, code, "Redirection prohibited", headers, fp)
 
+TASK_EFFORT = {}          # task_id -> 本次任务的思考深度（例行任务覆盖、客户端指定）
+_EFFORT_UNSUPPORTED = set()  # (base_url, model)：服务商拒绝思考参数后不再发送
+
+def apply_reasoning(body, model, effort, chat_url):
+    """把思考深度映射成服务商参数：Claude 系（OpenAI 兼容层）用 thinking.budget_tokens，
+    其余（OpenAI / Gemini 兼容 / 大多数中转）用 reasoning_effort。off 或不支持时不发送。"""
+    if not effort or effort == "off" or (chat_url, model) in _EFFORT_UNSUPPORTED:
+        return body
+    out = dict(body)
+    name = (model or "").lower()
+    if "claude" in name:
+        budget = {"low": 2048, "medium": 8192, "high": 24576, "xhigh": 48000}[effort]
+        out["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        out["max_tokens"] = max(int(out.get("max_tokens") or 0), budget + 4096)
+    else:
+        out["reasoning_effort"] = effort
+    return out
+
+def call_llm_with_effort(url, headers, body, effort):
+    payload = apply_reasoning(body, body.get("model"), effort, url)
+    if payload is body:
+        return call_llm(url, headers, body)
+    try:
+        return call_llm(url, headers, payload)
+    except urllib.error.HTTPError as e:
+        if e.code not in (400, 422):
+            raise
+        # 模型不支持思考参数（或不支持 xhigh）：降级一次，再不行就不发送
+        if effort == "xhigh" and "claude" not in (body.get("model") or "").lower():
+            try:
+                return call_llm(url, headers, apply_reasoning(body, body.get("model"), "high", url))
+            except urllib.error.HTTPError as e2:
+                if e2.code not in (400, 422):
+                    raise
+        _EFFORT_UNSUPPORTED.add((url, body.get("model")))
+        return call_llm(url, headers, body)
+
 def call_llm(url, headers, body):
     opener = urllib.request.build_opener(NoRedirect)
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
@@ -1758,7 +1798,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             m["tool_call_id"] = r_tcid
         messages.append(m)
 
-    log_event(task_id, "started", {"message": "Started"})
+    _bot = session_bot(session_id)
+    effort = TASK_EFFORT.pop(task_id, None) or (_bot or {}).get("reasoning_effort")
+    log_event(task_id, "started", {"message": "Started", "model": model, "reasoning_effort": effort})
     final_status = "completed"
 
     try:
@@ -1767,9 +1809,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 final_status = "cancelled"
                 break
             try:
-                resp = call_llm(chat_url, {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}, {
+                resp = call_llm_with_effort(chat_url, {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}, {
                     "model": model, "messages": messages, "tools": tools_for_depth(depth) + plugin_defs, "tool_choice": "auto", "stream": False
-                })
+                }, effort)
             except Exception as e:
                 log_event(task_id, "error", {"error": sanitize_err(e)})
                 final_status = "failed"
@@ -1946,7 +1988,8 @@ _scheduler_thread = None
 
 def _routine_row_to_dict(r):
     keys = ["routine_id", "name", "prompt", "schedule", "credential", "model", "instructions", "enabled",
-            "max_runs", "run_count", "next_run_at", "last_run_at", "last_status", "notify", "created_at", "updated_at", "persona_id"]
+            "max_runs", "run_count", "next_run_at", "last_run_at", "last_status", "notify", "created_at", "updated_at", "persona_id",
+            "reasoning_effort"]
     d = dict(zip(keys, r))
     try: d["schedule"] = json.loads(d["schedule"])
     except Exception: d["schedule"] = {}
@@ -1954,7 +1997,7 @@ def _routine_row_to_dict(r):
     d["notify"] = bool(d["notify"])
     return d
 
-ROUTINE_COLUMNS = "routine_id, name, prompt, schedule, credential, model, instructions, enabled, max_runs, run_count, next_run_at, last_run_at, last_status, notify, created_at, updated_at, persona_id"
+ROUTINE_COLUMNS = "routine_id, name, prompt, schedule, credential, model, instructions, enabled, max_runs, run_count, next_run_at, last_run_at, last_status, notify, created_at, updated_at, persona_id, reasoning_effort"
 
 def validate_schedule(schedule):
     """返回规范化的 schedule dict，非法抛 ValueError。"""
@@ -2057,6 +2100,11 @@ def validate_routine_fields(req, existing=None):
             out[key] = req[key]
     if "persona_id" in req:
         out["persona_id"] = validate_persona_ref(req["persona_id"])
+    if "reasoning_effort" in req:
+        v = req["reasoning_effort"]
+        if v not in (None, "") and v not in cloud_bots.EFFORTS:
+            raise ValueError("reasoning_effort must be one of off/low/medium/high/xhigh or null")
+        out["reasoning_effort"] = v or None
     if "max_runs" in req:
         v = req["max_runs"]
         if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v < 1):
@@ -2072,10 +2120,10 @@ def create_routine(fields):
     next_run = compute_next_run(schedule, now, first=True) if enabled else None
     conn = get_db_connection()
     try:
-        conn.execute("INSERT INTO routines (" + ROUTINE_COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?, ?)",
+        conn.execute("INSERT INTO routines (" + ROUTINE_COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?, ?, ?)",
                      (rid, fields["name"], fields["prompt"], json.dumps(schedule), fields["credential"], fields["model"],
                       fields.get("instructions"), 1 if enabled else 0, fields.get("max_runs"), next_run,
-                      1 if fields.get("notify", True) else 0, now, now, fields.get("persona_id")))
+                      1 if fields.get("notify", True) else 0, now, now, fields.get("persona_id"), fields.get("reasoning_effort")))
         conn.commit()
     finally:
         conn.close()
@@ -2094,10 +2142,10 @@ def update_routine(routine_id, fields):
             merged["enabled"] = False
     conn = get_db_connection()
     try:
-        conn.execute("UPDATE routines SET name = ?, prompt = ?, schedule = ?, credential = ?, model = ?, instructions = ?, enabled = ?, max_runs = ?, next_run_at = ?, notify = ?, updated_at = ?, persona_id = ? WHERE routine_id = ?",
+        conn.execute("UPDATE routines SET name = ?, prompt = ?, schedule = ?, credential = ?, model = ?, instructions = ?, enabled = ?, max_runs = ?, next_run_at = ?, notify = ?, updated_at = ?, persona_id = ?, reasoning_effort = ? WHERE routine_id = ?",
                      (merged["name"], merged["prompt"], json.dumps(merged["schedule"]), merged["credential"], merged["model"],
                       merged.get("instructions"), 1 if merged["enabled"] else 0, merged.get("max_runs"), merged["next_run_at"],
-                      1 if merged["notify"] else 0, now, merged.get("persona_id"), routine_id))
+                      1 if merged["notify"] else 0, now, merged.get("persona_id"), merged.get("reasoning_effort"), routine_id))
         conn.commit()
     finally:
         conn.close()
@@ -2167,6 +2215,8 @@ def launch_routine_run(routine, trigger="schedule"):
 
     sid = "sess_" + uuid.uuid4().hex[:12]
     tid = "task_" + uuid.uuid4().hex[:12]
+    if routine.get("reasoning_effort"):
+        TASK_EFFORT[tid] = routine["reasoning_effort"]
     instructions = routine.get("instructions") or ROUTINE_DEFAULT_INSTRUCTIONS
     fired = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(now))
     content = f"[例行任务「{routine['name']}」于 {fired} 触发（{'手动运行' if trigger == 'manual' else '按计划'}）]\n{routine['prompt']}"
@@ -2384,6 +2434,10 @@ def _telegram_safe_send(cfg, chat_id, text, reply_markup=None):
         return False
 
 def telegram_start_task(cfg, chat_id, sid, text):
+    bot = get_persona(cfg.get("_channel")) if cfg.get("_channel") else None
+    if bot and bot.get("model") and bot.get("credential"):
+        # Bot 自己选了模型：它的 Telegram 渠道也跟着用（思考深度由 session 所属 Bot 决定）
+        cfg = dict(cfg, model=bot["model"], credential=bot["credential"])
     provider, p_status, p_err = resolve_provider({"credential": cfg["credential"]})
     if p_err:
         _telegram_safe_send(cfg, chat_id, f"云端凭据不可用（{p_status}）：{p_err}")
@@ -3784,6 +3838,10 @@ class Handler(BaseHTTPRequestHandler):
                 db_user_content = json.dumps(message_parts, ensure_ascii=False)
 
             model = req_json.get("model", "gpt-4o")
+            client_effort = req_json.get("reasoning_effort")
+            if client_effort not in (None, "") and client_effort not in cloud_bots.EFFORTS:
+                self._send(400, {"error": "reasoning_effort must be one of off/low/medium/high/xhigh"})
+                return
             client_nonce = req_json.get("client_nonce")
             provider_req = req_json.get("provider", {})
             bot = session_bot(sid)
@@ -3862,7 +3920,9 @@ class Handler(BaseHTTPRequestHandler):
 
             with active_tasks_lock:
                 active_tasks[tid] = {"process": None, "cancelled": False, "pid": None}
-            
+            if client_effort and not (bot and bot.get("reasoning_effort")):
+                TASK_EFFORT[tid] = client_effort
+
             # Start background thread BEFORE sending HTTP 202 to guarantee execution survives client disconnect
             task_thread = threading.Thread(
                 target=run_agent_task,

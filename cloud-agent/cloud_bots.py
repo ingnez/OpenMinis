@@ -20,9 +20,11 @@ EXTRA_COLUMNS = {
     "skills": "TEXT",      # JSON 列表；NULL 表示全部技能
     "plugins": "TEXT",     # JSON 列表：授权给此 Bot 的插件 id
     "is_primary": "INTEGER NOT NULL DEFAULT 0",
+    "reasoning_effort": "TEXT",   # off / low / medium / high / xhigh；NULL = 跟随客户端
 }
 
-COLS = "persona_id, name, instructions, emoji, created_at, updated_at, description, model, credential, skills, plugins, is_primary"
+COLS = "persona_id, name, instructions, emoji, created_at, updated_at, description, model, credential, skills, plugins, is_primary, reasoning_effort"
+EFFORTS = ("off", "low", "medium", "high", "xhigh")
 
 
 class BotError(ValueError):
@@ -48,7 +50,8 @@ def _row(r):
             return None
     return {"persona_id": r[0], "bot_id": r[0], "name": r[1], "instructions": r[2], "emoji": r[3],
             "created_at": r[4], "updated_at": r[5], "description": r[6] or "", "model": r[7],
-            "credential": r[8], "skills": lst(r[9]), "plugins": lst(r[10]) or [], "is_primary": bool(r[11])}
+            "credential": r[8], "skills": lst(r[9]), "plugins": lst(r[10]) or [], "is_primary": bool(r[11]),
+            "reasoning_effort": r[12] if len(r) > 12 else None}
 
 
 def get(conn, bot_id):
@@ -119,6 +122,11 @@ def validate(body, existing=None, credential_exists=None):
     present, plugins = _name_list(body, "plugins", NAME_RE)
     if present:
         out["plugins"] = json.dumps(plugins or [], ensure_ascii=False)
+    if "reasoning_effort" in body:
+        v = body["reasoning_effort"]
+        if v not in (None, "") and v not in EFFORTS:
+            raise BotError("reasoning_effort must be one of off/low/medium/high/xhigh or null")
+        out["reasoning_effort"] = v or None
     if "is_primary" in body:
         if not isinstance(body["is_primary"], bool):
             raise BotError("is_primary must be a boolean")
@@ -172,7 +180,7 @@ def export_bundle(conn, bot_id, routines, memory_entries):
     bot = get(conn, bot_id)
     if not bot:
         return None
-    clean = {k: bot[k] for k in ("name", "emoji", "description", "instructions", "model", "skills", "plugins")}
+    clean = {k: bot[k] for k in ("name", "emoji", "description", "instructions", "model", "skills", "plugins", "reasoning_effort")}
     return {
         "format": EXPORT_FORMAT,
         "bot_id": bot_id,

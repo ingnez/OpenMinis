@@ -135,5 +135,32 @@ class IsolationServerTests(CloudServerTestCase):
         self.assertEqual(self.request("POST", "/v1/desktop/display", {"bot_id": "ghost"})[0], 404)
 
 
+
+class ReasoningEffortTests(CloudServerTestCase):
+    def test_bot_effort_mapping_and_fallback(self):
+        self.request("PUT", "/v1/credentials/effkey", {"api_key": "sk-eff-000000000000000000", "base_url": self.model_base})
+        self.assertEqual(self.request("PUT", "/v1/bots/eff", {"name": "e", "instructions": "x", "reasoning_effort": "max"})[0], 400)
+        self.request("PUT", "/v1/bots/eff", {"name": "e", "instructions": "x", "reasoning_effort": "high",
+                                            "model": "gpt-think", "credential": "effkey"})
+        self.assertEqual(self.request("GET", "/v1/bots/eff")[1]["reasoning_effort"], "high")
+        sid = self.request("POST", "/v1/sessions", {"title": "e", "persona_id": "eff"})[1]["session_id"]
+        t = self.submit(sid, "hi", "m-any")[1]
+        self.wait_status(t["task_id"], ("completed",))
+        self.assertEqual(FakeModelHandler.requests[-1]["reasoning_effort"], "high")
+        self.request("PUT", "/v1/bots/eff", {"model": "claude-x", "credential": "effkey", "reasoning_effort": "medium"})
+        t = self.submit(sid, "hi2", "m-any")[1]
+        self.wait_status(t["task_id"], ("completed",))
+        req = FakeModelHandler.requests[-1]
+        self.assertEqual(req["thinking"], {"type": "enabled", "budget_tokens": 8192})
+        self.assertNotIn("reasoning_effort", req)
+
+    def test_client_effort_for_plain_session_and_routine_column(self):
+        sid = self.new_session()
+        t = self.submit(sid, "hi", "m-plain", reasoning_effort="low")[1]
+        self.wait_status(t["task_id"], ("completed",))
+        self.assertEqual(FakeModelHandler.requests[-1]["reasoning_effort"], "low")
+        self.assertEqual(self.submit(sid, "x", "m-plain", reasoning_effort="ultra")[0], 400)
+
+
 if __name__ == "__main__":
     unittest.main()
