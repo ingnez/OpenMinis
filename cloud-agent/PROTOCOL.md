@@ -589,3 +589,11 @@ GitHub 和邮件每 5 分钟轮询一次；第一次只记位置。新事件（�
 ```
 
 `history` 只保留最近 90 个点，只在有人看面板时才采样。
+
+## 录屏回放（2.30.0）
+
+Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存为该任务的一帧，并附上这一帧之前做过的动作说明（输入只写「输入了 N 个字」，网址只留域名）。每个任务最多 80 帧，保留最近 20 个任务。
+
+- `GET /v1/replays` → `{"replays": [{"task_id", "frames", "started_at", "ended_at"}]}`
+- `GET /v1/tasks/<id>/replay` → `{"task_id", "frames": [{"i", "t", "steps": ["打开 example.com", "输入了 3 个字"]}]}`
+- `GET /v1/tasks/<id>/replay/<i>` → `{"mime": "image/png", "image_b64": "…"}`；没有这一帧时 404

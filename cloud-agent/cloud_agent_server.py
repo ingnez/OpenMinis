@@ -75,6 +75,7 @@ import cloud_events
 import cloud_exams
 import cloud_sysnap
 import cloud_livestats
+import cloud_replay
 import cloud_secrets
 import cloud_policy
 import cloud_cron
@@ -100,6 +101,9 @@ PORT = int(os.environ.get("OPENMINIS_PORT", "18765"))
 BASE_DIR = os.path.abspath(os.environ.get("OPENMINIS_BASE", SERVER_DIR))
 DB_PATH = os.environ.get("OPENMINIS_DB", os.path.join(BASE_DIR, "data", "openminis_agent.db"))
 SYSNAP_ETC = os.environ.get("OPENMINIS_SYSNAP_ETC", "/etc")
+def replay_dir():
+    return os.environ.get("OPENMINIS_REPLAY_DIR") or os.path.join(os.path.dirname(DB_PATH), "replays")
+
 def sysnap_dir():
     return os.environ.get("OPENMINIS_SYSNAP_DIR") or os.path.join(os.path.dirname(DB_PATH), "system_snapshots")
 
@@ -626,7 +630,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.29.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.30.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -4751,6 +4755,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     blocked = loop_guard.check(fn_name, fn_args)
                     if blocked:
                         return (tc_id, fn_name, blocked, 0)
+                    if fn_name in ("browser_action", "desktop_action") and isinstance(fn_args, dict):
+                        cloud_replay.note_action(task_id, fn_name, fn_args)     # 录屏回放：记下这一步做了什么（不含输入原文）
 
                     policy = current_approval_policy()
                     hit = cloud_policy.evaluate(fn_name, fn_args, policy)
@@ -4827,6 +4833,11 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     # If model is vision-capable (e.g. gpt-4o, claude-3, gemini-1.5, qwen-vl) and screenshot generated, inject vision user message
                     if isinstance(res, dict) and res.get("status") == "ok" and res.get("action") == "screenshot":
                         rel_file = res.get("file_path")
+                        if rel_file:
+                            try:
+                                cloud_replay.add_frame(replay_dir(), task_id, os.path.join(get_session_workspace(session_id), rel_file))
+                            except Exception as e:
+                                note_server_error("replay", e)
                         if rel_file:
                             ws = get_session_workspace(session_id)
                             abs_img = os.path.join(ws, rel_file)
@@ -6687,6 +6698,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Task not found"})
                 return
             self._send(200, {"task_id": tid, "status": t[0], "approvals": list_approvals(tid)})
+            return
+
+        if path == "/v1/replays":
+            self._send(200, {"replays": cloud_replay.list_tasks(replay_dir())})
+            return
+
+        m_rp = re.match(r"^/v1/tasks/([A-Za-z0-9_-]{1,64})/replay(?:/(\d{1,4}))?$", path)
+        if m_rp:
+            tid = m_rp.group(1)
+            if m_rp.group(2) is None:
+                self._send(200, {"task_id": tid, "frames": cloud_replay.frames(replay_dir(), tid)})
+                return
+            data, mime = cloud_replay.frame_bytes(replay_dir(), tid, int(m_rp.group(2)))
+            if data is None:
+                self._send(404, {"error": "Frame not found"})
+                return
+            import base64
+            self._send(200, {"mime": mime, "image_b64": base64.b64encode(data).decode("ascii")})
             return
 
         if path.startswith("/v1/tasks/") and path.endswith("/events"):

@@ -868,6 +868,7 @@ struct CloudBotHubView: View {
                 NavigationLink(destination: FaceIDProtectionSettingsView()) { Label("Face ID 锁（打开 App 先验证）", systemImage: "faceid") }
                 NavigationLink(destination: CloudExamListView()) { Label("考试倒计时", systemImage: "calendar.badge.clock") }
                 NavigationLink(destination: CloudErrorLogView()) { Label("导出错误日志", systemImage: "ladybug") }
+                NavigationLink(destination: CloudReplayListView()) { Label("录屏回放（Bot 用浏览器 / 桌面的截图）", systemImage: "play.rectangle") }
                 NavigationLink(destination: CloudLiveStatsView()) { Label("实时资源（CPU / 内存 / 网速）", systemImage: "gauge.with.dots.needle.33percent") }
                 NavigationLink(destination: CloudSystemSnapshotsView()) { Label("系统快照（装软件前自动拍）", systemImage: "camera.metering.matrix") }
             }
