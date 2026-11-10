@@ -67,3 +67,25 @@ struct CloudPresenceFlags: View {
         .accessibilityHidden(true)
     }
 }
+
+/// 下班后首页顶部的「错过了什么」卡片
+struct CloudDutyDigestCard: View {
+    let text: String
+    let onDismiss: () -> Void
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Label("下班了：值班期间错过了什么", systemImage: "moon.zzz.fill").font(.subheadline.weight(.semibold))
+                Spacer()
+                Button(action: onDismiss) { Image(systemName: "xmark").font(.caption.weight(.bold)) }
+                    .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("知道了")
+            }
+            Text(text).font(.footnote).foregroundStyle(.secondary).lineLimit(expanded ? nil : 4)
+                .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { expanded.toggle() } }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.indigo.opacity(0.1)))
+    }
+}

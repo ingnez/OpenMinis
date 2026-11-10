@@ -70,6 +70,7 @@ import cloud_vision
 import cloud_handoff
 import cloud_botstatus
 import cloud_botthreads
+import cloud_duty
 import cloud_secrets
 import cloud_policy
 import cloud_cron
@@ -316,6 +317,7 @@ def init_db():
     cloud_runmodel.ensure_schema(conn)
     cloud_vision.ensure_schema(conn)
     cloud_botthreads.ensure_schema(conn)
+    cloud_duty.ensure_schema(conn)
     cloud_vault.set_loader(get_db_connection)
     cloud_plugins.ensure_schema(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS app_settings (name TEXT PRIMARY KEY, value TEXT)")
@@ -455,6 +457,18 @@ def sanitize_err(e):
     s = re.sub(r'Bearer\s+[a-zA-Z0-9\-_.\s]+', 'Bearer ***REDACTED***', s)
     return s
 
+_TOKEN_PATTERNS = [re.compile(p) for p in (r'sk-[A-Za-z0-9\-_]{16,}', r'gh[pousr]_[A-Za-z0-9]{20,}', r'xox[abprs]-[A-Za-z0-9\-]{10,}',
+                                             r'AKIA[0-9A-Z]{16}', r'(?i)bearer\s+[A-Za-z0-9\-_.]{12,}', r'eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{5,}')]
+
+
+def scrub_text(text):
+    """保管库里的值 + 常见密钥形状都打码；用于要长期存下来或发出去的文字（值班汇总、错误日志）"""
+    text = cloud_vault.redact(text or "")
+    for p in _TOKEN_PATTERNS:
+        text = p.sub("***", text)
+    return text
+
+
 CREDENTIAL_NAME_RE = re.compile(r'^[A-Za-z0-9_.:-]{1,64}$')
 
 def credential_aad(name):
@@ -566,7 +580,7 @@ pending_approvals = {}
 pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
-AGENT_VERSION = "2.17.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.18.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -645,6 +659,7 @@ def user_notify(cfg, event, title, body, session_id=None, bot_id=None):
             title, body = "OpenMinis", "有一条新消息（已上锁的 Bot）"
     except Exception as e:
         print(f"notify privacy check failed: {type(e).__name__}", flush=True)
+    _duty_record("notify", title, body, bot_id=bot_id, session_id=session_id)
     # 先决定走哪条路：App 进程还活着 → 只进 App 通知流（App 用系统本地通知显示）；
     # App 不在了 → 按设置走 Bark / ntfy / Telegram，并在通知流里标记已推送，App 回来后不再弹一次
     external = False
@@ -3184,6 +3199,45 @@ def on_duty(rs=None):
     return float(rs.get("duty_until") or 0) > time.time()
 
 
+_duty_lock = threading.Lock()
+
+
+def _duty_record(kind, title, body, bot_id=None, session_id=None, suppressed=False):
+    """值班中攒下要在下班时汇总的条目（标题和截短的正文，调用方已脱敏）；失败不影响通知本身"""
+    if kind == "duty_digest" or not on_duty():
+        return
+    try:
+        conn = get_db_connection()
+        try:
+            cloud_duty.record(conn, kind, scrub_text(title), scrub_text(body),
+                              bot_id=bot_id, session_id=session_id, suppressed=suppressed)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"duty record failed: {type(e).__name__}", flush=True)
+
+
+def duty_check(now=None):
+    """值班开始 / 结束检测：调度器每轮调用，改值班设置时也立即调用。下班时推一份「错过了什么」。"""
+    now = time.time() if now is None else now
+    with _duty_lock:
+        state = _settings_get("duty_state") or {}
+        new, window = cloud_duty.transition(state, resource_settings().get("duty_until"), now)
+        if new != state:
+            _settings_put("duty_state", new)
+        if not window:
+            return None
+        conn = get_db_connection()
+        try:
+            digest = cloud_duty.finish(conn, window[0], window[1], now=now)
+            conn.commit()
+        finally:
+            conn.close()
+    user_notify(current_notify_config(), "duty_digest", "下班了：值班期间错过了什么", digest["text"])
+    return digest
+
+
 FAST_MODE_NOTE = "\n[快速模式] 用户希望快：直接给结论，回答尽量短；能一步完成就不要多步规划，非必要不调用工具。"
 PERF = deque(maxlen=200)
 _STREAM_UNSUPPORTED = set()
@@ -4925,7 +4979,10 @@ def on_routine_finished(routine, run):
     if run.get("status") == "completed" and is_quiet_result(run.get("result")):
         return None     # 主动消息：Bot 觉得这次没什么值得说的，就不打扰
     if run.get("status") == "completed" and on_duty() and (routine.get("name") or "").startswith("主动消息"):
-        return None     # 值班中不推送主动消息（失败仍然通知）
+        # 值班中不推送主动消息（失败仍然通知），攒到下班汇总
+        _duty_record("proactive", routine.get("name") or "主动消息", run.get("result") or "", bot_id=routine.get("persona_id"),
+                     session_id=run.get("session_id"), suppressed=True)
+        return None
     cfg = current_notify_config()
     label = {"completed": "完成", "failed": "失败", "limit_reached": "达到轮数上限", "cancelled": "已取消",
              "interrupted": "中断"}.get(run.get("status"), run.get("status"))
@@ -5089,6 +5146,10 @@ def _scheduler_main():
             scheduler_tick()
         except Exception as e:
             sys.stderr.write(f"[routine] scheduler error: {sanitize_err(e)}\n")
+        try:
+            duty_check()
+        except Exception as e:
+            sys.stderr.write(f"[duty] check error: {sanitize_err(e)}\n")
 
 def start_scheduler():
     global _scheduler_thread
@@ -5844,6 +5905,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, proxy_mgr().status())
             except Exception as e:
                 self._send(500, {"error": f"读取代理设置失败：{type(e).__name__}"})
+            return
+        if path == "/v1/duty/digest":
+            conn = get_db_connection()
+            try:
+                self._send(200, {"digest": cloud_duty.latest(conn), "on_duty": on_duty()})
+            finally:
+                conn.close()
             return
         if path == "/v1/resources":
             specs = iso.server_specs(GLOBAL_WORKSPACE)
@@ -6607,6 +6675,11 @@ class Handler(BaseHTTPRequestHandler):
             except iso.SettingsError as e:
                 self._send(400, {"error": str(e)})
                 return
+            if "duty_until" in req_json:
+                try:
+                    duty_check()
+                except Exception as e:
+                    print(f"duty check failed: {type(e).__name__}", flush=True)
             self._send(200, {"settings": new, "usage": resource_usage()})
             return
 

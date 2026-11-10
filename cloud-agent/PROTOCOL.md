@@ -506,3 +506,10 @@
 ## 对话详情带无痕标记（2.17.0）
 
 `GET /v1/sessions/<sid>` 多了 `incognito`（布尔）。App 打开对话时先画手机缓存、再静默替换；无痕对话不写缓存。
+
+## 值班「错过了什么」（2.18.0）
+
+值班期间（`resources.duty_until` 在未来）不推送的主动消息、照常发出的通知都会记下标题和截短正文（保管库值和常见密钥形状打码）。
+下班时（到点，或 `PUT /v1/resources {"duty_until": 0}` 提前结束）汇总成一条 `duty_digest` 通知：「下班了：值班期间错过了什么」。
+
+`GET /v1/duty/digest` → `{"digest": {"id", "started", "ended", "count", "text", "items": [{ts, kind, title, body, suppressed}]} | null, "on_duty": bool}`，只返回最近一份。

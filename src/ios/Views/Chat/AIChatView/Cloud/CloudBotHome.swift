@@ -65,10 +65,19 @@ final class CloudBotHomeModel: ObservableObject {
     @Published var showSharePicker = false
     /// 值班模式到什么时候（服务器 resources.duty_until）；nil = 没在值班
     @Published private(set) var dutyUntil: Date?
+    /// 下班后的「错过了什么」（服务器 /v1/duty/digest）；看过点掉就不再显示
+    @Published private(set) var dutyDigest: (id: Int, text: String)?
+
+    func dismissDutyDigest() {
+        if let d = dutyDigest { UserDefaults.standard.set(d.id, forKey: "OpenMinisCloud_dutyDigestSeen") }
+        dutyDigest = nil
+    }
+
     /// 「今日」：最近 24 小时例行任务和主动消息的结果（服务器 /v1/feed）
     @Published private(set) var feed: [CloudFeedItem] = []
 
     func setDuty(hours: Double?) async {
+        defer { if hours == nil { Task { await refresh() } } }   // 结束值班：马上拉「错过了什么」
         let until: Double
         if let hours { until = Date().addingTimeInterval(hours * 3600).timeIntervalSince1970 } else { until = 0 }
         do {
@@ -352,6 +361,14 @@ final class CloudBotHomeModel: ObservableObject {
                 if let until = settings["duty_until"] as? Double {
                     dutyUntil = until > Date().timeIntervalSince1970 ? Date(timeIntervalSince1970: until) : nil
                 }
+                if dutyUntil == nil, let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/duty/digest"),
+                   let d = r["digest"] as? [String: Any], let id = d["id"] as? Int, let text = d["text"] as? String,
+                   id != UserDefaults.standard.integer(forKey: "OpenMinisCloud_dutyDigestSeen"),
+                   Date().timeIntervalSince1970 - ((d["ended"] as? Double) ?? 0) < 18 * 3600 {
+                    dutyDigest = (id, text)
+                } else if dutyUntil != nil {
+                    dutyDigest = nil
+                }
                 // 云端记录的上锁 Bot 和本机不一致（比如重装了云端）就再同步一次
                 let lock = CloudBotLock.shared
                 if let serverLocked = settings["private_bots"] as? [String], Set(serverLocked) != lock.locked {
@@ -508,12 +525,16 @@ struct CloudBotHomeScreen: View {
                         if let until = model.dutyUntil, until > Date() {
                             HStack(spacing: 8) {
                                 Image(systemName: "cross.case.fill").foregroundStyle(.red)
-                                Text("值班中 · 到 \(until.formatted(date: .omitted, time: .shortened))：回答极简，不推送主动消息")
+                                Text("值班中 · 到 \(until.formatted(date: .omitted, time: .shortened))：回答极简，主动消息攒到下班汇总")
                                     .font(.footnote)
                                 Spacer()
                                 Button("结束") { Task { await model.setDuty(hours: nil) } }.font(.footnote)
                             }
                             .padding(.vertical, 4).padding(.horizontal, 16)
+                        }
+                        if let digest = model.dutyDigest {
+                            CloudDutyDigestCard(text: digest.text, onDismiss: model.dismissDutyDigest)
+                                .padding(.horizontal, 16).padding(.bottom, 8)
                         }
                         if let banner = model.bannerText {
                             Button { Task { await model.refresh(forceReconnect: true) } } label: {
