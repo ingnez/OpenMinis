@@ -31,6 +31,9 @@ try:
 except ImportError:
     sync_playwright = None
 
+# 云电脑代理开着时返回 http://127.0.0.1:<端口>（服务端设置）；新打开的浏览器经它上网，按规则分流
+PROXY_SERVER_FN = None
+
 _browser_daemon_instance = None
 _daemon_lock = threading.Lock()
 
@@ -226,6 +229,12 @@ class BrowserOwnerDaemon:
         ]
         if os.getuid() == 0:
             args.append("--no-sandbox")
+        try:
+            proxy_server = PROXY_SERVER_FN() if PROXY_SERVER_FN else None
+        except Exception:
+            proxy_server = None
+        if proxy_server:
+            args.append(f"--proxy-server={proxy_server}")
 
         child_env = os.environ.copy()
         if display:

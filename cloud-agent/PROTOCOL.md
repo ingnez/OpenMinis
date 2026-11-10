@@ -380,3 +380,17 @@
 - `PUT /v1/notify`（Bark）：`url` 可直接粘贴 Bark App 的示例链接（如 `https://api.day.app/<Key>/标题/内容?group=x&ttl=600`）、只填设备 Key，或自建 Bark 服务器地址；服务器归一为 `https://<主机>[/<前缀>]/<Key>`，示例链接里的 `group` 会沿用。错误提示为中文且区分「缺少 Key」「含账号密码」「地址无效」。
 - 依赖安装下载源：Node.js 依次尝试 nodejs.org → npmmirror；uv 依次尝试 GitHub Releases → PyPI / 阿里云 / 清华镜像的 wheel（sha256 取自索引）。
 - 服务启动时定时任务与 Telegram 轮询在后台线程启动，网络不通不影响 `/health`。安装脚本健康检查改为最长 45 秒轮询，失败时输出 `systemctl status` 与 journalctl；apt / pip / Playwright 下载均带超时并回退国内镜像。手机端以 nohup + setsid 在服务器后台运行安装脚本并轮询日志，SSH 中断不会打断安装。
+
+## 8. 云电脑代理（服务器 2.5.1+）
+
+用 sing-box 在 `127.0.0.1:17890`（`OPENMINIS_PROXY_PORT` 可改）开 http + socks 混合端口。节点、订阅地址整体用主密钥加密保存（`proxy_state.bin`），接口只返回名称、类型、地址、端口、加密方式。
+
+- `GET /v1/proxy`：状态 `{mode: off|rules|global, selected, running, installed, version, error, nodes[], subscriptions[], rule_domains[], extra_domains[]}`
+- `PUT /v1/proxy`：`{mode?, selected?, extra_domains?}`，立即重启 sing-box
+- `POST /v1/proxy/import`：`{text}`，一条或多条分享链接（vless / REALITY、vmess、trojan、ss、hysteria2 / hy2），或一个订阅地址
+- `POST /v1/proxy/test`：`{ids?}`，经每个节点真实访问 generate_204 计时；没装 sing-box 时退回 TCP 连接耗时
+- `POST /v1/proxy/refresh`：重新拉取订阅；`POST /v1/proxy/install`：下载 sing-box（GitHub → 镜像，sha256 固定校验）
+- `POST /v1/proxy/check`：经代理 HEAD https://github.com，返回 `{http, ms}`
+- `DELETE /v1/proxy/nodes/<id>`、`DELETE /v1/proxy/subscriptions/<id>`
+
+代理在运行时，Bot 的命令环境带 `HTTP(S)_PROXY / ALL_PROXY / NO_PROXY / npm_config_*_proxy` 和 `GIT_CONFIG_*`（git 的 http.proxy），新打开的浏览器带 `--proxy-server`，服务器自己的工具下载（uv / node）也经代理；代理没在运行时都不设置。`rules` 模式只有开发常用域名走节点，其他直连。

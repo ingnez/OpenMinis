@@ -115,6 +115,20 @@ fi
 chmod 600 "$MASTER_KEY_FILE"
 chown "$SERVICE_USER:$SERVICE_USER" "$MASTER_KEY_FILE"
 
+echo "=== 4c. 安装代理内核 sing-box（GitHub release，依次试镜像，sha256 校验；失败不影响主服务）==="
+SB_DIR="$VAR_LIB_DIR/data/proxy/bin"
+SB_WANT=$(python3 -c "import sys; sys.path.insert(0, '$INSTALL_DIR'); import cloud_proxy; print(cloud_proxy.SINGBOX_VERSION)" 2>/dev/null || echo "")
+if [ "${OPENMINIS_SKIP_SINGBOX:-0}" = "1" ]; then
+    echo "[+] 已按 OPENMINIS_SKIP_SINGBOX=1 跳过（可在 App 的代理设置里再安装）"
+elif [ -n "$SB_WANT" ] && [ -x "$SB_DIR/sing-box" ] && "$SB_DIR/sing-box" version 2>/dev/null | head -1 | grep -q " $SB_WANT\$"; then
+    echo "[+] sing-box $SB_WANT 已安装"
+elif timeout 240 python3 "$INSTALL_DIR/cloud_proxy.py" install "$SB_DIR"; then
+    chown -R "$SERVICE_USER:$SERVICE_USER" "$VAR_LIB_DIR/data/proxy"
+    echo "[+] sing-box $SB_WANT 已安装到 $SB_DIR"
+else
+    echo "[-] 警告: sing-box 下载失败（可稍后在 App「云电脑资源设置 → 代理」里重试），继续安装"
+fi
+
 echo "=== 5. 配置 Systemd 服务文件 (openminis-cloud-agent.service) ==="
 # 已装过云电脑桌面时，服务配置由 install-desktop.sh 写（venv 里的 Python、DISPLAY、浏览器路径）。
 # 只「更新服务器 Agent」时保留它，否则浏览器和桌面工具会在升级后失效。

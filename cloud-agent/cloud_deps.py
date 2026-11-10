@@ -79,9 +79,17 @@ def _arch(kind):
     raise DepsError(f"不支持的 CPU 架构：{m}")
 
 
+# 云电脑代理在运行时返回经代理的 opener（服务端设置）；GitHub 等下载走代理，代理没开时直连
+OPENER_FN = None
+
+
 def _fetch(url, limit=MAX_DOWNLOAD):
     req = urllib.request.Request(url, headers={"User-Agent": "OpenMinis-cloud-agent"})
-    with urllib.request.urlopen(req, timeout=120) as r:
+    try:
+        opener = OPENER_FN() if OPENER_FN else None
+    except Exception:
+        opener = None
+    with (opener.open(req, timeout=120) if opener else urllib.request.urlopen(req, timeout=120)) as r:
         data = r.read(limit + 1)
     if len(data) > limit:
         raise DepsError(f"下载过大：{url}")

@@ -60,6 +60,7 @@ import cloud_llm
 import cloud_efficiency as eff
 import cloud_appfeed
 import cloud_audit
+import cloud_proxy
 import cloud_ws
 import select
 import gzip
@@ -1223,6 +1224,7 @@ def task_env(session_id):
     env = os.environ.copy()
     s = resource_settings()
     env.update(iso.mirror_env(s, os.path.join(os.path.dirname(GLOBAL_WORKSPACE), "cache")))
+    env.update(proxy_env())   # 云电脑代理开着时：终端、git、pip、npm 走本机 sing-box（按规则分流）
     pid = session_persona_id(session_id)
     ports = iso.bot_port_range(s, slot_index("bot:" + pid) if pid else 0)
     env["OPENMINIS_SHARED"] = SHARED_WORKSPACE
@@ -1291,6 +1293,35 @@ def _close_browser_for_display(key):
 GATE = iso.TaskGate(resource_settings)
 DISPLAYS = cloud_displays.DisplayManager(resource_settings, slot_index, on_stop=_close_browser_for_display)
 BG_JOBS = iso.BackgroundJobs()
+
+_proxy_mgr = [None]
+_proxy_lock = threading.Lock()
+
+def proxy_mgr():
+    """云电脑代理（sing-box）。状态和数据库放在同一个目录，节点整体用主密钥加密。"""
+    d = os.path.dirname(os.path.abspath(DB_PATH))
+    with _proxy_lock:
+        m = _proxy_mgr[0]
+        if m is None or m.dir != d:
+            if m is not None:
+                m.shutdown()
+            port = int(os.environ.get("OPENMINIS_PROXY_PORT", cloud_proxy.DEFAULT_PORT))
+            m = _proxy_mgr[0] = cloud_proxy.ProxyManager(d, cloud_secrets.get_box, port=port)
+        return m
+
+def proxy_env():
+    try:
+        return proxy_mgr().env()
+    except Exception:
+        return {}
+
+def start_proxy():
+    m = proxy_mgr()
+    m.apply()
+    m.watch()
+
+cloud_browser.PROXY_SERVER_FN = lambda: proxy_mgr().browser_proxy()
+cloud_deps.OPENER_FN = lambda: proxy_mgr().opener()
 
 def tool_request_user_takeover(task_id, session_id, args):
     """需要用户亲自操作（登录、验证码、扫码、付款确认）时请求接管：记事件让手机显示「打开电脑」卡片，并推送提醒。"""
@@ -4376,6 +4407,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"items": daily_feed()})
             return
 
+        if path == "/v1/proxy":
+            try:
+                self._send(200, proxy_mgr().status())
+            except Exception as e:
+                self._send(500, {"error": f"读取代理设置失败：{type(e).__name__}"})
+            return
         if path == "/v1/resources":
             specs = iso.server_specs(GLOBAL_WORKSPACE)
             self._send(200, {"settings": resource_settings(), "defaults": iso.DEFAULTS, "specs": specs,
@@ -4989,6 +5026,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if entry else 404, entry or {"error": "Memory entry not found"})
             return
 
+        if path == "/v1/proxy":
+            try:
+                self._send(200, proxy_mgr().update(req_json))
+            except cloud_proxy.ProxyError as e:
+                self._send(400, {"error": str(e)})
+            return
         if path == "/v1/resources":
             try:
                 new = update_resource_settings(req_json)
@@ -5153,10 +5196,54 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send(404, {"error": "Not found"})
 
+    def _proxy_post(self, path, body):
+        m = proxy_mgr()
+        try:
+            if path == "/v1/proxy/import":
+                text = body.get("text")
+                if not isinstance(text, str) or not text.strip() or len(text) > 2_000_000:
+                    raise cloud_proxy.ProxyError("请粘贴分享链接或订阅地址")
+                res = m.import_text(text)
+                m.apply()
+                self._send(200, dict(res, status=m.status()))
+            elif path == "/v1/proxy/test":
+                ids = body.get("ids")
+                self._send(200, {"results": m.test(ids if isinstance(ids, list) else None), "status": m.status()})
+            elif path == "/v1/proxy/refresh":
+                self._send(200, {"results": m.refresh_subscriptions(), "status": m.status()})
+            elif path == "/v1/proxy/install":
+                m.install_async()
+                self._send(202, m.status())
+            elif path == "/v1/proxy/check":
+                # 经代理访问 GitHub：如实给出耗时，不编数字
+                op = m.opener()
+                if not op:
+                    raise cloud_proxy.ProxyError("代理没在运行")
+                t0 = time.monotonic()
+                with op.open(urllib.request.Request("https://github.com", method="HEAD"), timeout=15) as r:
+                    code = r.status
+                self._send(200, {"ok": True, "http": code, "ms": int((time.monotonic() - t0) * 1000)})
+            else:
+                self._send(404, {"error": "Not found"})
+        except cloud_proxy.ProxyError as e:
+            self._send(400, {"error": str(e)})
+        except cloud_secrets.SecretStoreUnavailable as e:
+            self._send(503, {"error": str(e)})
+        except Exception as e:
+            self._send(502, {"error": f"{type(e).__name__}：{cloud_proxy.scrub(str(e), cloud_proxy.secret_strings(m.state()))[:200]}"})
+
     def do_DELETE(self):
         path = self.path.split("?")[0]
         query_params = parse_qs(urlparse(self.path).query)
         if not self._authorized():
+            return
+        m_px = re.match(r"^/v1/proxy/(nodes|subscriptions)/([0-9a-f]{6,64})$", path)
+        if m_px:
+            if m_px.group(1) == "nodes":
+                proxy_mgr().delete(node_id=m_px.group(2))
+            else:
+                proxy_mgr().delete(sub_id=m_px.group(2))
+            self._send(200, proxy_mgr().status())
             return
         if path.startswith("/v1/bots/") and path.endswith("/telegram"):
             self._send(200, telegram_delete(path[len("/v1/bots/"):-len("/telegram")]))
@@ -5319,6 +5406,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_json = self._read_json_body()
         if req_json is None:
+            return
+        if path.startswith("/v1/proxy/"):
+            self._proxy_post(path, req_json)
             return
         m_share = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/library/([A-Za-z0-9_-]{1,64})/share$", path)
         if m_share:
@@ -6051,7 +6141,8 @@ def run_server():
 
     def start_background():
         # 后台服务（定时任务、Telegram 长轮询）放在独立线程启动：任何一项出错或网络不通都不影响 /health 与 API 立即可用
-        for name, fn in (("watchdog", start_watchdog), ("scheduler", start_scheduler), ("telegram", start_telegram), ("browser-warm", warm_browser)):
+        for name, fn in (("watchdog", start_watchdog), ("scheduler", start_scheduler), ("proxy", start_proxy),
+                         ("telegram", start_telegram), ("browser-warm", warm_browser)):
             try:
                 fn()
             except Exception as e:

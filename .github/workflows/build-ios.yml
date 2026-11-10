@@ -80,6 +80,15 @@ jobs:
           sudo cp cloud-agent/test_browser_real.py /opt/openminis-cloud-agent/test_browser_real.py
           sudo chown root:root /opt/openminis-cloud-agent/test_browser_real.py
           sudo -u openminis env DISPLAY=:99 XAUTHORITY=/var/lib/openminis-cloud-agent/.Xauthority HOME=/var/lib/openminis-cloud-agent PLAYWRIGHT_BROWSERS_PATH=/var/lib/openminis-cloud-agent/ms-playwright OPENMINIS_REAL_BROWSER_TEST=1 /opt/openminis-cloud-agent/venv/bin/python3 /opt/openminis-cloud-agent/test_browser_real.py 2>&1 | tee cloud-browser-real.log
+      - name: 云电脑代理：安装脚本装好的 sing-box 真连测速与配置校验
+        run: |
+          set -euo pipefail
+          SB=/var/lib/openminis-cloud-agent/data/proxy/bin/sing-box
+          sudo "$SB" version | head -1 | tee cloud-proxy.log
+          sudo cp "$SB" /tmp/sing-box && sudo chmod 755 /tmp/sing-box
+          TOKEN=$(sudo cat /etc/openminis/token)
+          curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18765/v1/proxy | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d["installed"] and d["mode"]=="off", d; print("proxy installed", d["version"])' | tee -a cloud-proxy.log
+          cd cloud-agent && OPENMINIS_SINGBOX=/tmp/sing-box python3 -W ignore -m unittest test_phase19_proxy -v 2>&1 | tee -a ../cloud-proxy.log
       - name: 客户端断线后的真实浏览器模型循环
         run: |
           set -o pipefail
@@ -96,6 +105,7 @@ jobs:
           test "$(sudo cat /etc/openminis/token)" = "$TOKEN"
           test "$(sudo sha256sum /etc/openminis/master.key)" = "$KEY"
           test ! -e /opt/openminis-cloud-agent/cloud_stale_module.py
+          grep -q 'sing-box .* 已安装$' cloud-reinstall.log   # 重复安装不重新下载代理内核
           grep -q '^Environment=DISPLAY=' /etc/systemd/system/openminis-cloud-agent.service
           curl -fsS -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:18765/v1/sessions/$SID" > /dev/null
           curl -fsS http://127.0.0.1:18765/health | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("agent_version"), d; print("agent", d["agent_version"])'
@@ -110,6 +120,7 @@ jobs:
             cloud-desktop-test.log
             cloud-browser-real.log
             cloud-browser-agent.log
+            cloud-proxy.log
   build:
     if: ${{ !inputs.quick }}
     runs-on: macos-26
