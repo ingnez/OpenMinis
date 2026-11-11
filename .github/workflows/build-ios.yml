@@ -1155,6 +1155,21 @@ jobs:
           xcrun xcresulttool export attachments --path ui-tests.xcresult --output-path e2e-shots 2>&1 | tail -3 || true
           ls e2e-shots | head -50
 
+      # 端到端结果一出来就先传（不等后面约 20 分钟的单元测试），失败时能马上看截图
+      - name: Upload e2e results (early)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-e2e-early
+          path: |
+            ui-tests.log
+            e2e-summary.md
+            ui-tests-summary.json
+            ui-tests-tests.json
+            e2e-shots
+            e2e-cloud-stack.log
+          retention-days: 7
+
       - name: iOS 单元测试 MinisTests（模拟器，MinisUnitTests 方案）
         id: unit
         if: always()

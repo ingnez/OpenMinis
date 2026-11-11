@@ -28,7 +28,7 @@ final class E2EFlowsUITests: XCTestCase {
         openBot(app)
         shot(app, "02a-托盘一张图")
         send(app, "看一张图")
-        XCTAssertTrue(waitText(app, contains: "收到 1 张图片", timeout: 90), "模型没收到图片（回复里没有「收到 1 张图片」）")
+        XCTAssertTrue(waitText(app, contains: "收到 1 张图片", timeout: 45), "模型没收到图片（回复里没有「收到 1 张图片」）")
         XCTAssertEqual(lastProbe(containing: "看一张图")?.images, 1, "假模型收到的 image_url 不是 1 张")
         XCTAssertFalse(anyElement(app, contains: "→ 工作区"), "气泡里还露着附件说明行")
         shot(app, "02b-一张图发出后")
@@ -146,7 +146,7 @@ final class E2EFlowsUITests: XCTestCase {
         let app = launch(attach: 3)
         openBot(app)
         send(app, "看三张图")
-        XCTAssertTrue(waitText(app, contains: "收到 3 张图片", timeout: 90), "模型没收到 3 张图片")
+        XCTAssertTrue(waitText(app, contains: "收到 3 张图片", timeout: 45), "模型没收到 3 张图片")
         let stack = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ AND label == %@", "imageStack", "3 张图片")).firstMatch
         XCTAssertTrue(stack.waitForExistence(timeout: 20), "气泡里没有「3 张图片」的叠放卡片")
         XCTAssertEqual(stack.value as? String, "叠放")
@@ -215,7 +215,7 @@ final class E2EFlowsUITests: XCTestCase {
         let app = launch(attach: 1)
         openBot(app)
         send(app, "单张图")
-        XCTAssertTrue(waitText(app, contains: "收到 1 张图片", timeout: 90))
+        XCTAssertTrue(waitText(app, contains: "收到 1 张图片", timeout: 45))
         let one = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ AND label == %@", "imageStack", "图片")).firstMatch
         XCTAssertTrue(one.waitForExistence(timeout: 20), "单张图没有显示成一张卡片")
         XCTAssertFalse(app.staticTexts["1 张图片"].exists, "单张图不该写「1 张图片」")
@@ -257,7 +257,7 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(poll(30) { (gear.value as? String) == "云端在线" }, "齿轮上的状态点不是在线（\(gear.value ?? "")）")
         XCTAssertTrue(app.buttons["新建"].exists, "右上角「+」不见了")
         // 上一个流程（test12）的 40 秒慢任务可能还在云端跑；等它干完，中间应该变空
-        XCTAssertTrue(waitGone(app.descendants(matching: .any)["homeCenterStatus"], timeout: 90), "没有 Bot 干活时中间应该是空的")
+        XCTAssertTrue(waitGone(app.descendants(matching: .any)["homeCenterStatus"], timeout: 45), "没有 Bot 干活时中间应该是空的")
         shot(app, "13a-顶栏齿轮无切换器")
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
         start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)))
@@ -344,7 +344,7 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 15), "点中间状态没跳进对话")
         shot(app, "16b-点状态进对话")
         goBack(app)
-        XCTAssertTrue(waitGone(status, timeout: 90), "Bot 干完后中间状态没自动消失")
+        XCTAssertTrue(waitGone(status, timeout: 45), "Bot 干完后中间状态没自动消失")
         shot(app, "16c-干完状态消失")
     }
 
@@ -407,7 +407,7 @@ final class E2EFlowsUITests: XCTestCase {
         let app = launch(attach: 1)
         openBot(app)
         send(app, "存一张图")
-        XCTAssertTrue(waitText(app, contains: "收到 1 张图片", timeout: 90), "图片没发出去")
+        XCTAssertTrue(waitText(app, contains: "收到 1 张图片", timeout: 45), "图片没发出去")
         app.buttons["Bot 资料"].tap()
         let lib = app.buttons["资料库"].exists ? app.buttons["资料库"] : app.staticTexts["资料库"]
         XCTAssertTrue(scrollTo(app, lib), "Bot 资料页没有「资料库」")
@@ -458,7 +458,7 @@ final class E2EFlowsUITests: XCTestCase {
         input.tap(); dismissKeyboardIntro(app); input.typeText("本地请加粗回复")
         let send = app.buttons["localComposerSendButton"]
         XCTAssertTrue(send.waitForExistence(timeout: 10)); send.tap()
-        XCTAssertTrue(waitText(app, contains: "引用里的中文加粗", timeout: 90), "本地引用回复没显示出来")
+        XCTAssertTrue(waitText(app, contains: "引用里的中文加粗", timeout: 45), "本地引用回复没显示出来")
         XCTAssertFalse(anyElement(app, contains: "**"), "本地 Markdown 星号原样露出来了")
         XCTAssertFalse(anyElement(app, contains: "\u{200B}"), "零宽空格留在了正文里")
         shot(app, "20-本地引用里中文加粗")
@@ -488,7 +488,9 @@ final class E2EFlowsUITests: XCTestCase {
         if app.keyboards.firstMatch.exists { app.swipeDown() }
         voice.tap()
         let capsule = app.descendants(matching: .any)["callCapsule"]
-        XCTAssertTrue(capsule.waitForExistence(timeout: 20), "点声波没出现通话胶囊")
+        let turnsPage = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "切到实时双向通话")).firstMatch
+        XCTAssertTrue(capsule.waitForExistence(timeout: 20),
+                      "点声波没出现通话胶囊" + (turnsPage.exists ? "（进了轮流通话页：App 认为没配好实时语音服务商）" : ""))
         shot(app, "21a-通话胶囊")
         XCTAssertTrue(poll(30) { (self.realtimeProbe()?.appends ?? 0) >= before + 10 }, "假实时服务没收到麦克风音频（input_audio_buffer.append）")
         XCTAssertTrue(poll(20) { (capsule.value as? String ?? "").hasPrefix("已接通") }, "服务端确认、收音也在送，胶囊却没显示已接通：\(capsule.value as? String ?? "")")
@@ -549,7 +551,7 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(mic.waitForExistence(timeout: 20), "本地输入栏没有麦克风")
         mic.tap()
         checkDictationCard(app, prefix: "23")
-        XCTAssertTrue(poll(60) { self.localProbe()?.requests.contains { $0.text.contains("e2e 听写 的 文字") } ?? false },
+        XCTAssertTrue(poll(45) { self.localProbe()?.requests.contains { $0.text.contains("e2e 听写 的 文字") } ?? false },
                       "点发送后本地模型没收到听写的文字")
     }
 
