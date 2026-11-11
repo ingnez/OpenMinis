@@ -161,7 +161,8 @@ final class E2EFlowsUITests: XCTestCase {
         pressVisible(app, stack)
         XCTAssertTrue(waitValue(stack, "叠放", timeout: 5), "再长按没有收回")
 
-        stack.tap()
+        revealBelowNavBar(app, stack)
+        pressVisible(app, stack, duration: 0)
         let close = app.buttons["关闭"]
         XCTAssertTrue(close.waitForExistence(timeout: 10), "点叠放卡片没打开全屏看图（左上没有关闭）")
         XCTAssertTrue(app.buttons["更多"].exists, "看图页右上没有「…」")
@@ -170,6 +171,7 @@ final class E2EFlowsUITests: XCTestCase {
         shot(app, "10c-看图页")
         app.swipeLeft()
         XCTAssertTrue(waitSelected(app.buttons["第 2 张"], timeout: 5), "左滑没换到第 2 张")
+        XCTAssertFalse(app.buttons["第 1 张"].isSelected, "换到第 2 张后缩略图条还框着第 1 张")
         let zoom = currentZoom(app)
         XCTAssertNotNil(zoom, "看图页没有可缩放的图片")
         if let zoom {
@@ -200,8 +202,9 @@ final class E2EFlowsUITests: XCTestCase {
         field.tap()
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 12))
 
-        stack.tap()
-        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        revealBelowNavBar(app, stack)
+        pressVisible(app, stack, duration: 0)
+        XCTAssertTrue(close.waitForExistence(timeout: 10), "第二次轻点叠放卡片没打开看图页")
         let page = currentZoom(app) ?? app
         page.swipeDown(velocity: .fast)
         XCTAssertTrue(waitGone(close, timeout: 10), "下滑没收起看图页")
@@ -414,16 +417,21 @@ final class E2EFlowsUITests: XCTestCase {
                 || app.navigationBars.buttons["Done"].exists || app.navigationBars.buttons["完成"].exists
         }
         shot(app, "18b-打开媒体图片")
-        XCTAssertTrue(opened, "点媒体里的图片没打开")
+        let err = app.descendants(matching: .any)["libraryPreviewError"]
+        XCTAssertTrue(opened && app.descendants(matching: .any)["libraryPreviewImage"].exists,
+                      "点媒体里的图片没打开" + (err.exists ? "：\(err.label)" : ""))
     }
 
     func test19_stepPanelShowsCloudComputer() throws {
         let app = launch()
         openBot(app)
-        send(app, "跑个命令")
-        XCTAssertTrue(poll(60) { (cloudProbe()?.requests ?? []).filter { $0.text.contains("跑个命令") }.count >= 2 }, "云端没执行步骤")
-        let bar = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "e2e-shell-ok")).firstMatch
-        XCTAssertTrue(bar.waitForExistence(timeout: 20), "没有步骤条")
+        executionTimeAllowance = 240
+        // 步骤条只在运行中（和结束后几秒）显示；42963481185 里等「跑个命令」跑完再找，条已经收起了。
+        // 改用 40 秒的慢任务，趁它在跑时点开
+        send(app, "慢任务")
+        let live = NSPredicate(format: "label CONTAINS %@", "sleep 40")
+        XCTAssertTrue(poll(60) { app.buttons.matching(live).firstMatch.exists || app.staticTexts.matching(live).firstMatch.exists }, "没有步骤条")
+        let bar = app.buttons.matching(live).firstMatch.exists ? app.buttons.matching(live).firstMatch : app.staticTexts.matching(live).firstMatch
         bar.tap()
         XCTAssertTrue(app.staticTexts["E2E云电脑"].waitForExistence(timeout: 10), "步骤面板标题不是云电脑名字")
         XCTAssertFalse(app.staticTexts["Minis Computer"].exists, "步骤面板标题还是本机「Minis Computer」")
@@ -594,9 +602,10 @@ final class E2EFlowsUITests: XCTestCase {
         let win = app.windows.firstMatch.frame
         let top = app.navigationBars.firstMatch.exists ? app.navigationBars.firstMatch.frame.maxY + 4 : win.minY + 120
         let visible = el.frame.intersection(CGRect(x: win.minX, y: top, width: win.width, height: win.maxY - top - 160))
-        guard !visible.isNull, visible.height > 10 else { el.press(forDuration: duration); return }
+        guard !visible.isNull, visible.height > 10 else { if duration <= 0 { el.tap() } else { el.press(forDuration: duration) }; return }
         let origin = app.coordinate(withNormalizedOffset: .zero)
-        origin.withOffset(CGVector(dx: visible.midX, dy: visible.midY)).press(forDuration: duration)
+        let point = origin.withOffset(CGVector(dx: visible.midX, dy: visible.midY))
+        if duration <= 0 { point.tap() } else { point.press(forDuration: duration) }
     }
 
     private func waitValue(_ el: XCUIElement, _ v: String, timeout: TimeInterval) -> Bool {
