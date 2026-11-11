@@ -331,6 +331,8 @@ struct ChatSendButton: View {
                 .keyboardShortcut(.return, modifiers: .command)
                 .opacity(0)
                 .accessibilityHidden(true)
+                // 自己的标识：不然外面给发送键的标识也落到这个 0×0 的隐藏按钮上，同一个标识两个按钮（42995594800 test17 / test20）
+                .accessibilityIdentifier("sendKeyboardShortcut")
         )
         .accessibilityAction(named: Text("Return key options", comment: "VoiceOver action on the send button that opens the Return-key mode menu")) {
             // VoiceOver users get the same switch without the long-press:

@@ -365,7 +365,7 @@ final class E2EFlowsUITests: XCTestCase {
         if hasInput {
             let input = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
             input.tap(); input.typeText("本地隔离E2E慢任务")
-            let send = app.buttons["localComposerSendButton"]
+            let send = localSendButton(app)
             if localModelReady(app), send.waitForExistence(timeout: 10), send.isEnabled {
                 send.tap()
                 localRan = poll(90) { (localProbe()?.requests ?? []).contains { $0.text.contains("本地隔离E2E慢任务") } }
@@ -456,7 +456,7 @@ final class E2EFlowsUITests: XCTestCase {
         try XCTSkipUnless(localModelReady(app), "本地模式没选上注入的假模型（No model selected），本地渲染这条在模拟器里没法验证")
         let input = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
         input.tap(); dismissKeyboardIntro(app); input.typeText("本地请加粗回复")
-        let send = app.buttons["localComposerSendButton"]
+        let send = localSendButton(app)
         XCTAssertTrue(send.waitForExistence(timeout: 10)); send.tap()
         XCTAssertTrue(waitText(app, contains: "引用里的中文加粗", timeout: 45), "本地引用回复没显示出来")
         XCTAssertFalse(anyElement(app, contains: "**"), "本地 Markdown 星号原样露出来了")
@@ -467,6 +467,14 @@ final class E2EFlowsUITests: XCTestCase {
     // MARK: - 工具
 
     /// 本地新对话顶上的模型名不再是「No model selected」（最多等 20 秒，注入是异步的）
+    /// 本地发送键：iOS 26 上发送键背后有个 ⌘Return 用的 0×0 隐藏按钮，只取有尺寸的那个
+    private func localSendButton(_ app: XCUIApplication) -> XCUIElement {
+        let q = app.buttons.matching(identifier: "localComposerSendButton")
+        var found: XCUIElement?
+        _ = poll(10) { found = q.allElementsBoundByIndex.first { $0.frame.width > 1 }; return found != nil }
+        return found ?? q.firstMatch
+    }
+
     private func localModelReady(_ app: XCUIApplication) -> Bool {
         poll(20) {
             let m = app.buttons["Model"]
