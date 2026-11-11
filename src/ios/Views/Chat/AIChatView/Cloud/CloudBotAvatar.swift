@@ -439,6 +439,9 @@ struct CloudBotAliveAvatar: View {
     var size: CGFloat = 150
     /// 放在按钮里时传 false：头像自己的拖动手势（minimumDistance 0）会吞掉按钮的点按
     var interactive = true
+    /// 首页大头像跟着状态变表情：出错时 .frown；working = 正在思考 / 干活，眨眼更勤
+    var mood: CloudBotMood = .calm
+    var working = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var gaze: CGSize = .zero
     @State private var eyeOpen: CGFloat = 1
@@ -452,7 +455,7 @@ struct CloudBotAliveAvatar: View {
             let breath = reduceMotion ? 0 : sin(t * 1.6)
             let tilt = CloudBotMood.tilt(gaze: (Double(gaze.width), Double(gaze.height)), shy: shy)
             CloudBotAvatarView(spec: spec, size: size, gaze: shy ? CGSize(width: tilt.yaw > 0 ? 0.8 : -0.8, height: 0.6) : gaze,
-                               eyeOpen: eyeOpen, mood: shy ? .shy : .calm)
+                               eyeOpen: eyeOpen, mood: shy ? .shy : mood)
                 .overlay(CloudAvatarSheen(yaw: reduceMotion ? 0 : tilt.yaw, pitch: reduceMotion ? 0 : tilt.pitch).allowsHitTesting(false))
                 .rotation3DEffect(.degrees(reduceMotion ? 0 : tilt.yaw), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
                 .rotation3DEffect(.degrees(reduceMotion ? 0 : tilt.pitch), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
@@ -488,7 +491,7 @@ struct CloudBotAliveAvatar: View {
             bounce = 1.12
             withAnimation(.spring(response: 0.35, dampingFraction: 0.45)) { bounce = 1 }
         }
-        .task(id: reduceMotion) { await live() }
+        .task(id: reduceMotion ? 2 : (working ? 1 : 0)) { await live() }
         .accessibilityHidden(true)
     }
 
@@ -504,9 +507,10 @@ struct CloudBotAliveAvatar: View {
 
     private func live() async {
         while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: UInt64.random(in: 1_200_000_000...3_200_000_000))
+            let wait = CloudHomeHeaderRules.blinkWait(working: working)
+            try? await Task.sleep(nanoseconds: UInt64(Double.random(in: wait) * 1_000_000_000))
             if Task.isCancelled { return }
-            if Int.random(in: 0..<3) > 0 {
+            if working || Int.random(in: 0..<3) > 0 {
                 withAnimation(.easeInOut(duration: 0.07)) { eyeOpen = 0.1 }
                 try? await Task.sleep(nanoseconds: 110_000_000)
                 withAnimation(.easeInOut(duration: 0.1)) { eyeOpen = 1 }

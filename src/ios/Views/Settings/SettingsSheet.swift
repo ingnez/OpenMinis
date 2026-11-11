@@ -42,6 +42,7 @@ private enum SettingsDestination: Hashable {
 struct SettingsSheet: View {
     @Binding var showTerminal: Bool
     @AppStorage("appearanceMode") private var appearanceMode: Int = 0
+    @AppStorage(CloudBotHome.modeKey) private var homeMode: String = "local"
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var deepLink = DeepLinkCoordinator.shared
     @State private var navPath = NavigationPath()
@@ -50,6 +51,10 @@ struct SettingsSheet: View {
     var body: some View {
         NavigationStack(path: $navPath) {
             List {
+                // 11-11：「模式」和 Bot 设置里同一个选择页；本地模式下打勾的是本地模式（从 Bot 模式进来就是云端），选另一个立刻切过去
+                Section {
+                    HomeModeRow(current: HomeMode.from(homeMode), dismiss: { dismiss() })
+                }
                 Section {
                     NavigationLink {
                         ProviderInstancesView()

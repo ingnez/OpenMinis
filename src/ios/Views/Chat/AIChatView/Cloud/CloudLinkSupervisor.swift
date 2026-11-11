@@ -399,45 +399,6 @@ final class CloudLinkSupervisor: ObservableObject {
     }
 }
 
-/// 首页 / 云端页面顶部的小状态点：绿 = 在线，黄 = 连接中，红 = 需要处理；点开看原因与修复
-struct CloudLinkDot: View {
-    @ObservedObject private var link = CloudLinkSupervisor.shared
-    var onOpenSettings: () -> Void = {}
-    @State private var showDetail = false
-
-    var body: some View {
-        Button { showDetail = true } label: {
-            Circle().fill(color).frame(width: 9, height: 9)
-                .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 1.5))
-                .padding(6)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("云电脑连接：\(label)")
-        .sheet(isPresented: $showDetail) {
-            NavigationStack { CloudLinkDiagnosticsView(onOpenSettings: { showDetail = false; onOpenSettings() }) }
-        }
-    }
-
-    private var color: Color {
-        switch link.state {
-        case .online: return link.serverOutdated || link.desktopProblem != nil ? .yellow : .green
-        case .connecting, .retrying: return .yellow
-        case .offline: return .red
-        case .idle: return .gray
-        }
-    }
-
-    private var label: String {
-        switch link.state {
-        case .online: return "在线"
-        case .connecting: return "连接中"
-        case .retrying(let n): return "重连中（第 \(n) 次）"
-        case .offline(let c): return c.message
-        case .idle: return "未配置"
-        }
-    }
-}
-
 /// 只有需要用户动手时才出现的一行横幅：断线原因 / 服务器需要更新 / 桌面未安装
 struct CloudLinkBanner: View {
     @ObservedObject private var link = CloudLinkSupervisor.shared

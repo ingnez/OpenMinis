@@ -360,6 +360,7 @@ extension ContentView {
                 } label: {
                     Image(systemName: "gear")
                 }
+                .accessibilityIdentifier("localSettingsButton")
             }
         }
         ToolbarItem(placement: .topBarTrailing) {

@@ -530,6 +530,8 @@ struct CloudBotHomeScreen: View {
     @State private var showCreate = false
     @State private var showCreateGroup = false
     @State private var showHub = false
+    /// 下拉首页露出的「今天」卡片
+    @State private var showToday = false
     @State private var showShiftCard = false
     @State private var showWorkbench = false
     /// 打开 Bot 设置时直接进「云电脑设置」（连接出问题的修复按钮用）
@@ -565,6 +567,10 @@ struct CloudBotHomeScreen: View {
             ZStack(alignment: .bottom) {
                 ScrollView {
                     VStack(spacing: 0) {
+                        CloudHomeScrollProbe()
+                        if showToday && search.isEmpty {
+                            CloudTodayCard(model: model).transition(.move(edge: .top).combined(with: .opacity))
+                        }
                         CloudLinkBanner(onOpenSettings: openCloudSettings)
                             .padding(.horizontal, 16).padding(.bottom, 8)
                         if let until = model.dutyUntil, until > Date() {
@@ -637,6 +643,11 @@ struct CloudBotHomeScreen: View {
                         Color.clear.frame(height: 90)
                     }
                 }
+                .coordinateSpace(name: "cloudHomeScroll")
+                .onPreferenceChange(CloudHomeScrollTopKey.self) { top in
+                    let next = CloudHomeHeaderRules.todayVisible(was: showToday, scrollTop: Double(top))
+                    if next != showToday { withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { showToday = next } }
+                }
                 .refreshable { await model.refresh() }
                 .scrollDismissesKeyboard(.interactively)
                 bottomBar
@@ -644,20 +655,12 @@ struct CloudBotHomeScreen: View {
             .background(Color(.systemBackground))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { avatarMenu }
+                // 11-11：Grok Bot 风格顶栏。左上角首字母圆头像（带连接状态点），中间平时空着、有 Bot 干活时飘出一行状态
+                ToolbarItem(placement: .topBarLeading) {
+                    CloudUserAvatarButton(onTap: openBotSettings, onAppSettings: onOpenSettings, onSwitch: { if $0 == .local { onSwitchToLocal() } })
+                }
                 ToolbarItem(placement: .principal) {
-                    HStack(spacing: 2) {
-                        Menu {
-                            modeButtons
-                        } label: {
-                            HStack(spacing: 3) {
-                                Text("Minis Bot").font(.caption.weight(.semibold))
-                                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
-                            }
-                            .foregroundStyle(.secondary)
-                        }
-                        CloudLinkDot(onOpenSettings: openCloudSettings)
-                    }
+                    CloudHomeCenterStatus(model: model, open: open)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -796,30 +799,6 @@ struct CloudBotHomeScreen: View {
         path = [id]
     }
 
-    @ViewBuilder
-    private var modeButtons: some View {
-        Button { onSwitchToLocal() } label: { Label("本地模式", systemImage: "iphone") }
-        Button {} label: { Label("Minis Bot ✓", systemImage: "person.3.fill") }
-    }
-
-    /// 左上角设置按钮：和右上角「+」同样的系统工具栏样式（iOS 26 上自动是玻璃按钮），点一下打开设置，长按有更多入口
-    private var avatarMenu: some View {
-        Menu {
-            Button { openBotSettings() } label: { Label("Bot 设置（云电脑、保管库）", systemImage: "gear") }
-            Button { onOpenSettings() } label: { Label("App 通用设置", systemImage: "slider.horizontal.3") }
-            Divider()
-            Button { onSwitchToLocal() } label: { Label("切换到本地模式", systemImage: "iphone") }
-        } label: {
-            Image(systemName: "gear")
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
-        } primaryAction: {
-            // Bot 模式的设置：云电脑设置（安装 / 更新服务器 Agent 服务）、保管库、Bot 管理
-            openBotSettings()
-        }
-        .accessibilityLabel("设置")
-    }
-
     private func openBotSettings() {
         hubOpensCloud = false
         showHub = true
@@ -904,10 +883,25 @@ struct CloudBotHubView: View {
     var openCloudFirst = false
     var onOpenAppSettings: (() -> Void)? = nil
     @State private var showCloud = false
+    @AppStorage(CloudHomeHeaderRules.userNameKey) private var userName: String = ""
 
     var body: some View {
         List {
             Section {
+                HomeModeRow(current: .bots, dismiss: onDone)
+                HStack {
+                    Label("你的名字", systemImage: "person.crop.circle")
+                    TextField("显示成左上角头像的首字母", text: $userName)
+                        .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("userNameField")
+                }
+            } footer: {
+                Text("「模式」切换本地 / 云端；名字只存在这台手机上，用来生成左上角头像的首字母。")
+            }
+            Section {
+                NavigationLink(destination: CloudLinkDiagnosticsView(onOpenSettings: { showCloud = true })) {
+                    Label("连接诊断（头像上的状态点）", systemImage: "stethoscope")
+                }
                 NavigationLink(destination: CloudAgentSettingsView()) {
                     Label("云电脑设置", systemImage: "server.rack")
                 }

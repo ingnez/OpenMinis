@@ -54,7 +54,8 @@ struct CloudBotTopAvatar: View {
     var body: some View {
         Button(action: onTap) {
             VStack(spacing: 8) {
-                CloudBotAliveAvatar(spec: CloudBotAvatarSpec.of(bot), size: size, interactive: false)
+                CloudBotAliveAvatar(spec: CloudBotAvatarSpec.of(bot), size: size, interactive: false,
+                                    mood: presence.state == .error ? .frown : .calm, working: typing != nil)
                     .allowsHitTesting(false)
                     // 正在回复：外面一圈 Bot 颜色的光环（多个 Bot 同时在干活一眼看得出）
                     .overlay {
@@ -87,6 +88,7 @@ struct CloudBotTopAvatar: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("打开 \(bot.name)，\(presence.accessibilityText)")
+        .accessibilityValue(presence.state == .error ? "皱眉" : (typing != nil ? "思考中眨眼" : "平静"))
     }
 
     private var typing: CloudTypingPhase? { CloudBotLock.shared.isLocked(bot.id) ? nil : bot.activity }
