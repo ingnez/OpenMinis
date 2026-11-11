@@ -638,7 +638,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.47.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.48.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -4713,7 +4713,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         print(f"attachment images failed: {type(e).__name__}", flush=True)
         _added, _missing = 0, 0
     if _missing:
-        log_event(task_id, "status", {"message": f"有 {_missing} 张图片读不出来（文件不在或太大），模型只看到文件名"})
+        log_event(task_id, "status", {"message": cloud_vision.missing_note(_missing)})
     _had_images = cloud_vision.has_images(messages)
     if cloud_vision.has_images(messages):
         _vc = get_db_connection()

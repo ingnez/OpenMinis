@@ -56,6 +56,12 @@ if ! python3 -c "import cryptography.hazmat.primitives.ciphers.aead" &> /dev/nul
     { apt_update; apt_install python3-cryptography; } || echo "[-] 警告: python3-cryptography 安装失败，云端将无法保存凭据"
 fi
 
+# 图片压缩：手机发来的大照片（保留原图时可能 >8 MB）要在服务器缩小后再给模型，没有 Pillow 只能原图直发或放弃
+if ! python3 -c "import PIL.Image" &> /dev/null; then
+    echo "[+] 安装 python3-pil 用于压缩发给模型的图片..."
+    { apt_update; apt_install python3-pil; } || echo "[-] 警告: python3-pil 安装失败，超过 8 MB 的图片模型看不到（App 默认会先压缩）"
+fi
+
 echo "=== 2. 创建专用服务用户 ($SERVICE_USER) ==="
 if ! id "$SERVICE_USER" &>/dev/null; then
     useradd -r -s /bin/false -M -d "$VAR_LIB_DIR" "$SERVICE_USER"

@@ -97,6 +97,8 @@ pip_install --upgrade pip || echo "[-] 警告: pip 升级失败，继续使用�
 pip_install playwright==1.49.0
 # 凭据加密 (AES-256-GCM)；服务以 venv 解释器运行，系统包对其不可见
 pip_install "cryptography>=41,<46"
+# 图片压缩：大照片在服务器缩小后再给模型（没有它时超过 8 MB 的图模型看不到）
+pip_install "Pillow>=10,<12" || echo "[-] 警告: Pillow 安装失败，超过 8 MB 的图片模型看不到（App 默认会先压缩）"
 
 echo "[+] 正在通过 playwright install --with-deps chromium 安装浏览器及依赖..."
 # 浏览器下载依次尝试官方 CDN 与 npmmirror 国内镜像

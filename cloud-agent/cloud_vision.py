@@ -191,6 +191,22 @@ def _sniff(data):
     return None
 
 
+def has_pil():
+    try:
+        import PIL.Image  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def missing_note(n):
+    """有图片没能作为图片给模型时，写进任务状态的中文说明（说清楚怎么办）"""
+    if not has_pil():
+        return (f"有 {n} 张图片没能给模型看（服务器缺 Pillow，超过 8 MB 的图压不了）："
+                "在 App 里「更新服务器 Agent」会自动装上，或发图时关掉「保留原图」")
+    return f"有 {n} 张图片读不出来（文件不在或格式不认识），模型只看到文件名"
+
+
 def shrink(data, max_bytes=MAX_IMAGE_BYTES):
     """太大的图片缩小重压成 JPEG。没有 PIL 时：JPEG / PNG / WebP / GIF 原图 ≤ MAX_RAW_BYTES 照发，
     更大或认不出格式才放弃（返回 None）。"""
