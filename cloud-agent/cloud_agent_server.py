@@ -2859,6 +2859,34 @@ def session_reply_view(conn, sid, bot_id):
     return {k: plan[k] for k in ("mode", "source", "bot_mode", "override", "front_model", "back_model")}
 
 REPLY_BACK_MODEL = {}        # task_id -> 秒回前台这一轮派出去的后台任务用的模型
+INSTANT_HANDED = set()       # 已经为这个前台任务自动 spawn_task 过（模型没照提示、直接调了干活的工具）
+INSTANT_HANDOFF_LOCK = threading.Lock()
+
+
+def instant_auto_handoff(task_id, session_id, fn_name, goal, model, provider_config):
+    """秒回前台误调用了干活的工具：不在前台执行，把用户原要求自动 spawn_task 给后台（每个前台任务只派一次）。
+
+    前台常用快模型，经常不理会「你没有这些工具、请用 spawn_task」。只回一句错误的话，后台不会启动，
+    截图回灌、命令、文件这些活也就丢了。这里补上这一步。"""
+    goal_text = (goal or "").strip()
+    if not goal_text:
+        return {"error": "秒回模式下前台不直接干活：先回用户一句，再用 spawn_task 把这件事交给后台。"}
+    with INSTANT_HANDOFF_LOCK:
+        already = task_id in INSTANT_HANDED
+        if not already:
+            INSTANT_HANDED.add(task_id)
+    if already:
+        return {"error": "秒回模式下前台不直接干活：这件事已经交给后台，请用 task_status 查看进度，或用 task_message 补充要求。"}
+    res = tool_worker(task_id, session_id, "spawn_task",
+                      {"goal": goal_text, "context": f"前台刚才调用了 {fn_name}，已改为交给后台继续完成。"},
+                      model, provider_config)
+    if not (isinstance(res, dict) and res.get("id")):
+        with INSTANT_HANDOFF_LOCK:
+            INSTANT_HANDED.discard(task_id)
+        return res if isinstance(res, dict) else {"error": "秒回模式下前台不直接干活：请用 spawn_task 把这件事交给后台。"}
+    res["note"] = "秒回前台不能直接调用 " + fn_name + "，已改为 spawn_task 交给后台。" + (res.get("note") or "")
+    return res
+
 
 def _park_running_task(task_id, session_id, reason):
     """当前工具已跑完：把对应的后台任务在安全点暂停并写下检查点。"""
@@ -5188,7 +5216,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     if instant:
                         front_err = cloud_reply.front_blocked(fn_name)
                         if front_err:
-                            return (tc_id, fn_name, front_err, 0)
+                            handed = instant_auto_handoff(
+                                task_id, session_id, fn_name, initial_content,
+                                REPLY_BACK_MODEL.get(task_id) or main_model, provider_config)
+                            return (tc_id, fn_name, handed, 0)
                     if fn_name in ("browser_action", "desktop_action") and isinstance(fn_args, dict):
                         cloud_replay.note_action(task_id, fn_name, fn_args)     # 录屏回放：记下这一步做了什么（不含输入原文）
 
@@ -5372,6 +5403,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             print(f"choice card post failed: {type(e).__name__}", flush=True)
         TURN_FLAGS.pop(task_id, None)
         REPLY_BACK_MODEL.pop(task_id, None)
+        INSTANT_HANDED.discard(task_id)
         conn = get_db_connection()
         c = conn.cursor()
         c.execute("UPDATE tasks SET status = ? WHERE task_id = ? AND status IN ('running', 'waiting_user')", (final_status, task_id))

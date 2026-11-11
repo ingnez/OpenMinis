@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Pick an iPhone simulator that xcodebuild will actually accept for a scheme.
+
+`simctl list` can show a device as available (and even boot it) while
+`xcodebuild -destination id=…` still rejects it. That happens when:
+
+- the runner image has a device/runtime simctl lists, but the selected
+  Xcode/scheme does not (placeholders only in -showdestinations);
+- the Minis target excludes x86_64 for the simulator SDK, so an Intel
+  runner (macos-15-intel) has no concrete iOS Simulator destination.
+
+This script asks xcodebuild for the scheme's destinations and prints the
+UDID of the newest available iPhone (no paired-Watch combos, no
+placeholders). Details go to stderr. Exit 1 if none are usable.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import platform
+import re
+import subprocess
+import sys
+from typing import Iterable
+
+DEST_RE = re.compile(r"\{([^{}]+)\}")
+
+
+def parse_destinations(text: str) -> list[dict[str, str]]:
+    dests: list[dict[str, str]] = []
+    for body in DEST_RE.findall(text):
+        fields: dict[str, str] = {}
+        for part in body.split(", "):
+            if ":" not in part:
+                continue
+            key, value = part.split(":", 1)
+            fields[key.strip()] = value.strip()
+        if fields:
+            dests.append(fields)
+    return dests
+
+
+def parse_os(value: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for chunk in re.split(r"[^\d]+", value or "0"):
+        if chunk:
+            parts.append(int(chunk))
+    return tuple(parts) or (0,)
+
+
+def is_concrete_iphone_simulator(dest: dict[str, str]) -> bool:
+    platform_name = dest.get("platform", "")
+    name = dest.get("name", "")
+    dest_id = dest.get("id", "")
+    if platform_name != "iOS Simulator":
+        return False
+    if not dest_id or "placeholder" in dest_id.lower():
+        return False
+    if name.startswith("Any "):
+        return False
+    if not name.startswith("iPhone"):
+        return False
+    # Skip "iPhone 17 Pro + Apple Watch …" paired destinations.
+    if "+" in name:
+        return False
+    return True
+
+
+def pick_iphone_simulator(dests: Iterable[dict[str, str]]) -> dict[str, str] | None:
+    cands = [d for d in dests if is_concrete_iphone_simulator(d)]
+    if not cands:
+        return None
+    cands.sort(key=lambda d: (parse_os(d.get("OS", "0")), d.get("name", "")), reverse=True)
+    return cands[0]
+
+
+def format_dest(dest: dict[str, str]) -> str:
+    return (
+        f"{dest.get('name', '?')} OS={dest.get('OS', '?')} "
+        f"arch={dest.get('arch', '?')} id={dest.get('id', '?')}"
+    )
+
+
+def run_showdestinations(args: argparse.Namespace) -> str:
+    cmd = [
+        "xcodebuild",
+        "-project", args.project,
+        "-scheme", args.scheme,
+        "-showdestinations",
+    ]
+    if args.configuration:
+        cmd += ["-configuration", args.configuration]
+    if args.derived_data:
+        cmd += ["-derivedDataPath", args.derived_data]
+    if args.cloned_source_packages:
+        cmd += [
+            "-clonedSourcePackagesDirPath", args.cloned_source_packages,
+            "-scmProvider", "system",
+            "-disableAutomaticPackageResolution",
+        ]
+    print("选择模拟器：" + " ".join(cmd), file=sys.stderr)
+    proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    text = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    if proc.returncode != 0 and "Available destinations" not in text:
+        sys.stderr.write(text)
+        raise SystemExit(
+            f"xcodebuild -showdestinations 失败（退出码 {proc.returncode}）"
+        )
+    return text
+
+
+def fail_no_destination(dests: list[dict[str, str]]) -> None:
+    print("xcodebuild 给出的目的地：", file=sys.stderr)
+    if dests:
+        for dest in dests:
+            print("  " + format_dest(dest) if dest.get("id") else "  " + str(dest), file=sys.stderr)
+    else:
+        print("  （无）", file=sys.stderr)
+    machine = platform.machine()
+    print(f"本机架构：{machine}", file=sys.stderr)
+    if machine in {"x86_64", "i386"}:
+        raise SystemExit(
+            "没有可用的 iPhone 模拟器目的地。Minis 在 iphonesimulator SDK 上排除了 "
+            "x86_64（只编 arm64），请改用 arm64 机器（macos-15 或 macos-26），"
+            "不要用 macos-15-intel。"
+        )
+    raise SystemExit(
+        "没有可用的 iPhone 模拟器目的地。请检查这台机器上的 Xcode 是否带了 iOS 模拟器运行时。"
+    )
+
+
+def self_test() -> None:
+    sample = """
+	Available destinations for the "MinisE2E" scheme:
+		{ platform:iOS, id:dvtdevice-DVTiPhonePlaceholder-iphoneos:placeholder, name:Any iOS Device }
+		{ platform:iOS Simulator, id:dvtdevice-DVTiOSDeviceSimulatorPlaceholder-iphonesimulator:placeholder, name:Any iOS Simulator Device }
+		{ platform:iOS Simulator, arch:arm64, id:AAAA-1111, OS:18.5, name:iPhone 16 }
+		{ platform:iOS Simulator, arch:arm64, id:BBBB-2222, OS:26.2, name:iPhone 17 Pro }
+		{ platform:iOS Simulator, arch:arm64, id:CCCC-3333, OS:26.2, name:iPhone 17 Pro + Apple Watch Series 11 (46mm) }
+		{ platform:iOS Simulator, arch:arm64, id:DDDD-4444, OS:26.2, name:iPad Pro 13-inch (M4) }
+    """
+    dests = parse_destinations(sample)
+    picked = pick_iphone_simulator(dests)
+    assert picked is not None, "should pick a concrete iPhone"
+    assert picked["id"] == "BBBB-2222", picked
+    # Only placeholders, as on Intel with EXCLUDED_ARCHS=x86_64
+    placeholders = parse_destinations(
+        """
+		{ platform:iOS, id:dvtdevice-DVTiPhonePlaceholder-iphoneos:placeholder, name:Any iOS Device }
+		{ platform:iOS Simulator, id:dvtdevice-DVTiOSDeviceSimulatorPlaceholder-iphonesimulator:placeholder, name:Any iOS Simulator Device }
+        """
+    )
+    assert pick_iphone_simulator(placeholders) is None
+    print("self-test ok", file=sys.stderr)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--project", default="src/ios/Minis.xcodeproj")
+    parser.add_argument("--scheme", default="MinisE2E")
+    parser.add_argument("--configuration")
+    parser.add_argument("--derived-data")
+    parser.add_argument("--cloned-source-packages")
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        return
+    text = run_showdestinations(args)
+    dests = parse_destinations(text)
+    picked = pick_iphone_simulator(dests)
+    if picked is None:
+        fail_no_destination(dests)
+    assert picked is not None
+    print(f"选中模拟器：{format_dest(picked)}", file=sys.stderr)
+    print(picked["id"])
+
+
+if __name__ == "__main__":
+    main()

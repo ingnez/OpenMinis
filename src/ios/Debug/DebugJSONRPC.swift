@@ -2425,25 +2425,31 @@ final class DebugJSONRPC: @unchecked Sendable {
         }
 
         let decided = full &+ single
-        return [
+        let hitRate: Double = decided > 0 ? Double(full) * 100.0 / Double(decided) : 0
+        let pagesPerCluster: Double = decided > 0 ? Double(pagesCommitted) / Double(decided) : 0
+        let pagesPerAnon: Double = anonMmaps > 0 ? Double(anonPages) / Double(anonMmaps) : 0
+        let guestMB: Double = Double(guestBytes) / (1024 * 1024)
+        let hostMB: Double = Double(hostBytes) / (1024 * 1024)
+        let out: [String: Any] = [
             "clusterCalls": calls,
             "clusterFull": full,
             "clusterSingle": single,
-            "clusterHitRatePct": decided > 0 ? Double(full) * 100.0 / Double(decided) : 0,
+            "clusterHitRatePct": hitRate,
             "missWhyNeighbourMapped": whyMapped,
             "missWhySameFlagsRefused": whyFlags,
             "missWhyHostPageEqualsGuest": whyNoCluster,
             "missWhyClusterMmapFailed": whyEnomem,
             "clusterPagesCommitted": pagesCommitted,
-            "avgPagesPerClusterCall": decided > 0 ? Double(pagesCommitted) / Double(decided) : 0,
+            "avgPagesPerClusterCall": pagesPerCluster,
             "anonMmapCalls": anonMmaps,
             "anonPagesMapped": anonPages,
-            "anonGuestMB": Double(guestBytes) / (1024 * 1024),
-            "anonHostMBUpperBound": Double(hostBytes) / (1024 * 1024),
-            "avgPagesPerAnonMmap": anonMmaps > 0 ? Double(anonPages) / Double(anonMmaps) : 0,
+            "anonGuestMB": guestMB,
+            "anonHostMBUpperBound": hostMB,
+            "avgPagesPerAnonMmap": pagesPerAnon,
             "hostPageSize": hostPage,
             "appFootprintMB": footprintMB,
         ]
+        return out
     }
 
     private func handleAppInfo(params: [String: Any] = [:]) -> Any {

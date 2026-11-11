@@ -361,22 +361,54 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
       viewReq = requestAnimationFrame(apply);
     };
     om.shot = () => { const c = cvs(); if (!c) { om.send({ type: 'shot', error: 'nocanvas' }); return; } try { om.send({ type: 'shot', data: c.toDataURL('image/png') }); } catch (e) { om.send({ type: 'shot', error: String(e) }); } };
-    let rec = null, chunks = [];
+    let rec = null, chunks = [], recTimer = null, recCanvas = null;
+    const recBlit = () => {
+      const src = cvs(), rc = recCanvas; if (!src || !rc) return;
+      if (rc.width !== src.width) rc.width = src.width;
+      if (rc.height !== src.height) rc.height = src.height;
+      try { rc.getContext('2d').drawImage(src, 0, 0); } catch (e) {}
+    };
+    const recCleanup = () => {
+      if (recTimer) { clearInterval(recTimer); recTimer = null; }
+      if (recCanvas && recCanvas.parentNode) recCanvas.parentNode.removeChild(recCanvas);
+      recCanvas = null;
+    };
     om.rec = on => {
       const c = cvs();
       if (on) {
+        if (rec) return;
         if (!c || !c.captureStream || !window.MediaRecorder) { om.send({ type: 'rec', error: 'unsupported' }); return; }
         const mime = ['video/mp4', 'video/webm'].find(m => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
-        try { rec = new MediaRecorder(c.captureStream(10), mime ? { mimeType: mime } : {}); } catch (e) { om.send({ type: 'rec', error: String(e) }); return; }
+        // 远端画面停住之后，直接 captureStream 画布不会再出帧，录完是空文件。另开一块画布定时把当前画面画过去，不改 noVNC 正在用的那块。
+        recCanvas = document.createElement('canvas');
+        recCanvas.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
+        (scr || document.body).appendChild(recCanvas);
+        recBlit();
+        let r;
+        try { r = new MediaRecorder(recCanvas.captureStream(10), mime ? { mimeType: mime } : {}); } catch (e) { recCleanup(); om.send({ type: 'rec', error: String(e) }); return; }
         chunks = [];
-        rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-        rec.onstop = () => {
-          const b = new Blob(chunks, { type: (rec && rec.mimeType) || mime || 'video/mp4' });
-          const fr = new FileReader(); fr.onload = () => om.send({ type: 'rec', data: fr.result, mime: b.type }); fr.readAsDataURL(b);
+        rec = r;
+        recTimer = setInterval(recBlit, 100);
+        r.onerror = e => om.send({ type: 'rec', error: String((e.error && (e.error.name || e.error.message)) || e.type || e) });
+        r.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+        r.onstop = () => {
+          recBlit();
+          recCleanup();
+          rec = null;
+          const typ = r.mimeType || mime || 'video/mp4';
+          const b = new Blob(chunks, { type: typ });
+          const fr = new FileReader();
+          fr.onload = () => om.send({ type: 'rec', data: fr.result, mime: b.type || typ });
+          fr.onerror = () => om.send({ type: 'rec', error: 'read' });
+          fr.readAsDataURL(b);
         };
-        rec.start(1000); om.send({ type: 'rec', started: true });
-      } else if (rec) { const r = rec; r.stop(); setTimeout(() => { rec = null; }, 0); }
+        try { r.start(1000); } catch (e) { recCleanup(); rec = null; om.send({ type: 'rec', error: String(e) }); return; }
+        om.send({ type: 'rec', started: true });
+      } else if (rec) {
+        try { rec.stop(); } catch (e) { recCleanup(); rec = null; om.send({ type: 'rec', error: String(e) }); }
+      }
     };
+
     """
 
     static func install(on config: WKWebViewConfiguration, bridge: CloudNoVNCBridge) {

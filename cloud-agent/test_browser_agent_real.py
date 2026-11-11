@@ -261,6 +261,20 @@ class RealBrowserAgentTests(unittest.TestCase):
             session_id = sess_resp["session_id"]
             log(f"✓ POST /v1/sessions/import 成功创建会话: {session_id}")
 
+        # 2.50.0 默认「秒回」：前台没有 browser_action，截图不会发生，MockLLM 也收不到 image_url。
+        # 本测试验证的是完整浏览器模型循环（含视觉回灌），所以这个会话改用「详细」。
+        reply_body = json.dumps({"mode": "verbose"}).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:18765/v1/sessions/{session_id}/reply",
+            data=reply_body,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            reply = json.loads(resp.read().decode())
+        self.assertEqual((reply.get("reply") or {}).get("mode"), "verbose", reply)
+        log("✓ 本会话回复方式已设为详细，保留完整浏览器工具")
+
         # 5. POST 任务并通过 raw socket 发送后立即关闭连接（验证服务端脱机自主执行）
         task_payload = json.dumps({
             "content": "Execute autonomous browser model loop",
