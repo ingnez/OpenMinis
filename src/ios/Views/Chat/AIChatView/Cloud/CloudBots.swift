@@ -410,6 +410,7 @@ struct CloudBotEditor: View {
     @State private var summary = ""
     @State private var instructions = ""
     @State private var isPrimary = false
+    @State private var alwaysShow = false
     @State private var saving = false
     @State private var errorText: String?
 
@@ -456,6 +457,9 @@ struct CloudBotEditor: View {
                 TextField("头像 Emoji", text: $emoji)
                 TextField("一句话简介（主 Bot 据此分派）", text: $summary)
                 Toggle("设为主 Bot", isOn: $isPrimary)
+                Toggle("专注模式时始终显示", isOn: $alwaysShow)
+            } footer: {
+                Text("值班专注打开时，首页默认只显示名字或指令里和医疗相关的 Bot。打开「始终显示」后，即使名称不含这些词也会出现。")
             }
             Section("指令") {
                 TextField("这个 Bot 是谁、怎么做事", text: $instructions, axis: .vertical)
@@ -481,6 +485,7 @@ struct CloudBotEditor: View {
                 summary = existing.summary
                 instructions = existing.instructions
                 isPrimary = existing.isPrimary
+                alwaysShow = CloudFocusFilter.isAlwaysShown(existing.id)
             }
         }
     }
@@ -493,6 +498,8 @@ struct CloudBotEditor: View {
         Task {
             do {
                 try await CloudBotService.save(bot)
+                CloudFocusFilter.setAlwaysShow(bot.id, alwaysShow)
+                NotificationCenter.default.post(name: .cloudFocusFilterChanged, object: nil)
                 await onSaved()
                 dismiss()
             } catch {

@@ -1,6 +1,6 @@
 import Foundation
 
-// 专注模式过滤：医疗关键词判断、关闭时全部显示、置顶和搜索不受影响（假 Bot）
+// 专注模式过滤：医疗关键词判断、关闭时全部显示、置顶和搜索不受影响、手动标记优先于关键词（假 Bot）
 var failures = 0
 func check(_ ok: Bool, _ what: String) { if !ok { failures += 1; print("FAIL:", what) } }
 
@@ -15,6 +15,20 @@ func check(_ ok: Bool, _ what: String) { if !ok { failures += 1; print("FAIL:", 
         check(!CloudFocusFilter.allows(name: shop.name, summary: shop.summary, instructions: shop.instructions, pinned: false, searching: false, on: true), "on hides shop")
         check(CloudFocusFilter.allows(name: shop.name, summary: shop.summary, instructions: shop.instructions, pinned: true, searching: false, on: true), "pinned kept")
         check(CloudFocusFilter.allows(name: shop.name, summary: shop.summary, instructions: shop.instructions, pinned: false, searching: true, on: true), "search shows all")
+        check(CloudFocusFilter.allows(name: shop.name, summary: shop.summary, instructions: shop.instructions, pinned: false, searching: false, on: true, alwaysShow: true), "manual mark kept")
+        check(CloudFocusFilter.allows(name: "ICU 助手", summary: "", instructions: "", pinned: false, searching: false, on: true, alwaysShow: false), "medical still shown without mark")
+
+        let ud = UserDefaults(suiteName: "OpenMinisFocusFilterTest-\(UUID().uuidString)")!
+        check(!CloudFocusFilter.isAlwaysShown("casebot", in: ud), "default off")
+        CloudFocusFilter.setAlwaysShow("casebot", true, in: ud)
+        CloudFocusFilter.setAlwaysShow("  casebot  ", true, in: ud)
+        check(CloudFocusFilter.isAlwaysShown("casebot", in: ud), "marked on")
+        check(CloudFocusFilter.alwaysShowIds(in: ud) == ["casebot"], "ids deduped")
+        CloudFocusFilter.setAlwaysShow("casebot", false, in: ud)
+        check(!CloudFocusFilter.isAlwaysShown("casebot", in: ud), "unmarked")
+        CloudFocusFilter.setAlwaysShow("  ", true, in: ud)
+        check(CloudFocusFilter.alwaysShowIds(in: ud).isEmpty, "empty id ignored")
+
         if failures > 0 { print("\(failures) failures"); exit(1) }
         print("CloudFocusFilterTests OK")
     }

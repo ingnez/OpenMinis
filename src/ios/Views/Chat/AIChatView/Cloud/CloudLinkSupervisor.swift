@@ -351,7 +351,9 @@ final class CloudLinkSupervisor: ObservableObject {
                 content.title = "OpenMinis"
                 content.body = "有一条新消息（已上锁的 Bot）"
             }
-            content.sound = .default
+            let night = CloudNightMode.notifyStyle()
+            content.sound = night.sound ? .default : nil
+            if !night.interrupt { content.interruptionLevel = .passive }
             content.threadIdentifier = "cloud-" + (item["bot_id"] as? String ?? sid ?? "main")
             var info: [String: Any] = ["cloud_kind": item["kind"] as? String ?? ""]
             if let sid { info["cloud_session_id"] = sid }

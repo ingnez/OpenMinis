@@ -42,7 +42,7 @@ struct CloudNightModeMenu: View {
             Text("常开").tag("on")
             Text("关闭").tag("off")
         } label: {
-            Label("夜班模式（暗色暖光、大字、不震动）", systemImage: "moon.stars")
+            Label("夜班模式（暗色暖光、大字、不震动、通知静音）", systemImage: "moon.stars")
         }
         .pickerStyle(.menu)
     }

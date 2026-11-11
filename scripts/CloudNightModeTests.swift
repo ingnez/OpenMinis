@@ -16,6 +16,8 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(CloudNightMode.active(setting: "on", dutyUntil: nil, now: at(14), calendar: cal), "常开")
         check(!CloudNightMode.active(setting: "off", dutyUntil: later, now: at(23), calendar: cal), "关闭")
         check(CloudNightMode.isNightHour(20) && CloudNightMode.isNightHour(7) && !CloudNightMode.isNightHour(8), "边界")
+        check(CloudNightMode.notifyStyle(muted: true) == CloudNightMode.NotifyStyle(sound: false, interrupt: false), "夜班通知静音")
+        check(CloudNightMode.notifyStyle(muted: false) == CloudNightMode.NotifyStyle(sound: true, interrupt: true), "白天通知有声")
         print("PASS：夜班模式生效规则")
     }
 }

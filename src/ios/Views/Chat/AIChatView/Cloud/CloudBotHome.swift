@@ -59,6 +59,21 @@ final class CloudBotHomeModel: ObservableObject {
     @Published var sections: [CloudBotSection] = []
     /// 外部入口（小组件、Siri、分享、委托卡片）要打开的 Bot id 或 "group:<id>"；首页收到后进入对话
     @Published var pendingOpen: String?
+    /// 最近打开的 Bot（手表抬腕说话、控制中心没选 Bot 时用这个；不是分组 / 隐藏页）
+    @Published var currentBotId: String? = UserDefaults.standard.string(forKey: "OpenMinisCloud_currentBot")
+
+    func rememberCurrent(_ id: String?) {
+        guard let id, !id.isEmpty else { return }
+        if id.hasPrefix("group:") || id.hasPrefix("nav:") || id.hasPrefix("page:") || id.hasPrefix("detail:") || id == "hidden" { return }
+        if CloudBotThreadRules.parseRoute(id) != nil { return }
+        currentBotId = id
+        UserDefaults.standard.set(id, forKey: "OpenMinisCloud_currentBot")
+    }
+
+    func currentForWatch() -> String? {
+        if let currentBotId, bots.contains(where: { $0.id == currentBotId }) { return currentBotId }
+        return primary?.id ?? bots.first?.id
+    }
     /// 外部入口带来的文字 / 附件：对应 Bot 的对话打开时取走
     var pendingPrompt: CloudBotPendingPrompt?
     /// 分享进来的内容还没选 Bot：首页弹出选择表
@@ -152,7 +167,8 @@ final class CloudBotHomeModel: ObservableObject {
         let focus = CloudFocusFilter.active
         return bots.filter { !$0.isPrimary && (!$0.hidden || !q.isEmpty) }
             .filter { CloudFocusFilter.allows(name: $0.name, summary: $0.summary, instructions: $0.instructions,
-                                              pinned: $0.pinned, searching: !q.isEmpty, on: focus) }
+                                              pinned: $0.pinned, searching: !q.isEmpty, on: focus,
+                                              alwaysShow: CloudFocusFilter.isAlwaysShown($0.id)) }
             .filter { q.isEmpty || $0.name.lowercased().contains(q) || $0.lastPreview.lowercased().contains(q) || $0.id.contains(q) }
             .sorted {
                 if $0.pinned != $1.pinned { return $0.pinned }
@@ -173,7 +189,7 @@ final class CloudBotHomeModel: ObservableObject {
     func refreshBots() async {
         guard CloudConnection.shared.isConnected, let list = try? await CloudBotService.list() else { return }
         bots = list
-        CloudWatchBridge.shared.publish(list)
+        CloudWatchBridge.shared.publish(list, currentId: currentForWatch())
         CloudSpotlight.index(list)
     }
 
@@ -366,7 +382,7 @@ final class CloudBotHomeModel: ObservableObject {
         link.handle(.pageOpened)
         do {
             bots = try await CloudQuiet.retry { try await CloudBotService.list() }
-            CloudWatchBridge.shared.publish(bots)
+            CloudWatchBridge.shared.publish(bots, currentId: currentForWatch())
             CloudSpotlight.index(bots)
             CloudBotLock.shared.lockSecretHoldersByDefault(bots)
             bannerText = nil
@@ -766,6 +782,8 @@ struct CloudBotHomeScreen: View {
             CloudConnectAppsSheet(onClose: { showConnectApps = false })
                 .presentationDetents([.large])
         }
+        .onChange(of: path) { p in if let id = p.last { model.rememberCurrent(id) } }
+        .onChange(of: splitSelection) { id in model.rememberCurrent(id) }
         .onChange(of: model.pendingOpen) { target in
             guard let target else { return }
             model.pendingOpen = nil
@@ -807,6 +825,7 @@ struct CloudBotHomeScreen: View {
     private func open(_ id: String) {
         CloudHaptics.tap()
         model.markSeen(id)
+        model.rememberCurrent(id)
         path = [id]
     }
 
@@ -922,6 +941,10 @@ struct CloudBotHubView: View {
                 Text("换聊天字体后，新消息马上用新字体；已经显示的消息重新打开对话后才换。")
             }
             Section {
+                NavigationLink(destination: CloudControlsAndWatchView(onPreview: { id in
+                    onDone()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { CloudBotEntry.openVoice(bot: id) }
+                })) { Label("控制中心与手表", systemImage: "applewatch") }
                 NavigationLink(destination: CloudBotsView()) { Label("我的 Bot（模板、导入导出）", systemImage: "person.3") }
                 NavigationLink(destination: CloudPluginsView()) { Label("插件市场", systemImage: "puzzlepiece.extension") }
                 NavigationLink(destination: CloudRoutinesView()) { Label("例行任务", systemImage: "clock.arrow.circlepath") }

@@ -136,6 +136,16 @@ struct MinisShortcutsProvider: AppShortcutsProvider {
             shortTitle: "Open Bot",
             systemImageName: "person.2.circle"
         )
+        // iOS 16–17 没有控制中心选 Bot 的控件：把这个快捷指令放到锁屏、操作按钮或主屏幕，并可指定 Bot
+        AppShortcut(
+            intent: StartCloudBotVoiceIntent(),
+            phrases: [
+                "Talk to my bot in \(.applicationName)",
+                "Call my bot in \(.applicationName)",
+            ],
+            shortTitle: "Talk to Bot",
+            systemImageName: "waveform"
+        )
         // [T-ios-remove-open-webapp-shortcut-intent] OpenWebAppIntent removed —
         // the Home-Screen WebApp tile path was replaced by another mechanism,
         // so the Shortcuts/AppIntents action is no longer registered.
