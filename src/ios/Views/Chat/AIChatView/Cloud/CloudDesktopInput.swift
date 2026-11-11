@@ -319,6 +319,10 @@ enum CloudIMECommit {
 
     /// 含中文、全角标点等（没有 X11 Latin-1 keysym）必须走服务器；纯 ASCII 在 VNC 可用时才能直接按键
     static func viaServer(_ text: String) -> Bool { text.contains { CloudKey.keysym(for: $0) == nil } }
+
+    /// 已经按 `sent` 发出去之后：输入框若又多了字（打字/上屏和清回 sentinel 撞车），
+    /// 不要用 sentinel 把新字抹掉，应带着 `sent` 再冲一次。
+    static func shouldFlushAgain(sent: String, fieldNow: String) -> Bool { fieldNow != sent }
 }
 
 /// 输入法上屏的发送顺序：中文等走服务器（HTTP 剪贴板粘贴 / 逐字）。

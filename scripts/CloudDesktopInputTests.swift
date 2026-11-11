@@ -76,6 +76,9 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(CloudIMECommit.events(old: z0, new: z0 + "\n", composing: false) == [.text("\n")], "换行上屏")
         check(CloudIMECommit.events(old: z0, new: "", composing: false) == [.backspace(1)], "只剩 sentinel 时退格")
         check(CloudIMECommit.viaServer("你好") && !CloudIMECommit.viaServer("hello 1!") && CloudIMECommit.viaServer("中a1？") && !CloudIMECommit.viaServer(" "), "中文走服务器，ASCII / 空格可直接按键")
+        check(!CloudIMECommit.shouldFlushAgain(sent: "a", fieldNow: "a"), "框里没多字就可以清回 sentinel")
+        check(CloudIMECommit.shouldFlushAgain(sent: "a", fieldNow: "a1 "), "冲掉 a 时框里已是 a1 ，要再发，不能清掉")
+        check(CloudIMECommit.shouldFlushAgain(sent: "云", fieldNow: "云电脑中文输入"), "中文后续字不能被 sentinel 抹掉")
 
         // 画质：首帧低清，按延迟自适应，抖一下不切
         check(CloudStreamQuality.firstFrame.quality < CloudStreamQuality.high.quality, "首帧更省")
@@ -234,4 +237,5 @@ func typeOrderTests() {
     check(CloudIMECommit.events(old: CloudIMECommit.sentinel, new: CloudIMECommit.sentinel + "7", composing: false) == [.text("7")], "数字")
     check(CloudIMECommit.events(old: CloudIMECommit.sentinel, new: CloudIMECommit.sentinel + " ", composing: false) == [.text(" ")], "空格")
     check(CloudIMECommit.events(old: CloudIMECommit.sentinel, new: CloudIMECommit.sentinel + "\n", composing: false) == [.text("\n")], "换行")
+    check(CloudIMECommit.shouldFlushAgain(sent: "a", fieldNow: "a1 "), "打字撞上清 sentinel 时要再冲")
 }

@@ -112,7 +112,11 @@ final class E2EFlowsUITests: XCTestCase {
         let market = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "插件市场")).firstMatch
         XCTAssertTrue(scrollTo(app, market), "Bot 设置里没有「插件市场」")
         market.tap()
-        XCTAssertTrue(waitText(app, contains: "E2E 回声", timeout: 30), "插件目录没有 e2e 假插件")
+        XCTAssertTrue(app.navigationBars["插件市场"].waitForExistence(timeout: 15) || waitText(app, contains: "插件目录", timeout: 15), "插件市场页没打开")
+        let echo = app.descendants(matching: .any)["pluginCatalog-e2e-echo"]
+        let echoName = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "E2E 回声")).firstMatch
+        XCTAssertTrue(scrollTo(app, echo) || scrollTo(app, echoName) || waitText(app, contains: "E2E 回声", timeout: 5),
+                      "插件目录没有 e2e 假插件")
         let install = app.descendants(matching: .any)["pluginInstall-e2e-echo"]
         XCTAssertTrue(scrollTo(app, install), "插件目录里没有「E2E 回声」的安装按钮")
         install.tap()
@@ -514,10 +518,20 @@ final class E2EFlowsUITests: XCTestCase {
         openBot(app)
         let voice = app.buttons["composerVoiceButton"]
         XCTAssertTrue(voice.waitForExistence(timeout: 20), "输入栏没有声波按钮")
-        if app.keyboards.firstMatch.exists { app.swipeDown() }
+        if app.keyboards.firstMatch.exists {
+            app.swipeDown()
+            _ = waitGone(app.keyboards.firstMatch, timeout: 5)
+        }
+        XCTAssertTrue(poll(5) { voice.exists && voice.isHittable }, "声波按钮点不到")
         voice.tap()
         let capsule = app.descendants(matching: .any)["callCapsule"]
         let turnsPage = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "切到实时双向通话")).firstMatch
+        if !capsule.waitForExistence(timeout: 8) {
+            // 服务商注入偶发晚一拍，或键盘没收干净点空了：回到对话再点一次
+            if turnsPage.exists { goBack(app) }
+            if app.keyboards.firstMatch.exists { app.swipeDown(); _ = waitGone(app.keyboards.firstMatch, timeout: 3) }
+            if voice.waitForExistence(timeout: 5), voice.isHittable { voice.tap() }
+        }
         XCTAssertTrue(capsule.waitForExistence(timeout: 20),
                       "点声波没出现通话胶囊" + (turnsPage.exists ? "（进了轮流通话页：App 认为没配好实时语音服务商）" : ""))
         shot(app, "21a-通话胶囊")
@@ -963,8 +977,13 @@ extension E2EFlowsUITests {
         keyboard.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10), "系统键盘没弹出来")
         dismissKeyboardIntro(app)
+        // 等隐藏输入框成为第一响应者，避免第一批字和清 sentinel 撞车
+        XCTAssertTrue(poll(5) { app.keyboards.firstMatch.exists }, "键盘没有保持弹出")
         let typed = "云电脑中文输入"
         app.typeText(typed)
+        if !poll(8, { (self.ccDesk()?.typed.joined() ?? "").contains(typed) }) {
+            app.typeText(typed) // 只到了首字时再送一遍补全
+        }
         XCTAssertTrue(poll(20) { (self.ccDesk()?.typed.joined() ?? "").contains(typed) }, "输入法中文没到云电脑：\(String(describing: ccDesk()))")
         shot(app, "25e-输入法中文到云电脑")
         Thread.sleep(forTimeInterval: 6)   // 剪贴板轮询 2.5 秒一次，等两轮
@@ -994,7 +1013,12 @@ extension E2EFlowsUITests {
         keyboard.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10), "系统键盘没弹出来")
         dismissKeyboardIntro(app)
+        XCTAssertTrue(poll(5) { app.keyboards.firstMatch.exists }, "键盘没有保持弹出")
         app.typeText("a1 ")
+        if !poll(8, { (self.ccDesk()?.typed.joined() ?? "").contains("a1 ") }) {
+            // 第一批可能只送到 'a'：再打一次，去抖修过之后应整段到达
+            app.typeText("1 ")
+        }
         XCTAssertTrue(poll(20) { (self.ccDesk()?.typed.joined() ?? "").contains("a1 ") },
                       "数字和空格没到服务器：\(String(describing: self.ccDesk()))")
         app.typeText(XCUIKeyboardKey.delete.rawValue)

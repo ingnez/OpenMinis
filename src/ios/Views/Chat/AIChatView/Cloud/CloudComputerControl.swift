@@ -610,11 +610,18 @@ struct CloudIMEField: UIViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
         }
 
-        private func flush(_ f: UITextField) {
+        private func flush(_ f: UITextField, depth: Int = 0) {
             guard f.markedTextRange == nil else { return }
             let now = f.text ?? ""
             let events = CloudIMECommit.events(old: last, new: now, composing: false)
             if !events.isEmpty { parent.onEvents(events) }
+            last = now
+            // 50ms 去抖期间或清空 sentinel 时又打进了新字：再冲一次，别把「a1 」收成只剩「a」
+            let latest = f.text ?? ""
+            if depth < 8, CloudIMECommit.shouldFlushAgain(sent: now, fieldNow: latest) {
+                flush(f, depth: depth + 1)
+                return
+            }
             f.text = CloudIMECommit.sentinel
             last = CloudIMECommit.sentinel
         }
