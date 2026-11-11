@@ -352,7 +352,7 @@ struct MessageImageGallery: View {
                         let source = currentItem?.source
                         dismiss()
                         onAsk(img, source)
-                    } label: { Label("问问这张图", systemImage: "bubble.left.and.text.bubble.right") }
+                    } label: { Label("问 Bot 这张图", systemImage: "bubble.left.and.text.bubble.right") }
                 }
                 Button { printCurrent() } label: { Label("打印", systemImage: "printer") }
             } label: {

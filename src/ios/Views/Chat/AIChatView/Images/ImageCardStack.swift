@@ -41,6 +41,8 @@ struct ImageCardStack: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(count == 1 ? "图片" : "\(count) 张图片")
+        .accessibilityValue(count > 1 ? (fanned ? "已展开" : "叠放") : "")
+        .accessibilityIdentifier("imageStack")
         .accessibilityHint("轻点全屏查看")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { onOpen(0) }

@@ -114,6 +114,127 @@ final class E2EFlowsUITests: XCTestCase {
         shot(app, "08b-步骤面板")
     }
 
+    // MARK: - 图片规格
+
+    func test09_trayToggleReorderRemove() throws {
+        let app = launch(attach: 3)
+        openBot(app)
+        let cards = app.descendants(matching: .any).matching(identifier: "trayCard")
+        XCTAssertTrue(cards.firstMatch.waitForExistence(timeout: 20), "托盘里没有图片卡")
+        XCTAssertEqual(cards.count, 3, "托盘里不是 3 张")
+        let toggle = app.descendants(matching: .any)["keepOriginalToggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5), "托盘下面没有「保留原图 / 自动压缩」开关")
+        let before = toggle.label
+        toggle.tap()
+        XCTAssertTrue(waitLabel(toggle, differentFrom: before, timeout: 5), "点了开关，文字没变（\(before)）")
+        shot(app, "09a-托盘-保留原图开关")
+        toggle.tap()   // 还原，别影响后面的流程
+        cards.element(boundBy: 0).press(forDuration: 1.0)
+        XCTAssertTrue(app.buttons["往后移"].waitForExistence(timeout: 5), "长按托盘图片没有「往后移」")
+        XCTAssertTrue(app.buttons["裁剪和标注"].exists, "长按托盘图片没有「裁剪和标注」")
+        shot(app, "09b-托盘长按菜单")
+        app.buttons["移除"].tap()
+        XCTAssertTrue(waitCount(cards, 2, timeout: 5), "移除后托盘不是 2 张")
+        shot(app, "09c-移除一张后")
+    }
+
+    func test10_stackCaptionFanOutAndViewer() throws {
+        executionTimeAllowance = 240
+        let app = launch(attach: 3)
+        openBot(app)
+        send(app, "看三张图")
+        XCTAssertTrue(waitText(app, contains: "收到 3 张图片", timeout: 90), "模型没收到 3 张图片")
+        let stack = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ AND label == %@", "imageStack", "3 张图片")).firstMatch
+        XCTAssertTrue(stack.waitForExistence(timeout: 20), "气泡里没有「3 张图片」的叠放卡片")
+        XCTAssertEqual(stack.value as? String, "叠放")
+        shot(app, "10a-三张叠放")
+        stack.press(forDuration: 0.8)
+        XCTAssertTrue(waitValue(stack, "已展开", timeout: 5), "长按没有铺开")
+        shot(app, "10b-长按铺开")
+        stack.press(forDuration: 0.8)
+        XCTAssertTrue(waitValue(stack, "叠放", timeout: 5), "再长按没有收回")
+
+        stack.tap()
+        let close = app.buttons["关闭"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10), "点叠放卡片没打开全屏看图（左上没有关闭）")
+        XCTAssertTrue(app.buttons["更多"].exists, "看图页右上没有「…」")
+        XCTAssertTrue(app.buttons["第 1 张"].exists && app.buttons["第 2 张"].exists && app.buttons["第 3 张"].exists, "看图页没有缩略图条")
+        XCTAssertTrue(app.buttons["第 1 张"].isSelected, "缩略图条没框住当前这张")
+        shot(app, "10c-看图页")
+        app.swipeLeft()
+        XCTAssertTrue(waitSelected(app.buttons["第 2 张"], timeout: 5), "左滑没换到第 2 张")
+        let zoom = currentZoom(app)
+        XCTAssertNotNil(zoom, "看图页没有可缩放的图片")
+        if let zoom {
+            zoom.doubleTap()
+            XCTAssertTrue(waitValue(zoom, "已放大", timeout: 5), "双击没放大")
+            shot(app, "10d-双击放大")
+            zoom.doubleTap()
+            XCTAssertTrue(waitValue(zoom, "原始大小", timeout: 5), "再双击没还原")
+            zoom.pinch(withScale: 2.5, velocity: 2)
+            XCTAssertTrue(waitValue(zoom, "已放大", timeout: 5), "双指没放大")
+            zoom.doubleTap()
+        }
+        app.buttons["更多"].tap()
+        for item in ["保存到相册", "分享", "拷贝图片", "识别并拷贝文字", "问 Bot 这张图"] {
+            XCTAssertTrue(app.buttons[item].waitForExistence(timeout: 5), "「…」菜单里没有「\(item)」")
+        }
+        shot(app, "10e-看图菜单")
+        app.buttons["问 Bot 这张图"].tap()
+        XCTAssertTrue(waitGone(close, timeout: 10), "「问 Bot 这张图」后看图页没关")
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "trayCard").firstMatch.waitForExistence(timeout: 5), "图没放回输入框的托盘")
+        XCTAssertTrue(waitText(app, contains: "关于这张图片", timeout: 5), "输入框没起头「关于这张图片：」")
+        shot(app, "10f-问Bot这张图")
+        // 清掉放回来的图和起头文字（草稿会留到下一个流程）
+        let tray = app.descendants(matching: .any).matching(identifier: "trayCard").firstMatch
+        tray.press(forDuration: 1.0)
+        if app.buttons["移除"].waitForExistence(timeout: 5) { app.buttons["移除"].tap() }
+        let field = app.descendants(matching: .any)["botComposerField"]
+        field.tap()
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 12))
+
+        stack.tap()
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        let page = currentZoom(app) ?? app
+        page.swipeDown(velocity: .fast)
+        XCTAssertTrue(waitGone(close, timeout: 10), "下滑没收起看图页")
+        shot(app, "10g-下滑收起")
+    }
+
+    func test11_singleImageRoundedCard() throws {
+        let app = launch(attach: 1)
+        openBot(app)
+        send(app, "单张图")
+        XCTAssertTrue(waitText(app, contains: "收到 1 张图片", timeout: 90))
+        let one = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ AND label == %@", "imageStack", "图片")).firstMatch
+        XCTAssertTrue(one.waitForExistence(timeout: 20), "单张图没有显示成一张卡片")
+        XCTAssertFalse(app.staticTexts["1 张图片"].exists, "单张图不该写「1 张图片」")
+        shot(app, "11-单张圆角")
+    }
+
+    // MARK: - 输入框规格
+
+    func test12_morphButtonNeverStop() throws {
+        let app = launch()
+        openBot(app)
+        let button = app.buttons["composerVoiceButton"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10))
+        XCTAssertEqual(button.label, "开始实时语音（长按按住说话）", "空输入框时不是声波")
+        let field = app.descendants(matching: .any)["botComposerField"]
+        field.tap(); field.typeText("慢任务")
+        XCTAssertTrue(waitLabel(button, equals: "发送", timeout: 5), "有字时没变成发送箭头")
+        shot(app, "12a-有字变发送")
+        button.tap()
+        XCTAssertTrue(waitText(app, contains: "sleep 20", timeout: 60) || waitText(app, contains: "正在", timeout: 5) || waitText(app, contains: "编写代码中", timeout: 5), "Bot 没开始干活")
+        XCTAssertTrue(waitLabel(button, equals: "开始实时语音（长按按住说话）", timeout: 10), "Bot 干活时空输入框不是声波（\(button.label)）")
+        XCTAssertFalse(button.label.contains("停止"), "输入框按钮变成了停止键")
+        shot(app, "12b-干活时仍是声波")
+        field.tap(); field.typeText("顺便")
+        XCTAssertTrue(waitLabel(button, equals: "插话", timeout: 5) || waitLabel(button, equals: "排队发送", timeout: 2), "干活时有字没变成插话 / 排队（\(button.label)）")
+        XCTAssertFalse(button.label.contains("停止"))
+        shot(app, "12c-干活时有字是插话")
+    }
+
     // MARK: - 工具
 
     private func launch(attach: Int = 0) -> XCUIApplication {
@@ -192,6 +313,47 @@ final class E2EFlowsUITests: XCTestCase {
         guard let url = URL(string: "http://127.0.0.1:18799/_e2e/requests"),
               let data = try? Data(contentsOf: url), let r = try? JSONDecoder().decode(R.self, from: data) else { return nil }
         return r.requests.last { $0.text.contains(s) }
+    }
+
+    private func waitLabel(_ el: XCUIElement, differentFrom old: String, timeout: TimeInterval) -> Bool {
+        poll(timeout) { el.exists && el.label != old }
+    }
+
+    private func waitLabel(_ el: XCUIElement, equals s: String, timeout: TimeInterval) -> Bool {
+        poll(timeout) { el.exists && el.label == s }
+    }
+
+    private func waitValue(_ el: XCUIElement, _ v: String, timeout: TimeInterval) -> Bool {
+        poll(timeout) { el.exists && (el.value as? String) == v }
+    }
+
+    private func waitSelected(_ el: XCUIElement, timeout: TimeInterval) -> Bool {
+        poll(timeout) { el.exists && el.isSelected }
+    }
+
+    private func waitGone(_ el: XCUIElement, timeout: TimeInterval) -> Bool {
+        poll(timeout) { !el.exists }
+    }
+
+    private func waitCount(_ q: XCUIElementQuery, _ n: Int, timeout: TimeInterval) -> Bool {
+        poll(timeout) { q.count == n }
+    }
+
+    /// 看图页当前这一页可缩放的图片（左右的页面也在控件树里，取屏幕上点得到的那个）
+    private func currentZoom(_ app: XCUIApplication) -> XCUIElement? {
+        let all = app.descendants(matching: .any).matching(identifier: "galleryZoom")
+        guard all.firstMatch.waitForExistence(timeout: 10) else { return nil }
+        return all.allElementsBoundByIndex.first { $0.isHittable && $0.frame.minX >= -1 && $0.frame.minX < 50 }
+            ?? all.allElementsBoundByIndex.first { $0.isHittable }
+    }
+
+    private func poll(_ timeout: TimeInterval, _ ok: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if ok() { return true }
+            Thread.sleep(forTimeInterval: 0.3)
+        } while Date() < deadline
+        return false
     }
 
     private func shot(_ app: XCUIApplication, _ name: String) {

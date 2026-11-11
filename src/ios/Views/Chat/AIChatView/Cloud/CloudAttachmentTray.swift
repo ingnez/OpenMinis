@@ -27,6 +27,7 @@ struct CloudAttachmentTray: View {
                     Text(keepOriginal ? "保留原图（之后选的图不缩小）" : "自动压缩大图（长边 1600）").font(.caption)
                 }
                 .toggleStyle(.button).buttonStyle(.borderless).font(.caption)
+                .accessibilityIdentifier("keepOriginalToggle")
                 .padding(.horizontal, 14)
             }
         }
@@ -72,6 +73,7 @@ struct CloudAttachmentTray: View {
             Button(role: .destructive) { attachments.removeAll { $0.id == a.id } } label: { Label("移除", systemImage: "trash") }
         }
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("trayCard")
     }
 
     private func move(_ from: Int, to: Int) {

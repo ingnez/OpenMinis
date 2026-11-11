@@ -188,6 +188,12 @@ final class ImagePreviewContentView: UIView, UIScrollViewDelegate, UIGestureReco
         addSubview(backdrop)
 
         scrollView.delegate = self
+        // 缩放状态给 VoiceOver 和 UI 测试读
+        scrollView.accessibilityIdentifier = "galleryZoom"
+        scrollView.accessibilityValue = "原始大小"
+        scrollView.isAccessibilityElement = true
+        scrollView.accessibilityLabel = "图片"
+        scrollView.accessibilityTraits = [.image, .allowsDirectInteraction]
         scrollView.minimumZoomScale = 1.0
         scrollView.maximumZoomScale = maximumScale
         scrollView.showsVerticalScrollIndicator = false
@@ -291,6 +297,7 @@ final class ImagePreviewContentView: UIView, UIScrollViewDelegate, UIGestureReco
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
 
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        scrollView.accessibilityValue = scrollView.zoomScale > 1.01 ? "已放大" : "原始大小"
         // Re-center via contentInset as the content grows/shrinks
         // relative to the viewport.
         let boundsSize = scrollView.bounds.size
