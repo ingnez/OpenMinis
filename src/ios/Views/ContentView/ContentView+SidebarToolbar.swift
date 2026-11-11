@@ -332,17 +332,9 @@ extension ContentView {
                         .buttonStyle(.plain)
                     } else {
                         // 点标题切换 本地模式 / 多 Bot 模式（Grok Bot 风格首页），选择会记住
-                        Menu {
-                            Button { homeMode = "local" } label: { Label("本地模式", systemImage: "checkmark") }
-                            Button { homeMode = "bots" } label: { Text("Minis Bot") }
-                        } label: {
-                            HStack(spacing: 4) {
-                                titleLabel
-                                Image(systemName: "chevron.down").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityHint("切换首页模式")
+                        // 本地首页中间只是标题：切到 Bot / 云端只走 齿轮 → 设置 → 模式（14:41 真机：这里的「小猪包 ⌄」能切走）
+                        titleLabel
+                            .accessibilityIdentifier("localHomeTitle")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
