@@ -506,6 +506,32 @@ final class CloudDirectGestures: NSObject, UIGestureRecognizerDelegate {
         edge.name = Self.tag
         edge.delegate = self
         view.addGestureRecognizer(edge)
+        // 直接触控时 noVNC 按未缩放的画布算点击位置，画面不能就地放大；双指捏合就切到触控板模式接着放大
+        // （按钮图标随之变成触控板，点一下可切回），不再毫无反应
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinch(_:)))
+        pinch.name = Self.tag
+        pinch.delegate = self
+        view.addGestureRecognizer(pinch)
+    }
+
+    private var pinchSwitched = false
+    @objc private func pinch(_ g: UIPinchGestureRecognizer) {
+        guard let c = controller else { return }
+        switch g.state {
+        case .began:
+            if c.mode == .direct {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                c.mode = .trackpad
+                pinchSwitched = true
+            }
+        case .changed:
+            if pinchSwitched {
+                c.pinch(by: g.scale, around: g.location(in: g.view))
+                g.scale = 1
+            }
+        default:
+            pinchSwitched = false
+        }
     }
 
     private var active: Bool { controller.map { $0.controlling && $0.mode == .direct } ?? false }

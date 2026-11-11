@@ -297,12 +297,12 @@ struct CloudComputerHelpSheet: View {
                     Label("单指拖 = 移动光标，点一下 = 左键，双击 = 双击", systemImage: "hand.point.up.left")
                     Label("双指点 = 右键，双指拖 = 滚动", systemImage: "hand.tap")
                     Label("长按后拖 = 按住左键拖选，捏合 = 放大，三指拖 = 平移；放大后光标靠边会自动跟随", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
-                    Label("底栏手形按钮可切换到直接触控（点哪就点哪）", systemImage: "hand.point.up")
+                    Label("底栏手形按钮可切换到直接触控（点哪就点哪）；直接触控时双指捏合会自动切回触控板并放大", systemImage: "hand.point.up")
                 }
                 Section("打字") {
                     Label("键盘按钮弹出系统键盘，中文输入法选好字才发送，不会把拼音发过去", systemImage: "keyboard")
                     Label("键盘上方有 Esc、Tab、Ctrl、Alt、方向键和复制 / 粘贴 / 全选等组合；点 Ctrl 粘住，长按锁定", systemImage: "command")
-                    Label("剪贴板按钮：输入手机剪贴板、同步到云电脑剪贴板、取回云电脑剪贴板、从保管库粘贴密码", systemImage: "doc.on.clipboard")
+                    Label("剪贴板按钮：输入手机剪贴板、同步到云电脑剪贴板、取回云电脑剪贴板、从保管库粘贴密码；接管时在云电脑里复制的文字几秒内自动到手机", systemImage: "doc.on.clipboard")
                     Label("麦克风按钮：说话后把文字输入到云电脑", systemImage: "mic")
                 }
                 Section("最近连接耗时（本机实测）") {

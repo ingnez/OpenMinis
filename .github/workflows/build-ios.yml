@@ -322,6 +322,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Agent/Markdown/MarkdownCJKEmphasis.swift scripts/MarkdownCJKEmphasisTests.swift -o /tmp/cjk-emphasis-tests
           /tmp/cjk-emphasis-tests
+      - name: 云电脑剪贴板自动回到手机（轮询基线）
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudClipboardWatch.swift scripts/CloudClipboardWatchTests.swift -o /tmp/cloud-clipwatch-tests
+          /tmp/cloud-clipwatch-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -498,6 +503,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudClipboardWatch.swift scripts/CloudClipboardWatchTests.swift -o /tmp/cloud-clipwatch-tests
+          /tmp/cloud-clipwatch-tests | tee cloud-clipwatch-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Agent/Markdown/MarkdownCJKEmphasis.swift scripts/MarkdownCJKEmphasisTests.swift -o /tmp/cjk-emphasis-tests
           /tmp/cjk-emphasis-tests | tee cjk-emphasis-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudComputerContext.swift scripts/CloudComputerLabelTests.swift -o /tmp/cloud-computerlabel-tests
@@ -853,6 +860,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudClipboardWatch.swift scripts/CloudClipboardWatchTests.swift -o /tmp/cloud-clipwatch-tests
+          /tmp/cloud-clipwatch-tests | tee cloud-clipwatch-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Agent/Markdown/MarkdownCJKEmphasis.swift scripts/MarkdownCJKEmphasisTests.swift -o /tmp/cjk-emphasis-tests
           /tmp/cjk-emphasis-tests | tee cjk-emphasis-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudComputerContext.swift scripts/CloudComputerLabelTests.swift -o /tmp/cloud-computerlabel-tests

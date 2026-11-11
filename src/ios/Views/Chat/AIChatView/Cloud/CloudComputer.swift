@@ -21,6 +21,7 @@ struct CloudComputerView: View {
     @State private var started = false
     @State private var showHelp = false
     @State private var showVault = false
+    @State private var clipWatch = CloudClipboardWatch()
     @State private var toast: String?
     @State private var keyboardFocused = false
     @State private var immersive = false
@@ -61,6 +62,7 @@ struct CloudComputerView: View {
         .sheet(isPresented: $showHelp) { CloudComputerHelpSheet(reason: reason) }
         .sheet(isPresented: $showVault) { CloudDesktopVaultSheet { item, field in pasteFromVault(item, field) } }
         .task { await start() }
+        .task { await watchRemoteClipboard() }
         .onAppear(perform: setUp)
         .onDisappear(perform: tearDown)
         .onChange(of: ctl.controlling) { on in holdControl(on) }
@@ -189,6 +191,7 @@ struct CloudComputerView: View {
         ctl.onNotice = { show($0) }
         ctl.onClipboard = { text in
             guard ctl.controlling else { return }
+            clipWatch.noteKnown(text)
             UIPasteboard.general.string = text
             show("云电脑剪贴板已同步到手机")
         }
@@ -356,8 +359,25 @@ struct CloudComputerView: View {
         send(["action": "type", "text": String(text.prefix(10000))], done: "已输入到云电脑")
     }
 
+    /// 接管时每隔几秒看一眼云电脑剪贴板，那边复制了新文字就拷到手机（见 CloudClipboardWatch）
+    private func watchRemoteClipboard() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: CloudClipboardWatch.interval)
+            guard ctl.controlling, phase == .live else { continue }
+            var payload: [String: Any] = ["action": "clipboard_get"]
+            if ownDisplay, let botId { payload["bot_id"] = botId }
+            guard let r = try? await connection.request(method: "POST", path: "/v1/desktop/input", body: payload),
+                  let text = r["text"] as? String else { continue }
+            if let fresh = clipWatch.observe(text) {
+                UIPasteboard.general.string = fresh
+                show("云电脑里复制的文字已到手机（\(fresh.count) 字）")
+            }
+        }
+    }
+
     private func syncClipboardToRemote() {
         guard let text = UIPasteboard.general.string, !text.isEmpty else { show("剪贴板没有文字"); return }
+        clipWatch.noteKnown(String(text.prefix(10000)))
         send(["action": "clipboard_set", "text": String(text.prefix(10000))], done: "已放进云电脑剪贴板，可在那边 Ctrl+V")
     }
 
@@ -365,6 +385,7 @@ struct CloudComputerView: View {
         send(["action": "clipboard_get"]) { r in
             let text = r["text"] as? String ?? ""
             if text.isEmpty { show("云电脑剪贴板是空的"); return }
+            clipWatch.noteKnown(text)
             UIPasteboard.general.string = text
             show("已复制云电脑剪贴板（\(text.count) 字）")
         }
