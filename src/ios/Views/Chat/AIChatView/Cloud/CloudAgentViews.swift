@@ -719,6 +719,23 @@ struct CloudSessionView: View {
                 .background(Color.red.opacity(0.1))
             }
 
+            if isLoading, !messages.isEmpty {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("正在同步…").font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+                .accessibilityIdentifier("chatSyncingBanner")
+            }
+            if let rec = CloudOutbox.shared.receipts(for: sessionId).last {
+                Text(CloudOutbox.flushedLabel(createdAt: rec.createdAt, flushedAt: rec.flushedAt))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                    .accessibilityIdentifier("outboxFlushedBanner")
+            }
+
             // Messages & Event Log area
             messagesArea
 
@@ -821,6 +838,9 @@ struct CloudSessionView: View {
         .modifier(CloudSessionExtras(followUp: $followUpNotice, outboxCount: outboxCount, privacyHits: $privacyHits,
                                      onDiscard: discardOutbox, onRedact: sendRedacted, onSend: sendAnyway,
                                      onAppear: resumeOutbox, onDisappear: pauseOutbox))
+        .onReceive(NotificationCenter.default.publisher(for: CloudE2EOffline.flushNotification)) { _ in
+            resumeOutbox()
+        }
         .onAppear {
             callDividers = CloudCallDivider.load(sessionId)
             injectE2EAttachments()
@@ -1958,9 +1978,9 @@ struct CloudSessionView: View {
             defer { outboxTask = nil }
             var attempt = 0
             while !Task.isCancelled {
-                var pending: [(nonce: String, content: String, body: [String: Any])] =
-                    CloudOutbox.shared.items(for: sid).compactMap { i in CloudOutbox.decode(i.body).map { (nonce: i.nonce, content: i.content, body: $0) } }
-                pending += memoryOutbox.map { (nonce: $0.key, content: $0.value.0, body: $0.value.1) }
+                var pending: [(nonce: String, content: String, body: [String: Any], createdAt: Double)] =
+                    CloudOutbox.shared.items(for: sid).compactMap { i in CloudOutbox.decode(i.body).map { (nonce: i.nonce, content: i.content, body: $0, createdAt: i.createdAt) } }
+                pending += memoryOutbox.map { (nonce: $0.key, content: $0.value.0, body: $0.value.1, createdAt: Date().timeIntervalSince1970) }
                 if pending.isEmpty { break }
                 // 正在跑别的任务时先等它结束，免得两条消息抢同一个对话
                 if activeTaskStatus == "running" || isSubmitting {
@@ -1971,6 +1991,8 @@ struct CloudSessionView: View {
                 do {
                     try await connection.ensureConnected()
                     let res = try await connection.request(method: "POST", path: "/v1/sessions/\(sid)/messages", body: next.body)
+                    let created = next.createdAt
+                    CloudOutbox.shared.recordFlush(nonce: next.nonce, sessionId: sid, content: next.content, createdAt: created)
                     CloudOutbox.shared.remove(next.nonce)
                     memoryOutbox[next.nonce] = nil
                     refreshOutboxCount()
@@ -1992,6 +2014,7 @@ struct CloudSessionView: View {
     }
 
     private func resumeOutbox() {
+        CloudOutboxNetwork.start()
         // 「和 Bot 语音」快捷指令 / 操作按钮打开的：直接开通话
         if let theme, CloudBotEntry.pendingVoiceBot == theme.botId {
             CloudBotEntry.pendingVoiceBot = nil

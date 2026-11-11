@@ -350,6 +350,13 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOutbox.swift scripts/CloudOutboxTests.swift -o /tmp/cloud_outbox_tests
           /tmp/cloud_outbox_tests
+      - name: 一句话交班与任务时间轴单测
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudShiftSpeech.swift scripts/CloudShiftSpeechTests.swift -o /tmp/cloud-shift-speech-tests
+          /tmp/cloud-shift-speech-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudTaskTimeline.swift scripts/CloudTaskTimelineTests.swift -o /tmp/cloud-task-timeline-tests
+          /tmp/cloud-task-timeline-tests
       - name: 夜班模式规则单测
         run: |
           set -o pipefail
@@ -683,6 +690,10 @@ jobs:
           /tmp/cloud_nightmode_tests | tee /tmp/cloud_nightmode_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOutbox.swift scripts/CloudOutboxTests.swift -o /tmp/cloud_outbox_tests
           /tmp/cloud_outbox_tests | tee /tmp/cloud_outbox_tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudShiftSpeech.swift scripts/CloudShiftSpeechTests.swift -o /tmp/cloud-shift-speech-tests
+          /tmp/cloud-shift-speech-tests | tee /tmp/cloud-shift-speech-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudTaskTimeline.swift scripts/CloudTaskTimelineTests.swift -o /tmp/cloud-task-timeline-tests
+          /tmp/cloud-task-timeline-tests | tee /tmp/cloud-task-timeline-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOneLine.swift scripts/CloudOneLineTests.swift -o /tmp/cloud_oneline_tests
           /tmp/cloud_oneline_tests | tee /tmp/cloud_oneline_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudFollowUp.swift scripts/CloudFollowUpTests.swift -o /tmp/cloud_followup_tests
@@ -1055,6 +1066,10 @@ jobs:
           /tmp/cloud_nightmode_tests | tee /tmp/cloud_nightmode_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOutbox.swift scripts/CloudOutboxTests.swift -o /tmp/cloud_outbox_tests
           /tmp/cloud_outbox_tests | tee /tmp/cloud_outbox_tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudShiftSpeech.swift scripts/CloudShiftSpeechTests.swift -o /tmp/cloud-shift-speech-tests
+          /tmp/cloud-shift-speech-tests | tee /tmp/cloud-shift-speech-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudTaskTimeline.swift scripts/CloudTaskTimelineTests.swift -o /tmp/cloud-task-timeline-tests
+          /tmp/cloud-task-timeline-tests | tee /tmp/cloud-task-timeline-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOneLine.swift scripts/CloudOneLineTests.swift -o /tmp/cloud_oneline_tests
           /tmp/cloud_oneline_tests | tee /tmp/cloud_oneline_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudFollowUp.swift scripts/CloudFollowUpTests.swift -o /tmp/cloud_followup_tests

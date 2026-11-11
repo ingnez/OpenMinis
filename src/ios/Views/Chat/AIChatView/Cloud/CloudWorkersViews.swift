@@ -78,6 +78,31 @@ struct CloudWorkerTimelineView: View {
                         Text("· \(CloudWorkerInfo.elapsedText(info.elapsed))").font(.caption).foregroundStyle(.secondary)
                         if info.steps > 0 { Text("· \(info.steps) 步").font(.caption).foregroundStyle(.secondary) }
                     }
+                    if !CloudTaskTimeline.startLabel(createdAt: info.createdAt).isEmpty {
+                        Text(CloudTaskTimeline.startLabel(createdAt: info.createdAt))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("taskTimelineStart")
+                    }
+                    let titles = turns.compactMap { turn -> String? in
+                        let t = turn.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return t.isEmpty ? nil : String(t.prefix(40))
+                    }
+                    ForEach(CloudTaskTimeline.steps(createdAt: info.createdAt, status: info.status, lastStep: info.lastStep, turnTitles: titles)) { step in
+                        HStack(alignment: .top, spacing: 8) {
+                            Circle().fill(step.status == "failed" ? Color.orange : (step.status == "running" ? Color.green : Color.secondary))
+                                .frame(width: 8, height: 8).padding(.top, 6)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\(step.id). \(step.title)").font(.subheadline)
+                                if step.retryable {
+                                    Button("重试这一步") {
+                                        Task { try? await CloudRunModelService.message(workerId, CloudTaskTimeline.retryPrompt(step: step)) }
+                                    }
+                                    .font(.caption.weight(.semibold))
+                                    .accessibilityIdentifier("taskRetryStep")
+                                }
+                            }
+                        }
+                    }
                 }
                 ForEach(Array(turns.enumerated()), id: \.offset) { _, turn in
                     if turn.message.role == .user {
@@ -94,6 +119,7 @@ struct CloudWorkerTimelineView: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("taskTimeline")
         .task { await poll() }
     }
 

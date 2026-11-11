@@ -53,6 +53,8 @@ final class CloudBotHomeModel: ObservableObject {
     @Published private(set) var bots: [CloudBot] = []
     @Published private(set) var groups: [CloudGroup] = []
     @Published private(set) var loaded = false
+    @Published private(set) var syncing = false
+    @Published var shiftSpeechBot: CloudBot?
     @Published private(set) var connecting = false
     @Published var bannerText: String?
     /// 首页分组（服务器保存）
@@ -363,6 +365,8 @@ final class CloudBotHomeModel: ObservableObject {
     func refresh(forceReconnect: Bool = false) async {
         let conn = CloudConnection.shared
         let link = CloudLinkSupervisor.shared
+        if !bots.isEmpty { syncing = true }
+        defer { syncing = false }
         guard conn.canAutoConnect || conn.isConnected else {
             bannerText = "还没有连接云电脑：点左上角齿轮 › 云电脑设置，填写 VPS 并点「安装 / 更新服务器 Agent 服务」"
             loaded = true
@@ -473,6 +477,10 @@ struct CloudBotHomeRow: View {
             .overlay(alignment: .bottomTrailing) { CloudPresenceBadge(presence: presence, size: 13) }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(bot.name)，\(presence.accessibilityText)")
+            .accessibilityIdentifier("homeBotAvatar-\(bot.id)")
+            .onLongPressGesture {
+                CloudBotHomeModel.shared.shiftSpeechBot = bot
+            }
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     // 系统字体样式，跟着「更大字体」缩放（以前写死 17pt）
@@ -610,6 +618,15 @@ struct CloudBotHomeScreen: View {
                         if let digest = model.dutyDigest {
                             CloudDutyDigestCard(text: digest.text, onDismiss: model.dismissDutyDigest)
                                 .padding(.horizontal, 16).padding(.bottom, 8)
+                        }
+                        if model.syncing {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.mini)
+                                Text("正在同步…").font(.caption).foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.bottom, 6)
+                            .accessibilityIdentifier("homeSyncingBanner")
                         }
                         if let banner = model.bannerText {
                             Button { Task { await model.refresh(forceReconnect: true) } } label: {
@@ -767,6 +784,9 @@ struct CloudBotHomeScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: .cloudFocusFilterChanged)) { _ in model.objectWillChange.send() }
         .onAppear { CloudColdStart.markHomeVisible(hasContent: !model.bots.isEmpty) }
         .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
+        .sheet(item: $model.shiftSpeechBot) { bot in
+            CloudShiftSpeechSheet(bot: bot, onDone: { model.shiftSpeechBot = nil })
+        }
         .sheet(isPresented: $showWorkbench) { CloudWorkbenchSheet() }
         .sheet(isPresented: $showHub) {
             NavigationStack {

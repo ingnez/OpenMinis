@@ -14,8 +14,17 @@ struct CloudOutboxBanner: View {
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(.thinMaterial, in: Capsule())
             .padding(.top, 6)
+            .accessibilityIdentifier("pendingOutboxBanner")
             .contextMenu {
                 Button(role: .destructive, action: onDiscard) { Label("放弃待发送的消息", systemImage: "trash") }
+            }
+            .overlay(alignment: .bottom) {
+                if CloudE2EOffline.forced {
+                    Button("模拟网络已恢复") { CloudE2EOffline.goOnline() }
+                        .font(.caption.weight(.semibold))
+                        .padding(.top, 36)
+                        .accessibilityIdentifier("e2eGoOnline")
+                }
             }
             .transition(.opacity)
         }
