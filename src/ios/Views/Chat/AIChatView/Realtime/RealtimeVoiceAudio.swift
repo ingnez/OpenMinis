@@ -43,8 +43,24 @@ final class RealtimeVoiceAudio {
     private var scheduledEnd: AVAudioFramePosition = 0
     private let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24_000,
                                       channels: 1, interleaved: false)!
+    /// 引擎被系统停掉且重启不了（切换设备、别的功能改了音频会话）时回调中文原因
+    var onEngineStopped: ((String) -> Void)?
+    private var configObserver: NSObjectProtocol?
+    /// 模拟器 E2E：不开真麦克风 / 扬声器（CI 机器没有音频设备），用生成的音调当收音、只数播放字节
+    private var fake = false
+    private var fakeTask: Task<Void, Never>?
+    private var fakePlayedFrames: Int64 = 0
+    /// 一共收到并交给播放器的 Bot 声音字节数（胶囊和 E2E 用）
+    private(set) var playedBytes = 0
+
+    /// 引擎真的在跑（收音和播放都靠它）
+    var isRunning: Bool { fake ? fakeTask != nil : (engine?.isRunning ?? false) }
 
     func start(inputSampleRate: Double = 24_000) throws -> AsyncStream<Data> {
+        playedBytes = 0
+        #if DEBUG
+        if CloudE2E.fakeMic { return startFake(rate: inputSampleRate) }
+        #endif
         guard AudioSessionCoordinator.shared.beginAndWait(.realtimeConversation, timeout: 2),
               AudioSessionCoordinator.lastApplyError == nil else {
             AudioSessionCoordinator.shared.end(.realtimeConversation)
@@ -75,12 +91,55 @@ final class RealtimeVoiceAudio {
             }
             tapped = true
             engine.prepare(); try engine.start(); player.play()
+            // 系统改了音频配置（别的功能切了会话类别、插拔耳机、蓝牙）时 AVAudioEngine 会自己停掉，
+            // 以前没人管：通话计时照走，两边都没声音。先试着重启，重启不了就挂断并说原因
+            configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.recoverEngine() }
+            }
             return stream
         } catch { stop(); throw error }
     }
 
+    private func recoverEngine() {
+        guard let engine, !engine.isRunning else { return }
+        do { try engine.start(); player?.play() }
+        catch { onEngineStopped?("音频设备被切换或被别的功能占用，收音和播放都停了，通话已结束。请重新拨打。") }
+    }
+
+    #if DEBUG
+    private func startFake(rate: Double) -> AsyncStream<Data> {
+        fake = true; fakePlayedFrames = 0
+        var continuation: AsyncStream<Data>.Continuation!
+        let stream = AsyncStream<Data>(bufferingPolicy: .bufferingOldest(100)) { continuation = $0 }
+        streamContinuation = continuation
+        let sink = continuation!
+        let n = Int(rate / 10)
+        func tone(_ amp: Double) -> Data {
+            var frame = Data(count: n * 2)
+            frame.withUnsafeMutableBytes { raw in
+                let p = raw.bindMemory(to: Int16.self)
+                for i in 0..<n { p[i] = Int16(amp * sin(2 * Double.pi * 220 * Double(i) / rate)) }
+            }
+            return frame
+        }
+        // 先「说」2 秒（响），之后是很轻的环境声：不会被当成一直在说话没人理
+        let loud = tone(9000), quiet = tone(300)
+        fakeTask = Task {
+            var k = 0
+            while !Task.isCancelled {
+                sink.yield(k < 20 ? loud : quiet); k += 1
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        return stream
+    }
+    #endif
+
     func play(_ bytes: Data) throws {
-        guard bytes.count % 2 == 0, bytes.count > 0, let player else { return }
+        guard bytes.count % 2 == 0, bytes.count > 0 else { return }
+        if fake { playedBytes += bytes.count; fakePlayedFrames += Int64(bytes.count / 2); return }
+        guard let player else { return }
+        playedBytes += bytes.count
         guard pendingBuffers < 600 else { throw AudioError.start("语音播放积压过多，通话已停止，请重试。") }
         let frames = bytes.count / 2
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
@@ -108,6 +167,7 @@ final class RealtimeVoiceAudio {
     }
     var hasPendingAudio: Bool { pendingBuffers > 0 }
     var playedFrames: Int64 {
+        if fake { return fakePlayedFrames }
         guard let player, let time = player.lastRenderTime,
               let position = player.playerTime(forNodeTime: time) else { return 0 }
         return max(0, position.sampleTime - playbackOrigin)
@@ -123,6 +183,10 @@ final class RealtimeVoiceAudio {
         player?.stop(); player?.play()
     }
     func stop() {
+        if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
+        configObserver = nil
+        fakeTask?.cancel(); fakeTask = nil
+        if fake { fake = false; streamContinuation?.finish(); streamContinuation = nil; return }
         streamContinuation?.finish(); streamContinuation = nil
         playbackEpoch += 1; pendingBuffers = 0; scheduledEnd = 0; playbackOrigin = 0
         if tapped { engine?.inputNode.removeTap(onBus: 0); tapped = false }

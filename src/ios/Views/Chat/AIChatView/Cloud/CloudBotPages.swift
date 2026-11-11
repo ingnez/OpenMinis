@@ -64,6 +64,8 @@ enum CloudBotSpeaker {
     private static var cloudTask: Task<Void, Never>?
 
     static func speak(_ text: String, botId: String) {
+        // 实时通话中不朗读：这里会直接把音频会话切成 .playback，通话的收音和播放会一起断
+        guard !AudioSessionCoordinator.shared.isRealtimeActive else { return }
         let settings = CloudBotVoiceSettings.load(botId)
         stop()
         guard settings.engine == "phone", !VoiceProviderResolver.resolvedOutputCandidates().isEmpty else {

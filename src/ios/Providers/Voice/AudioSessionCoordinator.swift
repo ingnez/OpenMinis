@@ -41,6 +41,8 @@ final class AudioSessionCoordinator {
 
     /// True while the mic is capturing — reply TTS is suppressed in this state.
     var isCapturing: Bool { active.contains(.capture) }
+    /// 实时通话占着音频会话：别的功能不许直接改类别 / 停用会话（会把通话的收音和播放一起掐掉）
+    var isRealtimeActive: Bool { active.contains(.realtimeConversation) }
 
     // MARK: - Public API
 

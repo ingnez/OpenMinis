@@ -22,6 +22,10 @@ enum CloudE2E {
         if env["OPENMINIS_E2E_LEGACY_CLOUD_EXEC"] == "1" {
             UserDefaults.standard.set(true, forKey: LocalCloudIsolation.legacyDefaultKey)
         }
+        if let rt = realtimeURL {
+            if Thread.isMainThread { MainActor.assumeIsolated { injectRealtimeProvider(url: rt) } }
+            else { Task { @MainActor in injectRealtimeProvider(url: rt) } }
+        }
         if let base = env["OPENMINIS_E2E_LOCAL_PROVIDER"], !base.isEmpty {
             // 同步注入：异步 Task 跑在首屏之后，对话页先按「没有服务商」画出来（No model selected）
             if Thread.isMainThread {
@@ -33,6 +37,33 @@ enum CloudE2E {
     }
 
     static let localModelId = "e2e-local-model"
+
+    /// 实时通话 E2E：OPENMINIS_E2E_REALTIME=ws://127.0.0.1:18796 指向 e2e 栈里的假实时服务（OpenAI Realtime 协议）
+    static var realtimeURL: String? {
+        let v = ProcessInfo.processInfo.environment["OPENMINIS_E2E_REALTIME"] ?? ""
+        return token != nil && !v.isEmpty ? v : nil
+    }
+    static let realtimeLabel = "E2E实时"
+    /// 模拟器没有可靠的麦克风 / 扬声器：用生成的音调当收音、只数播放的字节
+    static var fakeMic: Bool { token != nil && ProcessInfo.processInfo.environment["OPENMINIS_E2E_FAKE_MIC"] == "1" }
+
+    /// 假实时服务商（全是假数据）：选进全局「实时语音」设置
+    @MainActor
+    static func injectRealtimeProvider(url: String) {
+        let store = ProviderConfigStore.shared
+        let base = url.replacingOccurrences(of: "ws://", with: "http://")
+        let inst: ProviderInstance
+        if let old = store.instances.first(where: { $0.label == realtimeLabel }) { inst = old }
+        else {
+            inst = ProviderInstance(label: realtimeLabel, providerType: .openAI, credentialType: .apiKey, customBaseURL: base)
+            ProviderKeychainHelper.saveAPIKey("sk-e2e-realtime-fake-0000", instanceId: inst.id)
+            store.addInstance(inst)
+        }
+        let d = UserDefaults.standard
+        d.set(inst.id, forKey: "realtimeVoice.provider")
+        d.set("e2e-realtime", forKey: "realtimeVoice.model")
+        d.set("{}", forKey: "realtimeVoice.protocolsByProvider")
+    }
 
     /// 本地模式用的假服务商：OpenAI 兼容，指向 e2e 栈里单独的假模型端口（和云端用的假模型分开记录请求）。全是假数据
     @MainActor
@@ -57,6 +88,9 @@ enum CloudE2E {
     }
     #else
     static func applyLaunchDefaults() {}
+    static var realtimeURL: String? { nil }
+    static var fakeMic: Bool { false }
+    static let realtimeLabel = ""
     static var token: String? { nil }
     static var fakeAttachments: Int { 0 }
     #endif

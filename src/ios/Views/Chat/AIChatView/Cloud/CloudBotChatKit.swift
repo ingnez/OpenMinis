@@ -590,6 +590,8 @@ final class CloudDictation: ObservableObject {
 
     func start(language: String = "") {
         guard !isRecording else { return }
+        // 实时通话占着麦克风：听写会改音频会话类别，把通话掐断
+        guard !AudioSessionCoordinator.shared.isRealtimeActive else { errorText = "正在实时通话，挂断后再听写"; return }
         errorText = nil
         transcript = ""
         SFSpeechRecognizer.requestAuthorization { status in
@@ -656,6 +658,8 @@ final class CloudDictation: ObservableObject {
         request = nil
         task = nil
         isRecording = false
+        // 实时通话已经接管音频会话时不能停用它（停用会让通话两边都没声音）
+        guard !AudioSessionCoordinator.shared.isRealtimeActive else { return }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 }

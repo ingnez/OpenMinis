@@ -30,6 +30,10 @@ struct CloudBotCallLine: Identifiable, Equatable {
     let role: String
     let text: String
 }
+@MainActor final class AudioSessionCoordinator {
+    static let shared = AudioSessionCoordinator()
+    var isRealtimeActive: Bool { false }
+}
 @MainActor
 final class CloudBotCallController: ObservableObject {
     @Published private(set) var active = false
@@ -43,6 +47,8 @@ final class CloudBotCallController: ObservableObject {
     @Published private(set) var lines: [CloudBotCallLine] = []
     @Published private(set) var pushToTalk = false
     @Published private(set) var startedAt: Date?
+    @Published private(set) var notice: String?
+    @Published private(set) var receivedAudioKB = 0
     var onEnded: ((Date, Int) -> Void)?
     init() {}
     static var isConfigured: Bool { false }

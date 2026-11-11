@@ -24,6 +24,9 @@ final class CloudBotCallController: ObservableObject {
     @Published private(set) var lines: [CloudBotCallLine] = []
     @Published private(set) var pushToTalk = false
     @Published private(set) var startedAt: Date?
+    /// 通话中的问题（中文，胶囊上显示）
+    @Published private(set) var notice: String?
+    @Published private(set) var receivedAudioKB = 0
     /// 挂断后调用：(开始时间, 时长秒)
     var onEnded: ((Date, Int) -> Void)?
     private var session: RealtimeVoiceSession?
@@ -71,7 +74,7 @@ final class CloudBotCallController: ObservableObject {
         s.continuesInBackground = true
         session = s
         callName = name
-        error = nil; lines = []; elapsed = 0
+        error = nil; lines = []; elapsed = 0; notice = nil; receivedAudioKB = 0
         self.pushToTalk = pushToTalk
         bind(s)
         startedAt = Date()
@@ -97,6 +100,8 @@ final class CloudBotCallController: ObservableObject {
         s.$speakLevel.sink { [weak self] in self?.speakLevel = $0 }.store(in: &bag)
         s.$elapsed.sink { [weak self] in self?.elapsed = $0 }.store(in: &bag)
         s.$status.sink { [weak self] in self?.status = $0 }.store(in: &bag)
+        s.$notice.sink { [weak self] in self?.notice = $0 }.store(in: &bag)
+        s.$receivedAudioKB.sink { [weak self] in self?.receivedAudioKB = $0 }.store(in: &bag)
         s.$error.sink { [weak self] e in if let e { self?.error = e } }.store(in: &bag)
         s.$lines.sink { [weak self] ls in
             self?.lines = ls.map { CloudBotCallLine(id: $0.id, role: $0.role, text: $0.text) }

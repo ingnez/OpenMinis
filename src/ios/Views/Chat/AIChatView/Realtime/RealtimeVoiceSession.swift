@@ -64,6 +64,12 @@ final class RealtimeVoiceSession: ObservableObject {
     private var pendingResponseCreate = false
     private var cloudWatchers: [Task<Void, Never>] = []
     @Published var validationResult: String?
+    /// 通话中出的问题（中文，胶囊上显示）：听不到你的声音 / 服务没回应 / 声音播不出来
+    @Published var notice: String?
+    /// 收到并交给播放器的 Bot 声音（KB）
+    @Published private(set) var receivedAudioKB = 0
+    private var health = RealtimeCallHealth()
+    private var healthTask: Task<Void, Never>?
 
     init(host: RealtimeVoiceHost) { self.host = host }
     /// 等一个任务最多 seconds 秒；按时完成返回 true（超时不取消它，让它在后台自己跑完）
@@ -81,6 +87,28 @@ final class RealtimeVoiceSession: ObservableObject {
 
     convenience init(chat: AIChatViewModel) { self.init(host: RealtimeLocalChatHost(chat: chat)) }
 
+    /// 模拟器 E2E：假实时服务商用固定假密钥、允许 127.0.0.1 上的 ws://（正式包里恒为 nil / false）
+    private static func e2eKey(_ provider: ProviderInstance) -> String? {
+        #if DEBUG
+        if CloudE2E.realtimeURL != nil, provider.label == CloudE2E.realtimeLabel { return "sk-e2e-realtime-fake-0000" }
+        #endif
+        return nil
+    }
+    private static var e2eFakeMic: Bool {
+        #if DEBUG
+        return CloudE2E.fakeMic
+        #else
+        return false
+        #endif
+    }
+    private static func e2eLoopback(_ url: URL) -> Bool {
+        #if DEBUG
+        return CloudE2E.realtimeURL != nil && url.scheme == "ws" && url.host == "127.0.0.1"
+        #else
+        return false
+        #endif
+    }
+
     func start(providerID: String, model: String, voice: String, preview: Bool, protocolMode: String = "automatic", validateOnly: Bool = false, roundTrip: Bool = false) async {
         guard !active else { return }
         // 上一通的记录还在保存：最多等 3 秒。以前无限等，保存卡住（网络差）时再点声波按钮就像没反应
@@ -88,10 +116,10 @@ final class RealtimeVoiceSession: ObservableObject {
         guard !active else { return }
         if let reason = host.blockReason { error = reason; return }
         guard let provider = ProviderConfigStore.shared.instance(for: providerID), provider.isEnabled,
-              let key = ProviderKeychainHelper.loadAPIKey(instanceId: provider.id), !key.isEmpty else {
+              let key = Self.e2eKey(provider) ?? ProviderKeychainHelper.loadAPIKey(instanceId: provider.id), !key.isEmpty else {
             error = "请先在服务商设置中配置支持实时音频的 API 密钥。"; return
         }
-        validationResult = nil; error = nil
+        validationResult = nil; error = nil; notice = nil; receivedAudioKB = 0; health = RealtimeCallHealth()
         do { connectionProtocol = try RealtimeConnectionProtocol.resolve(protocolMode, model: model) }
         catch { self.error = error.localizedDescription; return }
         connectionLabel = "\(provider.label) · \(model)"; geminiPlaybackID = nil
@@ -115,7 +143,7 @@ final class RealtimeVoiceSession: ObservableObject {
         do {
             let base = provider.resolvedBaseURL(default: provider.providerType == .gemini ? "https://generativelanguage.googleapis.com" : "https://api.openai.com")
             let url = try connectionProtocol.endpoint(base: base.url, appendV1: base.appendV1, model: model)
-            guard url.scheme == "wss" else {
+            guard url.scheme == "wss" || Self.e2eLoopback(url) else {
                 fail("实时通话需要 HTTPS/WSS 服务商地址，请配置加密连接。"); return
             }
             host.prepareForCall()
@@ -197,6 +225,7 @@ final class RealtimeVoiceSession: ObservableObject {
 
     private func handle(_ event: [String: Any], model: String, voice: String, preview: Bool) throws {
         let type = event["type"] as? String ?? ""
+        if RealtimeCallHealth.isServerHeard(type) { health.serverHeard(at: Date()); if notice?.hasPrefix(RealtimeCallHealth.deafPrefix) == true { notice = nil } }
         switch type {
         case "session.created":
             guard !configured else { return }; configured = true
@@ -258,6 +287,7 @@ final class RealtimeVoiceSession: ObservableObject {
             guard ledger.accept(response: response, item: item, index: event["content_index"] as? Int ?? 0, byteCount: bytes.count) else { return }
             if newItem { audio.markItemStart() }
             try audio.play(bytes); noteSpeakLevel(bytes); status = "AI 正在说 · 可以直接插话"
+            health.received(bytes: bytes.count, at: Date()); receivedAudioKB = audio.playedBytes / 1024
         case "response.audio_transcript.delta", "response.output_audio_transcript.delta":
             guard let id = event["item_id"] as? String,
                   let response = event["response_id"] as? String, !ignoredResponses.contains(response),
@@ -373,8 +403,11 @@ final class RealtimeVoiceSession: ObservableObject {
         timeoutTask?.cancel()
         let generation = epoch
         Task { [weak self] in
-            let allowed = await withCheckedContinuation { c in
-                AVAudioSession.sharedInstance().requestRecordPermission { c.resume(returning: $0) }
+            var allowed = true
+            if !Self.e2eFakeMic {
+                allowed = await withCheckedContinuation { c in
+                    AVAudioSession.sharedInstance().requestRecordPermission { c.resume(returning: $0) }
+                }
             }
             guard let self, self.active, self.epoch == generation else { return }
             guard allowed else { self.fail("请在系统设置中允许 Minis 使用麦克风。"); return }
@@ -445,6 +478,7 @@ final class RealtimeVoiceSession: ObservableObject {
             geminiAssistantID = UUID().uuidString
             status = "正在听你说"
         }
+        if content["inputTranscription"] != nil || content["modelTurn"] != nil { health.serverHeard(at: Date()) }
         if let input = content["inputTranscription"] as? [String: Any], let text = input["text"] as? String {
             updateLine(id: geminiUserID, role: "user", text: text, append: true)
         }
@@ -462,6 +496,7 @@ final class RealtimeVoiceSession: ObservableObject {
                     }
                     geminiPlaybackID = geminiAssistantID
                     responseRunning = true; try audio.play(data); noteSpeakLevel(data); status = "AI 正在说 · 可以直接插话"
+                    health.received(bytes: data.count, at: Date()); receivedAudioKB = audio.playedBytes / 1024
                 }
             }
         }
@@ -479,24 +514,55 @@ final class RealtimeVoiceSession: ObservableObject {
             guard let self, self.active, !self.responseRunning else { return }
             self.status = self.muted ? "麦克风已静音" : "正在听你说"
         }
+        audio.onEngineStopped = { [weak self] reason in self?.fail(reason) }
         let stream = try audio.start(inputSampleRate: Double(connectionProtocol.inputSampleRate))
         VoiceModePreference.shared.isCapturing = true
+        status = "已连上实时服务，正在打开麦克风"
         microphoneTask = Task { [weak self] in
             for await data in stream {
                 guard let self, self.active, self.epoch == generation else { return }
                 // 静音仍发送同长度的零音频，让服务端正确结束上一句话。
                 let bytes = self.muted ? Data(count: data.count) : data
-                self.noteMicLevel(self.muted ? 0 : RealtimeLevelMeter.level(pcm16: data))
+                let level = self.muted ? 0 : RealtimeLevelMeter.level(pcm16: data)
+                self.noteMicLevel(level)
                 self.emit(self.connectionProtocol.audio(bytes))
+                let ms = data.count * 500 / max(1, self.connectionProtocol.inputSampleRate)
+                self.health.sent(ms: ms, level: level, muted: self.muted, at: Date())
+                // 服务端确认了会话、麦克风也真的送出了第一帧，才算接通、开始计时
+                if !self.connected { self.markConnected(generation: generation) }
             }
         }
+        // 3 秒内麦克风一帧都没有：收音根本没起来，别让一个不计时的「连接中」挂着
+        healthTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let self, self.active, self.epoch == generation, !self.connected else { return }
+            self.fail("麦克风没有声音进来：收音没启动（可能被听写、朗读或别的 App 占用），通话已停止。")
+        }
+    }
+
+    private func markConnected(generation: UUID) {
         connected = true; status = "正在听你说"; timeoutTask?.cancel()
         clockTask = Task { [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
                 guard let self, self.active, self.epoch == generation else { return }
                 self.elapsed += 1
+                self.checkHealth()
             }
+        }
+    }
+
+    /// 每秒看一次两个方向有没有真的通：说的话服务端有没有反应、Bot 的声音有没有播出去
+    private func checkHealth() {
+        if !audio.isRunning {
+            fail("音频引擎被系统停掉了（切换设备或别的功能占用了声音），收音和播放都停了，通话已结束。"); return
+        }
+        let verdict = health.verdict(now: Date(), playedFrames: audio.playedFrames, pendingPlayback: audio.hasPendingAudio,
+                                     label: connectionLabel)
+        switch verdict {
+        case .ok: if notice != nil, !health.hasProblem { notice = nil }
+        case .warn(let text): notice = text
+        case .fail(let text): fail(text)
         }
     }
 
@@ -587,7 +653,7 @@ final class RealtimeVoiceSession: ObservableObject {
         active = false
         interrupt(sendCancel: false)
         connected = false; epoch = UUID()
-        receiveTask?.cancel(); senderTask?.cancel(); microphoneTask?.cancel()
+        receiveTask?.cancel(); senderTask?.cancel(); microphoneTask?.cancel(); healthTask?.cancel(); healthTask = nil
         timeoutTask?.cancel(); clockTask?.cancel()
         cloudWatchers.forEach { $0.cancel() }; cloudWatchers = []; pendingResponseCreate = false
         outbound?.finish(); outbound = nil

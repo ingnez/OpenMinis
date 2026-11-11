@@ -122,8 +122,18 @@ struct CloudCallCapsule<Avatar: View>: View {
                     Text(call.connected ? CloudBotCallText.clock(call.elapsed) : "连接中…")
                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
-                CloudLevelMeter(level: max(call.micLevel, call.speakLevel), tint: tint)
-                    .frame(height: 6)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("callCapsule")
+                .accessibilityValue(CloudCallCapsuleText.value(connected: call.connected, receivedKB: call.receivedAudioKB, lines: call.lines.count))
+                if let line = CloudCallCapsuleText.line(connected: call.connected, notice: call.notice, status: call.status) {
+                    // 没接通、或接通了但某个方向不通时，直接在胶囊里写原因（以前只有计时在走，两边都没声音也看不出来）
+                    Text(line).font(.caption2).foregroundStyle(call.notice != nil ? Color.orange : Color.secondary)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("callCapsuleStatus")
+                } else {
+                    CloudLevelMeter(level: max(call.micLevel, call.speakLevel), tint: tint)
+                        .frame(height: 6)
+                }
             }
             Spacer(minLength: 4)
             capsuleButton("gearshape.fill", label: "通话设置", fill: Color(.tertiarySystemFill), glyph: .primary) { showSettings = true }
@@ -152,8 +162,9 @@ struct CloudCallCapsule<Avatar: View>: View {
         } label: {
             HStack(spacing: 6) {
                 Circle().fill(tint).frame(width: 8, height: 8).scaleEffect(pulse)
-                Text(CloudBotCallText.clock(call.elapsed)).font(.caption.monospacedDigit().weight(.semibold))
-                Image(systemName: call.muted ? "mic.slash.fill" : "waveform").font(.caption2).foregroundStyle(tint)
+                Text(call.connected ? CloudBotCallText.clock(call.elapsed) : "连接中").font(.caption.monospacedDigit().weight(.semibold))
+                Image(systemName: call.notice != nil ? "exclamationmark.triangle.fill" : (call.muted ? "mic.slash.fill" : "waveform"))
+                    .font(.caption2).foregroundStyle(call.notice != nil ? Color.orange : tint)
             }
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(Capsule().fill(.regularMaterial))
@@ -258,5 +269,18 @@ struct CloudTypingStatusRow<Avatar: View>: View {
         }
         .onAppear { phase = true }
         .accessibilityElement(children: .combine)
+    }
+}
+
+
+/// 胶囊上的一行字：有问题写问题；没接通写在做什么；正常接通显示音量条（nil）
+enum CloudCallCapsuleText {
+    static func line(connected: Bool, notice: String?, status: String) -> String? {
+        if let notice, !notice.isEmpty { return notice }
+        if !connected { return status.isEmpty ? "正在连接实时语音" : status }
+        return nil
+    }
+    static func value(connected: Bool, receivedKB: Int, lines: Int) -> String {
+        connected ? "已接通 · 收到声音 \(receivedKB) KB · 字幕 \(lines) 条" : "未接通"
     }
 }
