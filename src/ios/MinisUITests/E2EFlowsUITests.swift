@@ -397,6 +397,7 @@ final class E2EFlowsUITests: XCTestCase {
         if attach > 0 { app.launchEnvironment["OPENMINIS_E2E_ATTACH"] = String(attach) }
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 60))
+        dismissKeyboardIntro(app)
         return app
     }
 
@@ -418,6 +419,15 @@ final class E2EFlowsUITests: XCTestCase {
         }
     }
 
+    /// 系统键盘第一次弹出时的「滑行输入」引导（Speed up your typing… Continue）会盖住下半屏；有就点掉。
+    /// CI 已在模拟器里写了不再显示的偏好，这里兜底
+    private func dismissKeyboardIntro(_ app: XCUIApplication) {
+        for label in ["Continue", "继续"] {
+            let b = app.buttons[label]
+            if b.exists && b.isHittable { b.tap(); return }
+        }
+    }
+
     private func goBack(_ app: XCUIApplication) {
         let back = app.navigationBars.buttons.element(boundBy: 0)
         if back.waitForExistence(timeout: 5) { back.tap() } else {
@@ -428,6 +438,7 @@ final class E2EFlowsUITests: XCTestCase {
     private func send(_ app: XCUIApplication, _ text: String) {
         let field = app.descendants(matching: .any)["botComposerField"]
         field.tap()
+        dismissKeyboardIntro(app)
         field.typeText(text)
         let button = app.buttons["composerVoiceButton"]
         XCTAssertTrue(button.waitForExistence(timeout: 10))

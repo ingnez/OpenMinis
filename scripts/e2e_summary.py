@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """从 xcodebuild test 的日志里列出每个 UI 测试流程 PASS / FAIL（附失败原因）。
-用法：e2e_summary.py ui-tests.log [xcresult-summary.json]
+用法：e2e_summary.py ui-tests.log [xcresult-summary.json] [xcresult-tests.json]
+优先用 xcresulttool get test-results tests 的 JSON（每个用例的结果、重试），日志解析是兜底。
 日志有两种写法：老的「Test Case '-[MinisUITests.类 方法]' passed (1.0 seconds)」，
 Xcode 26 并行 / 克隆模拟器时是「Test case '类.方法()' passed on 'Clone 1 of …' (1.0 seconds)」。
 失败原因优先从 xcresulttool get test-results summary 的 JSON 里取（日志里不一定有）。
@@ -26,6 +27,40 @@ for cls, name, verdict, secs in re.findall(r"Test Case '-\[MinisUITests\.(\w+) (
     runs.append((cls, name, verdict, secs))
 for cls, name, verdict, secs in re.findall(r"Test case '(\w+)\.(\w+)\(\)' (passed|failed) on '[^']*' \(([\d.]+) seconds\)", log):
     runs.append((cls, name, verdict, secs))
+
+def walk_tests(node, out):
+    if isinstance(node, dict):
+        if node.get("nodeType") == "Test Case":
+            ident = node.get("nodeIdentifier") or node.get("name", "")
+            parts = ident.replace("()", "").split("/")
+            cls, name = (parts[-2], parts[-1]) if len(parts) >= 2 else ("?", parts[-1])
+            reps = [c for c in node.get("children", []) if c.get("nodeType") == "Repetition"]
+            verdict = "passed" if node.get("result") == "Passed" else "failed"
+            dur = str(node.get("durationInSeconds") or node.get("duration") or "").rstrip("s")
+            for _ in range(max(1, len(reps)) - 1):
+                out.append((cls, name, "failed", ""))
+            out.append((cls, name, verdict, dur))
+            if verdict == "failed":
+                msgs = [c.get("name", "") for c in node.get("children", []) if c.get("nodeType") == "Failure Message"]
+                for r in reps:
+                    msgs += [c.get("name", "") for c in r.get("children", []) if c.get("nodeType") == "Failure Message"]
+                if msgs:
+                    reasons.setdefault(f"{cls}.{name}", msgs[-1][:200])
+        for c in node.get("children", []) or node.get("testNodes", []):
+            walk_tests(c, out)
+    elif isinstance(node, list):
+        for c in node:
+            walk_tests(c, out)
+
+
+if len(sys.argv) > 3:
+    try:
+        from_json = []
+        walk_tests(json.load(open(sys.argv[3], encoding="utf-8")), from_json)
+        if from_json:
+            runs = from_json
+    except Exception:
+        pass
 
 order, last, tries = [], {}, {}
 for cls, name, verdict, secs in runs:

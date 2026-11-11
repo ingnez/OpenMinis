@@ -1094,6 +1094,10 @@ jobs:
           DEV=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
           echo "模拟器：$DEV"
           xcrun simctl boot "$DEV" || true
+          # 关掉系统键盘的「滑行输入」新手引导（Speed up your typing… Continue），它会盖住下半屏挡住后面的点按
+          xcrun simctl bootstatus "$DEV" -b || true
+          xcrun simctl spawn "$DEV" defaults write com.apple.keyboard.preferences DidShowContinuousPathIntroduction -bool true || true
+          xcrun simctl spawn "$DEV" defaults write com.apple.Preferences DidShowContinuousPathIntroduction -bool true || true
           # Minis 方案里挂着的 MinisTests 只依赖 MinisTestHost、不依赖 Minis（设计上走 MinisUnitTests 方案、先单独编 App，
           # 见 scripts/ios-unit-tests.sh），并行编译时扫描不到 Minis 模块就报「Unable to resolve module dependency: 'Minis'」，
           # -only-testing 也挡不住它被编译。这里只在运行机上生成一个不含它的方案跑 UI 流程；单元测试在下一步按它自己的方案跑。
@@ -1129,7 +1133,8 @@ jobs:
         if: always()
         run: |
           xcrun xcresulttool get test-results summary --path ui-tests.xcresult --format json > ui-tests-summary.json 2>/dev/null || true
-          python3 scripts/e2e_summary.py ui-tests.log ui-tests-summary.json > e2e-summary.md || true
+          xcrun xcresulttool get test-results tests --path ui-tests.xcresult --format json > ui-tests-tests.json 2>/dev/null || true
+          python3 scripts/e2e_summary.py ui-tests.log ui-tests-summary.json ui-tests-tests.json > e2e-summary.md || true
           cat e2e-summary.md
           mkdir -p e2e-shots
           xcrun xcresulttool export attachments --path ui-tests.xcresult --output-path e2e-shots 2>&1 | tail -3 || true
@@ -1169,6 +1174,7 @@ jobs:
             ui-tests.xcresult
             e2e-summary.md
             ui-tests-summary.json
+            ui-tests-tests.json
             e2e-shots
             e2e-cloud-stack.log
             unit-tests.log
