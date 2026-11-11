@@ -11,16 +11,16 @@ struct CloudAttachmentTray: View {
     @State private var dragging: UUID?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+                HStack(spacing: ComposerAttachLayout.thumbSpacing) {
                     ForEach(attachments) { a in
                         card(a)
                             .onDrag { dragging = a.id; return NSItemProvider(object: a.id.uuidString as NSString) }
                             .onDrop(of: [.text], delegate: CloudTrayDrop(target: a.id, dragging: $dragging, items: $attachments))
                     }
                 }
-                .padding(.horizontal, 14).padding(.top, 6)
+                .padding(.horizontal, 4).padding(.top, ComposerAttachLayout.closeOverhang)
             }
             if attachments.contains(where: \.isImage) {
                 Toggle(isOn: $keepOriginal) {
@@ -52,14 +52,14 @@ struct CloudAttachmentTray: View {
                 }
                 ImageUploadBadge(state: state, onRetry: onRetry).scaleEffect(0.8)
             }
-            .frame(width: 64, height: 64)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .frame(width: ComposerAttachLayout.thumbSize.width, height: ComposerAttachLayout.thumbSize.height)
+            .clipShape(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous))
             .opacity(dragging == a.id ? 0.4 : 1)
             Button { attachments.removeAll { $0.id == a.id } } label: {
                 Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette)
-                    .foregroundStyle(.white, Color.black.opacity(0.6)).font(.system(size: 18))
+                    .foregroundStyle(.white, Color.black.opacity(0.6)).font(.system(size: 22))
             }
-            .offset(x: 5, y: -5)
+            .offset(x: 6, y: -6)
             .accessibilityLabel("移除 \(a.filename)")
         }
         .contextMenu {

@@ -52,6 +52,33 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
         check(ImageStackLayout.hitIndex(at: leftEdge, count: 3, fanned: true) == left.index, "点最左边露出来的那张")
         check(ImageStackLayout.hitIndex(at: CGPoint(x: -500, y: -500), count: 3, fanned: true) == 0, "点空白算第一张")
 
+        // 长按滑动：跟手选中、松手是否打开
+        let midX = box.width / 2
+        check(ImageStackLayout.focusedIndex(atX: midX, count: 3) == 1, "三张铺开时手指在中间是第 2 张")
+        let leftX = midX - ImageStackLayout.fanSpacing
+        let rightX = midX + ImageStackLayout.fanSpacing
+        check(ImageStackLayout.focusedIndex(atX: leftX, count: 3) == 0, "手指在左边是第 1 张")
+        check(ImageStackLayout.focusedIndex(atX: rightX, count: 3) == 2, "手指在右边是第 3 张")
+        check(ImageStackLayout.focusedIndex(atX: midX, count: 1) == 0, "一张总是第 1 张")
+        check(ImageStackLayout.scale(index: 2, focused: 2, fanned: true) == ImageStackLayout.highlightScale, "选中的卡放大")
+        check(ImageStackLayout.scale(index: 0, focused: 2, fanned: true) == ImageStackLayout.restScale, "没选中的略缩小")
+        check(ImageStackLayout.scale(index: 2, focused: 2, fanned: false) == 1, "没展开不放大")
+        check(ImageStackLayout.shouldOpenOnRelease(translation: ImageStackLayout.scrubThreshold), "刚好达到阈值就打开")
+        check(ImageStackLayout.shouldOpenOnRelease(translation: ImageStackLayout.scrubThreshold + 30), "滑过阈值打开")
+        check(!ImageStackLayout.shouldOpenOnRelease(translation: 4), "几乎没滑不打开")
+        check(!ImageStackLayout.shouldOpenOnRelease(translation: -4), "反向微移不打开")
+
+        // 输入框附图：大缩略图在文字上方，文字区不被挤扁
+        check(ComposerAttachLayout.thumbSize.width >= 120 && ComposerAttachLayout.thumbSize.height >= 120, "缩略图是大号卡片")
+        check(ComposerAttachLayout.composerMinHeight(attachmentCount: 0) == ComposerAttachLayout.textMinHeight, "没附图时高度就是文字区")
+        let attachH1 = ComposerAttachLayout.composerMinHeight(attachmentCount: 1)
+        let attachH3 = ComposerAttachLayout.composerMinHeight(attachmentCount: 3)
+        check(attachH1 == attachH3, "1 张和 3 张最小高度一样（多出来的横向滑）")
+        check(attachH1 >= ComposerAttachLayout.stripHeight + ComposerAttachLayout.textMinHeight, "附图后整块至少是缩略图 + 文字区")
+        check(ComposerAttachLayout.textHeight(composerHeight: attachH1, attachmentCount: 3) >= ComposerAttachLayout.textMinHeight, "三张图时文字区仍有最小高度")
+        check(ComposerAttachLayout.textHeight(composerHeight: 80, attachmentCount: 3) == ComposerAttachLayout.textMinHeight, "总高低了也不把文字区压到最小值以下")
+        check(ComposerAttachLayout.stripHeight > 64, "缩略图条比旧的 64 点小图更高")
+
         // 看图页页码
         check(ImageViewerIndex.clamp(5, count: 3) == 2 && ImageViewerIndex.clamp(-1, count: 3) == 0 && ImageViewerIndex.clamp(2, count: 0) == 0, "起始页夹在范围内")
         check(!ImageViewerIndex.showsStrip(1) && ImageViewerIndex.showsStrip(2), "两张以上才有缩略图条")
@@ -61,6 +88,6 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
         check(ImageSendPolicy.targetSize(for: big, keepOriginal: false) == CGSize(width: 1600, height: 1200), "大图压到长边 1600")
         check(ImageSendPolicy.targetSize(for: big, keepOriginal: true) == big, "保留原图不缩")
         check(ImageSendPolicy.targetSize(for: CGSize(width: 800, height: 600), keepOriginal: false) == CGSize(width: 800, height: 600), "小图不放大")
-        print("PASS：叠卡张数 / 旋转 / 层级 / 铺开、行高、看图页码 / 缩略图条、发图压缩")
+        print("PASS：叠卡张数 / 旋转 / 层级 / 铺开、行高、跟手选择、输入框附图尺寸、看图页码 / 缩略图条、发图压缩")
     }
 }

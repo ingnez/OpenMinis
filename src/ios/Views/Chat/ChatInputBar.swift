@@ -184,7 +184,8 @@ struct InputAttachmentGridView: View {
     @State private var editVersion: [UUID: Int] = [:]
 
     var body: some View {
-        FlowLayout(hSpacing: 8, vSpacing: 8) {
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: ComposerAttachLayout.thumbSpacing) {
             ForEach(attachments) { attachment in
                 AttachmentChip(attachment: attachment, onRemove: {
                     onRemove(attachment)
@@ -214,9 +215,10 @@ struct InputAttachmentGridView: View {
             ForEach(0..<loadingVideoCount, id: \.self) { _ in
                 VideoLoadingChip()
             }
+          }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 6)  // room for × button overhang (offset y: -4)
+        .padding(.horizontal, 12)
+        .padding(.top, ComposerAttachLayout.closeOverhang)
         .fullScreenCover(item: $markupTarget) { target in
             if let a = attachments.first(where: { $0.id == target.id }) {
                 ImageMarkupSheet(fileURL: a.cacheURL) { url in
@@ -276,10 +278,10 @@ private struct VideoLoadingChip: View {
                 .font(.caption2)
                 .foregroundStyle(ChatColors.secondaryText)
         }
-        .frame(width: 64, height: 64)
+        .frame(width: ComposerAttachLayout.thumbSize.width, height: ComposerAttachLayout.thumbSize.height)
         .background(ChatColors.secondaryBg)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
+        .clipShape(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
     }
 }
 
@@ -304,6 +306,7 @@ private struct AttachmentChip: View {
                 readyChip
             }
         }
+        .accessibilityIdentifier("trayCard")
     }
 
     /// A normal, loaded attachment (image / video thumbnail or file chip).
@@ -327,10 +330,10 @@ private struct AttachmentChip: View {
     private var loadingChip: some View {
         ProgressView()
             .controlSize(.small)
-            .frame(width: 64, height: 64)
+            .frame(width: ComposerAttachLayout.thumbSize.width, height: ComposerAttachLayout.thumbSize.height)
             .background(ChatColors.secondaryBg)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
+            .clipShape(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
     }
 
     /// [T-ios-photo-pick-placeholder] Error chip for a photo that failed to load.
@@ -345,10 +348,10 @@ private struct AttachmentChip: View {
                     .font(.caption2)
                     .foregroundStyle(ChatColors.secondaryText)
             }
-            .frame(width: 64, height: 64)
+            .frame(width: ComposerAttachLayout.thumbSize.width, height: ComposerAttachLayout.thumbSize.height)
             .background(ChatColors.secondaryBg)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.5), lineWidth: 0.5))
+            .clipShape(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous).stroke(Color.orange.opacity(0.5), lineWidth: 0.5))
 
             Button {
                 onRemove()
@@ -372,9 +375,9 @@ private struct AttachmentChip: View {
                     Image(uiImage: uiImage)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
-                        .frame(width: 64, height: 64)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
+                        .frame(width: ComposerAttachLayout.thumbSize.width, height: ComposerAttachLayout.thumbSize.height)
+                        .clipShape(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
                         .shadow(color: .black.opacity(0.08), radius: 2, x: 0, y: 1)
 
                     if isVideo {
@@ -480,10 +483,10 @@ private struct AttachmentChip: View {
             }
             .padding(.horizontal, 4)
             .padding(.vertical, 6)
-            .frame(width: 64, height: 64)
+            .frame(width: ComposerAttachLayout.thumbSize.width, height: ComposerAttachLayout.thumbSize.height)
             .background(ChatColors.secondaryBg)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
+            .clipShape(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
 
             Button {
                 onRemove()
@@ -552,10 +555,10 @@ struct PastedTextChipRow: View {
                         }
                         .padding(.horizontal, 4)
                         .padding(.vertical, 6)
-                        .frame(width: 64, height: 64)
+                        .frame(width: ComposerAttachLayout.thumbSize.width, height: ComposerAttachLayout.thumbSize.height)
                         .background(ChatColors.secondaryBg)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
                         .contentShape(RoundedRectangle(cornerRadius: 8))
                         // The ✕ Button keeps priority for its own hit area; the
                         // rest of the card opens the read-only preview.
@@ -964,8 +967,8 @@ struct UserAttachmentList: View {
             .padding(.vertical, 6)
             .frame(width: tileSize, height: tileSize)
             .background(ChatColors.secondaryBg)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
+            .clipShape(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
         }
         .buttonStyle(.plain)
     }
@@ -992,7 +995,7 @@ struct UserAttachmentList: View {
             .padding(.vertical, 6)
             .frame(width: tileSize, height: tileSize)
             .background(ChatColors.secondaryBg)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous))
         }
         .buttonStyle(.plain)
         // WebApp entry point — only for .html / .htm. Long-press → context
@@ -1109,7 +1112,7 @@ struct QueuedAttachmentPreview: View {
         }
         .frame(width: tileSize, height: tileSize)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(.systemGray5)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: ComposerAttachLayout.thumbCorner, style: .continuous))
         .opacity(0.7)
     }
 }

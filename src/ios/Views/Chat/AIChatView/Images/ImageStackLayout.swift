@@ -25,6 +25,13 @@ enum ImageStackLayout {
     static let captionSpacing: CGFloat = 6
     /// 旋转和错开需要的余量，算进容器尺寸，免得卡片角压到别的行
     static let stackInset = CGSize(width: 28, height: 8)
+    /// 铺开后相邻两张中心的水平间距
+    static let fanSpacing: CGFloat = 46
+    /// 跟手滑动超过这个距离，松手就打开当前高亮的那张；否则只保持展开/收回
+    static let scrubThreshold: CGFloat = 12
+    /// 当前选中的卡放大，其余略缩小（长按滑动时）
+    static let highlightScale: CGFloat = 1.14
+    static let restScale: CGFloat = 0.94
 
     static func isStack(_ count: Int) -> Bool { count > 1 }
 
@@ -53,7 +60,7 @@ enum ImageStackLayout {
             let mid = Double(n - 1) / 2
             return (0..<n).reversed().map { i in
                 let d = Double(i) - mid
-                return Card(index: i, rotation: d * 8, offset: CGSize(width: d * 46, height: abs(d) * 6), zIndex: Double(n - i))
+                return Card(index: i, rotation: d * 8, offset: CGSize(width: d * fanSpacing, height: abs(d) * 6), zIndex: Double(n - i))
             }
         }
         let n = min(count, maxStacked)
@@ -78,6 +85,57 @@ extension ImageStackLayout {
 }
 
 /// 全屏看图的页码规则
+
+extension ImageStackLayout {
+    /// 手指在铺开容器里的 x（左上为原点）对应哪一张（只在可见的铺开张数里，最近中心）
+    static func focusedIndex(atX x: CGFloat, count: Int) -> Int {
+        let n = min(max(count, 1), maxFanned)
+        guard n > 1 else { return 0 }
+        let mid = stackSize(count: count).width / 2
+        var best = 0
+        var bestDist = CGFloat.greatestFiniteMagnitude
+        for i in 0..<n {
+            let d = CGFloat(i) - CGFloat(n - 1) / 2
+            let cx = mid + d * fanSpacing
+            let dist = abs(x - cx)
+            if dist < bestDist { bestDist = dist; best = i }
+        }
+        return best
+    }
+
+    static func scale(index: Int, focused: Int, fanned: Bool) -> CGFloat {
+        guard fanned else { return 1 }
+        return index == focused ? highlightScale : restScale
+    }
+
+    /// 松手是否打开当前高亮的那张（滑动超过阈值）
+    static func shouldOpenOnRelease(translation: CGFloat) -> Bool {
+        abs(translation) >= scrubThreshold
+    }
+}
+
+/// 输入框附图：上方大号缩略图条，输入框整体是圆角大卡片，文字区不被挤扁
+enum ComposerAttachLayout {
+    static let thumbSize = CGSize(width: 140, height: 140)
+    static let thumbCorner: CGFloat = 18
+    static let composerCorner: CGFloat = 22
+    static let thumbSpacing: CGFloat = 10
+    /// × 超出缩略图上沿的空间
+    static let closeOverhang: CGFloat = 10
+    static let textMinHeight: CGFloat = 44
+    static var stripHeight: CGFloat { thumbSize.height + closeOverhang }
+    /// 附图时整块最小高度：大缩略图在文字上方，文字区至少 textMinHeight
+    static func composerMinHeight(attachmentCount: Int) -> CGFloat {
+        guard attachmentCount > 0 else { return textMinHeight }
+        return stripHeight + 8 + textMinHeight
+    }
+    /// 给定整块高度时，文字区还能剩多少（不会低于最小值）
+    static func textHeight(composerHeight: CGFloat, attachmentCount: Int) -> CGFloat {
+        guard attachmentCount > 0 else { return max(textMinHeight, composerHeight) }
+        return max(textMinHeight, composerHeight - stripHeight - 8)
+    }
+}
+
 enum ImageViewerIndex {
     static func clamp(_ index: Int, count: Int) -> Int { max(0, min(index, max(count - 1, 0))) }
     /// 底部缩略图条：两张以上才显示

@@ -522,6 +522,7 @@ extension AIChatView {
                 field.fixedSize(horizontal: false, vertical: true)
             }
         }
+        .frame(minHeight: ComposerAttachLayout.textMinHeight)
         .padding(.horizontal, 16)
         .padding(.top, topPadding)
         .padding(.bottom, 10)

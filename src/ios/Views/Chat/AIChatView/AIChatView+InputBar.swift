@@ -105,15 +105,10 @@ extension AIChatView {
                 }
                 // Attachment preview chips — 3 per row
                 if !vm.attachments.isEmpty || vm.loadingVideoCount > 0 {
-                    ScrollView(.vertical, showsIndicators: true) {
-                        inputAttachmentGrid
-                            .background(GeometryReader { geo in
-                                Color.clear.preference(key: AttachmentGridHeightKey.self, value: geo.size.height)
-                            })
-                    }
-                    .frame(height: min(attachmentGridHeight, 160))
-                    .onPreferenceChange(AttachmentGridHeightKey.self) { attachmentGridHeight = $0 }
-                    .padding(.top, 8)
+                    inputAttachmentGrid
+                        .frame(height: ComposerAttachLayout.stripHeight)
+                        .padding(.top, 4)
+                        .accessibilityIdentifier("composerAttachStrip")
                 }
                 if vm.attachments.contains(where: { $0.kind == .image }) {
                     LocalKeepOriginalToggle()
@@ -177,6 +172,7 @@ extension AIChatView {
                 }
             }
             .modifier(ComposerSurface())
+            .accessibilityIdentifier(!vm.attachments.isEmpty || vm.loadingVideoCount > 0 ? "composerAttachCard" : "composerCard")
             // [T-ios-context-usage-hint] Inner glow along the glass wall.
             // An overlay ABOVE the material (so the Liquid Glass backdrop
             // sampler never sees it) that clips itself to the same shape, so
