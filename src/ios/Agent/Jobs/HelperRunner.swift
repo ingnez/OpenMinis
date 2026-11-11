@@ -433,9 +433,12 @@ extension AIChatViewModel {
         }
         // [T-sub-agents-v1] Only consulted when the definition pins no group.
         let modelChoice = SubAgentModelChoice.parse(args["model_choice"] as? String)
-        guard let resolution = SubAgentModelResolver.resolve(subAgent: subAgent, parent: self,
+        guard var resolution = SubAgentModelResolver.resolve(subAgent: subAgent, parent: self,
                                                             choice: modelChoice) else {
             return reject("no_model", "No model is configured for a helper to run on.")
+        }
+        if let eid = localReplyBackEntryId, let entry = ProviderConfigStore.shared.entry(for: eid) {
+            resolution = HelperModelResolution(source: .directEntry(modelEntryId: eid), entry: entry, origin: .inherited)
         }
 
         // ── Child session ────────────────────────────────────────────────

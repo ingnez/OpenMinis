@@ -430,6 +430,15 @@ extension AIChatViewModel {
             return "{}"
         }()
 
+        if isInstantFrontTurn && !LocalReplyStore.isHandoffTool(tu.name) {
+            let handed = await instantAutoHandoff(toolName: tu.name, toolUseId: tu.id,
+                                                 msgIdx: msgIdx, blockIdx: blockIdx)
+            toolOutput = handed.output
+            toolSuccess = handed.success
+            if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
+                messages[msgIdx].blocks[blockIdx].content = toolOutput
+            }
+        } else {
         do {
         switch tu.name {
         case "shell_execute":
@@ -444,6 +453,17 @@ extension AIChatViewModel {
                 }
                 break
             }
+
+            #if DEBUG
+            if let fake = await LocalReplyE2E.shell(command) {
+                toolOutput = fake
+                toolSuccess = true
+                if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
+                    messages[msgIdx].blocks[blockIdx].content = toolOutput
+                }
+                break
+            }
+            #endif
 
             // Offload permission check.
             ctLogger.info("[OffloadPerm] shell command: \(command)")
@@ -1009,6 +1029,22 @@ extension AIChatViewModel {
             toolOutput = askResult.output
             toolSuccess = askResult.success
 
+        case "spawn_task", "task_message", "task_status", "task_stop", "task_resume":
+            let mapped = Self.mapLocalReplyTool(name: tu.name, args: toolArgs)
+            if tu.name == "spawn_task" {
+                let helperResult = await executeDelegateTask(args: mapped, toolUseId: tu.id,
+                                                             msgIdx: msgIdx, blockIdx: blockIdx)
+                toolOutput = helperResult.output
+                toolSuccess = helperResult.success
+            } else {
+                let statusResult = executeAgentStatus(args: mapped)
+                if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
+                    messages[msgIdx].blocks[blockIdx].content = statusResult.output
+                }
+                toolOutput = statusResult.output
+                toolSuccess = statusResult.success
+            }
+
         case SubAgentDefinition.toolName:
             // [T-agents-debug-only] A refusal in the sub-agent result dialect,
             // so HelperBlockInfo renders the block as "Rejected" (a plain
@@ -1075,6 +1111,7 @@ extension AIChatViewModel {
             ctLogger.error("Tool execution threw non-cancellation error: \(error)")
             toolOutput = "Error: \(error.localizedDescription)"
             toolSuccess = false
+        }
         }
 
         // Tail cancel-detection: if Task got cancelled mid-execution.

@@ -286,6 +286,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReplyMode.swift scripts/CloudReplyModeTests.swift -o /tmp/cloud-reply-mode-tests
           /tmp/cloud-reply-mode-tests
+      - name: 本地回复方式（秒回 / 详细）设置与预计剩余测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReplyMode.swift src/ios/Views/Chat/AIChatView/Cloud/LocalReplyStore.swift scripts/LocalReplyModeTests.swift -o /tmp/local-reply-mode-tests
+          /tmp/local-reply-mode-tests
       - name: Spotlight 搜 Bot 规则测试
         run: |
           set -o pipefail

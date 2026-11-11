@@ -24,6 +24,8 @@ LOCAL_MODEL_PORT = 18797
 # 回复方式（秒回）：前台快模型 + 后台干活模型，都是假的；默认把 e2ebot 设成「详细」，老流程不受影响
 FRONT_MODEL = "e2e-front-model"
 BACK_MODEL = "e2e-back-model"
+LOCAL_FRONT_MODEL = "e2e-local-front-model"
+LOCAL_BACK_MODEL = "e2e-local-back-model"
 API_PORT = int(os.environ.get("OPENMINIS_E2E_PORT", "18765"))
 
 
@@ -99,6 +101,22 @@ def front_script(data):
     if "查一下" in text:
         title = "慢活" if "慢活" in text else "查资料"
         return _stream_then_tool("好，我让后台去查，做完告诉你。", "f1", "spawn_task", {"goal": text, "context": "假数据", "title": title})
+    return {"_chunks": ["秒回：", text[:20]], "_delay": 0.02}
+
+
+def local_front_script(data):
+    """本地秒回前台：和云端同一套话术，任务 id 从 spawn_task 的 job_id 里取（本地是 UUID）。"""
+    import re
+    text = last_user_text(data)
+    if _fresh_tools(data):
+        return {"role": "assistant", "content": ""}
+    blob = json.dumps(data.get("messages", []), ensure_ascii=False)
+    m = re.search(r'"job_id"\s*:\s*"([0-9a-fA-F-]{8,})"', blob)
+    if "插话" in text and m:
+        return _stream_then_tool("收到插话，马上转给后台。", "lf2", "task_message", {"id": m.group(1), "text": text})
+    if "查一下" in text:
+        title = "慢活" if "慢活" in text else "查资料"
+        return _stream_then_tool("好，我让后台去查，做完告诉你。", "lf1", "spawn_task", {"goal": text, "context": "假数据", "title": title})
     return {"_chunks": ["秒回：", text[:20]], "_delay": 0.02}
 
 
@@ -306,6 +324,8 @@ def main():
     sup.FakeModelHandler.scripts[LOCAL_MODEL] = local_script
     sup.FakeModelHandler.scripts[FRONT_MODEL] = front_script
     sup.FakeModelHandler.scripts[BACK_MODEL] = back_script
+    sup.FakeModelHandler.scripts[LOCAL_FRONT_MODEL] = local_front_script
+    sup.FakeModelHandler.scripts[LOCAL_BACK_MODEL] = back_script
     local_srv = ThreadingHTTPServer(("127.0.0.1", LOCAL_MODEL_PORT), sup.FakeModelHandler)
     threading.Thread(target=local_srv.serve_forever, daemon=True).start()
     model_srv = ThreadingHTTPServer(("127.0.0.1", 0), sup.FakeModelHandler)

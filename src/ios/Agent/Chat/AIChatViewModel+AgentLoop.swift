@@ -89,6 +89,7 @@ extension AIChatViewModel {
 
     func runAgentLoop(resumingAt existingMsgIdx: Int? = nil, committedBlocks: Int? = nil) async throws {
         guard !isRetiredByReset else { throw CancellationError() }
+        prepareLocalReplyTurn()
 
         // 本地就是本地：本地对话只在本机跑。以前这里看到旧版「云电脑」开关留下的偏好
         // 就把整轮悄悄导到 VPS 主 Bot 上执行（11-11 真机：本地任务出现在云端小猪包对话里）。
@@ -268,6 +269,7 @@ extension AIChatViewModel {
         // Authoritative memory-status footer (overrides any earlier
         // baseSystemPrompt mentions when memory is disabled).
         userSystemPrompt += memoryStatusFragment
+        if isInstantFrontTurn { userSystemPrompt += LocalReplyStore.frontNote }
 
         let promptBuildMs = (CFAbsoluteTimeGetCurrent() - loopSetupStart) * 1000
         logger.info("⏱️ [runAgentLoop] prompt build elapsed=\(String(format: "%.1f", promptBuildMs))ms history=\(self.agentHistory.count)")
@@ -1106,6 +1108,7 @@ extension AIChatViewModel {
                     }
                 }
                 userSystemPrompt += memoryStatusFragment
+                if isInstantFrontTurn { userSystemPrompt += LocalReplyStore.frontNote }
                 fallbackTrigger += 1
                 if !fallbackReasons.isEmpty {
                     // Resync the assistant message index by its stable id before

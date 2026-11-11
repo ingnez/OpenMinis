@@ -201,7 +201,7 @@ extension AIChatViewModel {
     ) async throws -> AsyncThrowingStream<AgentStreamEvent, Error> {
         var currentProvider = initialProvider
         var currentSystemPrompt = initialSystemPrompt
-        var currentEntryId = activeEntryId
+        var currentEntryId = turnModelEntryOverride ?? activeEntryId
         var triedEntries: Set<String> = []
         if let eid = currentEntryId { triedEntries.insert(eid) }
 
@@ -306,6 +306,10 @@ extension AIChatViewModel {
                 )
                 // Success — update binding if we fell back to a different entry
                 let prevEntryId = activeEntryId
+                if turnModelEntryOverride != nil {
+                    logger.info("🔀ROUTE front/back override kept off the session binding")
+                    return stream
+                }
                 if currentEntryId != activeEntryId, let currentEntryId,
                    let groupId = activeGroupId, let sid = sessionId {
                     logger.info("🔀ROUTE success with different entry: \(prevEntryId ?? "nil") → \(currentEntryId)")
@@ -471,6 +475,7 @@ extension AIChatViewModel {
                     )
                     // Auto-retry succeeded
                     let prevEntryId = activeEntryId
+                    if turnModelEntryOverride != nil { return stream }
                     if currentEntryId != activeEntryId, let currentEntryId,
                        let groupId = activeGroupId, let sid = sessionId {
                         logger.info("🔀ROUTE auto-retry success with different entry: \(prevEntryId ?? "nil") → \(currentEntryId)")

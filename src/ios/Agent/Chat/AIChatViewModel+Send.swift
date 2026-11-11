@@ -78,6 +78,10 @@ extension AIChatViewModel {
             logger.warning("🔑DRAFT [vm=\(self.vmInstanceId)] send() GUARD FAILED — text.isEmpty=\(text.isEmpty) attachments.isEmpty=\(pendingAttachments.isEmpty) isProcessing=\(self.isProcessing)")
             return
         }
+        if isInstantFrontTurn {
+            replyLatency.sent()
+            NotificationCenter.default.post(name: CloudReplyService.kick, object: nil)
+        }
 
         // Don't stop TTS here — let the previous reply finish playing. The stream
         // handler will clear the queue on the FIRST textDelta of the new reply, so

@@ -136,6 +136,22 @@ enum CloudReplyText {
         return "\(n / 3600) 小时 \(n % 3600 / 60) 分"
     }
 
+    /// 预计剩余秒数：只用真实历史用时。至少 3 个样本时取中位数减去已用时间；不够、快到了或已超时返回 nil（不瞎猜）。
+    static let etaMinSamples = 3
+    static func etaSeconds(history: [Double], elapsed: Double) -> Int? {
+        let xs = history.filter { $0 > 0 }
+        guard xs.count >= etaMinSamples else { return nil }
+        let sorted = xs.sorted()
+        let mid: Double
+        if sorted.count % 2 == 1 {
+            mid = sorted[sorted.count / 2]
+        } else {
+            mid = (sorted[sorted.count / 2 - 1] + sorted[sorted.count / 2]) / 2
+        }
+        let left = mid - elapsed
+        return left >= 5 ? Int(left.rounded()) : nil
+    }
+
     /// 预计剩余：服务器只在有真实历史数据时给 eta_s；本地按拿到之后过去的时间往下减，减到 5 秒以内就不显示（不瞎猜）
     static func eta(_ seconds: Int?, since fetched: Double = 0) -> String? {
         guard let s = seconds else { return nil }

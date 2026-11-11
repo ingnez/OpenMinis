@@ -55,6 +55,9 @@ struct SettingsSheet: View {
                 Section {
                     HomeModeRow(current: HomeMode.from(homeMode), dismiss: { dismiss() })
                 }
+                if homeMode == "local" {
+                    LocalReplyModeSection()
+                }
                 Section {
                     NavigationLink {
                         ProviderInstancesView()

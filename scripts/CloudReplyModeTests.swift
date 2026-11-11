@@ -33,6 +33,10 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         // 文字
         check(CloudReplyText.elapsed(8.9) == "8 秒" && CloudReplyText.elapsed(65) == "1 分 05 秒" && CloudReplyText.elapsed(3720) == "1 小时 2 分", "用时")
         check(CloudReplyText.elapsed(-3) == "0 秒", "负数")
+        check(CloudReplyText.etaSeconds(history: [], elapsed: 3) == nil, "没有样本不猜")
+        check(CloudReplyText.etaSeconds(history: [60, 80], elapsed: 3) == nil, "样本不够不猜")
+        check(CloudReplyText.etaSeconds(history: [60, 80, 100], elapsed: 20) == 60, "中位数 80 - 已用 20")
+        check(CloudReplyText.etaSeconds(history: [60, 80, 100], elapsed: 79) == nil, "快到了不显示")
         check(CloudReplyText.eta(nil) == nil, "没有数据不显示预计")
         check(CloudReplyText.eta(40) == "约还需 40 秒", CloudReplyText.eta(40) ?? "nil")
         check(CloudReplyText.eta(150) == "约还需 3 分钟", CloudReplyText.eta(150) ?? "nil")

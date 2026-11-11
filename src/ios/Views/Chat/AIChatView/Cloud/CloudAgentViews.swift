@@ -2115,7 +2115,12 @@ struct CloudSessionView: View {
         if plan?.isInstant == true {
             replyStatus.botName = theme.name
             replyStatus.locked = CloudBotLock.isLockedStored(theme.botId)
-            replyStatus.inRealtimeCall = { showVoiceCall && voiceMode == "realtime" }
+            replyStatus.inRealtimeCall = {
+                #if DEBUG
+                if CloudE2E.replySpeak { return true }
+                #endif
+                return showVoiceCall && voiceMode == "realtime"
+            }
             replyStatus.onWorkerFinished = { loadSessionDetail() }
             replyStatus.start(sessionId: sessionId)
         } else {

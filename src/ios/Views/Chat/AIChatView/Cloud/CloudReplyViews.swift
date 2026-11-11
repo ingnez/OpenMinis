@@ -9,6 +9,8 @@ enum CloudReplyService {
     nonisolated static let changed = Notification.Name("OpenMinisReplyModeChanged")
     /// 实时语音通话里念进度（RealtimeVoiceSession 收这个名字；用字面量，实时目录单独类型检查时不依赖这里）
     nonisolated static let spoken = Notification.Name("OpenMinisReplyStatusSpoken")
+    /// 刚发出消息：状态行勤快刷新（本地秒回派活之后后台任务马上会出现）
+    nonisolated static let kick = Notification.Name("OpenMinisReplyStatusKick")
 
     static func botSettings(_ botId: String) async throws -> CloudReplyBotSettings {
         let res = try await CloudConnection.shared.request(method: "GET", path: "/v1/bots/\(botId)/reply")
@@ -73,6 +75,15 @@ final class CloudReplyStatusModel: ObservableObject {
     var inRealtimeCall: () -> Bool = { false }
     /// 有后台任务结束：结果消息已经写进对话，页面要重新拉一次
     var onWorkerFinished: () -> Void = {}
+    /// 本地模式：自己提供 worker 列表（不走云端 /v1/workers）
+    var workerSource: ((String) async -> [CloudReplyWorker])? = nil
+    var onStopWorker: ((CloudReplyWorker) -> Void)?
+    var onMessageWorker: ((CloudReplyWorker, String) throws -> Void)?
+    #if DEBUG
+    @Published var lastCue: String?
+    @Published var liveActivityOn = false
+    @Published var lastSpokenLine: String?
+    #endif
 
     var current: CloudReplyWorker? { CloudReplyRow.current(workers, finishedAt: finishedAt) }
     var activeCount: Int { workers.filter(\.active).count }
@@ -81,6 +92,9 @@ final class CloudReplyStatusModel: ObservableObject {
         guard loop == nil || sessionId != sid else { return }
         loop?.cancel()
         sessionId = sid
+        #if DEBUG
+        if CloudE2E.replySpeak { inRealtimeCall = { true } }
+        #endif
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -103,7 +117,15 @@ final class CloudReplyStatusModel: ObservableObject {
     }
 
     func refresh() async {
-        guard !sessionId.isEmpty, let list = try? await CloudReplyService.workers(sessionId) else { return }
+        guard !sessionId.isEmpty else { return }
+        let list: [CloudReplyWorker]
+        if let workerSource {
+            list = await workerSource(sessionId)
+        } else if let remote = try? await CloudReplyService.workers(sessionId) {
+            list = remote
+        } else {
+            return
+        }
         let cues = tracker.update(list)
         let now = Date()
         for w in list where !w.active && finishedAt[w.id] == nil && cues.contains(where: { $0.workerId == w.id }) {
@@ -124,7 +146,8 @@ final class CloudReplyStatusModel: ObservableObject {
     func stop(_ w: CloudReplyWorker) {
         Task {
             do {
-                try await CloudReplyService.stop(w.id)
+                if let onStopWorker { onStopWorker(w) }
+                else { try await CloudReplyService.stop(w.id) }
                 notice = "已停止「\(w.title)」"
             } catch {
                 notice = "没能停止：\(error.localizedDescription.prefix(80))"
@@ -138,7 +161,8 @@ final class CloudReplyStatusModel: ObservableObject {
         guard !t.isEmpty else { return }
         Task {
             do {
-                try await CloudReplyService.message(w.id, t)
+                if let onMessageWorker { try onMessageWorker(w, t) }
+                else { try await CloudReplyService.message(w.id, t) }
                 notice = "已转给后台：\(t.prefix(30))"
                 CloudHaptics.tap()
             } catch {
@@ -156,6 +180,14 @@ final class CloudReplyStatusModel: ObservableObject {
         case .failed: CloudHaptics.warning()
         case .stopped: CloudHaptics.tap()
         }
+        #if DEBUG
+        switch cue {
+        case .done: lastCue = "done"
+        case .decision: lastCue = "decision"
+        case .failed: lastCue = "failed"
+        case .stopped: lastCue = "stopped"
+        }
+        #endif
     }
 
     private func chime(_ id: SystemSoundID) {
@@ -172,6 +204,9 @@ final class CloudReplyStatusModel: ObservableObject {
                 if !mirrored.contains(key) {
                     mirrored.insert(key)
                     CloudBotLiveActivity.began(sessionId: key, botName: locked ? "已上锁的 Bot" : botName)
+                    #if DEBUG
+                    liveActivityOn = true
+                    #endif
                 }
                 let line = locked ? "后台进行中" : CloudReplyText.phrase(w) + " · " + CloudReplyText.elapsed(w.elapsed)
                 CloudBotLiveActivity.progress(sessionId: key, toolName: "", status: line)
@@ -189,6 +224,9 @@ final class CloudReplyStatusModel: ObservableObject {
         guard let line = CloudReplySpoken.next(previous: lastSpoken, current: w, lastSpokenAt: lastSpokenAt) else { return }
         lastSpoken = line
         lastSpokenAt = Date()
+        #if DEBUG
+        lastSpokenLine = line
+        #endif
         NotificationCenter.default.post(name: CloudReplyService.spoken, object: nil, userInfo: ["text": line])
     }
 }
@@ -518,6 +556,18 @@ struct CloudReplyComposerSlot: View {
             Text("\(ms)").font(.system(size: 1)).opacity(0.02)
                 .accessibilityIdentifier("replyFirstTextMs").accessibilityLabel("\(ms)")
         }
+        if CloudE2E.token != nil, let cue = status.lastCue {
+            Text(cue).font(.system(size: 1)).opacity(0.02)
+                .accessibilityIdentifier("replyCueLast").accessibilityLabel(cue)
+        }
+        if CloudE2E.token != nil, status.liveActivityOn {
+            Text("on").font(.system(size: 1)).opacity(0.02)
+                .accessibilityIdentifier("replyLiveActivity").accessibilityLabel("on")
+        }
+        if CloudE2E.token != nil, let line = status.lastSpokenLine {
+            Text(line).font(.system(size: 1)).opacity(0.02)
+                .accessibilityIdentifier("replySpokenLine").accessibilityLabel(line)
+        }
         #endif
     }
 }
@@ -548,6 +598,7 @@ struct CloudReplyChatChrome: ViewModifier {
                 let sid = sessionId
                 Task { @MainActor in onPlan(try? await CloudReplyService.session(sid)) }
             }
+            .onReceive(NotificationCenter.default.publisher(for: CloudReplyService.kick)) { _ in status.kick() }
             .onDisappear { status.stopPolling() }
     }
 

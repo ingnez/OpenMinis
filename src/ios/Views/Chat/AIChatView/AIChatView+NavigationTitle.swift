@@ -491,6 +491,12 @@ extension AIChatView {
         // environment here freezes them at the design baseline without
         // having to rewrite every Text modifier individually.
         .dynamicTypeSize(.large)
+        .contextMenu {
+            if let sid = vm.sessionId, !sid.isEmpty {
+                LocalReplyChatMenu(sessionId: sid, plan: $localReplyPlan).items
+            }
+        }
+        .accessibilityIdentifier("localChatTitle")
         // Blur the title (and model/provider subtitle) while the session
         // is locked, mirroring the chat body's SessionLockGateOverlay.
         // `SessionLockStore.isVisuallyLocked` is the single source of

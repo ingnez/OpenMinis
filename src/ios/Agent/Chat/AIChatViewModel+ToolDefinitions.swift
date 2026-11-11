@@ -267,7 +267,40 @@ extension AIChatViewModel {
             tools.append(Self.userAskToolDefinition)
         }
 
+        if isInstantFrontTurn {
+            return Self.localReplyFrontTools(existing: tools)
+        }
         return tools
+    }
+
+    /// 秒回前台：只留派活 / 转话 / 停止这类工具，并加上和云端同名的 spawn_task 等别名。
+    static func localReplyFrontTools(existing: [AgentToolDefinition]) -> [AgentToolDefinition] {
+        var front = existing.filter { LocalReplyStore.isHandoffTool($0.name) }
+        let have = Set(front.map(\.name))
+        for t in localReplySpawnToolDefs() where !have.contains(t.name) { front.append(t) }
+        return front
+    }
+
+    static func localReplySpawnToolDefs() -> [AgentToolDefinition] {
+        let goal = AgentToolParam(type: .string, description: "后台要做的事，写完整目标和成功标准")
+        let context = AgentToolParam(type: .string, description: "需要一并交给后台的背景")
+        let title = AgentToolParam(type: .string, description: "五个到十个字的任务标题，给用户看")
+        let id = AgentToolParam(type: .string, description: "后台任务 id（spawn_task 返回的 worker_id 或 job_id）")
+        let text = AgentToolParam(type: .string, description: "转给后台的补充或修改")
+        return [
+            AgentToolDefinition(name: "spawn_task", description: "把一件需要多步完成的事交给后台。先回用户一句，再调用本工具。",
+                                parameters: ["goal": goal, "task": goal, "context": context, "title": title, "tool_title": title],
+                                required: [], propertyOrdering: ["title", "goal", "task", "context", "tool_title"]),
+            AgentToolDefinition(name: "task_message", description: "把用户的补充或修改转给正在做的后台任务。",
+                                parameters: ["id": id, "job_id": id, "text": text, "message": text],
+                                required: [], propertyOrdering: ["id", "job_id", "text", "message"]),
+            AgentToolDefinition(name: "task_status", description: "查看这个对话里后台任务的进度。",
+                                parameters: ["id": id, "job_id": id], required: [], propertyOrdering: ["id", "job_id"]),
+            AgentToolDefinition(name: "task_stop", description: "停止一个正在做的后台任务。",
+                                parameters: ["id": id, "job_id": id], required: [], propertyOrdering: ["id", "job_id"]),
+            AgentToolDefinition(name: "task_resume", description: "继续一个中断的后台任务。",
+                                parameters: ["id": id, "job_id": id], required: [], propertyOrdering: ["id", "job_id"]),
+        ]
     }
 
 }
