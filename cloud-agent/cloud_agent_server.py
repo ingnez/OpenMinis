@@ -2274,6 +2274,38 @@ def mention_note(session_id, content):
 def session_bot(session_id):
     return get_persona(session_persona_id(session_id))
 
+
+def shift_card_build(hours=12, now=None):
+    conn = get_db_connection()
+    try:
+        return cloud_shift_card.build(conn, hours, lambda sid: session_bot(sid), now=now, skip_session=session_incognito)
+    finally:
+        conn.close()
+
+
+def shift_card_pin(hours=12, now=None):
+    card = shift_card_build(hours, now=now)
+    pin = {"show_on_open": True, "pinned_at": now or time.time(), "hours": card["hours"], "card": card}
+    _settings_put("shift_card_pin", pin)
+    return pin
+
+
+def shift_card_pending():
+    pin = _settings_get("shift_card_pin") or {}
+    if not isinstance(pin, dict):
+        return {"show_on_open": False, "card": None}
+    return {"show_on_open": bool(pin.get("show_on_open")), "pinned_at": pin.get("pinned_at"),
+            "hours": pin.get("hours"), "card": pin.get("card")}
+
+
+def shift_card_ack():
+    pin = _settings_get("shift_card_pin") or {}
+    if isinstance(pin, dict):
+        pin["show_on_open"] = False
+        _settings_put("shift_card_pin", pin)
+    return {"show_on_open": False}
+
+
 def server_tool_notes(session_id):
     """追加到 system 消息的服务端工具说明（客户端 instructions 不了解服务端新增工具）与技能索引。"""
     conn = get_db_connection()
@@ -6689,18 +6721,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/shift-card":
-            # 交班卡：最近 N 小时（默认 12）各 Bot 的对话、在跑 / 等你 / 没回的事（纯查库，不调模型）
+            # 交班卡：最近 N 小时各 Bot 的未完成任务、未收回授权、待盯事项（纯查库，不调模型）
+            if (query_params.get("pending") or ["0"])[0] in ("1", "true", "yes"):
+                self._send(200, shift_card_pending())
+                return
             try:
                 hours = int((query_params.get("hours") or ["12"])[0])
             except ValueError:
                 self._send(400, {"error": "hours 必须是整数"})
                 return
-            conn = get_db_connection()
-            try:
-                card = cloud_shift_card.build(conn, hours, lambda sid: session_bot(sid), skip_session=session_incognito)
-            finally:
-                conn.close()
-            self._send(200, card)
+            self._send(200, shift_card_build(hours))
             return
 
         if path == "/v1/notifications":
@@ -9155,6 +9185,18 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 conn.close()
             self._send(201 if created else 200, dict(entry, created=created))
+            return
+
+        if path == "/v1/shift-card":
+            try:
+                hours = int((req_json or {}).get("hours") or 12)
+            except (TypeError, ValueError):
+                self._send(400, {"error": "hours 必须是整数"})
+                return
+            self._send(200, shift_card_pin(hours))
+            return
+        if path == "/v1/shift-card/ack":
+            self._send(200, shift_card_ack())
             return
 
         if path == "/v1/routines":

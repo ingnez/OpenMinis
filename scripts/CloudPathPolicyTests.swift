@@ -51,6 +51,7 @@ struct CloudPathPolicyTests {
             ("/v1/audit?bot=../etc", false),
             ("/v1/feed?hours=48", false),
             ("/v1/shift-card?hours=12", true),
+            ("/v1/shift-card?pending=1", true),
             ("/v1/shift-card?hours=12&x=1", false),
             ("/v1/bots/helper?drop=1", false),
             ("/v1/search?q=a b", false),

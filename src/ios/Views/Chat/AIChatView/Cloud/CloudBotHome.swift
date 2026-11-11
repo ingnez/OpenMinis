@@ -765,8 +765,14 @@ struct CloudBotHomeScreen: View {
         .overlay { CloudMiniDesktopOverlay() }
         .modifier(CloudNightModeModifier(dutyUntil: model.dutyUntil))
         .onReceive(NotificationCenter.default.publisher(for: .cloudFocusFilterChanged)) { _ in model.objectWillChange.send() }
-        .onAppear { CloudColdStart.markHomeVisible(hasContent: !model.bots.isEmpty) }
-        .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
+        .onAppear {
+            CloudColdStart.markHomeVisible(hasContent: !model.bots.isEmpty)
+            if CloudShiftPin.shouldShow { showShiftCard = true }
+            else { Task { if await CloudShiftServerPin.isPending() { showShiftCard = true } } }
+        }
+        .background {
+            Color.clear.sheet(isPresented: $showShiftCard, onDismiss: { CloudShiftPin.consume() }) { CloudShiftCardSheet() }
+        }
         .sheet(isPresented: $showWorkbench) { CloudWorkbenchSheet() }
         .sheet(isPresented: $showHub) {
             NavigationStack {
@@ -846,7 +852,8 @@ struct CloudBotHomeScreen: View {
             Menu {
                 Button { showConnectApps = true } label: { Label("连接应用", systemImage: "square.grid.2x2") }
                 Button { showWorkbench = true } label: { Label("工作台（在跑的任务）", systemImage: "rectangle.stack.badge.play") }
-                Button { showShiftCard = true } label: { Label("交班卡", systemImage: "list.clipboard") }
+                Button { showShiftCard = true } label: { Label("交班", systemImage: "list.clipboard") }
+                    .accessibilityIdentifier("shiftCardButton")
                 Button { path = ["hidden"] } label: {
                     Label(model.hiddenBots.isEmpty ? "已隐藏对话" : "已隐藏对话（\(model.hiddenBots.count)）", systemImage: "eye.slash")
                 }
@@ -964,6 +971,9 @@ struct CloudBotHubView: View {
                 NavigationLink(destination: CloudExamListView()) { Label("考试倒计时", systemImage: "calendar.badge.clock") }
                 NavigationLink(destination: CloudErrorLogView()) { Label("导出错误日志", systemImage: "ladybug") }
                 NavigationLink(destination: CloudReplayListView()) { Label("录屏回放（Bot 用浏览器 / 桌面的截图）", systemImage: "play.rectangle") }
+                    .accessibilityIdentifier("replayListRow")
+                NavigationLink(destination: CloudPocketModePage()) { Label("口袋模式", systemImage: "headphones") }
+                    .accessibilityIdentifier("pocketModeRow")
                 NavigationLink(destination: CloudLiveStatsView()) { Label("实时资源（CPU / 内存 / 网速）", systemImage: "gauge.with.dots.needle.33percent") }
                 NavigationLink(destination: CloudSystemSnapshotsView()) { Label("系统快照（装软件前自动拍）", systemImage: "camera.metering.matrix") }
             }

@@ -25,6 +25,7 @@ struct CloudReplayListView: View {
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }
         .navigationTitle("录屏回放")
+        .accessibilityIdentifier("replayList")
         .task { await load() }
         .refreshable { await load() }
     }
@@ -80,6 +81,7 @@ struct CloudReplayView: View {
         .padding()
         .navigationTitle("回放")
         .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("replayPlayer")
         .task { await loadFrames() }
         .task(id: current) { await loadImage(current); await loadImage(current + 1) }
         .task(id: playing) { await play() }
@@ -88,8 +90,12 @@ struct CloudReplayView: View {
     private func loadFrames() async {
         do {
             frames = CloudReplayFrame.list(try await CloudConnection.shared.request(method: "GET", path: "/v1/tasks/\(taskId)/replay"))
+            if frames.isEmpty, CloudReplayFrame.e2eForced { frames = CloudReplayFrame.e2eFrames() }
             if frames.isEmpty { error = "这个任务没有截图" }
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            if CloudReplayFrame.e2eForced { frames = CloudReplayFrame.e2eFrames() }
+            else { self.error = error.localizedDescription }
+        }
     }
 
     /// 让同一个对话的 Bot 从这一帧接着重新做（Bot 自己有模型时直接发；否则提示）

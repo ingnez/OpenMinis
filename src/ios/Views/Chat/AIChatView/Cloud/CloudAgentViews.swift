@@ -657,6 +657,8 @@ struct CloudSessionView: View {
     @State private var showCamera = false
     @State private var showScanner = false
     @State private var showCaseNote = false
+    @State private var showTemplates = false
+    @State private var showShiftCard = false
     @State private var showFiles = false
     @State private var showVoiceCall = false
     /// 顶部浮动胶囊的实时通话（Bot 模式）
@@ -840,6 +842,8 @@ struct CloudSessionView: View {
         .fullScreenCover(isPresented: $showCamera) { CloudCameraPicker { attachments.append($0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showScanner) { CloudDocumentScanner { attachments.append($0) }.ignoresSafeArea() }
         .sheet(isPresented: $showCaseNote) { CloudCaseNoteSheet { inputPrompt = $0 } }
+        .sheet(isPresented: $showTemplates) { CloudPromptTemplateSheet(text: $inputPrompt, onDismiss: { showTemplates = false }) }
+        .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
         .sheet(isPresented: $showFiles) { CloudFilePicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showVoiceCall) {
             if let theme {
@@ -1209,6 +1213,8 @@ struct CloudSessionView: View {
                         }
                         Button { showFiles = true } label: { Label("选择文件", systemImage: "folder") }
                         Button { showCaseNote = true } label: { Label("口述病例（脱敏后复盘）", systemImage: "stethoscope") }
+                        Button { showTemplates = true } label: { Label("一键模板", systemImage: "text.badge.plus") }
+                        Button { showShiftCard = true } label: { Label("交班卡", systemImage: "list.clipboard") }
                         Button { showPins = true } label: { Label("要点板", systemImage: "pin") }
                         Button { showRealtimeSettings = true } label: { Label("实时语音设置", systemImage: "waveform") }
                         Button { if !inputPrompt.hasPrefix("/") { inputPrompt = "/" } } label: { Label("斜杠命令", systemImage: "slash.circle") }
@@ -1224,6 +1230,7 @@ struct CloudSessionView: View {
                     HStack(alignment: .bottom, spacing: 4) {
                         TextField(CloudBotComposerAction.placeholder(botName: theme.name, localHint: false), text: $inputPrompt, axis: .vertical)
                             .accessibilityIdentifier("botComposerField")
+                            .onLongPressGesture(minimumDuration: 0.5) { showTemplates = true; CloudHaptics.selection() }
                             .lineLimit(1...6)
                             .padding(.vertical, 10).padding(.leading, 14)
                             .disabled(isSubmitting)
@@ -1272,6 +1279,7 @@ struct CloudSessionView: View {
         case "/电脑": showComputer = true
         case "/通话": openVoiceCall()
         case "/照片": showPhotos = true
+        case "/交班": showShiftCard = true
         case "/文件": showFiles = true
         case "/记住": inputPrompt = "记住："
         case "/总结": inputPrompt = "请总结一下我们这段对话的要点和待办"; sendTask()
@@ -1812,6 +1820,11 @@ struct CloudSessionView: View {
         if masked != content {
             inputPrompt = masked
             content = masked
+        }
+        if CloudShiftIntent.isUtterance(content), attachments.isEmpty {
+            inputPrompt = ""
+            showShiftCard = true
+            return
         }
         guard !content.isEmpty || !attachments.isEmpty, !isSubmitting else { return }
         switch CloudInCallSend.route(inCall: call.active, text: content, hasAttachments: !attachments.isEmpty) {
