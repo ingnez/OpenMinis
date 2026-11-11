@@ -634,32 +634,10 @@ struct CloudBotLibraryView: View {
         }
         .task { await load() }
         .refreshable { await load() }
-        .sheet(item: $preview) { p in
-            NavigationStack {
-                Group {
-                    if let image = p.image {
-                        ScrollView([.horizontal, .vertical]) {
-                            Image(uiImage: image).resizable().scaledToFit()
-                                .accessibilityLabel("资料库图片").accessibilityIdentifier("libraryPreviewImage")
-                        }
-                    } else if let err = p.error {
-                        Label(err, systemImage: "exclamationmark.triangle")
-                            .font(.footnote).foregroundStyle(.red).padding()
-                            .accessibilityIdentifier("libraryPreviewError")
-                    } else {
-                        ProgressView()
-                    }
-                }
-                .navigationTitle(p.title)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        if let image = p.image {
-                            ShareLink(item: Image(uiImage: image), preview: SharePreview(p.title, image: Image(uiImage: image)))
-                        }
-                    }
-                }
-            }
+        // 看图推一页进来（以前用 sheet：同一个视图上已经挂了分享 sheet 和快速查看，
+        // 模拟器里点了媒体没弹出来——42976420696 test18 两次都是这样）
+        .navigationDestination(isPresented: Binding(get: { preview != nil }, set: { if !$0 { preview = nil } })) {
+            if let p = preview { CloudLibraryPreviewPage(preview: p) }
         }
     }
 
@@ -901,6 +879,37 @@ struct CloudActivitySheet: UIViewControllerRepresentable {
         UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
+}
+
+/// 资料库里点开的一张图（推进来的一页）
+struct CloudLibraryPreviewPage: View {
+    let preview: CloudLibraryPreview
+
+    var body: some View {
+        Group {
+            if let image = preview.image {
+                ScrollView([.horizontal, .vertical]) {
+                    Image(uiImage: image).resizable().scaledToFit()
+                        .accessibilityLabel("资料库图片").accessibilityIdentifier("libraryPreviewImage")
+                }
+            } else if let err = preview.error {
+                Label(err, systemImage: "exclamationmark.triangle")
+                    .font(.footnote).foregroundStyle(.red).padding()
+                    .accessibilityIdentifier("libraryPreviewError")
+            } else {
+                ProgressView().accessibilityIdentifier("libraryPreviewLoading")
+            }
+        }
+        .navigationTitle(preview.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if let image = preview.image {
+                    ShareLink(item: Image(uiImage: image), preview: SharePreview(preview.title, image: Image(uiImage: image)))
+                }
+            }
+        }
+    }
 }
 
 struct CloudLibraryPreview: Identifiable {
