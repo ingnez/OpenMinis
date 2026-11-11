@@ -53,9 +53,10 @@ enum RealtimeVoiceProtocol {
     }
 
     static func configuration(model: String, voice: String, instructions: String, preview: Bool, tools: [[String: Any]] = []) -> [String: Any] {
-        let turn: [String: Any] = ["type": "server_vad", "threshold": 0.5,
-            "prefix_padding_ms": 300, "silence_duration_ms": 600,
-            "create_response": true, "interrupt_response": true]
+        // interrupt_response 关闭：回声/环境噪声触发的 speech_started 由客户端门控，避免服务端自己取消正在播的回复
+        let turn: [String: Any] = ["type": "server_vad", "threshold": 0.7,
+            "prefix_padding_ms": 400, "silence_duration_ms": 800,
+            "create_response": true, "interrupt_response": false]
         var session: [String: Any] = ["instructions": instructions]
         if preview {
             session.merge(["modalities": ["text", "audio"], "voice": voice,
@@ -200,5 +201,52 @@ struct RealtimeCallHealth {
             hasProblem = true; return .warn("听不到你的声音：麦克风没收进声音（检查是否被别的 App 占用）")
         }
         return .ok
+    }
+}
+
+/// 插话门槛：Bot 正在播音或正在生成时，服务端 VAD 的一次 speech_started
+///（扬声器回声、环境噪声、上一句尾音）不能立刻取消回复。
+/// 要等用户持续说话超过 VAD 静音窗口，或出现非空输入转写，才真正打断。
+/// confirmMs 必须大于 session 里的 silence_duration_ms：短暂回声的 speech_stopped
+/// 会在静音窗口结束后到达，此时若定时器已到且仍把「未结束」当成真插话，就会误取消。
+enum RealtimeBargeIn {
+    static let confirmMs: TimeInterval = 1.2
+    enum Decision: Equatable { case ignore, wait, cancel }
+
+    static func onSpeechStarted(botPlaying: Bool, muted: Bool) -> Decision {
+        if muted { return .ignore }
+        if botPlaying { return .wait }
+        return .ignore
+    }
+
+    static func onSpeechStopped(elapsedMs: Int, hasUserTranscript: Bool) -> Decision {
+        if hasUserTranscript { return .cancel }
+        // 还没有转写：先等到时。短促回声在静音窗口结束后会停，到期时 speechStillActive 为 false。
+        return .wait
+    }
+
+    static func onConfirmDeadline(stillWaiting: Bool, hasUserTranscript: Bool, speechStillActive: Bool) -> Decision {
+        guard stillWaiting else { return .ignore }
+        if hasUserTranscript || speechStillActive { return .cancel }
+        return .ignore
+    }
+
+    static func transcriptConfirmsBargeIn(_ text: String) -> Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+/// 打断后的字幕：用户没真正说话时原样保留；真插话也保留已有字幕，只在末尾轻轻标「已打断」。
+enum RealtimeInterruptText {
+    static let legacyPlaceholder = "[这段语音被打断，未保存可能尚未播放的字幕]"
+    static let subtleMark = "（已打断）"
+
+    static func apply(existing: String, userSpoke: Bool) -> (text: String, interrupted: Bool) {
+        if !userSpoke { return (existing, false) }
+        let trimmed = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return (subtleMark, true) }
+        if trimmed == legacyPlaceholder { return (subtleMark, true) }
+        if trimmed.hasSuffix(subtleMark) { return (existing, true) }
+        return (existing + subtleMark, true)
     }
 }

@@ -70,6 +70,12 @@ final class RealtimeVoiceSession: ObservableObject {
     @Published private(set) var receivedAudioKB = 0
     private var health = RealtimeCallHealth()
     private var healthTask: Task<Void, Never>?
+    /// Bot 正在播/生成时，等用户持续说话或转写确认再打断，避免回声把回复掐掉
+    private var bargeInWait: Task<Void, Never>?
+    private var awaitingBargeIn = false
+    private var bargeInStartedAt: Date?
+    private var bargeInSpeechActive = false
+    private var bargeInTranscript = false
 
     init(host: RealtimeVoiceHost) { self.host = host }
     /// 等一个任务最多 seconds 秒；按时完成返回 true（超时不取消它，让它在后台自己跑完）
@@ -259,8 +265,9 @@ final class RealtimeVoiceSession: ObservableObject {
             guard active else { return }
             authorizeAndBeginAudio()
         case "input_audio_buffer.speech_started":
-            interrupt(sendCancel: connectionProtocol.isDashScope); status = muted ? "麦克风已静音" : "正在听你说"
+            handleSpeechStarted()
         case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
+            handleSpeechEnded()
             status = "正在回应"
             if let id = event["item_id"] as? String, !lines.contains(where: { $0.id == id }) {
                 lines.append(Line(id: id, role: "user", text: ""))
@@ -275,6 +282,10 @@ final class RealtimeVoiceSession: ObservableObject {
             }
         case "conversation.item.input_audio_transcription.completed":
             if let id = event["item_id"] as? String, let text = event["transcript"] as? String {
+                if awaitingBargeIn, RealtimeBargeIn.transcriptConfirmsBargeIn(text) {
+                    bargeInTranscript = true
+                    confirmBargeIn()
+                }
                 updateLine(id: id, role: "user", text: text, append: false)
             }
         case "conversation.item.input_audio_transcription.failed":
@@ -309,14 +320,24 @@ final class RealtimeVoiceSession: ObservableObject {
             let response = event["response"] as? [String: Any] ?? [:]
             if let id = response["id"] as? String, id != currentResponse { return }
             responseRunning = false
-            if response["status"] as? String == "failed" {
-                fail("实时模型生成失败，请检查模型权限、余额和服务商状态。"); return
+            let responseStatus = response["status"] as? String ?? ""
+            if responseStatus == "cancelled" || responseStatus == "incomplete" {
+                // 用户插话或回声误触发取消：不要把整通电话挂掉
+            } else if responseStatus == "failed" {
+                let details = response["status_details"] as? [String: Any] ?? [:]
+                let reason = ((details["reason"] as? String) ?? "") + " " + ((details["type"] as? String) ?? "")
+                let low = reason.lowercased()
+                if low.contains("cancel") || low.contains("interrupt") {
+                    // 取消竞态写成 failed 也不挂断
+                } else {
+                    fail("实时模型生成失败，请检查模型权限、余额和服务商状态。"); return
+                }
             }
             if validationRoundTrip { _ = completeValidation(); return }
             if !audio.hasPendingAudio { status = muted ? "麦克风已静音" : "正在听你说" }
             if pendingResponseCreate {
                 pendingResponseCreate = false
-                emit(["type": "response.create"])
+                requestResponse()
             }
         case "response.function_call_arguments.done":
             guard let callId = event["call_id"] as? String, let name = event["name"] as? String else { return }
@@ -370,7 +391,12 @@ final class RealtimeVoiceSession: ObservableObject {
         }
     }
     private func requestResponse() {
-        if responseRunning { pendingResponseCreate = true } else { emit(["type": "response.create"]) }
+        var create: [String: Any] = ["type": "response.create"]
+        if !connectionProtocol.isGemini {
+            // 明确要求带声音，避免只回文字、通话里听不到
+            create["response"] = ["modalities": ["text", "audio"]]
+        }
+        if responseRunning { pendingResponseCreate = true } else { emit(create) }
     }
     private func watchCloudTask(_ taskId: String, generation: UUID) {
         let host = self.host
@@ -389,6 +415,15 @@ final class RealtimeVoiceSession: ObservableObject {
             emit(RealtimeVoiceProtocol.history(role: "user", text: text))
             requestResponse()
         }
+    }
+
+    /// 通话中从输入框打来的问题：交给实时会话用语音回答，不走云端文字聊天
+    func insertUserText(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard active, !trimmed.isEmpty else { return }
+        updateLine(id: "typed-" + UUID().uuidString, role: "user", text: trimmed, append: false)
+        announce(trimmed)
+        status = "正在回应"
     }
     /// 一来一回测试：发一句固定文字（不含任何聊天内容）
     private func sendValidationText() {
@@ -583,14 +618,73 @@ final class RealtimeVoiceSession: ObservableObject {
         } else { lines.append(Line(id: id, role: role, text: text)) }
     }
 
-    func interrupt(sendCancel: Bool = true) {
+    private func handleSpeechStarted() {
+        if muted {
+            status = "麦克风已静音"
+            return
+        }
+        let botPlaying = responseRunning || audio.hasPendingAudio
+        switch RealtimeBargeIn.onSpeechStarted(botPlaying: botPlaying, muted: muted) {
+        case .ignore:
+            if !botPlaying { status = "正在听你说" }
+        case .cancel:
+            confirmBargeIn()
+        case .wait:
+            awaitingBargeIn = true
+            bargeInStartedAt = Date()
+            bargeInSpeechActive = true
+            bargeInTranscript = false
+            bargeInWait?.cancel()
+            let generation = epoch
+            bargeInWait = Task { [weak self] in
+                do { try await Task.sleep(nanoseconds: UInt64(RealtimeBargeIn.confirmMs * 1_000_000_000)) } catch { return }
+                guard let self, self.active, self.epoch == generation, self.awaitingBargeIn else { return }
+                switch RealtimeBargeIn.onConfirmDeadline(stillWaiting: true,
+                                                        hasUserTranscript: self.bargeInTranscript,
+                                                        speechStillActive: self.bargeInSpeechActive) {
+                case .cancel: self.confirmBargeIn()
+                default: self.dismissBargeIn()
+                }
+            }
+        }
+    }
+
+    private func handleSpeechEnded() {
+        bargeInSpeechActive = false
+        guard awaitingBargeIn else { return }
+        let elapsed = Int((bargeInStartedAt.map { Date().timeIntervalSince($0) } ?? 0) * 1000)
+        switch RealtimeBargeIn.onSpeechStopped(elapsedMs: elapsed, hasUserTranscript: bargeInTranscript) {
+        case .cancel: confirmBargeIn()
+        case .wait: break
+        case .ignore: dismissBargeIn()
+        }
+    }
+
+    private func confirmBargeIn() {
+        guard awaitingBargeIn || responseRunning || audio.hasPendingAudio else { return }
+        awaitingBargeIn = false
+        bargeInWait?.cancel(); bargeInWait = nil
+        interrupt(sendCancel: connectionProtocol.isDashScope, userSpoke: true)
+        status = muted ? "麦克风已静音" : "正在听你说"
+    }
+
+    private func dismissBargeIn() {
+        awaitingBargeIn = false
+        bargeInWait?.cancel(); bargeInWait = nil
+        bargeInSpeechActive = false
+        bargeInTranscript = false
+    }
+
+    func interrupt(sendCancel: Bool = true, userSpoke: Bool = true) {
+        dismissBargeIn()
         if connectionProtocol.isGemini {
             let interruptedID = geminiPlaybackID
             let hadOutput = responseRunning || audio.hasPendingAudio
             audio.interrupt(); geminiPlaybackID = nil
             if hadOutput, let index = lines.firstIndex(where: { $0.id == interruptedID }) {
-                lines[index].text = "[这段语音被打断，未保存可能尚未播放的字幕]"
-                lines[index].interrupted = true
+                let applied = RealtimeInterruptText.apply(existing: lines[index].text, userSpoke: userSpoke)
+                lines[index].text = applied.text
+                lines[index].interrupted = applied.interrupted
             }
             // 自动VAD的服务端interrupted会结束输出；手动打断先静音本轮直到回合结束。
             geminiSuppressOutput = sendCancel && responseRunning
@@ -610,9 +704,10 @@ final class RealtimeVoiceSession: ObservableObject {
             // 百炼没有 conversation.item.truncate：只取消回复、丢掉没播的音频
             if let truncation, !connectionProtocol.isDashScope { emit(truncation) }
             if let item, let index = lines.firstIndex(where: { $0.id == item }) {
-                // 转写通常领先于播放，没有逐字时间戳时不伪称全部已经播出。
-                lines[index].text = "[这段语音被打断，未保存可能尚未播放的字幕]"
-                lines[index].interrupted = true
+                // 用户没真正插话时保留字幕；真插话也保留已有文字，只轻轻标「已打断」。
+                let applied = RealtimeInterruptText.apply(existing: lines[index].text, userSpoke: userSpoke)
+                lines[index].text = applied.text
+                lines[index].interrupted = applied.interrupted
             }
         }
         responseRunning = false
@@ -661,7 +756,8 @@ final class RealtimeVoiceSession: ObservableObject {
         guard active else { return }
         // 先禁用发送，防止发送队列溢出时挂断再次发取消事件造成递归。
         active = false
-        interrupt(sendCancel: false)
+        bargeInWait?.cancel(); bargeInWait = nil
+        interrupt(sendCancel: false, userSpoke: false)
         connected = false; epoch = UUID()
         receiveTask?.cancel(); senderTask?.cancel(); microphoneTask?.cancel(); healthTask?.cancel(); healthTask = nil
         timeoutTask?.cancel(); clockTask?.cancel()

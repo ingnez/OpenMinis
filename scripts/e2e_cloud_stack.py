@@ -242,9 +242,15 @@ def start_fake_realtime():
                             send(sock, {"type": "conversation.item.input_audio_transcription.completed", "item_id": "u1", "transcript": "（假）用户说话"})
                             send(sock, {"type": "response.created", "response": {"id": "r1"}})
                             send(sock, {"type": "response.output_audio_transcript.delta", "response_id": "r1", "item_id": "a1", "delta": REALTIME_REPLY})
+                            mid = False
                             for i in range(0, len(tone), 4800):
                                 send(sock, {"type": "response.output_audio.delta", "response_id": "r1", "item_id": "a1",
                                             "content_index": 0, "delta": base64.b64encode(tone[i:i + 4800]).decode()})
+                                # 播放中的短暂回声：不应把回复字幕换成「被打断」、也不该丢掉后面的音频
+                                if not mid:
+                                    mid = True
+                                    send(sock, {"type": "input_audio_buffer.speech_started", "item_id": "echo1"})
+                                    send(sock, {"type": "input_audio_buffer.speech_stopped", "item_id": "echo1"})
                             send(sock, {"type": "response.output_audio_transcript.done", "response_id": "r1", "item_id": "a1", "transcript": REALTIME_REPLY})
                             send(sock, {"type": "response.done", "response": {"id": "r1", "status": "completed"}})
             except (EOFError, ConnectionError, OSError, ValueError):

@@ -129,7 +129,9 @@ enum RealtimeDashScope {
             "modalities": ["text", "audio"],
             "voice": voice,
             "instructions": instructions,
-            "turn_detection": ["type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300, "silence_duration_ms": 800],
+            // interrupt_response 关闭，threshold 抬高：减轻扬声器回声把正在播的回复自动掐掉
+            "turn_detection": ["type": "server_vad", "threshold": 0.7, "prefix_padding_ms": 400, "silence_duration_ms": 800,
+                               "create_response": true, "interrupt_response": false],
             "input_audio_transcription": ["model": "qwen3-asr-flash-realtime"],
         ]
         if fam == "3" {
@@ -167,6 +169,24 @@ enum RealtimeDashScope {
         }
         if s.contains("invalidapikey") || s.contains("invalid_api_key") || s.contains("invalid api-key") {
             return "百炼密钥无效：请在服务商设置里重新填写 API Key（地域要和密钥一致）。"
+        }
+        if s.contains("insufficient") && (s.contains("quota") || s.contains("balance") || s.contains("credit")) {
+            return "百炼额度或余额不足，请在控制台充值或检查免费额度后再试。"
+        }
+        if s.contains("throttl") || s.contains("rate limit") || s.contains("too many request") {
+            return "实时服务请求太频繁，请稍等几秒再拨打。"
+        }
+        if s.contains("model") && (s.contains("not found") || s.contains("does not exist") || s.contains("not exist") || s.contains("unknown model")) {
+            return "所选实时模型不存在或未开通，请在服务商设置里换一个已开通的实时模型。"
+        }
+        if s.contains("cannot create response without input") {
+            return "实时服务还没收到有效输入就要求回复。请重拨一次。"
+        }
+        if s.contains("timeout") || s.contains("timed out") {
+            return "实时服务响应超时，请检查网络后重拨。"
+        }
+        if s.contains("audio") && (s.contains("format") || s.contains("sample")) {
+            return "音频格式与实时服务不匹配，请重新拨打；若一直出现，请检查服务商和模型设置。"
         }
         return nil
     }

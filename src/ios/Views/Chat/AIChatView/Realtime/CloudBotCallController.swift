@@ -144,6 +144,9 @@ final class CloudBotCallController: ObservableObject {
 
     func interrupt() { session?.interrupt() }
 
+    /// 通话中从输入框打来的问题：走实时语音回答，不另开一条文字聊天
+    func speakUserText(_ text: String) { session?.insertUserText(text) }
+
     func hangUp() { session?.finish() }
 }
 

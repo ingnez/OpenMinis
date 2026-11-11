@@ -524,6 +524,8 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(poll(30) { (self.realtimeProbe()?.appends ?? 0) >= before + 10 }, "假实时服务没收到麦克风音频（input_audio_buffer.append）")
         XCTAssertTrue(poll(20) { (capsule.value as? String ?? "").hasPrefix("已接通") }, "服务端确认、收音也在送，胶囊却没显示已接通：\(capsule.value as? String ?? "")")
         XCTAssertTrue(waitText(app, contains: "e2e-realtime-ok", timeout: 20), "回复字幕没出现在对话里")
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "被打断")).firstMatch.exists,
+                       "播放中的回声把回复字幕换成了「被打断」")
         XCTAssertTrue(poll(15) {
             let v = capsule.value as? String ?? ""
             guard let r = v.range(of: "收到声音 "), let kb = Int(v[r.upperBound...].prefix { $0.isNumber }) else { return false }
