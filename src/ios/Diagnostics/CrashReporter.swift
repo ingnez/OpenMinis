@@ -228,6 +228,16 @@ final class CrashReporter: NSObject, MXMetricManagerSubscriber {
     private static let crashLoopLastCrashAtKey = "crashLoop_lastCrashAt"
     private static let crashLoopTriggeredKey = "crashLoop_triggered"
 
+    #if DEBUG
+    /// 只给模拟器 XCUITest：测试之间 XCUITest 在前台直接杀 App，看起来就像「前台崩溃」，
+    /// 连杀两次（一分钟内）就会触发防崩溃循环、下次启动不开对话，后面的流程落在对话列表上。
+    /// E2E 启动时先忘掉这段「崩溃」记录
+    static func forgetCrashLoopForE2E() {
+        UserDefaults.standard.removeObject(forKey: crashLoopLastCrashAtKey)
+        UserDefaults.standard.removeObject(forKey: crashLoopTriggeredKey)
+    }
+    #endif
+
     /// Two foreground crashes inside this window count as a loop rather than two
     /// unrelated incidents. Short on purpose: a genuine restore loop crashes
     /// again within seconds of relaunching, whereas two crashes minutes apart

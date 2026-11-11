@@ -16,13 +16,19 @@ enum CloudE2E {
     static func applyLaunchDefaults() {
         let env = ProcessInfo.processInfo.environment
         guard env["OPENMINIS_E2E_TOKEN"] != nil else { return }
+        CrashReporter.forgetCrashLoopForE2E()
         if let mode = env["OPENMINIS_E2E_HOMEMODE"] { UserDefaults.standard.set(mode, forKey: CloudBotHome.modeKey) }
         // 模拟老用户手机：旧版本地「云电脑」开关留下的「本地对话在云端执行」偏好（启动时应被 LocalCloudIsolation 清掉）
         if env["OPENMINIS_E2E_LEGACY_CLOUD_EXEC"] == "1" {
             UserDefaults.standard.set(true, forKey: LocalCloudIsolation.legacyDefaultKey)
         }
         if let base = env["OPENMINIS_E2E_LOCAL_PROVIDER"], !base.isEmpty {
-            Task { @MainActor in injectLocalProvider(baseURL: base) }
+            // 同步注入：异步 Task 跑在首屏之后，对话页先按「没有服务商」画出来（No model selected）
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { injectLocalProvider(baseURL: base) }
+            } else {
+                Task { @MainActor in injectLocalProvider(baseURL: base) }
+            }
         }
     }
 
