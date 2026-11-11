@@ -1103,6 +1103,8 @@ struct CloudSessionView: View {
         VStack(spacing: 6) {
             // 与本地模式同一个步骤条（预览卡 + 状态胶囊 + N/M 翻页），数据来自 Bot 的实时工具事件
             CloudStepBar(message: liveMessage, liveToolId: liveTool?.id, liveOutput: liveTool?.output ?? "", working: working)
+                // 步骤面板复用本地组件：标题写 Bot / 云电脑名字，CPU / 内存读云端，不读这台 iPhone
+                .environment(\.cloudComputer, CloudComputerContext.current(actor: theme?.name))
                 .padding(.horizontal, 12)
             if let r = replyTarget {
                 CloudReplyBanner(excerpt: r.excerpt) { replyTarget = nil }
@@ -1254,14 +1256,31 @@ struct CloudSessionView: View {
     /// 运行中发消息：插话模式交给正在跑的任务（模型下一步就看到）；任务刚好结束或选了排队，就等它结束再普通发送
     private func steerOrQueue() {
         let content = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let tid = activeTaskId, !content.isEmpty, attachments.isEmpty, steerInterrupt else {
+        guard let tid = activeTaskId, !content.isEmpty || !attachments.isEmpty, steerInterrupt else {
             queueAfterCurrent()
             return
         }
         isInjecting = true
         let nonce = UUID().uuidString
+        let items = attachments
         Task { @MainActor in
-            let outcome = await CloudInjector.inject(taskId: tid, content: content, nonce: nonce)
+            // 带图片插话：先上传（进度圈 / 失败可重试），再把附件行交给正在跑的任务，服务器补成图片给模型
+            var text = content
+            if !items.isEmpty {
+                do {
+                    let lines = try await CloudAttachmentKit.upload(items, sessionId: sessionId) { id, state in uploadStates[id] = state }
+                    text = (content.isEmpty ? CloudAttachmentLines.placeholderText : content) + "\n\n" + lines.joined(separator: "\n")
+                } catch {
+                    isInjecting = false
+                    errorMessage = "附件上传失败：\(error.localizedDescription)。点卡片上的「重试」再发一次"
+                    return
+                }
+            }
+            let outcome = await CloudInjector.inject(taskId: tid, content: text, nonce: nonce)
+            if case .injected = outcome, !items.isEmpty {
+                attachments.removeAll { a in items.contains { $0.id == a.id } }
+                uploadStates = [:]
+            }
             isInjecting = false
             switch outcome {
             case .injected:
@@ -1278,6 +1297,9 @@ struct CloudSessionView: View {
     /// 排队：等当前任务结束（最多约 10 分钟）再走普通发送；输入框里的内容保留到发出为止
     private func queueAfterCurrent() {
         CloudHaptics.tap()
+        // 以前这里不吭声地等最多 10 分钟，看起来像「点发送没反应」
+        let n = attachments.filter(\.isImage).count
+        voiceProblem = n > 0 ? "等这一步做完就发（\(n) 张图片已排队）" : "等这一步做完就发"
         Task { @MainActor in
             for _ in 0..<1200 {
                 if !["running", "waiting_user", "queued"].contains(activeTaskStatus) && !isSubmitting { break }
@@ -1556,6 +1578,7 @@ struct CloudSessionView: View {
         }
         // 看图页「问问这张图」：图片放回附件，输入框起个头
         .environment(\.cloudAskImage, askAboutImage)
+        .environment(\.cloudAttachmentSession, sessionId)
     }
 
     /// 往前翻一页：接在最前面
@@ -1675,18 +1698,12 @@ struct CloudSessionView: View {
         Task {
             do {
                 let lines = try await CloudAttachmentKit.upload(items, sessionId: sessionId) { id, state in uploadStates[id] = state }
-                let text = (content.isEmpty ? "请查看附件。" : content) + "\n\n" + lines.joined(separator: "\n")
+                let text = (content.isEmpty ? CloudAttachmentLines.placeholderText : content) + "\n\n" + lines.joined(separator: "\n")
                 var newBody = body
                 newBody["content"] = text
-                // 图片按图片发给模型（不只给路径）：大图先压缩，不再悄悄丢掉
-                let images = items.compactMap(CloudAttachmentKit.visionData).prefix(4)
-                if !images.isEmpty {
-                    var parts: [[String: Any]] = [["type": "text", "text": text]]
-                    for data in images {
-                        parts.append(["type": "image_url", "image_url": ["url": "data:image/jpeg;base64," + data.base64EncodedString()]])
-                    }
-                    newBody["message_parts"] = parts
-                }
+                // 图片只传路径（附件行就是引用）：服务器调用模型时读上传的文件补成图片。
+                // 以前把 base64 塞进 message_parts，6 张照片就超过 2 MB 上限，发送直接 HTTP 400
+                newBody.removeValue(forKey: "message_parts")
                 attachments.removeAll()
                 uploadStates = [:]
                 isSubmitting = false

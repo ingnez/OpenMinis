@@ -15,7 +15,8 @@ import urllib.request
 
 IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "gif", "heic", "heif", "bmp"}
 MAX_IMAGE_BYTES = 1_400_000
-MAX_IMAGES = 4
+MAX_IMAGES = 9          # 一条消息最多带几张图给模型（手机一次最多选 9 张）
+MAX_RAW_BYTES = 8_000_000   # 没有 Pillow 压不了时，原图不超过这个大小也照发（以前直接丢掉，模型只看到路径去 OCR）
 PROBE_TTL = 6 * 3600
 DESCRIBE_PROMPT = ("请仔细看这张图片，用中文完整描述其中的内容：先逐字转写图里所有文字（保持原有分行和顺序），"
                    "再说明界面 / 图表 / 照片里有什么、关键数字和细节。只描述看到的东西，不要推测。")
@@ -178,8 +179,21 @@ def replace_images(conn, messages, vision_model, describe):
 ATTACH_LINE_RE = re.compile(r"(attachments/up_[A-Za-z0-9._-]{1,160})")
 
 
+def _sniff(data):
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    return None
+
+
 def shrink(data, max_bytes=MAX_IMAGE_BYTES):
-    """太大的图片缩小重压成 JPEG；没有 PIL 时太大就放弃（返回 None）。"""
+    """太大的图片缩小重压成 JPEG。没有 PIL 时：JPEG / PNG / WebP / GIF 原图 ≤ MAX_RAW_BYTES 照发，
+    更大或认不出格式才放弃（返回 None）。"""
     if len(data) <= max_bytes:
         if data[:3] == b"\xff\xd8\xff":
             return data, "image/jpeg"
@@ -188,7 +202,8 @@ def shrink(data, max_bytes=MAX_IMAGE_BYTES):
     try:
         from PIL import Image
     except Exception:
-        return None
+        mime = _sniff(data)
+        return (data, mime) if mime and len(data) <= MAX_RAW_BYTES else None
     try:
         im = Image.open(io.BytesIO(data)).convert("RGB")
     except Exception:
@@ -225,3 +240,33 @@ def parts_from_uploads(content, resolve):
     if not images:
         return None
     return [{"type": "text", "text": content}] + images
+
+
+def image_lines(content):
+    """消息文字里的图片附件路径（按顺序、去重）"""
+    out = []
+    for rel in ATTACH_LINE_RE.findall(content or ""):
+        ext = rel.rsplit(".", 1)[-1].lower() if "." in rel else ""
+        if ext in IMAGE_EXTS and rel not in out:
+            out.append(rel)
+    return out
+
+
+def expand_attachment_images(messages, resolve, recent=6):
+    """调用模型前：最近几条用户消息里只有附件路径（「[附件] … → 工作区 attachments/up_*.jpg」）的图片，
+    读上传的文件补成 image_url（手机不再把图片 base64 塞进 message_parts，避免 2 MB 上限）。
+    已经是图片内容的消息不动。返回 (补了几张, 读不出来几张)。"""
+    added, missing = 0, 0
+    start = max(0, len(messages) - recent)
+    for i in range(start, len(messages)):
+        m = messages[i]
+        if m.get("role") != "user" or not isinstance(m.get("content"), str) or not image_lines(m["content"]):
+            continue
+        parts = parts_from_uploads(m["content"], resolve)
+        got = len(parts) - 1 if parts else 0
+        want = min(len(image_lines(m["content"])), MAX_IMAGES)
+        missing += max(0, want - got)
+        if parts:
+            messages[i] = {**m, "content": parts}
+            added += got
+    return added, missing

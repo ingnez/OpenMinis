@@ -638,7 +638,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.46.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.47.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -2088,7 +2088,7 @@ def bot_detail(bot):
         last = conn.execute("SELECT m.role, m.content, m.timestamp, m.session_id FROM messages m JOIN sessions s ON s.session_id = m.session_id "
                             "WHERE s.persona_id = ? AND COALESCE(s.incognito, 0) = 0 AND s.session_id NOT IN (SELECT worker_session FROM bot_workers) AND m.role IN ('user', 'assistant') AND m.content IS NOT NULL AND m.content != '' "
                             "ORDER BY m.timestamp DESC, m.id DESC LIMIT 1", (pid,)).fetchone()
-        out["last_message"] = {"role": last[0], "preview": " ".join(str(last[1]).split())[:120], "at": last[2], "session_id": last[3]} if last else None
+        out["last_message"] = {"role": last[0], "preview": CloudMessageText_plain(str(last[1]))[:120], "at": last[2], "session_id": last[3]} if last else None
         tmsg = cloud_botthreads.latest_for(conn, pid)
         if tmsg and (not last or tmsg["ts"] >= (last[2] or 0) - 0.5):
             # 最近的动静是和别的 Bot 说话：首页显示「➤ 已发消息给 X：…」/「← 来自 X：…」
@@ -2290,9 +2290,7 @@ def search_everything(q, limit=60):
         conn.close()
 
     def snippet(text):
-        text = text or ""
-        if text.startswith("["):
-            text = CloudMessageText_plain(text)
+        text = CloudMessageText_plain(text or "")
         i = text.lower().find(q.lower())
         start = max(0, i - 30)
         return ("…" if start else "") + text[start:start + 120].replace("\n", " ")
@@ -2342,14 +2340,31 @@ def _thread_names():
     names[cloud_botthreads.MAIN] = "主助手"
     return names
 
+_ATT_LINE = re.compile(r"^\s*\[附件\] (.*?) → 工作区 (\S+)\s*$", re.M)
+
 def CloudMessageText_plain(raw):
-    try:
-        parts = json.loads(raw)
-        if isinstance(parts, list):
-            return " ".join(p.get("text", "") for p in parts if isinstance(p, dict) and p.get("type") == "text")
-    except (ValueError, TypeError):
-        pass
-    return raw
+    """给人看的一行文字：message_parts 只取文字；「[附件] … → 工作区 …」行（给模型找文件用）换成 [图片] / [文件] 名字"""
+    text, images = raw or "", 0
+    if text.startswith("["):
+        try:
+            parts = json.loads(text)
+            if isinstance(parts, list):
+                images = sum(1 for p in parts if isinstance(p, dict) and p.get("type") == "image_url")
+                text = " ".join(p.get("text", "") for p in parts if isinstance(p, dict) and p.get("type") == "text")
+        except (ValueError, TypeError):
+            pass
+    marks = []
+    for name, rel in _ATT_LINE.findall(text):
+        ext = rel.rsplit(".", 1)[-1].lower() if "." in rel else ""
+        marks.append("[图片]" if ext in cloud_vision.IMAGE_EXTS else f"[文件] {name}")
+    if marks:
+        text = _ATT_LINE.sub("", text).strip()
+        if text == "请查看附件。":
+            text = ""
+        if images:   # 老版本 App：图片同时在 parts 里，别数两遍
+            marks = [m for m in marks if m != "[图片]"]
+    marks = ["[图片]"] * images + marks
+    return " ".join(x for x in [" ".join(text.split())] + marks if x)
 
 BACKUP_FORMAT = "openminis-backup/1"
 
@@ -3375,6 +3390,8 @@ def auto_title(session_id, provider_config, model):
 # ---------------- 提速：流式、连接复用、快速模式、性能记录 ----------------
 PARALLEL_SAFE_TOOLS = {"file_read", "memory_search", "skill_load", "list_bots", "background_jobs", "request_tools"}
 INCOGNITO_NOTE = "\n[无痕对话] 这次对话结束后会被删除：不要写入长期记忆，也不要把内容带到别的对话里。"
+VISION_NOTE = ("\n\n[看图] 用户这次发的图片已经直接给你了（作为图片，或由看图模型读成的「图片内容」文字）：直接据此回答（排班表、截图等先逐字读出要用的内容）。"
+               "不要用 OCR、安装工具、打开或在电脑上查看图片文件来识别；真的看不清就直接说哪里看不清。")
 DUTY_NOTE = ("\n[值班模式] 用户正在值班（临床一线，随时被打断）：回答极简，先给结论、数字和要做的动作，"
              "用短句或要点，不寒暄、不铺垫；涉及剂量 / 换算时写明单位并提醒核对医嘱与说明书。")
 
@@ -4686,6 +4703,18 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         finally:
             vconn.close()
 
+    # 手机只给附件路径（2.47.0 起图片不再 base64 塞进 message_parts）：调用模型前读上传的文件补成图片内容
+    def _resolve_att(rel, _sid=session_id):
+        target, err = safe_path_resolve(_sid, rel)
+        return None if err else target
+    try:
+        _added, _missing = cloud_vision.expand_attachment_images(messages, _resolve_att)
+    except Exception as e:
+        print(f"attachment images failed: {type(e).__name__}", flush=True)
+        _added, _missing = 0, 0
+    if _missing:
+        log_event(task_id, "status", {"message": f"有 {_missing} 张图片读不出来（文件不在或太大），模型只看到文件名"})
+    _had_images = cloud_vision.has_images(messages)
     if cloud_vision.has_images(messages):
         _vc = get_db_connection()
         try:
@@ -4697,6 +4726,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             _vc.close()
         if _cap is False and not route_vision("model_caps"):
             vision["blocked"] = True
+    if _had_images:
+        # 图片已直接给模型看，或已由看图模型读成文字：别去 OCR、装工具或打开文件识别（真机上 Bot 为一张排班表跑了很多轮 OCR）
+        dynamic_note = (dynamic_note or "") + VISION_NOTE
 
     class VisionRetry(Exception):
         pass
@@ -4756,6 +4788,12 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             for item in inbox_take(task_id):
                 # 插话：作为一条用户消息放进上下文和历史（位置就是模型看到它的地方）
                 messages.append({"role": "user", "content": item["content"]})
+                if cloud_vision.image_lines(item["content"]):
+                    # 运行中带图片插话：同样把上传的图片补成图片内容
+                    try:
+                        cloud_vision.expand_attachment_images(messages, _resolve_att, recent=1)
+                    except Exception as e:
+                        print(f"injected images failed: {type(e).__name__}", flush=True)
                 insert_message(session_id, "user", item["content"], meta={"injected": True, "nonce": item["nonce"]})
                 log_event(task_id, "user_message_applied", {"nonce": item["nonce"]})
 
@@ -8483,18 +8521,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"error": "message_parts size exceeds 2MB limit"})
                     return
                 db_user_content = json.dumps(message_parts, ensure_ascii=False)
-            else:
-                # 只带了附件路径的图片（老版本 App、从「文件」里选的图片）：服务器自己把图片作为图片内容带上
-                def _resolve_upload(rel, _sid=sid):
-                    target, err = safe_path_resolve(_sid, rel)
-                    return None if err else target
-                try:
-                    auto_parts = cloud_vision.parts_from_uploads(content, _resolve_upload)
-                except Exception as e:
-                    print(f"upload image parts failed: {type(e).__name__}", flush=True)
-                    auto_parts = None
-                if auto_parts:
-                    db_user_content = json.dumps(auto_parts, ensure_ascii=False)
+            # 只带附件路径的图片（2.47.0 起手机都这样发）：数据库里存文字，调用模型时再读上传的文件补成图片
 
             model = req_json.get("model", "gpt-4o")
             client_effort = req_json.get("reasoning_effort")

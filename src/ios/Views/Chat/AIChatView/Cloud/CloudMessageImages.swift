@@ -6,29 +6,93 @@ private struct CloudAskImageKey: EnvironmentKey {
     static let defaultValue: ((UIImage) -> Void)? = nil
 }
 
+/// 当前对话的会话 ID：只有附件行（没有内嵌图片）的消息靠它去云端取原图
+private struct CloudAttachmentSessionKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
 extension EnvironmentValues {
     var cloudAskImage: ((UIImage) -> Void)? {
         get { self[CloudAskImageKey.self] }
         set { self[CloudAskImageKey.self] = newValue }
     }
+    var cloudAttachmentSession: String? {
+        get { self[CloudAttachmentSessionKey.self] }
+        set { self[CloudAttachmentSessionKey.self] = newValue }
+    }
+}
+
+/// 上传过的图片在本机留一份（缓存目录，最多 300 个），气泡缩略图先用它，历史消息再从云端取
+enum CloudAttachmentCache {
+    private static var dir: URL {
+        let d = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("cloud-attachments", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    private static func safe(_ name: String) -> String? {
+        name.range(of: #"^[A-Za-z0-9._-]{1,128}$"#, options: .regularExpression) != nil && !name.contains("..") ? name : nil
+    }
+
+    static func save(_ data: Data, name: String) {
+        guard let n = safe(name) else { return }
+        try? data.write(to: dir.appendingPathComponent(n), options: .atomic)
+        prune()
+    }
+
+    static func data(_ name: String) -> Data? {
+        guard let n = safe(name) else { return nil }
+        return try? Data(contentsOf: dir.appendingPathComponent(n))
+    }
+
+    private static func prune(keep: Int = 300) {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]),
+              files.count > keep else { return }
+        let sorted = files.sorted {
+            ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
+                < ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
+        }
+        for f in sorted.prefix(files.count - keep) { try? fm.removeItem(at: f) }
+    }
 }
 
 enum CloudMessageImageData {
-    /// message_parts 里的图片地址（data: 或 https:），按顺序
-    static func urls(_ content: String) -> [String] {
-        guard content.hasPrefix("["), let data = content.data(using: .utf8),
-              let parts = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
-        return parts.compactMap { p in
-            guard p["type"] as? String == "image_url" else { return nil }
-            return (p["image_url"] as? [String: Any])?["url"] as? String ?? p["image_url"] as? String
+    static let attachmentScheme = "openminis-attachment:"
+
+    /// 消息里的图片地址，按顺序：message_parts 里的 data: / https:；没有内嵌图片时，用附件行
+    /// 「[附件] … → 工作区 attachments/up_….jpg」生成 openminis-attachment:<会话>|<文件名>（本机缓存优先，再从云端取）
+    static func urls(_ content: String, sessionId: String? = nil) -> [String] {
+        var text = content
+        if content.hasPrefix("["), let data = content.data(using: .utf8),
+           let parts = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            let inline: [String] = parts.compactMap { p in
+                guard p["type"] as? String == "image_url" else { return nil }
+                return (p["image_url"] as? [String: Any])?["url"] as? String ?? p["image_url"] as? String
+            }
+            if !inline.isEmpty { return inline }
+            text = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: "\n")
         }
+        return CloudAttachmentLines.split(text).items.filter(\.isImage).map { attachmentScheme + (sessionId ?? "") + "|" + $0.serverName }
+    }
+
+    private static func attachmentData(_ url: String) async -> Data? {
+        let rest = url.dropFirst(attachmentScheme.count)
+        guard let bar = rest.firstIndex(of: "|") else { return nil }
+        let sid = String(rest[..<bar]), name = String(rest[rest.index(after: bar)...])
+        if let local = CloudAttachmentCache.data(name) { return local }
+        guard !sid.isEmpty, let remote = try? await CloudConnection.shared.downloadAttachment(path: "/v1/sessions/\(sid)/attachments/\(name)") else { return nil }
+        CloudAttachmentCache.save(remote, name: name)
+        return remote
     }
 
     static func load(_ url: String, maxPixel: CGFloat) async -> UIImage? {
         let key = "cloudimg\(Int(maxPixel)):\(url.count):\(url.suffix(48))"
         if let cached = NativeMediaImageCache.shared.image(for: key) { return cached }
         let data: Data?
-        if url.hasPrefix("data:"), let comma = url.firstIndex(of: ",") {
+        if url.hasPrefix(attachmentScheme) {
+            data = await attachmentData(url)
+        } else if url.hasPrefix("data:"), let comma = url.firstIndex(of: ",") {
             let b64 = String(url[url.index(after: comma)...])
             data = await Task.detached { Data(base64Encoded: b64) }.value
         } else if let u = URL(string: url), u.scheme == "https" || u.scheme == "http" {
@@ -48,10 +112,11 @@ struct CloudMessageImages: View {
     let content: String
     var alignment: HorizontalAlignment = .trailing
     @Environment(\.cloudAskImage) private var askImage
+    @Environment(\.cloudAttachmentSession) private var sessionId
     @State private var gallery: GalleryPresentation?
 
     var body: some View {
-        let urls = CloudMessageImageData.urls(content)
+        let urls = CloudMessageImageData.urls(content, sessionId: sessionId)
         if !urls.isEmpty {
             ImageCardStack(sources: urls.enumerated().map { i, u in
                 ImageStackSource(id: "\(i):\(u.count):\(u.suffix(32))", load: { await CloudMessageImageData.load(u, maxPixel: 640) })

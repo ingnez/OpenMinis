@@ -712,3 +712,12 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 首选目录不可写时退到 `~/.openminis/plugin-files`，再退到临时目录；全都不可写时插件状态为 error，`last_error` 是中文说明（让用户重新运行 install.sh 或设置 `OPENMINIS_PLUGIN_DIR`），不再透出 Errno 13。旧版本留下的 Errno 13 错误在列表里不再显示，下次连接重新判断。
 - `GET /v1/plugins` 新增 `plugin_dir: {path, writable, note}`。
 - 其它写路径已核对：数据库、工作区、回放、系统快照都来自环境变量或数据库目录，不在安装目录里。
+
+## 图片只传路径，调用模型时再补成图片（2.47.0）
+
+- 手机不再把图片 base64 塞进 `message_parts`（6 张照片就超过 2 MB 上限，`POST /messages` 直接 400）。每张图先 `POST /v1/sessions/{id}/upload`（并行，各自进度 / 重试），消息文字里带「`[附件] 名字 → 工作区 attachments/up_*.jpg`」，这行就是引用。
+- 服务器数据库里存文字；每次调用模型前，最近 6 条用户消息里的图片附件行读上传的文件补成 `image_url`（每条最多 9 张，`MAX_IMAGES`），运行中插话带的图片同样补上。`message_parts` 的 2 MB 上限只对老版本 App 内嵌的图片有效。
+- 没装 Pillow 时：JPEG / PNG / WebP / GIF 原图 ≤ 8 MB 照发（以前 > 1.4 MB 的照片被悄悄丢掉，模型只看到路径，于是在云电脑上跑 OCR）。读不出来的图片记一条中文状态。
+- 不按模型名猜能力：没有依据就发图片；服务商明确拒绝图片后按模型记进 `model_caps`，之后改走看图模型（原有逻辑）。
+- 带图片的任务在本轮末尾加一句：图片已直接给你，不要用 OCR、装工具或打开文件识别。
+- 主页最后一条预览、搜索片段：附件行换成「[图片]」/「[文件] 名字」。

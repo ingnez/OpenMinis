@@ -43,12 +43,26 @@ struct CloudBotChatTheme {
 
 enum CloudMessageText {
     /// 消息内容可能是 message_parts 的 JSON：取出文字，图片显示为占位
+    /// 附件说明行（「[附件] … → 工作区 attachments/…」）只给模型看：图片换成缩略图，其它文件显示成「📎 文件名」
     static func display(_ content: String) -> (text: String, images: Int) {
-        guard content.hasPrefix("["), let data = content.data(using: .utf8),
-              let parts = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return (content, 0) }
-        let text = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: "\n")
-        let images = parts.filter { $0["type"] as? String == "image_url" }.count
-        return (text, images)
+        var text = content, images = 0
+        if content.hasPrefix("["), let data = content.data(using: .utf8),
+           let parts = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            text = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: "\n")
+            images = parts.filter { $0["type"] as? String == "image_url" }.count
+        }
+        let s = CloudAttachmentLines.split(text)
+        guard !s.items.isEmpty else { return (text, images) }
+        let files = s.items.filter { !$0.isImage }.map { "📎 " + $0.filename }
+        let shown = ([s.text] + files).filter { !$0.isEmpty }.joined(separator: "\n")
+        return (shown, images > 0 ? images : s.items.filter(\.isImage).count)
+    }
+
+    /// 一行预览（主页、列表）：图片写成「[图片]」
+    static func preview(_ content: String) -> String {
+        let shown = display(content)
+        let line = shown.text.split(whereSeparator: \.isNewline).joined(separator: " ").replacingOccurrences(of: "📎 ", with: "[文件] ")
+        return ([line] + Array(repeating: "[图片]", count: shown.images)).filter { !$0.isEmpty }.joined(separator: " ")
     }
 }
 
@@ -395,22 +409,31 @@ enum CloudAttachmentKit {
     /// 上传非图片附件（以及图片的原件，便于在资料库里找到），返回给 Agent 的说明行
     static func upload(_ items: [CloudPendingAttachment], sessionId: String,
                        progress: (@MainActor (UUID, ImageStackSource.Upload) -> Void)? = nil) async throws -> [String] {
-        var lines: [String] = []
-        for item in items {
-            await progress?(item.id, .uploading(nil))
-            let resp: [String: Any]
-            do {
-                resp = try await CloudConnection.shared.request(method: "POST", path: "/v1/sessions/\(sessionId)/upload",
-                                                                body: ["filename": item.filename, "data_base64": item.data.base64EncodedString()])
-            } catch {
-                await progress?(item.id, .failed)
-                throw error
+        // 并行上传（每张各自的进度圈）；说明行按原来的顺序
+        return try await withThrowingTaskGroup(of: (Int, String).self) { group in
+            for (i, item) in items.enumerated() {
+                group.addTask {
+                    await progress?(item.id, .uploading(nil))
+                    let resp: [String: Any]
+                    do {
+                        resp = try await CloudConnection.shared.request(method: "POST", path: "/v1/sessions/\(sessionId)/upload",
+                                                                        body: ["filename": item.filename, "data_base64": item.data.base64EncodedString()])
+                    } catch {
+                        await progress?(item.id, .failed)
+                        throw error
+                    }
+                    await progress?(item.id, .done)
+                    let path = resp["file_path"] as? String ?? item.filename
+                    if item.isImage || CloudImageBudget.isImageName(item.filename) {
+                        CloudAttachmentCache.save(item.data, name: (path as NSString).lastPathComponent)   // 气泡缩略图先用本机这份
+                    }
+                    return (i, "[附件] \(item.filename) → 工作区 \(path)")
+                }
             }
-            await progress?(item.id, .done)
-            let path = resp["file_path"] as? String ?? item.filename
-            lines.append("[附件] \(item.filename) → 工作区 \(path)")
+            var lines = [String](repeating: "", count: items.count)
+            for try await (i, line) in group { lines[i] = line }
+            return lines
         }
-        return lines
     }
 }
 
@@ -419,7 +442,7 @@ struct CloudPhotoPicker: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var config = PHPickerConfiguration()
-        config.selectionLimit = 6
+        config.selectionLimit = 9
         config.filter = .any(of: [.images, .videos])
         let vc = PHPickerViewController(configuration: config)
         vc.delegate = context.coordinator

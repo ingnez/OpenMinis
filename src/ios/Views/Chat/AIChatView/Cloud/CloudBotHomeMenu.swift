@@ -109,7 +109,7 @@ struct CloudBotMenuPreview: View {
             } else {
                 HStack {
                     if bot.lastRole == "user" { Spacer(minLength: 30) }
-                    Text(CloudMessageText.display(bot.lastPreview).text)
+                    Text(CloudMessageText.preview(bot.lastPreview))
                         .font(.subheadline)
                         .lineLimit(5)
                         .padding(.horizontal, 12).padding(.vertical, 8)

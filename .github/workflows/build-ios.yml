@@ -307,6 +307,16 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/CloudProviderErrorText.swift scripts/CloudProviderErrorTextTests.swift -o /tmp/cloud-providererror-tests
           /tmp/cloud-providererror-tests
+      - name: 附件说明行解析测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudAttachmentLines.swift scripts/CloudAttachmentLinesTests.swift -o /tmp/cloud-attachlines-tests
+          /tmp/cloud-attachlines-tests
+      - name: 云电脑步骤面板名字测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudComputerContext.swift scripts/CloudComputerLabelTests.swift -o /tmp/cloud-computerlabel-tests
+          /tmp/cloud-computerlabel-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -483,6 +493,10 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudComputerContext.swift scripts/CloudComputerLabelTests.swift -o /tmp/cloud-computerlabel-tests
+          /tmp/cloud-computerlabel-tests | tee cloud-computerlabel-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudAttachmentLines.swift scripts/CloudAttachmentLinesTests.swift -o /tmp/cloud-attachlines-tests
+          /tmp/cloud-attachlines-tests | tee cloud-attachlines-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/CloudProviderErrorText.swift scripts/CloudProviderErrorTextTests.swift -o /tmp/cloud-providererror-tests
           /tmp/cloud-providererror-tests | tee cloud-providererror-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/CloudVoiceRoute.swift scripts/CloudVoiceRouteTests.swift -o /tmp/cloud-voiceroute-tests
@@ -832,6 +846,10 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudComputerContext.swift scripts/CloudComputerLabelTests.swift -o /tmp/cloud-computerlabel-tests
+          /tmp/cloud-computerlabel-tests | tee cloud-computerlabel-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudAttachmentLines.swift scripts/CloudAttachmentLinesTests.swift -o /tmp/cloud-attachlines-tests
+          /tmp/cloud-attachlines-tests | tee cloud-attachlines-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/CloudProviderErrorText.swift scripts/CloudProviderErrorTextTests.swift -o /tmp/cloud-providererror-tests
           /tmp/cloud-providererror-tests | tee cloud-providererror-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/CloudVoiceRoute.swift scripts/CloudVoiceRouteTests.swift -o /tmp/cloud-voiceroute-tests
