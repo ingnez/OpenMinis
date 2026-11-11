@@ -553,6 +553,30 @@ final class E2EFlowsUITests: XCTestCase {
                       "点发送后本地模型没收到听写的文字")
     }
 
+    // MARK: - 首页跟系统字号（Dynamic Type）
+
+    /// 首页 Bot 那一行的高度和名字的高度（找不到返回 nil）
+    private func homeRowMetrics(_ app: XCUIApplication) -> (row: CGFloat, title: CGFloat?)? {
+        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
+        guard row.waitForExistence(timeout: 60) else { return nil }
+        let title = app.descendants(matching: .any).matching(identifier: "homeRowTitle").firstMatch
+        return (row.frame.height, title.exists ? title.frame.height : nil)
+    }
+
+    func test24_homeRowFollowsDynamicType() throws {
+        let normal = launch()
+        let a = try XCTUnwrap(homeRowMetrics(normal), "默认字号下首页找不到 Bot 那一行")
+        shot(normal, "24a-默认字号首页")
+        normal.terminate()
+        let big = launch(extraArgs: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityL"])
+        let b = try XCTUnwrap(homeRowMetrics(big), "大字号下首页找不到 Bot 那一行")
+        shot(big, "24b-大字号首页")
+        if let ta = a.title, let tb = b.title {
+            XCTAssertGreaterThan(tb, ta * 1.2, "系统调大字号后首页 Bot 名字没变大（\(ta) → \(tb)）")
+        }
+        XCTAssertGreaterThan(b.row, a.row * 1.15, "系统调大字号后首页那一行没变高（\(a.row) → \(b.row)），字号是写死的")
+    }
+
     private struct RealtimeProbe: Decodable { let appends: Int; let replies: Int; let session_updates: Int }
     private func realtimeProbe() -> RealtimeProbe? {
         guard let url = URL(string: "http://127.0.0.1:18799/_e2e/realtime"), let data = try? Data(contentsOf: url) else { return nil }
