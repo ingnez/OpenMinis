@@ -83,5 +83,6 @@ assert 'voiceInputActive = false' in start and 'showRealtimeVoice = true' in sta
 assert 'LocalCallOverlay(call: CloudLocalCall.controller' in view
 local=read(active+'Cloud/CloudLocalComposer.swift')
 assert 'accessibilityIdentifier("realtimeVoiceButton")' in local and 'CloudMorphButton(action: .call' in local
-assert '34 * 3 + 38 + 12 * 4' in controls
+assert 'LocalPromptTemplateEntry(text: inputTextBinding)' in row
+assert '34 * 3 + 28 + 38 + 12 * 5' in controls
 print('PASS：实际编译的拆分聊天页状态、全屏通话兜底、本地变形按钮和浮动胶囊连接完整')
