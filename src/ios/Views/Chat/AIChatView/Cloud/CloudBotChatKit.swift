@@ -416,10 +416,12 @@ enum CloudAttachmentKit {
                     await progress?(item.id, .uploading(nil))
                     let setting = UserDefaults.standard.string(forKey: CloudLowBandwidth.key) ?? "auto"
                     if CloudLowBandwidth.shouldDefer(bytes: item.data.count, setting: setting, expensive: CloudDataSaver.expensiveNetwork) {
-                        CloudDataSaver.enqueue(CloudDataSaverItem(id: item.id.uuidString, filename: item.filename,
-                                                                  bytes: item.data.count, sessionId: sessionId,
-                                                                  createdAt: Date().timeIntervalSince1970),
-                                               defaults: .standard)
+                        var queued = CloudDataSaverItem(id: item.id.uuidString, filename: item.filename,
+                                                        bytes: item.data.count, sessionId: sessionId,
+                                                        createdAt: Date().timeIntervalSince1970, localName: nil)
+                        queued.localName = try? CloudDataSaver.writePayload(item.data, id: queued.id, filename: item.filename,
+                                                                            base: CloudDataSaver.defaultCacheBase())
+                        CloudDataSaver.enqueue(queued, defaults: .standard)
                         await progress?(item.id, .failed)
                         throw CloudDataSaverError.deferred
                     }

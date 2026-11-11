@@ -64,8 +64,13 @@ struct CloudDataSaverPage: View {
         .onAppear {
             CloudDataSaverMonitor.start()
             items = CloudDataSaver.load(from: .standard)
+            CloudDataSaverFlush.maybeFlush()
+            items = CloudDataSaver.load(from: .standard)
         }
-        .onChange(of: setting) { _ in items = CloudDataSaver.load(from: .standard) }
+        .onChange(of: setting) { _ in
+            CloudDataSaverFlush.maybeFlush()
+            items = CloudDataSaver.load(from: .standard)
+        }
     }
 
     private var saving: Bool {

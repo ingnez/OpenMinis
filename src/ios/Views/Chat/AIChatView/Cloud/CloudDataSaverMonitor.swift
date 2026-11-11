@@ -12,7 +12,11 @@ enum CloudDataSaverMonitor {
         let m = NWPathMonitor()
         m.pathUpdateHandler = { path in
             let expensive = path.isExpensive || path.isConstrained
-            DispatchQueue.main.async { CloudDataSaver.expensiveNetwork = expensive }
+            DispatchQueue.main.async {
+                let was = CloudDataSaver.expensiveNetwork
+                CloudDataSaver.expensiveNetwork = expensive
+                if was && !expensive { CloudDataSaverFlush.maybeFlush() }
+            }
         }
         m.start(queue: DispatchQueue(label: "openminis.datasaver.path"))
         monitor = m
