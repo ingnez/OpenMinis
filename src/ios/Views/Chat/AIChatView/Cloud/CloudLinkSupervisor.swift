@@ -224,7 +224,11 @@ final class CloudLinkSupervisor: ObservableObject {
         } else {
             serverOutdated = !h.isEmpty     // 旧版服务器没有 agent_version
         }
-        if let d = h["desktop"] as? [String: Any] {
+        if CloudE2E.fakeDesktop {
+            // 模拟器 E2E 用假画面，没有 Xvfb；横幅再报「还没有安装」会挡住设置里的「云电脑桌面」入口（43003171276 test25）
+            desktopMissing = false
+            desktopProblem = nil
+        } else if let d = h["desktop"] as? [String: Any] {
             desktopMissing = (d["installed"] as? Bool) == false
             desktopProblem = (d["ok"] as? Bool) == false && !desktopMissing ? d["message"] as? String : nil
         }
