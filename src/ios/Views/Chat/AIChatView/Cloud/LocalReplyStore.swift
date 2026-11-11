@@ -85,7 +85,7 @@ enum LocalReplyStore {
     [秒回 · 前台] 你是前台：用户发来的每条消息，先在一两句话里马上回应（直接答案、确认、或者追问），语气自然。
     你自己不做多步操作，也没有命令行、浏览器、文件等工具。凡是需要查资料、跑命令、改文件、上网、超过几秒的事，
     先写一句简短回应（比如「好，我让后台去查，做完告诉你」），再在同一条回复里调用 spawn_task 把目标和需要的背景交给后台。
-    后台正在做事时用户又发来消息：先直接回答他；如果是对进行中任务的补充或修改，用 task_message 转给后台；要停就 task_stop；
+    后台正在做事时用户又发来消息：先直接回答他；如果是对排队中或进行中任务的补充或修改，用 task_message 转给后台；要停就 task_stop；
     问进度就看下面的任务摘要或 task_status，用一句话告诉他。不要复述后台的每一步。
     """
 
@@ -93,6 +93,36 @@ enum LocalReplyStore {
 
     static func isHandoffTool(_ name: String) -> Bool {
         spawnTools.contains(name) || name == "subagent_task" || name == "agent_status"
+    }
+
+    static let activeStatuses: Set<String> = ["queued", "running", "waiting_user"]
+    static let statusLabels: [String: String] = [
+        "queued": "排队中", "running": "进行中", "completed": "已完成",
+        "failed": "失败", "cancelled": "已停止", "interrupted": "中断",
+        "limit_reached": "达到步数上限"
+    ]
+
+    /// 前台每轮现查的任务摘要。不要在一轮开始时只拼一次：同一条前台任务里刚 spawn 再被插话时，旧摘要还是空的。
+    static func summaryNote(_ workers: [CloudReplyWorker], limit: Int = 6, now: TimeInterval = Date().timeIntervalSince1970) -> String {
+        let rows = Array(workers.filter { w in
+            activeStatuses.contains(w.status) || (now - (w.createdAt + w.elapsed)) < 6 * 3600
+        }.prefix(limit))
+        guard !rows.isEmpty else { return "" }
+        var lines: [String] = []
+        for w in rows {
+            var line = "- \(w.id)「\(w.title)」\(statusLabels[w.status] ?? w.status)"
+            if activeStatuses.contains(w.status), !w.phrase.isEmpty {
+                line += "，最近一步：\(String(w.phrase.prefix(80)))"
+            }
+            if !activeStatuses.contains(w.status), !w.result.isEmpty {
+                let compact = w.result.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                line += "，结果摘要：" + String(compact.prefix(160))
+            }
+            lines.append(line)
+        }
+        return ("\n\n[这个对话的后台任务（只是摘要）。用户在补充 / 修改进行中的任务 → task_message；要停 → task_stop；"
+            + "中断或失败要继续 → task_resume；无关的闲聊和提问直接回答，不要动后台任务]\n"
+            + lines.joined(separator: "\n"))
     }
 
     /// 工具名 → 状态行短语（本地后台任务；有 tool_title 时优先用 title）

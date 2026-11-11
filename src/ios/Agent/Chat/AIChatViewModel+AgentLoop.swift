@@ -1031,7 +1031,7 @@ extension AIChatViewModel {
             } else {
                 stream = try await streamWithGroupFallback(
                     provider: provider,
-                    messages: contextHistory,
+                    messages: applyingLocalFrontWorkerNote(contextHistory),
                     baseSystemPrompt: baseSystemPrompt,
                     systemPrompt: userSystemPrompt,
                     tools: tools,
@@ -1283,7 +1283,7 @@ extension AIChatViewModel {
                         // with the reason).
                         reminderStream = try await streamWithGroupFallback(
                             provider: provider,
-                            messages: reminderHistory,
+                            messages: applyingLocalFrontWorkerNote(reminderHistory),
                             baseSystemPrompt: baseSystemPrompt,
                             systemPrompt: userSystemPrompt,
                             tools: tools,
@@ -1297,7 +1297,7 @@ extension AIChatViewModel {
                     } else {
                         reminderStream = try await streamWithAutoRetry(
                             provider: provider,
-                            messages: reminderHistory,
+                            messages: applyingLocalFrontWorkerNote(reminderHistory),
                             systemPrompt: userSystemPrompt,
                             tools: tools,
                             maxTokens: dynamicMaxTokens(provider: provider, model: activeModel, lastContextTokens: dispatchInputTokens),
@@ -1395,7 +1395,7 @@ extension AIChatViewModel {
                     msgIdx = resynced
                     streamResult = try await streamWithGroupFallbackUntilContent(
                         provider: provider,
-                        messages: applyRequestImageBudget(effectiveAgentHistory()),
+                        messages: applyingLocalFrontWorkerNote(applyRequestImageBudget(effectiveAgentHistory())),
                         baseSystemPrompt: baseSystemPrompt,
                         systemPrompt: userSystemPrompt,
                         tools: tools,
@@ -1418,7 +1418,7 @@ extension AIChatViewModel {
                     do {
                         let retryStream = try await streamWithAutoRetry(
                             provider: provider,
-                            messages: applyRequestImageBudget(effectiveAgentHistory()),
+                            messages: applyingLocalFrontWorkerNote(applyRequestImageBudget(effectiveAgentHistory())),
                             systemPrompt: userSystemPrompt,
                             tools: tools,
                             maxTokens: dynamicMaxTokens(provider: provider, model: activeModel, lastContextTokens: dispatchInputTokens),
@@ -1476,7 +1476,7 @@ extension AIChatViewModel {
                         // group entries until one returns non-empty content.
                         streamResult = try await streamWithGroupFallbackUntilContent(
                             provider: provider,
-                            messages: applyRequestImageBudget(effectiveAgentHistory()),
+                            messages: applyingLocalFrontWorkerNote(applyRequestImageBudget(effectiveAgentHistory())),
                             baseSystemPrompt: baseSystemPrompt,
                             systemPrompt: userSystemPrompt,
                             tools: tools,

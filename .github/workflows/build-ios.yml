@@ -11,6 +11,10 @@ on:
         description: "只在 iOS 模拟器上跑 XCUITest 端到端冒烟（MinisSmokeUITests），不出 IPA。模拟器依赖只有 arm64 版，固定用 macos-15（arm64）机器"
         type: boolean
         default: false
+      only_testing:
+        description: "只跑这些 XCUITest（传给 xcodebuild -only-testing，逗号或换行分隔，例如 MinisUITests/ReplyModeUITests）。留空则跑全部允许的 UI 流程，并接着跑 MinisTests"
+        type: string
+        default: ""
       mac_runner:
         description: "macOS 机器标签。arm64 机器紧张时 GitHub 会在约 15 分钟后报「job was not acquired by Runner of type hosted」并取消；那时换 macos-15-intel（Intel 机器池，同样有 Xcode 26）"
         type: choice
@@ -1117,11 +1121,40 @@ jobs:
           grep -q "E2E 云端就绪" e2e-cloud-stack.log
 
       - name: XCUITest 端到端冒烟（模拟器）
-        # 卡住时尽快失败：整步最多 80 分钟（编译约 20 分钟 + 模拟器启动约 3 分钟 + 17 个流程串行约 30 分钟 + 失败重试），单个测试默认 150 秒、最多 240 秒（xcodebuild 会把超时的测试记成失败并截图）
-        # 不用并行克隆模拟器（克隆冷启动「Timed out while launching application」）；失败的流程自动重试一次，汇总里注明重试次数
-        timeout-minutes: 80
+        # 卡住时尽快失败：整套流程最多 80 分钟；传入 only_testing 时缩到 40 分钟（编译约 20 分钟 + 少量流程）。
+        # 不用并行克隆模拟器（克隆冷启动「Timed out while launching application」，且假云端栈不能同时给两台模拟器用）；失败的流程自动重试一次，汇总里注明重试次数
+        timeout-minutes: ${{ inputs.only_testing != '' && 40 || 80 }}
+        env:
+          ONLY_TESTING: ${{ inputs.only_testing }}
         run: |
           set -o pipefail
+          DEFAULT_ONLY_TESTING="MinisUITests/MinisSmokeUITests
+          MinisUITests/ComposerVoiceButtonUITests
+          MinisUITests/E2EFlowsUITests
+          MinisUITests/MiscControlsUITests
+          MinisUITests/ReplyModeUITests"
+          ONLY_SRC="${ONLY_TESTING:-}"
+          if [ -z "$(printf '%s' "$ONLY_SRC" | tr -d '[:space:]')" ]; then
+            ONLY_SRC="$DEFAULT_ONLY_TESTING"
+          fi
+          ONLY_SRC="$(printf '%s' "$ONLY_SRC" | tr ',' $'\n')"
+          ONLY_FLAGS=()
+          while IFS= read -r item; do
+            item="${item#"${item%%[![:space:]]*}"}"
+            item="${item%"${item##*[![:space:]]}"}"
+            [ -z "$item" ] && continue
+            case "$item" in
+              *[!A-Za-z0-9_./-]*) echo "only_testing 条目不合法：$item" >&2; exit 1 ;;
+            esac
+            ONLY_FLAGS+=("-only-testing:$item")
+          done <<EOF
+          $ONLY_SRC
+          EOF
+          if [ ${#ONLY_FLAGS[@]} -eq 0 ]; then
+            echo "only_testing 解析后为空" >&2
+            exit 1
+          fi
+          echo "本次 -only-testing：${ONLY_FLAGS[*]}"
           # 用 xcodebuild -showdestinations 选这套 scheme 真正能用的 iPhone 模拟器，
           # 不要只信 simctl：设备可能列得出、也能 boot，但 scheme（Minis 排除了模拟器 x86_64）并不接受。
           DEV=$(python3 scripts/pick_ios_simulator.py \
@@ -1163,11 +1196,7 @@ jobs:
             -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
             -scmProvider system \
             -disableAutomaticPackageResolution \
-            -only-testing:MinisUITests/MinisSmokeUITests \
-            -only-testing:MinisUITests/ComposerVoiceButtonUITests \
-            -only-testing:MinisUITests/E2EFlowsUITests \
-            -only-testing:MinisUITests/MiscControlsUITests \
-            -only-testing:MinisUITests/ReplyModeUITests \
+            "${ONLY_FLAGS[@]}" \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 150 \
             -maximum-test-execution-time-allowance 240 \
@@ -1205,7 +1234,7 @@ jobs:
 
       - name: iOS 单元测试 MinisTests（模拟器，MinisUnitTests 方案）
         id: unit
-        if: always()
+        if: ${{ always() && inputs.only_testing == '' }}
         continue-on-error: true
         timeout-minutes: 30
         run: |

@@ -316,7 +316,47 @@ extension AIChatViewModel {
         !isHelper && LocalReplyStore.plan(sessionId: sessionId ?? "").isInstant
     }
 
+    /// 每轮现查后台任务摘要，只改这一次请求的副本，不写入对话历史（和云端 _front_worker_note 同一意图）。
+    func applyingLocalFrontWorkerNote(_ history: [AgentMessage]) -> [AgentMessage] {
+        guard isInstantFrontTurn, let sid = sessionId, !sid.isEmpty else { return history }
+        let note = LocalReplyStore.summaryNote(LocalReplyHub.workers(for: sid))
+        guard !note.isEmpty else { return history }
+        return Self.historyAppendingUserNote(note, to: history) ?? history
+    }
+
+    /// 把本轮提示接到最后一条用户消息后面（不一定是数组末尾）。
+    static func historyAppendingUserNote(_ note: String, to history: [AgentMessage]) -> [AgentMessage]? {
+        guard let lastIdx = history.lastIndex(where: { $0.role == .user }) else { return nil }
+        var parts = history[lastIdx].parts
+        let suffix = note.hasPrefix("\n") ? note : "\n\n" + note
+        if let partIdx = parts.indices.last(where: {
+            if case .toolResult = parts[$0] { return true }; return false
+        }), case let .toolResult(id, name, content, isError, imageData, imageMimeType, pageURL, imageLinuxPath, isReadback) = parts[partIdx] {
+            parts[partIdx] = .toolResult(
+                id: id, name: name, content: content + suffix, isError: isError,
+                imageData: imageData, imageMimeType: imageMimeType,
+                pageURL: pageURL, imageLinuxPath: imageLinuxPath,
+                isOffloadReadback: isReadback)
+        } else if let partIdx = parts.indices.last(where: {
+            if case .text = parts[$0] { return true }; return false
+        }), case let .text(existing) = parts[partIdx] {
+            parts[partIdx] = .text(existing + suffix)
+        } else {
+            return nil
+        }
+        var out = history
+        out[lastIdx] = AgentMessage(
+            role: history[lastIdx].role,
+            parts: parts,
+            isInterrupted: history[lastIdx].isInterrupted,
+            reasoningContent: history[lastIdx].reasoningContent,
+            reasoningEcho: history[lastIdx].reasoningEcho,
+            dbMessageId: history[lastIdx].dbMessageId)
+        return out
+    }
+
     func prepareLocalReplyTurn() {
+
         turnModelEntryOverride = nil
         localReplyBackEntryId = nil
         localReplyHandedOff = false
