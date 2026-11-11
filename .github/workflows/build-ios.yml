@@ -16,9 +16,9 @@ on:
         type: string
         default: ""
       mac_runner:
-        description: "macOS 机器标签。默认 macos-26（arm64，适合 UI 测试）。GitHub 对托管 Mac 排队约 15 分钟领不到就取消（「job was not acquired」），这段时间不算进 job 的 timeout-minutes；本工作流会先在 Linux 上等到本仓库空出 Mac，领不到再自动重排。UI 测试不要用 macos-15-intel（模拟器没有 x86_64）。构建 IPA 可用 macos-15-intel。"
+        description: "macOS 机器标签。默认 macos-26（arm64，适合 UI 测试）。GitHub 对托管 Mac 排队约 15 分钟领不到就取消（「job was not acquired」），这段时间不算进 job 的 timeout-minutes；本工作流会先在 Linux 上等到本仓库空出 Mac，领不到再自动改派，并在 macos-26 / macos-15 / xcode-27 之间轮换（都是 arm64）。不要用已退休的 macos-14。UI 测试不要用 macos-15-intel（模拟器没有 x86_64）。构建 IPA 可用 macos-15-intel。"
         type: choice
-        options: [macos-15, macos-15-intel, macos-26, macos-latest]
+        options: [macos-15, macos-15-intel, macos-26, macos-latest, xcode-27]
         default: macos-26
       mac_retry:
         description: "内部：领不到 Mac 后的自动重派次数，请留默认值"
@@ -1505,13 +1505,26 @@ jobs:
           print("领不到 Mac，准备再派一次同样输入的运行（第 %s 次重派，ref=%s）：" % (retry + 1, ref), flush=True)
           for line in unacquired:
               print("  " + line, flush=True)
+          # 每次换一个 arm64 池。macos-14 已于 2026-11-02 退役。
+          # macos-26-xlarge / macos-15-xlarge 是付费 larger runner，未确认免费前不用。
+          # UI 测试绝不能换到 *-intel / *-large（模拟器没有 x86_64）。
+          ui_tests = flag("INPUT_UI_TESTS")
+          ui_chain = ["macos-26", "macos-15", "xcode-27"]
+          build_chain = ["macos-26", "macos-15", "macos-15-intel", "xcode-27"]
+          chain = ui_chain if ui_tests else build_chain
+          current = (os.environ.get("INPUT_MAC_RUNNER") or "macos-26").strip()
+          if current in chain:
+              next_runner = chain[(chain.index(current) + 1) % len(chain)]
+          else:
+              next_runner = chain[0]
+          print("机器标签从 %s 换到 %s" % (current, next_runner), flush=True)
           payload = {
               "ref": ref,
               "inputs": {
                   "quick": "true" if flag("INPUT_QUICK") else "false",
-                  "ui_tests": "true" if flag("INPUT_UI_TESTS") else "false",
+                  "ui_tests": "true" if ui_tests else "false",
                   "only_testing": os.environ.get("INPUT_ONLY_TESTING") or "",
-                  "mac_runner": os.environ.get("INPUT_MAC_RUNNER") or "macos-26",
+                  "mac_runner": next_runner,
                   "mac_retry": str(retry + 1),
               },
           }
