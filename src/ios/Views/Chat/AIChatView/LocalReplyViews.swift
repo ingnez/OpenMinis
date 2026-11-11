@@ -3,6 +3,7 @@ import SwiftUI
 import UIKit
 
 /// 把本地后台子任务（AgentJobRegistry 里这个对话派出的 child）汇总成状态行要用的 CloudReplyWorker
+@MainActor
 enum LocalReplyHub {
     static func workers(for sessionId: String) -> [CloudReplyWorker] {
         guard !sessionId.isEmpty else { return [] }
@@ -67,6 +68,7 @@ enum LocalReplyHub {
 }
 
 /// 每个已记录过的完成任务只写入一次用时，避免轮询时重复插入
+@MainActor
 private enum LocalReplyETA {
     static var recorded: Set<String> = []
     static func remember(_ id: String, _ seconds: Double) {
