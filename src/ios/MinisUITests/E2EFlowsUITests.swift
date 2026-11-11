@@ -507,6 +507,52 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(waitGone(capsule, timeout: 10), "挂断后胶囊没收起")
     }
 
+    // MARK: - 听写卡片（照 Grok：实时文字 + 停止 + 滚动波形 + 发送）
+
+    /// 听写卡片的共同检查：波形、文字、停止、发送都在，点发送后返回
+    private func checkDictationCard(_ app: XCUIApplication, prefix: String) {
+        let card = app.descendants(matching: .any)
+        let wave = card["dictationWaveform"]
+        XCTAssertTrue(wave.waitForExistence(timeout: 15), "听写时没出现波形")
+        XCTAssertTrue(poll(10) { (wave.value as? String) == "有声音" }, "波形没跟着假音量动：\(wave.value as? String ?? "")")
+        let transcript = card["dictationTranscript"]
+        XCTAssertTrue(poll(15) { transcript.exists && transcript.label.contains("e2e 听写 的 文字") }, "听写文字没出现在卡片上：\(transcript.label)")
+        XCTAssertTrue(app.buttons["dictationStopButton"].exists, "听写卡片没有停止键")
+        let send = app.buttons["dictationSendButton"]
+        XCTAssertTrue(send.exists, "听写卡片没有发送键")
+        shot(app, "\(prefix)-听写卡片")
+        send.tap()
+        XCTAssertTrue(waitGone(wave, timeout: 10), "点发送后听写卡片没收起")
+    }
+
+    func test22_botDictationCard() throws {
+        let app = launch(extraEnv: ["OPENMINIS_E2E_FAKE_DICTATION": "1"])
+        openBot(app)
+        if app.keyboards.firstMatch.exists { app.swipeDown() }
+        let mic = app.buttons["botDictationButton"]
+        XCTAssertTrue(mic.waitForExistence(timeout: 20), "Bot 输入栏没有听写键")
+        let before = cloudProbe()?.cloud_texts.count ?? 0
+        mic.tap()
+        checkDictationCard(app, prefix: "22")
+        XCTAssertTrue(poll(30) { (self.cloudProbe()?.cloud_texts.dropFirst(before).contains { $0.contains("e2e 听写 的 文字") }) ?? false },
+                      "点发送后 Bot 没收到听写的文字")
+        // 停止键只在听写时有；Bot 干活时输入栏右边也不会变成停止键
+        XCTAssertFalse(app.buttons["dictationStopButton"].exists, "没在听写却还有听写停止键")
+    }
+
+    func test23_localDictationCard() throws {
+        let app = launch(homeMode: "local", extraEnv: ["OPENMINIS_E2E_LOCAL_PROVIDER": "http://127.0.0.1:18797", "OPENMINIS_E2E_FAKE_DICTATION": "1"],
+                         extraArgs: ["-launchScreen", "2"])
+        XCTAssertTrue(poll(60) { app.textViews.firstMatch.exists || app.textFields.firstMatch.exists }, "本地模式没打开新对话的输入框")
+        try XCTSkipUnless(localModelReady(app), "本地模式没选上注入的假模型（No model selected），本地听写发送在模拟器里没法验证")
+        let mic = app.descendants(matching: .any)["localMicButton"]
+        XCTAssertTrue(mic.waitForExistence(timeout: 20), "本地输入栏没有麦克风")
+        mic.tap()
+        checkDictationCard(app, prefix: "23")
+        XCTAssertTrue(poll(60) { self.localProbe()?.requests.contains { $0.text.contains("e2e 听写 的 文字") } ?? false },
+                      "点发送后本地模型没收到听写的文字")
+    }
+
     private struct RealtimeProbe: Decodable { let appends: Int; let replies: Int; let session_updates: Int }
     private func realtimeProbe() -> RealtimeProbe? {
         guard let url = URL(string: "http://127.0.0.1:18799/_e2e/realtime"), let data = try? Data(contentsOf: url) else { return nil }
