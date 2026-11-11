@@ -59,9 +59,9 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(note.contains("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee「查资料」进行中"), "进行中摘要：\(note)")
         check(note.contains("11111111-2222-3333-4444-555555555555「慢活」排队中"), "排队中摘要：\(note)")
         check(note.contains("task_message"), "摘要说明含转话")
-        let doneOld = CloudReplyWorker(id: "deadbeef-0000-0000-0000-000000000001", title: "旧任务", status: "completed", result: "已结束", createdAt: now - 7 * 3600, elapsed: 10)
+        let doneOld = CloudReplyWorker(id: "deadbeef-0000-0000-0000-000000000001", title: "旧任务", status: "completed", elapsed: 10, result: "已结束", createdAt: now - 7 * 3600)
         check(LocalReplyStore.summaryNote([doneOld], now: now).isEmpty, "超过 6 小时的完成任务不进摘要")
-        let doneNew = CloudReplyWorker(id: "deadbeef-0000-0000-0000-000000000002", title: "刚做完", status: "completed", result: "上海晴", createdAt: now - 60, elapsed: 20)
+        let doneNew = CloudReplyWorker(id: "deadbeef-0000-0000-0000-000000000002", title: "刚做完", status: "completed", elapsed: 20, result: "上海晴", createdAt: now - 60)
         let doneNote = LocalReplyStore.summaryNote([doneNew], now: now)
         check(doneNote.contains("刚做完」已完成") && doneNote.contains("上海晴"), "刚完成的任务带结果：\(doneNote)")
 
