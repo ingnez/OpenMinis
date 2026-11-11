@@ -104,6 +104,27 @@ final class E2EFlowsUITests: XCTestCase {
         shot(app, "07-插件市场")
     }
 
+    func test07b_pluginCatalogInstallMovesToInstalled() throws {
+        let app = launch()
+        let gear = app.buttons["设置"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 60))
+        gear.tap()
+        let market = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "插件市场")).firstMatch
+        XCTAssertTrue(scrollTo(app, market), "Bot 设置里没有「插件市场」")
+        market.tap()
+        XCTAssertTrue(waitText(app, contains: "E2E 回声", timeout: 30), "插件目录没有 e2e 假插件")
+        let install = app.descendants(matching: .any)["pluginInstall-e2e-echo"]
+        XCTAssertTrue(scrollTo(app, install), "插件目录里没有「E2E 回声」的安装按钮")
+        install.tap()
+        let installed = app.descendants(matching: .any)["pluginInstalled-e2e-echo"]
+        XCTAssertTrue(poll(30) { installed.exists }, "安装后没有出现在「已安装」")
+        // 已安装的条目应从「插件目录」消失（安装按钮不再出现）
+        XCTAssertFalse(app.descendants(matching: .any)["pluginInstall-e2e-echo"].exists, "已安装插件仍留在插件目录并显示「安装」")
+        XCTAssertTrue(waitText(app, contains: "安装成功", timeout: 5) || waitText(app, contains: "已经安装", timeout: 2),
+                      "安装后没有可见的成功/已安装提示")
+        shot(app, "07b-插件目录安装")
+    }
+
     func test08_botStepPanelUsesCloudNames() throws {
         let app = launch()
         openBot(app)
@@ -786,7 +807,23 @@ final class E2EFlowsUITests: XCTestCase {
 /// 模拟器上没有 Xvfb：App 用 OPENMINIS_E2E_FAKE_DESKTOP=1 换成假画面（1280×800 格子，回报收到的指针），
 /// e2e 栈的 /_e2e/desktop?on=1 把云端的剪贴板 / 输入换成内存假桌面（UTF-8 原样存）。真 X 上的同一套由 Linux CI 的 test_cc_clipboard_utf8 验证
 extension E2EFlowsUITests {
-    private struct CCDesk: Decodable { let on: Bool; let clip: String; let typed: [String]; let clip_sets: [String] }
+    private struct CCDesk: Decodable {
+        let on: Bool
+        let clip: String
+        let typed: [String]
+        let clip_sets: [String]
+        let keys: [CCKey]
+        struct CCKey: Decodable {
+            let name: String
+            let times: Int
+            init(from decoder: Decoder) throws {
+                var c = try decoder.unkeyedContainer()
+                name = try c.decode(String.self)
+                times = (try? c.decode(Int.self)) ?? 1
+            }
+        }
+        var keyNames: [String] { keys.map(\.name) }
+    }
 
     private func ccDesk(_ query: [String: String] = [:]) -> CCDesk? {
         var c = URLComponents(string: "http://127.0.0.1:18799/_e2e/desktop")!
@@ -930,6 +967,41 @@ extension E2EFlowsUITests {
         shot(app, "25e-输入法中文到云电脑")
         Thread.sleep(forTimeInterval: 6)   // 剪贴板轮询 2.5 秒一次，等两轮
         XCTAssertEqual(ccProbe(app)["toPhone"], remote, "手机自己打的中文被当成云电脑复制拷回了手机")
+        _ = ccDesk(["on": "0"])
+    }
+
+    @objc func test25b_CC_phoneKeyboardAsciiSpaceDeleteReturn() throws {
+        executionTimeAllowance = 180
+        let app = launch(extraEnv: ["OPENMINIS_E2E_FAKE_DESKTOP": "1"])
+        XCTAssertEqual(ccDesk(["on": "1"])?.on, true, "e2e 栈没有假桌面开关（/_e2e/desktop）")
+        let gear = app.buttons["设置"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
+        gear.tap()
+        let row = app.descendants(matching: .any)["ccDesktopSettingsRow"].exists
+            ? app.descendants(matching: .any)["ccDesktopSettingsRow"]
+            : app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "云电脑桌面")).firstMatch
+        XCTAssertTrue(scrollTo(app, row), "Bot 设置里没有「云电脑桌面」")
+        row.tap()
+        let probe = app.descendants(matching: .any)["ccDesktopProbe"]
+        XCTAssertTrue(probe.waitForExistence(timeout: 30), "云电脑页没打开（没有探针）")
+        XCTAssertTrue(app.descendants(matching: .any)["ccTrackpadSurface"].waitForExistence(timeout: 30), "接管后没有触控板层")
+        XCTAssertTrue(poll(20) { (self.ccPair(self.ccProbe(app)["viewport"])?.0 ?? 0) > 0 }, "画面没连上：\(probe.value as? String ?? "")")
+        ccRevealDesktopBar(app)
+        let keyboard = app.buttons["键盘"]
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 10), "底栏没有键盘按钮")
+        keyboard.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10), "系统键盘没弹出来")
+        dismissKeyboardIntro(app)
+        app.typeText("a1 ")
+        XCTAssertTrue(poll(20) { (self.ccDesk()?.typed.joined() ?? "").contains("a1 ") },
+                      "数字和空格没到服务器：\(String(describing: self.ccDesk()))")
+        app.typeText(XCUIKeyboardKey.delete.rawValue)
+        XCTAssertTrue(poll(20) { self.ccDesk()?.keyNames.contains("BackSpace") ?? false },
+                      "删除没到服务器 BackSpace：\(String(describing: self.ccDesk()))")
+        app.typeText("\n")
+        XCTAssertTrue(poll(20) { self.ccDesk()?.keyNames.contains("Return") ?? false },
+                      "换行没到服务器 Return：\(String(describing: self.ccDesk()))")
+        shot(app, "25b-键盘数字空格删除换行")
         _ = ccDesk(["on": "0"])
     }
 }

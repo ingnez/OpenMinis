@@ -311,6 +311,8 @@ def main():
         "OPENMINIS_DB": os.path.join(work, "data", "agent.db"),
         "OPENMINIS_WORKSPACE": os.path.join(work, "workspace"),
         "OPENMINIS_PLUGIN_DIR": os.path.join(work, "data", "plugin-files"),
+        # 插件市场 e2e：目录里多一个不访问网络的假 stdio MCP（E2E 回声）
+        "OPENMINIS_E2E_FAKE_PLUGIN": os.path.join(HERE, "..", "cloud-agent", "test_fake_mcp_server.py"),
     })
     os.makedirs(os.path.join(work, "data"), exist_ok=True)
     os.makedirs(os.path.join(work, "workspace"), exist_ok=True)
@@ -339,6 +341,17 @@ def main():
                     db.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
                 db.commit()
                 db.close()
+                # 卸掉上一个流程留下的 e2e 假插件，保证「插件目录安装」可重复跑
+                try:
+                    import urllib.request
+                    req = urllib.request.Request(
+                        f"http://127.0.0.1:{API_PORT}/v1/plugins/e2e-echo",
+                        method="DELETE",
+                        headers={"Authorization": f"Bearer {TOKEN}"},
+                    )
+                    urllib.request.urlopen(req, timeout=3).read()
+                except Exception:
+                    pass
                 FAKE_DESK.update({"on": False, "clip": "", "typed": [], "keys": [], "clip_sets": []})
                 body = json.dumps({"cleared_sessions": len(sids)}).encode()
                 self.send_response(200)

@@ -317,18 +317,21 @@ enum CloudIMECommit {
         return out
     }
 
-    /// 纯 ASCII 直接按键（经 VNC，几乎零延迟）；含中文等字符走服务器剪贴板粘贴（xdotool 打不了中文）
+    /// 含中文、全角标点等（没有 X11 Latin-1 keysym）必须走服务器；纯 ASCII 在 VNC 可用时才能直接按键
     static func viaServer(_ text: String) -> Bool { text.contains { CloudKey.keysym(for: $0) == nil } }
 }
 
-/// 输入法上屏的发送顺序：中文等走服务器（HTTP 剪贴板粘贴，慢），ASCII 和退格走 VNC（几乎零延迟）。
-/// 服务器那边还有没送完的字时，后面的字和退格也排进服务器队列，否则「中a」会到云电脑变成「a中」、退格删错字
+/// 输入法上屏的发送顺序：中文等走服务器（HTTP 剪贴板粘贴 / 逐字）。
+/// ASCII、空格、换行、退格本来走 VNC（几乎零延迟），但触控板模式会把 noVNC 设成 viewOnly，
+/// 真机上 rfb.sendKey 常常根本没发出去。VNC 按键未经确认可用时，这些键也改走服务器；
+/// 服务器那边还有没送完的字时，后面的字和退格也排进同一队列，否则「中a」会变成「a中」。
 struct CloudTypeOrder: Equatable {
     enum Route: Equatable { case vnc, server }
     private(set) var inFlight = 0
 
-    func route(_ e: CloudIMECommit.Event) -> Route {
+    func route(_ e: CloudIMECommit.Event, vncConfirmed: Bool = false) -> Route {
         if inFlight > 0 { return .server }
+        if !vncConfirmed { return .server }
         if case .text(let t) = e, CloudIMECommit.viaServer(t) { return .server }
         return .vnc
     }
@@ -336,11 +339,34 @@ struct CloudTypeOrder: Equatable {
     mutating func sent() { inFlight += 1 }
     mutating func finished() { inFlight = max(0, inFlight - 1) }
 
-    /// 走服务器时的请求体：文字用 type（服务器按 UTF-8 粘贴 / 逐字），退格用 xdotool 的 BackSpace 连按
+    /// 走服务器时的请求体：文字用 type（UTF-8 粘贴 / 逐字），退格用 BackSpace，换行映射为 Return
     static func serverPayload(_ e: CloudIMECommit.Event) -> [String: Any] {
+        serverPayloads(e).first ?? ["action": "type", "text": ""]
+    }
+
+    static func serverPayloads(_ e: CloudIMECommit.Event) -> [[String: Any]] {
         switch e {
-        case .text(let t): return ["action": "type", "text": String(t.prefix(10000))]
-        case .backspace(let n): return ["action": "key", "key": "BackSpace", "repeat": min(max(1, n), 50)]
+        case .backspace(let n):
+            return [["action": "key", "key": "BackSpace", "repeat": min(max(1, n), 50)]]
+        case .text(let raw):
+            var out: [[String: Any]] = []
+            var buf = ""
+            var skipNL = false
+            func flush() {
+                if !buf.isEmpty { out.append(["action": "type", "text": buf]); buf = "" }
+            }
+            for ch in raw.prefix(10000) {
+                if skipNL { skipNL = false; if ch == "\n" { continue } }
+                if ch == "\r" || ch == "\n" {
+                    flush()
+                    out.append(["action": "key", "key": "Return"])
+                    skipNL = ch == "\r"
+                } else {
+                    buf.append(ch)
+                }
+            }
+            flush()
+            return out
         }
     }
 }

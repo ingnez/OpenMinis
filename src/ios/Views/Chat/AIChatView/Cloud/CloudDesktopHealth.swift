@@ -346,7 +346,19 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
       if (v) tap(v > 0 ? 16 : 8, Math.min(20, Math.abs(v)));
       if (h) tap(h > 0 ? 64 : 32, Math.min(20, Math.abs(h)));
     };
-    om.keys = list => { const rfb = R(); if (!rfb) return; for (const k of list) { try { rfb.sendKey(k[0], null, !!k[1]); } catch (e) {} } };
+    om.keys = list => {
+      const rfb = R();
+      if (!rfb || !list || !list.length) return 0;
+      // 触控板模式会把 rfb.viewOnly 设为 true（避免画布把触摸当点击），但 sendKey 也会被丢掉。
+      // 程序发出的按键必须能送到远端：临时关掉 viewOnly，发完再恢复。
+      const vo = rfb.viewOnly;
+      try {
+        rfb.viewOnly = false;
+        for (const k of list) { try { rfb.sendKey(k[0], null, !!k[1]); } catch (e) {} }
+        return list.length;
+      } finally { try { rfb.viewOnly = vo; } catch (e) {} }
+    };
+    om.keysReady = () => { const rfb = R(); return rfb ? 1 : 0; };
     om.clip = t => { const rfb = R(); try { rfb && rfb.clipboardPasteFrom(t); } catch (e) {} };
     om.quality = (q, c) => { const rfb = R(); try { if (rfb) { rfb.qualityLevel = q; rfb.compressionLevel = c; } } catch (e) {} };
     om.viewOnly = v => { const rfb = R(); try { if (rfb) rfb.viewOnly = !!v; } catch (e) {} };

@@ -80,7 +80,13 @@ enum CloudPluginService {
     static func listAll() async throws -> (installed: [CloudPlugin], catalog: [CloudPlugin]) {
         let resp = try await CloudBotService.connected().request(method: "GET", path: "/v1/plugins", body: nil)
         let installed = (resp["installed"] as? [[String: Any]] ?? []).compactMap { CloudPlugin($0, installed: true) }
-        let catalog = (resp["catalog"] as? [[String: Any]] ?? []).compactMap { CloudPlugin($0, installed: false) }
+        let installedIds = Set(installed.map(\.id))
+        // 必须尊重服务端 catalog.installed；再与已安装 id 交叉核对，避免目录仍显示「安装」
+        let catalog = (resp["catalog"] as? [[String: Any]] ?? []).compactMap { d -> CloudPlugin? in
+            let flagged = d["installed"] as? Bool ?? false
+            let pid = (d["plugin_id"] as? String) ?? (d["id"] as? String) ?? ""
+            return CloudPlugin(d, installed: flagged || installedIds.contains(pid))
+        }
         return (installed, catalog)
     }
 
@@ -88,13 +94,27 @@ enum CloudPluginService {
         try await listAll().installed
     }
 
-    static func install(catalogId: String) async throws {
-        _ = try await CloudBotService.connected().request(method: "POST", path: "/v1/plugins/install", body: ["catalog_id": catalogId])
+    static func install(catalogId: String) async throws -> String {
+        let resp = try await CloudBotService.connected().request(method: "POST", path: "/v1/plugins/install", body: ["catalog_id": catalogId])
+        return Self.installMessage(resp)
     }
 
-    static func install(url: String) async throws {
-        _ = try await CloudBotService.connected().request(method: "POST", path: "/v1/plugins/install",
-                                                          body: ["url": url, "acknowledge_command": true])
+    static func install(url: String) async throws -> String {
+        let resp = try await CloudBotService.connected().request(method: "POST", path: "/v1/plugins/install",
+                                                                 body: ["url": url, "acknowledge_command": true])
+        return Self.installMessage(resp)
+    }
+
+    static func retry(_ id: String) async throws -> String {
+        let resp = try await CloudBotService.connected().request(method: "POST", path: "/v1/plugins/\(id)/retry", body: [:])
+        if let m = resp["message"] as? String, !m.isEmpty { return m }
+        return "已重新连接"
+    }
+
+    private static func installMessage(_ resp: [String: Any]) -> String {
+        if let m = resp["message"] as? String, !m.isEmpty { return m }
+        if resp["already_installed"] as? Bool == true { return "这个插件已经安装过了" }
+        return "安装成功"
     }
 
     static func update(_ id: String, _ body: [String: Any]) async throws {
@@ -176,6 +196,7 @@ struct CloudPluginsView: View {
     @State private var catalog: [CloudPlugin] = []
     @State private var loading = false
     @State private var busy = false
+    @State private var busyId: String?
     @State private var errorText: String?
     @State private var infoText: String?
     @State private var manifestURL = ""
@@ -183,13 +204,30 @@ struct CloudPluginsView: View {
 
     var body: some View {
         List {
+            if let errorText { Section { Text(errorText).font(.footnote).foregroundStyle(.red).accessibilityIdentifier("pluginMarketError") } }
+            if let infoText { Section { Text(infoText).font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("pluginMarketInfo") } }
+
             Section {
                 if installed.isEmpty && !loading {
                     Text("还没有安装插件。").font(.footnote).foregroundStyle(.secondary)
                 }
                 ForEach(installed) { p in
-                    NavigationLink(destination: CloudPluginDetailView(plugin: p, onChanged: { await reload() })) {
-                        pluginRow(p)
+                    HStack(alignment: .center, spacing: 8) {
+                        NavigationLink(destination: CloudPluginDetailView(plugin: p, onChanged: { await reload() })) {
+                            pluginRow(p)
+                        }
+                        .accessibilityIdentifier("pluginInstalled-\(p.id)")
+                        if p.status == "error" {
+                            if busyId == p.id {
+                                ProgressView()
+                                    .accessibilityIdentifier("pluginRetrying-\(p.id)")
+                            } else {
+                                Button("重试") { run(busyId: p.id) { try await CloudPluginService.retry(p.id) } }
+                                    .buttonStyle(.borderless)
+                                    .disabled(busy)
+                                    .accessibilityIdentifier("pluginRetry-\(p.id)")
+                            }
+                        }
                     }
                 }
             } header: {
@@ -229,16 +267,29 @@ struct CloudPluginsView: View {
                     HStack {
                         pluginRow(p)
                         Spacer()
-                        Button("安装") { run { try await CloudPluginService.install(catalogId: p.id) } }
-                            .buttonStyle(.borderless)
-                            .disabled(busy)
+                        if p.installed {
+                            Text("已安装").font(.caption).foregroundStyle(.secondary)
+                            NavigationLink("打开") {
+                                CloudPluginDetailView(plugin: installed.first(where: { $0.id == p.id }) ?? p, onChanged: { await reload() })
+                            }
+                            .accessibilityIdentifier("pluginOpen-\(p.id)")
+                        } else if busyId == p.id {
+                            ProgressView()
+                                .accessibilityIdentifier("pluginInstalling-\(p.id)")
+                        } else {
+                            Button("安装") { run(busyId: p.id) { try await CloudPluginService.install(catalogId: p.id) } }
+                                .buttonStyle(.borderless)
+                                .disabled(busy)
+                                .accessibilityIdentifier("pluginInstall-\(p.id)")
+                        }
                     }
+                    .accessibilityIdentifier("pluginCatalog-\(p.id)")
                 }
             }
 
             Section {
                 Button {
-                    run { infoText = try await CloudPluginService.importPhoneServers() }
+                    run { try await CloudPluginService.importPhoneServers() }
                 } label: {
                     Label("导入手机上的 MCP 服务器", systemImage: "iphone.and.arrow.forward")
                 }
@@ -253,8 +304,6 @@ struct CloudPluginsView: View {
                 Text("更多来源")
             }
 
-            if let infoText { Section { Text(infoText).font(.footnote).foregroundStyle(.secondary) } }
-            if let errorText { Section { Text(errorText).font(.footnote).foregroundStyle(.red) } }
         }
         .navigationTitle("插件市场")
         .alert("从 URL 安装插件？", isPresented: $confirmURL) {
@@ -312,15 +361,22 @@ struct CloudPluginsView: View {
         }
     }
 
-    private func run(_ op: @escaping @MainActor () async throws -> Void) {
+    private func run(busyId id: String? = nil, _ op: @escaping @MainActor () async throws -> String?) {
         busy = true
+        busyId = id
+        errorText = nil
         Task {
             do {
-                try await op()
-                await reload()
+                let message = try await op()
+                await reloadKeepingNotice()
+                if errorText == nil {
+                    infoText = (message?.isEmpty == false) ? message : "已完成"
+                }
             } catch {
                 errorText = error.localizedDescription
+                infoText = nil
             }
+            busyId = nil
             busy = false
         }
     }
@@ -328,15 +384,31 @@ struct CloudPluginsView: View {
     private func reload() async {
         loading = true
         do {
-            let all = try await CloudPluginService.listAll()
-            installed = all.installed
-            catalog = all.catalog
-            deps = (try? await CloudPluginService.deps()) ?? []
+            try await loadPlugins()
             errorText = nil
         } catch {
             errorText = error.localizedDescription
         }
         loading = false
+    }
+
+    /// 安装/重试成功后刷新列表，但不要清掉刚要展示的成功提示
+    private func reloadKeepingNotice() async {
+        loading = true
+        do {
+            try await loadPlugins()
+            errorText = nil
+        } catch {
+            errorText = error.localizedDescription
+        }
+        loading = false
+    }
+
+    private func loadPlugins() async throws {
+        let all = try await CloudPluginService.listAll()
+        installed = all.installed
+        catalog = all.catalog
+        deps = (try? await CloudPluginService.deps()) ?? []
     }
 }
 
@@ -360,6 +432,9 @@ struct CloudPluginDetailView: View {
             Section {
                 Text(plugin.summary.isEmpty ? plugin.name : plugin.summary).font(.footnote)
                 LabeledContent("状态", value: plugin.statusText)
+                if plugin.status == "error" {
+                    Button("重试") { testTools() }.disabled(busy)
+                }
                 LabeledContent("来源", value: plugin.source)
                 if let url = URL(string: plugin.homepage), !plugin.homepage.isEmpty {
                     Link("项目主页", destination: url)
