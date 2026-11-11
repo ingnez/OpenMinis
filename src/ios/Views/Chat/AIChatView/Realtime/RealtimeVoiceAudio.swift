@@ -140,7 +140,7 @@ final class RealtimeVoiceAudio {
         if fake { playedBytes += bytes.count; fakePlayedFrames += Int64(bytes.count / 2); return }
         guard let player else { return }
         playedBytes += bytes.count
-        guard pendingBuffers < 600 else { throw AudioError.start("语音播放积压过多，通话已停止，请重试。") }
+        guard pendingBuffers < 4000 else { throw AudioError.start("语音播放积压过多，通话已停止，请重试。") }
         let frames = bytes.count / 2
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
               let samples = buffer.floatChannelData?[0] else { return }
