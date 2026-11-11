@@ -108,7 +108,7 @@ struct CloudBot: Identifiable, Hashable {
         memoryCount = d["memory_count"] as? Int ?? 0
         latestSessionId = d["latest_session_id"] as? String
         let last = d["last_message"] as? [String: Any]
-        lastPreview = last?["preview"] as? String ?? ""
+        lastPreview = CloudPreviewText.plain(last?["preview"] as? String ?? "")
         lastRole = last?["role"] as? String ?? ""
         lastAt = (last?["at"] as? NSNumber)?.doubleValue ?? 0
         runningTasks = d["running_tasks"] as? Int ?? 0

@@ -31,6 +31,9 @@ struct CloudHomeHeaderRulesTests {
         check("干活时眨眼更勤", R.blinkWait(working: true).upperBound < R.blinkWait(working: false).lowerBound)
         check("两种模式的标题", HomeMode.local.title == "本地模式" && HomeMode.bots.title == "云端模式")
         check("模式存储值", HomeMode.from("bots") == .bots && HomeMode.from("local") == .local && HomeMode.from("") == .local)
+        check("预览去掉引用和加粗", CloudPreviewText.plain("> 这是**结论：**引用里的中文加粗\n\n正文第二段。") == "这是结论：引用里的中文加粗 正文第二段。")
+        check("预览去掉标题和代码", CloudPreviewText.plain("## 标题\n用 `ls` 看") == "标题 用 ls 看")
+        check("普通文字不变", CloudPreviewText.plain("收到：你好") == "收到：你好")
         if failed > 0 { exit(1) }
         print("全部通过")
     }

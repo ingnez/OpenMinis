@@ -76,3 +76,22 @@ enum CloudHomeHeaderRules {
     /// 顶部大头像的表情：出错皱眉，在干活时眨眼频率加快（返回下一次眨眼前等待的秒数范围）
     static func blinkWait(working: Bool) -> ClosedRange<Double> { working ? 0.45...1.1 : 1.2...3.2 }
 }
+
+/// 首页列表 / 小组件的最后一条预览：去掉 Markdown 记号（引用「> 」、标题「#」、加粗 / 斜体星号、行内代码反引号），
+/// 以前列表里直接露出「> 这是**结论：**…」（11-11 E2E 截图）
+enum CloudPreviewText {
+    static func plain(_ s: String) -> String {
+        var lines: [String] = []
+        for raw in s.split(separator: "\n", omittingEmptySubsequences: true) {
+            var line = raw.trimmingCharacters(in: .whitespaces)
+            while line.hasPrefix(">") { line = String(line.dropFirst()).trimmingCharacters(in: .whitespaces) }
+            while line.hasPrefix("#") { line = String(line.dropFirst()) }
+            if line.hasPrefix("- ") || line.hasPrefix("* ") { line = String(line.dropFirst(2)) }
+            line = line.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "__", with: "")
+                .replacingOccurrences(of: "`", with: "")
+            line = line.trimmingCharacters(in: .whitespaces)
+            if !line.isEmpty { lines.append(line) }
+        }
+        return lines.joined(separator: " ")
+    }
+}
