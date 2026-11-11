@@ -114,7 +114,19 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(CloudReplyRow.dispatchPhrase(title: "  ") == "派单给后台", "空标题")
         check(CloudReplyRow.visible([done], finishedAt: ["c": now.addingTimeInterval(-10)], now: now).isEmpty, "结束超过停留时间就收起")
 
-        print("PASS：回复方式解析、状态行文字、预计剩余只用真实数据、提示音只响一次、状态行选任务、语音播报节流、首字时间、多任务胶囊")
+        if let n = CloudReplyFrontAction.note(tool: "task_message", args: ["text": "按用户补充调整：改成10页"]) {
+            check(n.action == .steer && n.line.contains("改成10页"), "转给后台应带原话：\(n.line)")
+        } else { check(false, "task_message 应有决定") }
+        if let n = CloudReplyFrontAction.note(tool: "spawn_task", args: ["title": "查天气"]) {
+            check(n.action == .new && n.line.contains("查天气"), n.line)
+        } else { check(false, "spawn 应有决定") }
+        if let n = CloudReplyFrontAction.note(tool: "task_stop", args: [:]) {
+            check(n.action == .cancel, n.line)
+        } else { check(false, "stop 应有决定") }
+        check(CloudReplyFrontAction.note(tool: "shell_execute", args: ["command": "ls"]) == nil, "普通工具不是前台决定")
+
+        print("PASS：回复方式解析、状态行文字、预计剩余只用真实数据、提示音只响一次、状态行选任务、语音播报节流、首字时间、多任务胶囊、前台插话决定")
+
 
     }
 }

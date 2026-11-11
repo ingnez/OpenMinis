@@ -287,3 +287,26 @@ struct CloudReplyLatency {
         firstTextMs = max(0, Int((d.timeIntervalSince(s) * 1000).rounded()))
     }
 }
+
+
+/// 秒回前台对插话的决定：转给正在跑的后台 / 另派一个 / 停下 / 直接回答。
+enum CloudReplyFrontAction: String, Equatable {
+    case steer, new, cancel, answer
+
+    /// 根据工具调用生成进度条上要显示的一句决定。
+    static func note(tool: String, args: [String: Any]) -> (action: CloudReplyFrontAction, line: String)? {
+        switch tool {
+        case "task_message":
+            let t = (args["text"] as? String) ?? (args["message"] as? String) ?? ""
+            let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (.steer, trimmed.isEmpty ? "按你的补充改正在做的任务" : "转给后台：\(trimmed)")
+        case "spawn_task":
+            let t = (args["title"] as? String) ?? (args["goal"] as? String) ?? "新任务"
+            return (.new, "另派后台：\(t)")
+        case "task_stop":
+            return (.cancel, "停下当前任务")
+        default:
+            return nil
+        }
+    }
+}

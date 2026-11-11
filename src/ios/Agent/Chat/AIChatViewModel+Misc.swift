@@ -99,8 +99,9 @@ extension AIChatViewModel {
                                   pastePlan: pastePlanned.plan)
         prompt.deferUntilIdle = deferUntilIdle
         promptQueue.append(prompt)
-        // Show in chat immediately with queued styling
-        let chatMsg = ChatMessage(role: .user, content: text, isQueued: true)
+        // Show in chat immediately with queued styling（秒回插话不当成排队灰泡，先出勾）
+        let chatMsg = ChatMessage(role: .user, content: text, isQueued: !isInstantFrontTurn)
+        if isInstantFrontTurn { chatMsg.sendTick = .sent }
         chatMsg.queuedPromptId = prompt.id
         chatMsg.inputAttachments = pendingAttachments
         chatMsg.attachments = pastePlanned.metas

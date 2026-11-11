@@ -16,12 +16,14 @@ struct CloudReplyLiveBar: View {
             EmptyView()
         } else if items.count == 1, let w = items.first {
             CloudReplyStatusRow(worker: w, count: 1, fetchedAt: status.fetchedAt, theme: theme,
+                                decision: status.lastDecision,
                                 onExpand: { status.expanded = w }, onStop: { status.stop(w) },
                                 onInterject: { status.interjecting = w })
         } else {
             CloudReplyCapsuleStrip(workers: shown(items), selectedId: selectedBinding(items),
                                    overflow: CloudReplyRow.overflowCount(items.count),
                                    fetchedAt: status.fetchedAt, theme: theme,
+                                   decision: status.lastDecision,
                                    onExpand: { status.expanded = $0 },
                                    onStop: { status.stop($0) },
                                    onInterject: { status.interjecting = $0 })
@@ -55,6 +57,7 @@ struct CloudReplyCapsuleStrip: View {
     let overflow: Int
     let fetchedAt: Date
     let theme: CloudBotChatTheme
+    var decision: String? = nil
     var onExpand: (CloudReplyWorker) -> Void
     var onStop: (CloudReplyWorker) -> Void
     var onInterject: (CloudReplyWorker) -> Void
@@ -67,7 +70,7 @@ struct CloudReplyCapsuleStrip: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 if let w = selected {
-                    CloudReplyExpandedCapsule(worker: w, fetchedAt: fetchedAt, theme: theme)
+                    CloudReplyExpandedCapsule(worker: w, fetchedAt: fetchedAt, theme: theme, decision: decision)
                         .accessibilityIdentifier("replyCapsuleExpanded")
                         .onTapGesture { onExpand(w) }
                         .onLongPressGesture(minimumDuration: 0.5) { CloudHaptics.tap(); menu = w }
@@ -122,6 +125,7 @@ struct CloudReplyExpandedCapsule: View {
     let worker: CloudReplyWorker
     let fetchedAt: Date
     let theme: CloudBotChatTheme
+    var decision: String? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -134,6 +138,13 @@ struct CloudReplyExpandedCapsule: View {
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(worker.needsDecision ? Color.orange : Color.primary)
                     .lineLimit(1)
+                if let decision, !decision.isEmpty {
+                    Text(decision)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .accessibilityIdentifier("replyFrontDecision")
+                }
                 if CloudE2E.pauseIdleAnimations {
                     meta(sinceFetch: 0)
                 } else {
@@ -228,6 +239,7 @@ struct CloudReplyProgressRing: View {
 struct CloudReplyProgressSheet<Detail: View>: View {
     let worker: CloudReplyWorker
     var fetchedAt: Date = Date()
+    var decision: String? = nil
     var onStop: () -> Void
     var onInterject: () -> Void
     @ViewBuilder var detail: () -> Detail
@@ -250,6 +262,14 @@ struct CloudReplyProgressSheet<Detail: View>: View {
                     Text(CloudReplyText.phrase(worker))
                         .font(.body.weight(.medium))
                         .foregroundStyle(worker.needsDecision ? Color.orange : Color.primary)
+                }
+                if let decision, !decision.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("前台决定").font(.caption).foregroundStyle(.secondary)
+                        Text(decision)
+                            .font(.body.weight(.medium))
+                            .accessibilityIdentifier("replyFrontDecision")
+                    }
                 }
                 Spacer()
                 if worker.active {

@@ -74,13 +74,22 @@ extension AIChatViewModel {
         #else
         logger.info("🔑DRAFT [vm=\(self.vmInstanceId)] send() text=\(text.count)ch attachments=\(pendingAttachments.count) isProcessing=\(self.isProcessing) sessionId=\(self.sessionId ?? "nil") draftId=\(self.draftId ?? "nil")")
         #endif
-        guard !text.isEmpty || !pendingAttachments.isEmpty, !isProcessing else {
+        guard !text.isEmpty || !pendingAttachments.isEmpty, !isProcessing || isInstantFrontTurn else {
             logger.warning("🔑DRAFT [vm=\(self.vmInstanceId)] send() GUARD FAILED — text.isEmpty=\(text.isEmpty) attachments.isEmpty=\(pendingAttachments.isEmpty) isProcessing=\(self.isProcessing)")
             return
         }
         if isInstantFrontTurn {
             replyLatency.sent()
             NotificationCenter.default.post(name: CloudReplyService.kick, object: nil)
+        }
+        // 秒回插话：正在跑的这一轮不挡住发送。气泡立刻上屏，消息进队列并打断前台，由前台理解后再决定怎么做。
+        if isInstantFrontTurn, isProcessing {
+            enqueuePrompt(deferUntilIdle: false, overrideText: usingComposer ? nil : text)
+            if let last = messages.last(where: { $0.role == .user }) {
+                last.sendTick = last.sendTick ?? .sending
+                last.isQueued = false
+            }
+            return
         }
 
         // Don't stop TTS here — let the previous reply finish playing. The stream
@@ -235,6 +244,7 @@ extension AIChatViewModel {
         let pastePlanned = planPastedCards(for: text)
         let displayText = text.isEmpty && pendingAttachments.isEmpty ? "" : text
         let userMsg = ChatMessage(role: .user, content: displayText)
+        if isInstantFrontTurn { userMsg.sendTick = .sending }
         userMsg.awaitingHistoryEntry = true  // [T-edit-anchor-link] cleared when the entry lands
         userMsg.attachments = pastePlanned.metas
         // [T-ios-user-attach-two-phase-birth] Attach the user's OWN selection before
@@ -267,6 +277,7 @@ extension AIChatViewModel {
         scrollToBottomSignal.send()
 
         isProcessing = true
+        if isInstantFrontTurn { userMsg.sendTick = .sent }
         errorMessage = nil
         logger.info("🔄SESSION [vm=\(self.vmInstanceId)] send START session=\(self.sessionId ?? "nil")")
 

@@ -51,7 +51,8 @@ final class ReplyModeUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["replySpokenLine"].waitForExistence(timeout: 10), "通话中没有进度播报")
         shot(app, "reply-02a-后台状态行")
         send(app, "插话：只要上海的")
-        XCTAssertTrue(waitText(app, contains: "收到插话，马上转给后台", timeout: 20), "插话没被前台马上答复")
+        XCTAssertTrue(waitText(app, contains: "你想", timeout: 20) && waitText(app, contains: "上海", timeout: 2) && waitText(app, contains: "我让后台", timeout: 2), "插话没被前台按原意马上答复")
+        XCTAssertFalse(waitText(app, contains: "收到插话，马上转给后台", timeout: 1), "前台不该用套话答复插话")
         XCTAssertTrue(row.exists, "插话时后台任务不该结束")
         let button = app.buttons["composerVoiceButton"]
         XCTAssertFalse(button.label.contains("停止"), "输入框按钮变成了停止键")
@@ -179,6 +180,41 @@ final class ReplyModeUITests: XCTestCase {
         shot(app, "reply-06-两个胶囊")
     }
 
+    /// 后台干活时连发三条：每条气泡立刻出现，前台按原意一句话答复并决定转给后台，后台收到改写后的要求。
+    func testReply_burstInterject() throws {
+        let app = launch(mode: "instant")
+        openBot(app)
+        send(app, "慢活 查一下资料")
+        XCTAssertTrue(waitText(app, contains: "后台去查", timeout: 25), "前台没先派活")
+        XCTAssertTrue(app.descendants(matching: .any)["replyStatusRow"].waitForExistence(timeout: 20)
+                      || app.descendants(matching: .any)["replyCapsuleStrip"].waitForExistence(timeout: 2), "后台任务没出现")
+        let bursts = ["改成10页", "只要上海的", "先做大纲"]
+        for text in bursts {
+            let field = app.descendants(matching: .any)["botComposerField"]
+            field.tap()
+            field.typeText(text)
+            let button = app.buttons["composerVoiceButton"]
+            XCTAssertTrue(button.waitForExistence(timeout: 5))
+            let t0 = Date()
+            button.tap()
+            XCTAssertTrue(waitText(app, contains: text, timeout: 0.5), "「\(text)」气泡没有在 0.5 秒内出现（\(Date().timeIntervalSince(t0))s）")
+        }
+        for hint in ["10页", "上海", "大纲"] {
+            XCTAssertTrue(waitText(app, contains: "你想", timeout: 25) && waitText(app, contains: hint, timeout: 8), "前台答复没有体现「\(hint)」")
+        }
+        XCTAssertFalse((app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "收到，已经告诉")).firstMatch.exists), "前台用了套话")
+        XCTAssertTrue(poll(20) {
+            app.descendants(matching: .any)["replyFrontDecision"].exists
+                || (app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "转给后台")).firstMatch.exists)
+        }, "胶囊或进度里没有前台决定")
+        XCTAssertTrue(poll(90) {
+            let reqs = requests(model: "e2e-back-model").joined(separator: "\n")
+            return bursts.allSatisfy { reqs.contains("按用户补充调整：" + $0) || reqs.contains($0) }
+        }, "后台没收到改写后的要求：\(requests(model: "e2e-back-model"))")
+        shot(app, "reply-07-连发插话")
+    }
+
+
     /// 详细模式：和以前一样，主模型直接干活、步骤条显示步骤，没有后台状态行
     func testReply_verboseModeUnchanged() throws {
         let app = launch(mode: "verbose")
@@ -226,7 +262,8 @@ final class ReplyModeUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["replySpokenLine"].waitForExistence(timeout: 10), "本地没有进度播报")
         shot(app, "local-reply-02a-后台状态行")
         sendLocal(app, "插话：只要上海的")
-        XCTAssertTrue(waitText(app, contains: "收到插话，马上转给后台", timeout: 20), "本地插话没被前台马上答复")
+        XCTAssertTrue(waitText(app, contains: "你想", timeout: 20) && waitText(app, contains: "上海", timeout: 2) && waitText(app, contains: "我让后台", timeout: 2), "本地插话没被前台按原意马上答复")
+        XCTAssertFalse(waitText(app, contains: "收到插话，马上转给后台", timeout: 1), "本地前台不该用套话答复插话")
         let send = localSendButton(app)
         XCTAssertFalse(send.label.contains("停止"), "本地发送键变成了停止键")
         shot(app, "local-reply-02b-插话秒回")
@@ -341,6 +378,40 @@ final class ReplyModeUITests: XCTestCase {
         }, "本地点另一颗胶囊没有展开：expanded=\(app.descendants(matching: .any)["replyCapsuleExpanded"].label)")
         shot(app, "local-reply-06-两个胶囊")
     }
+
+    /// 本地：后台干活时连发三条，每条立刻上屏，前台按原意答复并把改写要求交给后台。
+    func testLocalReply_burstInterject() throws {
+        let app = launchLocal(mode: "instant")
+        openLocalComposer(app)
+        sendLocal(app, "慢活 查一下资料")
+        XCTAssertTrue(waitText(app, contains: "后台去查", timeout: 25), "本地前台没先派活")
+        XCTAssertTrue(app.descendants(matching: .any)["replyStatusRow"].waitForExistence(timeout: 25)
+                      || app.descendants(matching: .any)["replyCapsuleStrip"].waitForExistence(timeout: 2), "本地后台任务没出现")
+        let bursts = ["改成10页", "只要上海的", "先做大纲"]
+        for text in bursts {
+            let field = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
+            field.tap()
+            field.typeText(text)
+            let button = localSendButton(app)
+            XCTAssertTrue(button.waitForExistence(timeout: 5))
+            let t0 = Date()
+            button.tap()
+            XCTAssertTrue(waitText(app, contains: text, timeout: 0.5), "本地「\(text)」气泡没有在 0.5 秒内出现（\(Date().timeIntervalSince(t0))s）")
+        }
+        for hint in ["10页", "上海", "大纲"] {
+            XCTAssertTrue(waitText(app, contains: "你想", timeout: 25) && waitText(app, contains: hint, timeout: 8), "本地前台答复没有体现「\(hint)」")
+        }
+        XCTAssertTrue(poll(20) {
+            app.descendants(matching: .any)["replyFrontDecision"].exists
+                || (app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "转给后台")).firstMatch.exists)
+        }, "本地胶囊或进度里没有前台决定")
+        XCTAssertTrue(poll(90) {
+            let reqs = requests(model: "e2e-local-back-model").joined(separator: "\n")
+            return bursts.allSatisfy { reqs.contains("按用户补充调整：" + $0) || reqs.contains($0) }
+        }, "本地后台没收到改写后的要求：\(requests(model: "e2e-local-back-model"))")
+        shot(app, "local-reply-07-连发插话")
+    }
+
 
     /// 本地详细模式：主模型直接回话，没有后台状态行，也不叫前台模型
     func testLocalReply_verboseModeUnchanged() throws {

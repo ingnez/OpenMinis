@@ -47,6 +47,12 @@ struct AttachmentMeta: Identifiable, Equatable {
     }
 }
 
+
+/// 用户气泡角上的发送状态：先出泡再等送达。
+enum MessageSendTick: String, Equatable {
+    case sending, sent
+}
+
 final class ChatMessage: Identifiable, ObservableObject {
     let id = UUID()
     let role: ChatMessageRole
@@ -68,6 +74,10 @@ final class ChatMessage: Identifiable, ObservableObject {
     @Published var isAwaitingModelResponse = false
     /// True when this message is queued but not yet injected into the agent loop.
     @Published var isQueued = false
+    /// 秒回乐观发送：先上屏再等送达。nil = 普通消息（不是这次乐观发送）。
+    @Published var sendTick: MessageSendTick?
+    /// 后台任务已经收下这条插话（按新要求改了）。
+    @Published var adoptedMark = false
     /// True if this message is from the compacted history zone (read-only, no actions).
     @Published var isCompactedHistory = false
     /// True when this compact divider is still loading (LLM generating summary).

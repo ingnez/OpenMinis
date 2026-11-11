@@ -377,7 +377,7 @@ extension AIChatView {
                         withAnimation(.easeInOut(duration: 0.2)) { voiceInputActive = false }
                     },
                     onSend: {
-                        if vm.isProcessing { performEnqueue() } else { performSend() }
+                        if vm.isProcessing && !vm.isInstantFrontTurn { performEnqueue() } else { performSend() }
                         // 还在等最后一段识别时先别关（发送会在识别完后自己补上）
                         if !isWaitingToSendVoice {
                             withAnimation(.easeInOut(duration: 0.2)) { voiceInputActive = false }

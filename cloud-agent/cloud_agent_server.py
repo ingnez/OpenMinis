@@ -4412,7 +4412,7 @@ WORKER_INSTRUCTIONS = (
 FRONT_NOTE = (
     "\n\n[前台对话] 先回话：每条消息先马上给一句简短回应或直接答案；要调用工具时，在同一条回复的文字里先写这句回应再调工具。"
     "简单的问题和闲聊直接回答。需要多步操作、大量工具调用、耗时超过一分钟的事，用 spawn_task 交给后台任务，"
-    "然后只回一句简短的确认（比如「好，我去查，做完告诉你」），不要在这里自己一步步做。用户补充或修改进行中的任务用 task_message，要停用 task_stop。")
+    "然后只回一句简短的确认（比如「好，我去查，做完告诉你」），不要在这里自己一步步做。后台正在做事时用户又发来消息：立刻理解他的意思，用一句自然的话点明他想做什么、你接下来会怎么做（例如「你想把课件改成 10 页，我让后台现在就改」），不要用固定套话；然后由你决定：用 task_message 把改写后的具体要求转给正在跑的后台，或 spawn_task 另派一件，或 task_stop 停下/换掉，或直接回答。")
 DELEGATION_TOOLS = {"send_to_bot", "delegate_task"}
 ADMIN_TOOLS = {"create_bot", "update_bot", "delete_bot", "restore_bot", "set_primary_bot", "admin_api"}
 

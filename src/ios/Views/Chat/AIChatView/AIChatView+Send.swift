@@ -35,7 +35,7 @@ extension AIChatView {
     }
 
     var canEnqueue: Bool {
-        vm.isProcessing && (!vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || voiceOwesText)
+        !vm.isInstantFrontTurn && vm.isProcessing && (!vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || voiceOwesText)
     }
 
     /// [T-voice-send-waits-for-asr] Voice mode has captured speech that is not
@@ -94,7 +94,7 @@ extension AIChatView {
         }
         let hasText = !vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasReadyAttachment = vm.attachments.contains { $0.loadState == .ready }
-        if vm.isProcessing && hasText {
+        if vm.isProcessing && hasText && !vm.isInstantFrontTurn {
             performEnqueue(afterVoice: true)
         } else if vm.isReady && !vm.hasLoadingAttachments && (hasText || hasReadyAttachment) {
             performSend(afterVoice: true)
@@ -118,7 +118,7 @@ extension AIChatView {
         if !afterVoice, deferSendUntilVoiceFinished() { return }
         // Dismiss the software keyboard on enqueue. With a hardware keyboard,
         // keep focus so the user can continue typing the next candidate.
-        if GCKeyboard.coalesced == nil {
+        if GCKeyboard.coalesced == nil, !vm.isInstantFrontTurn {
             inputFocused = false
             UIApplication.shared.sendAction(
                 #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
@@ -154,7 +154,7 @@ extension AIChatView {
         // next message. With only the software keyboard, clear focus and
         // dismiss it so the @FocusState binding stays in sync.
         let hasHardwareKeyboard = GCKeyboard.coalesced != nil
-        if !hasHardwareKeyboard {
+        if !hasHardwareKeyboard, !vm.isInstantFrontTurn {
             inputFocused = false
             UIApplication.shared.sendAction(
                 #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)

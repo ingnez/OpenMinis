@@ -270,7 +270,7 @@ struct LocalReplyChatChrome: ViewModifier {
             .environment(\.cloudReplyInstant, instant)
             .animation(CloudE2E.pauseIdleAnimations ? nil : .spring(response: 0.4, dampingFraction: 0.85), value: status.current?.id)
             .sheet(item: $status.expanded) { w in
-                CloudReplyProgressSheet(worker: w, fetchedAt: status.fetchedAt, onStop: { status.stop(w) }, onInterject: { status.interjecting = w }) {
+                CloudReplyProgressSheet(worker: w, fetchedAt: status.fetchedAt, decision: status.lastDecision, onStop: { status.stop(w) }, onInterject: { status.interjecting = w }) {
                     if let cid = LocalReplyHub.childSessionId(for: w.id) {
                         HelperTranscriptPage(target: HelperSheetTarget(id: cid, title: w.title))
                             .helperTranscriptSheetStyle()

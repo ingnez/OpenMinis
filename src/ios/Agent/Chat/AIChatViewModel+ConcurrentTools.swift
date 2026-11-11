@@ -1044,6 +1044,12 @@ extension AIChatViewModel {
                 toolOutput = statusResult.output
                 toolSuccess = statusResult.success
             }
+            if let note = CloudReplyFrontAction.note(tool: tu.name, args: toolArgs) {
+                replyStatus.noteDecision(note.line, action: note.action.rawValue)
+            }
+            if tu.name == "task_message", toolSuccess {
+                messages.last(where: { $0.role == .user })?.adoptedMark = true
+            }
 
         case SubAgentDefinition.toolName:
             // [T-agents-debug-only] A refusal in the sub-agent result dialect,

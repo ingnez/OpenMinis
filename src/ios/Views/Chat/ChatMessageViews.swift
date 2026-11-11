@@ -459,6 +459,9 @@ struct ChatMessageRow: View {
                             }
                         }
                     }
+                    if message.sendTick != nil || message.adoptedMark {
+                        MessageSendStatusRow(tick: message.sendTick, adopted: message.adoptedMark)
+                    }
                 }
             }
             .modifier(MinisOpenURLHandler())

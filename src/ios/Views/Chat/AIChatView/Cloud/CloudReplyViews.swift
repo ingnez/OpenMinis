@@ -61,6 +61,14 @@ final class CloudReplyStatusModel: ObservableObject {
     @Published var expanded: CloudReplyWorker?
     /// 长按状态行：给这个后台任务补充要求
     @Published var interjecting: CloudReplyWorker?
+    /// 前台对最近一条插话的决定（转给后台 / 另派 / 停下 / 直接回答），显示在胶囊和进度页。
+    @Published private(set) var lastDecision: String?
+    @Published private(set) var lastAction: String?
+
+    func noteDecision(_ text: String, action: String? = nil) {
+        lastDecision = text
+        if let action { lastAction = action }
+    }
 
     private var tracker = CloudReplyTracker()
     private var loop: Task<Void, Never>?
@@ -245,6 +253,7 @@ struct CloudReplyStatusRow: View {
     let count: Int
     let fetchedAt: Date
     let theme: CloudBotChatTheme
+    var decision: String? = nil
     var onExpand: () -> Void
     var onStop: () -> Void
     var onInterject: () -> Void
@@ -336,6 +345,13 @@ struct CloudReplyStatusRow: View {
                                                      sinceFetch: sinceFetch, count: count)
                                : (worker.status == "completed" ? "做完了，结果在上面" : "已结束"))
                 .font(.caption2).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+            if let decision, !decision.isEmpty {
+                Text(decision)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .accessibilityIdentifier("replyFrontDecision")
+            }
         }
     }
 }
@@ -608,7 +624,7 @@ struct CloudReplyChatChrome: ViewModifier {
             .environment(\.cloudReplyInstant, instant)
             .animation(CloudE2E.pauseIdleAnimations ? nil : .spring(response: 0.4, dampingFraction: 0.85), value: status.current?.id)
             .sheet(item: $status.expanded) { w in
-                CloudReplyProgressSheet(worker: w, fetchedAt: status.fetchedAt, onStop: { status.stop(w) }, onInterject: { status.interjecting = w }) {
+                CloudReplyProgressSheet(worker: w, fetchedAt: status.fetchedAt, decision: status.lastDecision, onStop: { status.stop(w) }, onInterject: { status.interjecting = w }) {
                     CloudWorkerTimelineView(workerId: w.id, title: w.title)
                 }
             }

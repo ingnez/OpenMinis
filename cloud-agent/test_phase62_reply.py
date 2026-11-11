@@ -126,8 +126,10 @@ class ReplyModeTests(CloudServerTestCase):
             if fresh_tools(d):
                 return {"role": "assistant", "content": ""}
             wid = running_worker(d)
-            if "插话" in text and wid:
-                return stream_then_tool("收到插话，马上转给后台。", "f2", "task_message", {"id": wid, "text": text})
+            if "查一下" not in text and wid:
+                short = (text or "这个要求")[:28]
+                line = f"你想{short}，我让后台现在就改。"
+                return stream_then_tool(line, "f2", "task_message", {"id": wid, "text": "按用户补充调整：" + text})
             if "查一下" in text:
                 return stream_then_tool("好，我让后台去查，做完告诉你。", "f1", "spawn_task",
                                         {"goal": text, "context": "假数据", "title": "查资料"})
@@ -233,7 +235,10 @@ class ReplyModeTests(CloudServerTestCase):
         self.assertEqual(task["status"], "completed")
         self.assertLess(time.time() - t0, 5, "后台在忙时前台没有马上回话")
         msgs = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
-        self.assertIn("收到插话，马上转给后台", json.dumps(msgs, ensure_ascii=False))
+        blob = json.dumps(msgs, ensure_ascii=False)
+        self.assertIn("你想", blob)
+        self.assertIn("我让后台", blob)
+        self.assertNotIn("收到插话，马上转给后台", blob)
         self.assertEqual(self._worker(w["worker_id"])["status"], "running")
         self.gate.set()
         done = self._wait(lambda: (lambda x: x if x["status"] == "completed" else None)(self._worker(w["worker_id"])),

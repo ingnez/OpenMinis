@@ -93,6 +93,31 @@ def _stream_then_tool(text, call_id, name, args, reasoning=None):
     return {"_chunks": chunks, "_delay": 0.02}
 
 
+
+def _front_intent(text):
+    """把用户插话理解成一句自然回应 + 结构化动作（steer/new/cancel/answer）。回应必须反映原话，不能是套话。"""
+    t = (text or "").strip() or "这个要求"
+    short = t[:28]
+    if any(k in t for k in ("停掉", "取消任务", "不要做了", "停下当前")):
+        return f"你想停下当前任务，我现在就停。", "cancel", None
+    if any(k in t for k in ("另外再", "同时再查", "再开一个", "新任务")):
+        return f"你想再开一件：{short}，我另派一个后台去做。", "new", t
+    if t.endswith("？") or t.endswith("?") or t.startswith("问一下"):
+        return f"这个我直接说：{short}", "answer", None
+    return f"你想{short}，我让后台现在就改。", "steer", "按用户补充调整：" + t
+
+
+def _front_interject_response(text, wid, tool_id, stream=_stream_then_tool):
+    line, action, instruction = _front_intent(text)
+    if action == "steer" and wid:
+        return stream(line, tool_id, "task_message", {"id": wid, "text": instruction or text})
+    if action == "new":
+        return stream(line, tool_id, "spawn_task", {"goal": instruction or text, "context": text, "title": "新任务"})
+    if action == "cancel" and wid:
+        return stream(line, tool_id, "task_stop", {"id": wid})
+    return {"_chunks": [line], "_delay": 0.02}
+
+
 def front_script(data):
     """秒回前台：「查一下」→ 先回一句再派后台；后台在跑时「插话」→ 先回再转给后台；其余直接秒回。"""
     import re
@@ -110,12 +135,13 @@ def front_script(data):
             all_user.append(" ".join(p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text"))
         else:
             all_user.append(c or "")
-    heard = "插话" in text or any("插话" in u for u in all_user)
     m = re.search(r"(wk_[a-f0-9]{10})「[^」]*」(进行中|排队中)", blob)
     if not m:
         m = re.search(r"(wk_[a-f0-9]{10}).{0,80}(进行中|排队中)", blob)
-    if heard and m:
-        return _stream_then_tool("收到插话，马上转给后台。", "f2", "task_message", {"id": m.group(1), "text": text or " ".join(all_user)})
+    wid = m.group(1) if m else None
+    # 「查一下」始终派新活（两个胶囊的用例会在已有任务时再派一件）。其余有后台在跑的消息走意图分析。
+    if "查一下" not in text and wid:
+        return _front_interject_response(text or " ".join(all_user), wid, "f2")
     if "查一下" in text:
         title = "慢活" if "慢活" in text else "查资料"
         return _stream_then_tool("好，我让后台去查，做完告诉你。", "f1", "spawn_task",
@@ -140,14 +166,15 @@ def local_front_script(data):
             all_user.append(" ".join(p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text"))
         else:
             all_user.append(c or "")
-    heard = "插话" in text or any("插话" in u for u in all_user)
     m = re.search(r"([0-9a-fA-F-]{8,})「[^」]*」(进行中|排队中)", blob)
     if not m:
         m = re.search(r"([0-9a-fA-F-]{8,}).{0,80}(进行中|排队中)", blob)
     if not m:
         m = re.search(r'"job_id"\s*:\s*"([0-9a-fA-F-]{8,})"', blob)
-    if heard and m:
-        return _stream_then_tool("收到插话，马上转给后台。", "lf2", "task_message", {"id": m.group(1), "text": text or " ".join(all_user)})
+    wid = m.group(1) if m else None
+    if "查一下" not in text and wid:
+        return _front_interject_response(text or " ".join(all_user), wid, "lf2")
+
     if "查一下" in text:
         title = "慢活" if "慢活" in text else "查资料"
         return _stream_then_tool("好，我让后台去查，做完告诉你。", "lf1", "spawn_task",
@@ -166,7 +193,8 @@ def back_script(data):
         return {"role": "assistant", "content": "", "tool_calls": [{"id": f"b{done}", "type": "function", "function": {
             "name": "shell_execute", "arguments": json.dumps({"command": f"sleep {secs}; echo e2e-back-step{done}",
                                                               "tool_title": ["分析工作方案", "查找资料", "整理结果"][done]}, ensure_ascii=False)}}]}
-    heard = any(m.get("role") == "user" and "插话" in str(m.get("content")) for m in msgs)
+    blob = " ".join(str(m.get("content")) for m in msgs if m.get("role") == "user")
+    heard = "插话" in blob or "按用户补充调整：" in blob
     return {"role": "assistant", "content": "后台结论：上海晴（假数据）" + ("（已按插话调整）" if heard else "")}
 
 
