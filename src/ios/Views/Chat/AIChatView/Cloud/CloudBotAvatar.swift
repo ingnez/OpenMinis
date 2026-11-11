@@ -76,14 +76,21 @@ struct CloudBotAvatarSpec: Hashable {
 /// 13 种头像形状（单位方框内绘制后缩放）
 struct CloudBotShape: Shape {
     let kind: Int
+    /// 并集轮廓的采样点数：头像最大 150pt × 3 倍屏 = 450px，720 点时相邻点不到 3px
+    static let outlineSamples = 720
 
     func path(in rect: CGRect) -> Path {
         let s = min(rect.width, rect.height)
         let o = CGPoint(x: rect.midX - s / 2, y: rect.midY - s / 2)
         func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: o.x + x * s, y: o.y + y * s) }
-        func circles(_ list: [(CGFloat, CGFloat, CGFloat)]) -> Path {
+        // 多个圆拼的形状：画成一条并集外轮廓（一个填充、没有重叠的子形状），里面不会有接缝
+        func outline(_ discs: [CloudShapeOutline.Disc]) -> Path {
             var p = Path()
-            for (x, y, r) in list { p.addEllipse(in: CGRect(x: o.x + (x - r) * s, y: o.y + (y - r) * s, width: 2 * r * s, height: 2 * r * s)) }
+            let pts = CloudShapeOutline.union(discs, samples: Self.outlineSamples)
+            guard let first = pts.first else { return p }
+            p.move(to: pt(CGFloat(first.x), CGFloat(first.y)))
+            for q in pts.dropFirst() { p.addLine(to: pt(CGFloat(q.x), CGFloat(q.y))) }
+            p.closeSubpath()
             return p
         }
         func rounded(_ points: [CGPoint], radius: CGFloat) -> Path {
@@ -114,7 +121,7 @@ struct CloudBotShape: Shape {
         }
         switch kind {
         case 1:  // 四叶草
-            return circles([(0.32, 0.36, 0.24), (0.68, 0.36, 0.24), (0.36, 0.66, 0.24), (0.66, 0.66, 0.24), (0.5, 0.5, 0.2)])
+            return outline(CloudShapeOutline.clover)
         case 2:  // 倾斜圆角方
             let r = s * 0.2
             let box = CGRect(x: o.x + s * 0.14, y: o.y + s * 0.14, width: s * 0.72, height: s * 0.72)
@@ -125,18 +132,13 @@ struct CloudBotShape: Shape {
         case 3:  // 四角星
             return star(4, inner: 0.24, rotation: -.pi / 2)
         case 4:  // 蓬松云
-            return circles([(0.5, 0.3, 0.22), (0.28, 0.45, 0.22), (0.72, 0.45, 0.22), (0.38, 0.7, 0.22), (0.64, 0.7, 0.22), (0.5, 0.5, 0.22)])
+            return outline(CloudShapeOutline.cloud)
         case 5:  // 豆子
             var p = Path()
             p.addEllipse(in: CGRect(x: o.x + s * 0.08, y: o.y + s * 0.2, width: s * 0.84, height: s * 0.6))
             return p.applying(CGAffineTransform(translationX: -rect.midX, y: -rect.midY).concatenating(CGAffineTransform(rotationAngle: -.pi / 10)).concatenating(CGAffineTransform(translationX: rect.midX, y: rect.midY)))
         case 6:  // 花
-            var list: [(CGFloat, CGFloat, CGFloat)] = [(0.5, 0.5, 0.26)]
-            for i in 0..<6 {
-                let a = Double(i) * .pi / 3
-                list.append((0.5 + 0.24 * CGFloat(cos(a)), 0.5 + 0.24 * CGFloat(sin(a)), 0.17))
-            }
-            return circles(list)
+            return outline(CloudShapeOutline.flower)
         case 7:  // 水滴
             var p = Path()
             p.move(to: pt(0.5, 0.04))
@@ -170,6 +172,8 @@ struct CloudBotAvatarView: View {
     var eyeOpen: CGFloat = 1
     /// 心情：排队时眯眼专注、等你审批时睁大眼、有新回复时笑眯眯
     var mood: CloudBotMood = .calm
+    /// 渲染测试用：只画身体，检查里面有没有接缝
+    var showsFace = true
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -191,9 +195,11 @@ struct CloudBotAvatarView: View {
 
     private var shapeBody: some View {
         ZStack {
+            // 身体只有一个填充，不描边（描边会把拼接处的弧线也描出来，就是里面那些细缝）。
+            // 深色模式下黑色头像（主 Bot 默认）会融进背景：在外面加一圈淡光，只在形状外侧
             CloudBotShape(kind: spec.shape).fill(spec.fill)
-            // 深色模式下黑色头像（主 Bot 默认）会融进背景：加一圈随外观变化的细描边
-            CloudBotShape(kind: spec.shape).stroke(Color.primary.opacity(colorScheme == .dark ? 0.35 : 0.06), lineWidth: max(1, size * 0.025))
+                .shadow(color: colorScheme == .dark ? Color.white.opacity(0.28) : .clear, radius: max(0.5, size * 0.02))
+            if showsFace {
             HStack(spacing: size * 0.13) {
                 eye
                 eye
@@ -214,6 +220,7 @@ struct CloudBotAvatarView: View {
                 Text("z").font(.system(size: size * 0.22, weight: .heavy, design: .rounded)).foregroundStyle(.white.opacity(0.9))
                     .offset(x: size * 0.3, y: -size * 0.3)
                     .accessibilityHidden(true)
+            }
             }
         }
         .frame(width: size, height: size)

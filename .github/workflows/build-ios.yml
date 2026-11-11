@@ -188,7 +188,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/LocalCallDivider.swift scripts/LocalCallDividerTests.swift -o /tmp/local-call-divider-tests
           /tmp/local-call-divider-tests
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/RealtimeVoiceProtocol.swift scripts/RealtimeCallHealthTests.swift -o /tmp/rt-health-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudShapeOutline.swift scripts/CloudShapeOutlineTests.swift -o /tmp/shape-outline-tests
           /tmp/rt-health-tests
+          /tmp/shape-outline-tests
       - name: Bot 对话分页测试
         run: |
           set -o pipefail
@@ -578,7 +580,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/LocalCallDivider.swift scripts/LocalCallDividerTests.swift -o /tmp/local-call-divider-tests
           /tmp/local-call-divider-tests | tee local-call-divider-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/RealtimeVoiceProtocol.swift scripts/RealtimeCallHealthTests.swift -o /tmp/rt-health-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudShapeOutline.swift scripts/CloudShapeOutlineTests.swift -o /tmp/shape-outline-tests
           /tmp/rt-health-tests | tee rt-health-tests.log
+          /tmp/shape-outline-tests | tee shape-outline-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Images/ImageStackLayout.swift scripts/ImageStackLayoutTests.swift -o /tmp/image-stack-tests
           /tmp/image-stack-tests | tee image-stack-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudVaultModel.swift scripts/CloudVaultModelTests.swift -o /tmp/cloud-vault-model-tests
@@ -944,7 +948,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/LocalCallDivider.swift scripts/LocalCallDividerTests.swift -o /tmp/local-call-divider-tests
           /tmp/local-call-divider-tests | tee local-call-divider-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/RealtimeVoiceProtocol.swift scripts/RealtimeCallHealthTests.swift -o /tmp/rt-health-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudShapeOutline.swift scripts/CloudShapeOutlineTests.swift -o /tmp/shape-outline-tests
           /tmp/rt-health-tests | tee rt-health-tests.log
+          /tmp/shape-outline-tests | tee shape-outline-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Images/ImageStackLayout.swift scripts/ImageStackLayoutTests.swift -o /tmp/image-stack-tests
           /tmp/image-stack-tests | tee image-stack-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudVaultModel.swift scripts/CloudVaultModelTests.swift -o /tmp/cloud-vault-model-tests
