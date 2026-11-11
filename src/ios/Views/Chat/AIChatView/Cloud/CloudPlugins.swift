@@ -241,7 +241,8 @@ struct CloudPluginsView: View {
                     ProgressView()
                         .accessibilityIdentifier("pluginCatalogLoading")
                 }
-                ForEach(catalog.filter { !$0.installed }) { p in
+                // 保持服务端顺序（e2e-echo 在首位）；已安装的仍留在目录里，显示「已安装」而不是「安装」
+                ForEach(catalog) { p in
                     HStack {
                         pluginRow(p)
                         Spacer()

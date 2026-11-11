@@ -114,20 +114,18 @@ final class E2EFlowsUITests: XCTestCase {
         market.tap()
         XCTAssertTrue(app.navigationBars["插件市场"].waitForExistence(timeout: 15) || waitText(app, contains: "插件目录", timeout: 15), "插件市场页没打开")
         // 目录来自 GET /v1/plugins，标题「插件目录」在列表还空时就会出现；先等到真正的条目
-        XCTAssertTrue(waitText(app, contains: "E2E 回声", timeout: 30) || waitText(app, contains: "Fetch", timeout: 5),
+        XCTAssertTrue(waitText(app, contains: "E2E 回声", timeout: 30) || waitText(app, contains: "Fetch", timeout: 5) || waitText(app, contains: "网页抓取", timeout: 5),
                       "插件目录没加载出来")
         let echo = app.descendants(matching: .any)["pluginCatalog-e2e-echo"]
-        let echoName = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "E2E 回声")).firstMatch
-        XCTAssertTrue(scrollTo(app, echo) || scrollTo(app, echoName) || waitText(app, contains: "E2E 回声", timeout: 5),
-                      "插件目录没有 e2e 假插件")
+        XCTAssertTrue(scrollTo(app, echo), "插件目录没有 e2e 假插件")
         let install = app.descendants(matching: .any)["pluginInstall-e2e-echo"]
         XCTAssertTrue(scrollTo(app, install), "插件目录里没有「E2E 回声」的安装按钮")
         install.tap()
         let installed = app.descendants(matching: .any)["pluginInstalled-e2e-echo"]
         XCTAssertTrue(poll(30) { installed.exists }, "安装后没有出现在「已安装」")
-        // 已安装的条目应从「插件目录」消失（安装按钮不再出现）
+        // 已安装的条目留在目录里应显示「已安装」，不能再出现「安装」
         XCTAssertFalse(app.descendants(matching: .any)["pluginInstall-e2e-echo"].exists, "已安装插件仍留在插件目录并显示「安装」")
-        XCTAssertTrue(waitText(app, contains: "安装成功", timeout: 5) || waitText(app, contains: "已经安装", timeout: 2),
+        XCTAssertTrue(waitText(app, contains: "已安装", timeout: 5) || waitText(app, contains: "安装成功", timeout: 5) || waitText(app, contains: "已经安装", timeout: 2),
                       "安装后没有可见的成功/已安装提示")
         shot(app, "07b-插件目录安装")
     }
@@ -722,12 +720,25 @@ final class E2EFlowsUITests: XCTestCase {
     }
 
     private func scrollTo(_ app: XCUIApplication, _ el: XCUIElement) -> Bool {
-        if el.waitForExistence(timeout: 8), el.isHittable { return true }
-        for _ in 0..<8 {
-            app.swipeUp()
+        if el.exists, el.isHittable { return true }
+        // 先滚到顶部再往下找。只 swipeUp 会把目录开头滚出 List 虚拟化窗口。
+        // 从屏幕中下部拖，避免触发 List 的下拉刷新。
+        for _ in 0..<10 {
             if el.exists, el.isHittable { return true }
+            drag(app, from: CGVector(dx: 0.5, dy: 0.35), to: CGVector(dx: 0.5, dy: 0.85))
+        }
+        if el.exists, el.isHittable { return true }
+        for _ in 0..<14 {
+            if el.exists, el.isHittable { return true }
+            drag(app, from: CGVector(dx: 0.5, dy: 0.80), to: CGVector(dx: 0.5, dy: 0.30))
         }
         return el.exists
+    }
+
+    private func drag(_ app: XCUIApplication, from: CGVector, to: CGVector) {
+        let a = app.coordinate(withNormalizedOffset: from)
+        let b = app.coordinate(withNormalizedOffset: to)
+        a.press(forDuration: 0.05, thenDragTo: b)
     }
 
     private struct Probe: Decodable { let images: Int; let text: String }
