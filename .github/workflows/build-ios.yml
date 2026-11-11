@@ -1055,9 +1055,19 @@ jobs:
           DEV=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
           echo "模拟器：$DEV"
           xcrun simctl boot "$DEV" || true
+          # 单元测试目标 MinisTests 在这里会报「Unable to resolve module dependency: 'Minis'」，
+          # 而 -only-testing 也挡不住它被编译，所以临时生成一个只含 MinisUITests 的方案
+          python3 - <<'PY'
+          import re
+          d = "src/ios/Minis.xcodeproj/xcshareddata/xcschemes/"
+          s = open(d + "Minis.xcscheme").read()
+          s2 = re.sub(r"\s*<TestableReference[^>]*>(?:(?!</TestableReference>).)*?BlueprintName = \"MinisTests\"(?:(?!</TestableReference>).)*?</TestableReference>", "", s, flags=re.S)
+          assert s2 != s and "MinisUITests" in s2
+          open(d + "MinisE2E.xcscheme", "w").write(s2)
+          PY
           xcodebuild test \
             -project src/ios/Minis.xcodeproj \
-            -scheme Minis \
+            -scheme MinisE2E \
             -configuration Debug \
             -destination "id=$DEV" \
             -derivedDataPath build \
