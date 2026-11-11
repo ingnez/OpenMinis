@@ -361,7 +361,9 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
       viewReq = requestAnimationFrame(apply);
     };
     om.shot = () => { const c = cvs(); if (!c) { om.send({ type: 'shot', error: 'nocanvas' }); return; } try { om.send({ type: 'shot', data: c.toDataURL('image/png') }); } catch (e) { om.send({ type: 'shot', error: String(e) }); } };
-    let rec = null, chunks = [];
+    let rec = null, chunks = [], recTick = null;
+    // captureStream 只在画布被画时出帧：远端静止（或画面层刚变换完）时整段录屏是空的。录制期间每 100ms 把左上角 1 像素原样画回去，保证有帧
+    const touch = c => { try { const x = c.getContext('2d'); if (x) x.drawImage(c, 0, 0, 1, 1, 0, 0, 1, 1); } catch (e) {} };
     om.rec = on => {
       const c = cvs();
       if (on) {
@@ -374,8 +376,8 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
           const b = new Blob(chunks, { type: (rec && rec.mimeType) || mime || 'video/mp4' });
           const fr = new FileReader(); fr.onload = () => om.send({ type: 'rec', data: fr.result, mime: b.type }); fr.readAsDataURL(b);
         };
-        rec.start(1000); om.send({ type: 'rec', started: true });
-      } else if (rec) { const r = rec; r.stop(); setTimeout(() => { rec = null; }, 0); }
+        rec.start(1000); touch(c); clearInterval(recTick); recTick = setInterval(() => touch(c), 100); om.send({ type: 'rec', started: true });
+      } else if (rec) { const r = rec; clearInterval(recTick); recTick = null; touch(c); r.stop(); setTimeout(() => { rec = null; }, 0); }
     };
     """
 
