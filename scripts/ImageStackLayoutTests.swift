@@ -37,6 +37,21 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
         check(ImageStackLayout.height(count: 2) == ImageStackLayout.height(count: 20), "张数多高度不变")
         check(ImageStackLayout.stackSize(count: 4).width >= ImageStackLayout.cardSize.width + 28, "旋转余量算进宽度")
 
+        // 铺开后点在哪张上（叠放时永远第一张）
+        let box = ImageStackLayout.stackSize(count: 3)
+        check(ImageStackLayout.hitIndex(at: CGPoint(x: box.width / 2, y: box.height / 2), count: 3, fanned: false) == 0, "叠放时点哪都是第一张")
+        let fan3 = ImageStackLayout.cards(count: 3, fanned: true)
+        let cx: CGFloat = box.width / 2
+        let cy: CGFloat = box.height / 2
+        let topCard = fan3.max { $0.zIndex < $1.zIndex }!
+        let topPoint = CGPoint(x: cx + topCard.offset.width, y: cy + topCard.offset.height)
+        check(ImageStackLayout.hitIndex(at: topPoint, count: 3, fanned: true) == topCard.index, "铺开后点最上面那张的中心")
+        let left = fan3.min { $0.offset.width < $1.offset.width }!
+        let half: CGFloat = ImageStackLayout.cardSize.width / 2
+        let leftEdge = CGPoint(x: cx + left.offset.width - half + 4, y: cy + left.offset.height)
+        check(ImageStackLayout.hitIndex(at: leftEdge, count: 3, fanned: true) == left.index, "点最左边露出来的那张")
+        check(ImageStackLayout.hitIndex(at: CGPoint(x: -500, y: -500), count: 3, fanned: true) == 0, "点空白算第一张")
+
         // 看图页页码
         check(ImageViewerIndex.clamp(5, count: 3) == 2 && ImageViewerIndex.clamp(-1, count: 3) == 0 && ImageViewerIndex.clamp(2, count: 0) == 0, "起始页夹在范围内")
         check(!ImageViewerIndex.showsStrip(1) && ImageViewerIndex.showsStrip(2), "两张以上才有缩略图条")
