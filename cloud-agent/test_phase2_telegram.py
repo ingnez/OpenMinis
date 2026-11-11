@@ -133,11 +133,11 @@ class TelegramTests(CloudServerTestCase):
         self.push(OWNER, "执行危险命令")
         card = self.sent_to(OWNER, "需要你的审批")
         buttons = card["reply_markup"]["inline_keyboard"][0]
-        self.assertEqual([b["text"] for b in buttons], ["批准", "拒绝"])
+        self.assertEqual([b["text"] for b in buttons], ["批准一次", "本任务内都批准", "拒绝"])
         self.push(OWNER, "插队消息")
         self.sent_to(OWNER, "上一个任务还在运行")
         self.push(12345, callback=buttons[0]["callback_data"])   # 非本会话的按钮无效
-        self.push(OWNER, callback=buttons[1]["callback_data"])
+        self.push(OWNER, callback=buttons[2]["callback_data"])
         self.sent_to(OWNER, "已拒绝")
         self.sent_to(OWNER, "结果：")
         self.assertIn("answerCallbackQuery", FakeTelegram.calls)
