@@ -14,6 +14,8 @@ final class CloudAvatarImages: ObservableObject {
     static let shared = CloudAvatarImages()
     @Published private(set) var images: [String: UIImage] = [:]     // key = 哈希
     private var loading = Set<String>()
+    /// 本地没有、也没处去取的（没有主人 id）：不在每次重绘都再读一遍盘
+    private var missing = Set<String>()
 
     private static var dir: URL {
         let d = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("BotAvatars", isDirectory: true)
@@ -25,22 +27,25 @@ final class CloudAvatarImages: ObservableObject {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined().prefix(10).description
     }
 
+    /// 视图 body 里调用：只查内存；没有就在后台读盘解码（滚动首页时不在主线程读文件、解 JPEG），再不行才去服务器取
     func image(hash: String, owner: String?) -> UIImage? {
         if let img = images[hash] { return img }
+        guard !loading.contains(hash), !missing.contains(hash) else { return nil }
+        loading.insert(hash)
         let file = Self.dir.appendingPathComponent(hash + ".jpg")
-        if let data = try? Data(contentsOf: file), let img = UIImage(data: data) {
-            DispatchQueue.main.async { self.images[hash] = img }
-            return img
-        }
-        if let owner, !loading.contains(hash) {
-            loading.insert(hash)
-            Task { @MainActor in
-                defer { self.loading.remove(hash) }
-                guard let resp = try? await CloudQuiet.retry(2, { try await CloudConnection.shared.request(method: "GET", path: "/v1/bots/\(owner)/avatar") }),
-                      let b64 = resp["data_base64"] as? String, let data = Data(base64Encoded: b64), let img = UIImage(data: data) else { return }
-                try? data.write(to: file, options: .atomic)
-                self.images[hash] = img
-            }
+        Task { @MainActor in
+            defer { self.loading.remove(hash) }
+            let disk = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+                guard let data = try? Data(contentsOf: file), let img = UIImage(data: data) else { return nil }
+                return img.preparingForDisplay() ?? img
+            }.value
+            if let disk { self.images[hash] = disk; return }
+            guard let owner else { self.missing.insert(hash); return }
+            guard
+                  let resp = try? await CloudQuiet.retry(2, { try await CloudConnection.shared.request(method: "GET", path: "/v1/bots/\(owner)/avatar") }),
+                  let b64 = resp["data_base64"] as? String, let data = Data(base64Encoded: b64), let img = UIImage(data: data) else { return }
+            try? data.write(to: file, options: .atomic)
+            self.images[hash] = img.preparingForDisplay() ?? img
         }
         return nil
     }
@@ -48,6 +53,7 @@ final class CloudAvatarImages: ObservableObject {
     func store(_ data: Data) {
         let h = Self.hash(data)
         try? data.write(to: Self.dir.appendingPathComponent(h + ".jpg"), options: .atomic)
+        missing.remove(h)
         if let img = UIImage(data: data) { images[h] = img }
     }
 
