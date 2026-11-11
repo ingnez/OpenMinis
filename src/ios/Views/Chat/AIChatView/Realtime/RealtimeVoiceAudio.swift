@@ -155,8 +155,11 @@ final class RealtimeVoiceAudio {
         scheduledEnd = startFrame + Int64(frames)
         pendingBuffers += 1
         let epoch = playbackEpoch
-        player.scheduleBuffer(buffer, at: AVAudioTime(sampleTime: startFrame, atRate: 24_000),
-                              options: [], completionCallbackType: .dataPlayedBack) { [weak self] _ in
+        // 按顺序排队（at: nil），不按算出来的采样时刻排：lastRenderTime 落后一个渲染周期、
+        // 播放器重启后时间轴归零、真机上 playerTime 偶尔取不到（当成 0）时，算出来的时刻会落在「过去」，
+        // 排在过去时刻的缓冲可能被整段或部分跳过（疑似真机「计时在走、听不到 Bot」的原因之一，未在真机证实）。
+        // startFrame / scheduledEnd 只用于打断时估算已播帧数，语义不变
+        player.scheduleBuffer(buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, epoch == self.playbackEpoch else { return }
                 self.pendingBuffers = max(0, self.pendingBuffers - 1)
