@@ -284,6 +284,13 @@ final class E2EFlowsUITests: XCTestCase {
         let localGear = app.buttons["localSettingsButton"]
         XCTAssertTrue(localGear.waitForExistence(timeout: 15), "选本地模式后没切到本地首页")
         XCTAssertFalse(gear0.exists, "切到本地后还是 Bot 首页")
+        // 本地首页中间只是标题，不能是能切到 Bot / 云端的下拉（14:41 真机「小猪包 ⌄」）
+        let title = app.descendants(matching: .any)["localHomeTitle"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "本地首页中间没有标题")
+        XCTAssertFalse(title.elementType == .button || title.elementType == .popUpButton, "本地首页中间的标题还是可点的切换器")
+        XCTAssertFalse(app.navigationBars.buttons.matching(NSPredicate(format: "label CONTAINS %@ OR identifier == %@", "切换首页模式", "homeModeSwitcher")).firstMatch.exists)
+        title.tap()
+        XCTAssertFalse(app.buttons["Minis Bot"].waitForExistence(timeout: 2), "点本地首页标题弹出了切到 Bot 的菜单")
         shot(app, "14b-切到本地首页")
         localGear.tap()
         XCTAssertTrue(row.waitForExistence(timeout: 10), "本地设置里没有「模式」")
@@ -429,9 +436,11 @@ final class E2EFlowsUITests: XCTestCase {
         // 步骤条只在运行中（和结束后几秒）显示；42963481185 里等「跑个命令」跑完再找，条已经收起了。
         // 改用 40 秒的慢任务，趁它在跑时点开
         send(app, "慢任务")
-        let live = NSPredicate(format: "label CONTAINS %@", "sleep 40")
-        XCTAssertTrue(poll(60) { app.buttons.matching(live).firstMatch.exists || app.staticTexts.matching(live).firstMatch.exists }, "没有步骤条")
-        let bar = app.buttons.matching(live).firstMatch.exists ? app.buttons.matching(live).firstMatch : app.staticTexts.matching(live).firstMatch
+        // 每次现做一个谓词：NSPredicate 不是 Sendable，同一个实例传给多次 matching 在 Swift 6 下编不过（42971167791）
+        let liveButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "sleep 40")).firstMatch
+        let liveText = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "sleep 40")).firstMatch
+        XCTAssertTrue(poll(60) { liveButton.exists || liveText.exists }, "没有步骤条")
+        let bar = liveButton.exists ? liveButton : liveText
         bar.tap()
         XCTAssertTrue(app.staticTexts["E2E云电脑"].waitForExistence(timeout: 10), "步骤面板标题不是云电脑名字")
         XCTAssertFalse(app.staticTexts["Minis Computer"].exists, "步骤面板标题还是本机「Minis Computer」")
@@ -463,6 +472,45 @@ final class E2EFlowsUITests: XCTestCase {
             let m = app.buttons["Model"]
             return m.exists && !(((m.value as? String) ?? "").contains("No model"))
         }
+    }
+
+    // MARK: - 实时语音（P0-7：14:41 真机胶囊在计时、两边都没声音）
+
+    /// 假实时服务（e2e 栈 18796，OpenAI Realtime 协议）+ 模拟器假收音：
+    /// 必须真的发出 input_audio_buffer.append、收到回复字幕和声音，胶囊才算接通、才开始计时
+    func test21_realtimeCallBothDirections() throws {
+        executionTimeAllowance = 180
+        let before = realtimeProbe()?.appends ?? 0
+        let app = launch(extraEnv: ["OPENMINIS_E2E_REALTIME": "ws://127.0.0.1:18796", "OPENMINIS_E2E_FAKE_MIC": "1"])
+        openBot(app)
+        let voice = app.buttons["composerVoiceButton"]
+        XCTAssertTrue(voice.waitForExistence(timeout: 20), "输入栏没有声波按钮")
+        if app.keyboards.firstMatch.exists { app.swipeDown() }
+        voice.tap()
+        let capsule = app.descendants(matching: .any)["callCapsule"]
+        XCTAssertTrue(capsule.waitForExistence(timeout: 20), "点声波没出现通话胶囊")
+        shot(app, "21a-通话胶囊")
+        XCTAssertTrue(poll(30) { (self.realtimeProbe()?.appends ?? 0) >= before + 10 }, "假实时服务没收到麦克风音频（input_audio_buffer.append）")
+        XCTAssertTrue(poll(20) { (capsule.value as? String ?? "").hasPrefix("已接通") }, "服务端确认、收音也在送，胶囊却没显示已接通：\(capsule.value as? String ?? "")")
+        XCTAssertTrue(waitText(app, contains: "e2e-realtime-ok", timeout: 20), "回复字幕没出现在对话里")
+        XCTAssertTrue(poll(15) {
+            let v = capsule.value as? String ?? ""
+            guard let r = v.range(of: "收到声音 "), let kb = Int(v[r.upperBound...].prefix { $0.isNumber }) else { return false }
+            return kb > 0
+        }, "没收到 / 没交给播放器 Bot 的声音：\(capsule.value as? String ?? "")")
+        let problem = app.descendants(matching: .any)["callCapsuleStatus"]
+        if problem.exists { XCTAssertFalse(problem.label.contains("没"), "胶囊上报了问题：\(problem.label)") }
+        shot(app, "21b-两边都通")
+        let hang = app.buttons["挂断"]
+        XCTAssertTrue(hang.waitForExistence(timeout: 5))
+        hang.tap()
+        XCTAssertTrue(waitGone(capsule, timeout: 10), "挂断后胶囊没收起")
+    }
+
+    private struct RealtimeProbe: Decodable { let appends: Int; let replies: Int; let session_updates: Int }
+    private func realtimeProbe() -> RealtimeProbe? {
+        guard let url = URL(string: "http://127.0.0.1:18799/_e2e/realtime"), let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(RealtimeProbe.self, from: data)
     }
 
     private func launch(attach: Int = 0, homeMode: String = "bots",
