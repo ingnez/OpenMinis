@@ -6820,6 +6820,7 @@ struct LoadingDotsView: View {
                     .scaleEffect(animating ? 1.0 : 0.55)
                     .opacity(animating ? 0.95 : 0.3)
                     .animation(
+                        CloudE2E.pauseIdleAnimations ? .default :
                         .easeInOut(duration: 0.5)
                             .repeatForever(autoreverses: true)
                             .delay(Double(i) * 0.16),
@@ -6827,7 +6828,7 @@ struct LoadingDotsView: View {
                     )
             }
         }
-        .onAppear { animating = true }
+        .onAppear { if !CloudE2E.pauseIdleAnimations { animating = true } }
     }
 }
 

@@ -394,9 +394,13 @@ final class ReplyModeUITests: XCTestCase {
     }
 
     private func dismissKeyboardIntro(_ app: XCUIApplication) {
-        for label in ["Continue", "继续"] {
-            let b = app.buttons[label]
-            if b.exists && b.isHittable { b.tap(); return }
+        // 只点系统键盘 / 弹窗上的 Continue。对话里的「继续」不能点，否则会当成一条消息发出去（43027845469 「秒回：继续」）。
+        let springs = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        for root in [app.keyboards, app.alerts, springs.alerts] {
+            for label in ["Continue", "继续"] {
+                let b = root.buttons[label]
+                if b.waitForExistence(timeout: 0.3), b.isHittable { b.tap(); return }
+            }
         }
     }
 

@@ -575,8 +575,8 @@ struct CloudReplyComposerSlot: View {
         #if DEBUG
         if CloudE2E.token != nil, let ms = firstTextMs {
             // 只给模拟器 E2E 读：首字时间（点发送 → 对话里出现 Bot 的第一个字）
-            Color.clear.frame(width: 8, height: 8)
-                .accessibilityElement()
+            // Color.clear 会被 SwiftUI 从无障碍树里丢掉（43027845469 气泡已出但找不到 replyFirstTextMs）
+            Text("\(ms)").font(.system(size: 1)).opacity(0.01)
                 .accessibilityIdentifier("replyFirstTextMs")
                 .accessibilityLabel("replyFirstTextMs")
                 .accessibilityValue("\(ms)")

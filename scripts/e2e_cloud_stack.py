@@ -107,9 +107,9 @@ def front_script(data):
         else:
             all_user.append(c or "")
     heard = "插话" in text or any("插话" in u for u in all_user)
-    m = re.search(r"(wk_[a-f0-9]{10})「[^」]*」进行中", blob)
+    m = re.search(r"(wk_[a-f0-9]{10})「[^」]*」(进行中|排队中)", blob)
     if not m:
-        m = re.search(r"(wk_[a-f0-9]{10}).{0,80}进行中", blob)
+        m = re.search(r"(wk_[a-f0-9]{10}).{0,80}(进行中|排队中)", blob)
     if heard and m:
         return _stream_then_tool("收到插话，马上转给后台。", "f2", "task_message", {"id": m.group(1), "text": text or " ".join(all_user)})
     if "查一下" in text:
