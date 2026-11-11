@@ -333,7 +333,7 @@ struct MinisApp: App {
                     appearanceMode == 1 ? .light : appearanceMode == 2 ? .dark : nil
                 )
                 .environment(\.locale, appLanguage.isEmpty ? .current : Locale(identifier: appLanguage))
-                .dynamicTypeSize(fontSettings.appBaseScale.dynamicTypeSize)
+                .dynamicTypeSize(fontSettings.appTypeSize)
                 .onOpenURL { url in
                     shareLog.info("[Share] onOpenURL: \(url.absoluteString)")
                     guard !SessionLockStore.shared.appIsLocked else {

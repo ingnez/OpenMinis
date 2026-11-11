@@ -55,6 +55,19 @@ enum FontScaleLevel: Int, CaseIterable, Identifiable, Comparable {
         }
     }
 
+    /// 叠在系统「更大字体」上：默认档 = 完全跟系统；其他档在系统字号上加减几级（原来是写死的绝对字号，会盖掉系统设置）
+    func dynamicTypeSize(stackedOn system: DynamicTypeSize) -> DynamicTypeSize {
+        let all = DynamicTypeSize.allCases
+        let offset = Self.stackOffset(self)
+        let base = all.firstIndex(of: system) ?? all.firstIndex(of: .large) ?? 3
+        return all[min(max(base + offset, 0), all.count - 1)]
+    }
+
+    /// 相对默认档差几级（xSmall -2 … extraLarge +3），和原来在系统默认字号下的效果一样
+    static func stackOffset(_ level: FontScaleLevel) -> Int {
+        (allCases.firstIndex(of: level) ?? 2) - (allCases.firstIndex(of: .default) ?? 2)
+    }
+
     /// UIKit equivalent for applying to all UIWindows (including sheets).
     var contentSizeCategory: UIContentSizeCategory {
         switch self {
@@ -137,6 +150,17 @@ final class FontSettings: ObservableObject {
 
     // MARK: - Init
 
+    /// 系统设置里的字号（含启动参数 UIPreferredContentSizeCategoryName）；窗口上的覆盖不影响它
+    @Published private(set) var systemTypeSize: DynamicTypeSize = FontSettings.currentSystemTypeSize()
+    private var systemSizeObserver: NSObjectProtocol?
+
+    /// App 实际用的字号：系统字号叠上 App 里的字号档
+    var appTypeSize: DynamicTypeSize { appBaseScale.dynamicTypeSize(stackedOn: systemTypeSize) }
+
+    static func currentSystemTypeSize() -> DynamicTypeSize {
+        DynamicTypeSize(UIApplication.shared.preferredContentSizeCategory) ?? .large
+    }
+
     private init() {
         let ud = UserDefaults.standard
         chatInputScale = FontScaleLevel(rawValue: ud.integer(forKey: Keys.chatInput)) ?? .default
@@ -144,6 +168,16 @@ final class FontSettings: ObservableObject {
         appBaseScale = FontScaleLevel(rawValue: ud.integer(forKey: Keys.appBase)) ?? .default
         // Defer to after first window is available
         DispatchQueue.main.async { [weak self] in self?.applyAppScaleToAllWindows() }
+        systemSizeObserver = NotificationCenter.default.addObserver(forName: UIContentSizeCategory.didChangeNotification,
+                                                                    object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let now = Self.currentSystemTypeSize()
+                guard now != self.systemTypeSize else { return }
+                self.systemTypeSize = now
+                self.applyAppScaleToAllWindows()
+            }
+        }
     }
 
     // MARK: - UIKit global application
@@ -165,7 +199,7 @@ final class FontSettings: ObservableObject {
             }
             return
         }
-        let category = appBaseScale.contentSizeCategory
+        let category = UIContentSizeCategory(appTypeSize)
         for scene in UIApplication.shared.connectedScenes {
             guard let windowScene = scene as? UIWindowScene else { continue }
             for window in windowScene.windows {
@@ -204,7 +238,7 @@ private struct AppFontScaleModifier: ViewModifier {
     @ObservedObject private var fontSettings = FontSettings.shared
 
     func body(content: Content) -> some View {
-        content.dynamicTypeSize(fontSettings.appBaseScale.dynamicTypeSize)
+        content.dynamicTypeSize(fontSettings.appTypeSize)
     }
 }
 
