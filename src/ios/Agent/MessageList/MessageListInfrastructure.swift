@@ -1007,6 +1007,8 @@ final class NoAnimationCollectionView: UICollectionView {
         }
         if selectionAutoScrollLink == nil {
             let link = CADisplayLink(target: self, selector: #selector(stepSelectionAutoScroll))
+            // 拖选自动滚动跟手指走：ProMotion 机器上允许跑到 120Hz
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
             link.add(to: .main, forMode: .common)
             selectionAutoScrollLink = link
         }
