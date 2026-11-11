@@ -93,9 +93,23 @@ def front_script(data):
     text = last_user_text(data)
     if _fresh_tools(data):
         return {"role": "assistant", "content": ""}
-    m = re.search(r"(wk_[a-f0-9]{10})「[^」]*」进行中", json.dumps(data.get("messages", []), ensure_ascii=False))
-    if "插话" in text and m:
-        return _stream_then_tool("收到插话，马上转给后台。", "f2", "task_message", {"id": m.group(1), "text": text})
+    blob = json.dumps(data, ensure_ascii=False)
+    # 插话可能不在 last_user_text 的纯文本里（备注接在同一条 user 消息；或 content 是分段）
+    all_user = []
+    for m in data.get("messages", []):
+        if m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, list):
+            all_user.append(" ".join(p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text"))
+        else:
+            all_user.append(c or "")
+    heard = "插话" in text or any("插话" in u for u in all_user)
+    m = re.search(r"(wk_[a-f0-9]{10})「[^」]*」进行中", blob)
+    if not m:
+        m = re.search(r"(wk_[a-f0-9]{10}).{0,80}进行中", blob)
+    if heard and m:
+        return _stream_then_tool("收到插话，马上转给后台。", "f2", "task_message", {"id": m.group(1), "text": text or " ".join(all_user)})
     if "查一下" in text:
         title = "慢活" if "慢活" in text else "查资料"
         return _stream_then_tool("好，我让后台去查，做完告诉你。", "f1", "spawn_task", {"goal": text, "context": "假数据", "title": title})

@@ -810,14 +810,27 @@ extension E2EFlowsUITests {
         return (a, b)
     }
 
+    private func installPasteMonitor() {
+        addUIInterruptionMonitor(withDescription: "允许粘贴") { alert in
+            for label in ["Allow Paste", "允许粘贴"] {
+                if alert.buttons[label].exists { alert.buttons[label].tap(); return true }
+            }
+            return false
+        }
+    }
+
+    /// 不要用无超时的 `.exists`：粘贴权限弹窗会卡住 App 主线程，exists 先等空闲就会挂死（43013143801 test25）。
     private func ccAllowPaste(_ app: XCUIApplication) {
         let sb = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        for _ in 0..<12 {
+        // 触发 interruption monitor
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92)).tap()
+        for _ in 0..<8 {
             for label in ["Allow Paste", "允许粘贴"] {
-                if app.buttons[label].exists { app.buttons[label].tap(); return }
-                if sb.buttons[label].exists { sb.buttons[label].tap(); return }
+                let a = app.buttons[label]
+                if a.waitForExistence(timeout: 0.4) { a.tap(); return }
+                let b = sb.alerts.buttons[label]
+                if b.waitForExistence(timeout: 0.3) { b.tap(); return }
             }
-            Thread.sleep(forTimeInterval: 0.4)
         }
     }
 
@@ -888,6 +901,7 @@ extension E2EFlowsUITests {
         clipMenu.tap()
         let sync = app.buttons["同步到云电脑剪贴板"]
         XCTAssertTrue(sync.waitForExistence(timeout: 10), "剪贴板菜单里没有「同步到云电脑剪贴板」")
+        installPasteMonitor()
         sync.tap()
         ccAllowPaste(app)
         XCTAssertTrue(poll(20) { self.ccDesk()?.clip_sets.contains(phone) ?? false }, "手机剪贴板没到云电脑：\(String(describing: ccDesk()))")

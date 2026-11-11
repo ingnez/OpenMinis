@@ -10,7 +10,7 @@ struct CloudTypingAvatarDots: View {
         ZStack {
             Circle().fill(color.opacity(0.16))
             Circle().strokeBorder(color.opacity(0.35), lineWidth: 1.5)
-            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { ctx in
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || CloudE2E.pauseIdleAnimations)) { ctx in
                 let t = ctx.date.timeIntervalSinceReferenceDate
                 HStack(spacing: size * 0.08) {
                     ForEach(0..<3, id: \.self) { i in
@@ -35,7 +35,7 @@ struct CloudWorkingRing: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { ctx in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || CloudE2E.pauseIdleAnimations)) { ctx in
             let angle = reduceMotion ? 0 : (ctx.date.timeIntervalSinceReferenceDate * 120).truncatingRemainder(dividingBy: 360)
             Circle()
                 .strokeBorder(AngularGradient(colors: [color, color.opacity(0.15), color], center: .center), lineWidth: 3)
