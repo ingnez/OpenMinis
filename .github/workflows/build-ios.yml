@@ -246,6 +246,26 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNightMode.swift scripts/CloudNightModeTests.swift -o /tmp/cloud_nightmode_tests
           /tmp/cloud_nightmode_tests
+      - name: 一键模板单测
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPromptTemplates.swift scripts/CloudPromptTemplatesTests.swift -o /tmp/cloud-templates-tests
+          /tmp/cloud-templates-tests
+      - name: 省流推迟上传单测
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDataSaver.swift scripts/CloudDataSaverTests.swift -o /tmp/cloud-datasaver-tests
+          /tmp/cloud-datasaver-tests
+      - name: 口袋模式规则单测
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPocketMode.swift scripts/CloudPocketModeTests.swift -o /tmp/cloud-pocket-tests
+          /tmp/cloud-pocket-tests
+      - name: 表盘小组件文案与手表控制单测
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift src/ios/WatchShared/WatchComplicationLogic.swift scripts/WatchComplicationTests.swift -o /tmp/watch-complication-tests
+          /tmp/watch-complication-tests
       - name: 病区隐私自查单测
         run: |
           set -o pipefail
@@ -568,6 +588,14 @@ jobs:
           /tmp/cloud_privacy_tests | tee /tmp/cloud_privacy_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNightMode.swift scripts/CloudNightModeTests.swift -o /tmp/cloud_nightmode_tests
           /tmp/cloud_nightmode_tests | tee /tmp/cloud_nightmode_tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPromptTemplates.swift scripts/CloudPromptTemplatesTests.swift -o /tmp/cloud-templates-tests
+          /tmp/cloud-templates-tests | tee /tmp/cloud-templates-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDataSaver.swift scripts/CloudDataSaverTests.swift -o /tmp/cloud-datasaver-tests
+          /tmp/cloud-datasaver-tests | tee /tmp/cloud-datasaver-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPocketMode.swift scripts/CloudPocketModeTests.swift -o /tmp/cloud-pocket-tests
+          /tmp/cloud-pocket-tests | tee /tmp/cloud-pocket-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift src/ios/WatchShared/WatchComplicationLogic.swift scripts/WatchComplicationTests.swift -o /tmp/watch-complication-tests
+          /tmp/watch-complication-tests | tee /tmp/watch-complication-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOutbox.swift scripts/CloudOutboxTests.swift -o /tmp/cloud_outbox_tests
           /tmp/cloud_outbox_tests | tee /tmp/cloud_outbox_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOneLine.swift scripts/CloudOneLineTests.swift -o /tmp/cloud_oneline_tests
@@ -936,6 +964,14 @@ jobs:
           /tmp/cloud_privacy_tests | tee /tmp/cloud_privacy_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNightMode.swift scripts/CloudNightModeTests.swift -o /tmp/cloud_nightmode_tests
           /tmp/cloud_nightmode_tests | tee /tmp/cloud_nightmode_tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPromptTemplates.swift scripts/CloudPromptTemplatesTests.swift -o /tmp/cloud-templates-tests
+          /tmp/cloud-templates-tests | tee /tmp/cloud-templates-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDataSaver.swift scripts/CloudDataSaverTests.swift -o /tmp/cloud-datasaver-tests
+          /tmp/cloud-datasaver-tests | tee /tmp/cloud-datasaver-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPocketMode.swift scripts/CloudPocketModeTests.swift -o /tmp/cloud-pocket-tests
+          /tmp/cloud-pocket-tests | tee /tmp/cloud-pocket-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift src/ios/WatchShared/WatchComplicationLogic.swift scripts/WatchComplicationTests.swift -o /tmp/watch-complication-tests
+          /tmp/watch-complication-tests | tee /tmp/watch-complication-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOutbox.swift scripts/CloudOutboxTests.swift -o /tmp/cloud_outbox_tests
           /tmp/cloud_outbox_tests | tee /tmp/cloud_outbox_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOneLine.swift scripts/CloudOneLineTests.swift -o /tmp/cloud_oneline_tests

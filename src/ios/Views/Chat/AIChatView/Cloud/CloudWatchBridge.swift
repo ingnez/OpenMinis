@@ -25,9 +25,16 @@ final class CloudWatchBridge: NSObject, WCSessionDelegate {
         let resolved = resolvedCurrent(currentId, in: bots)
         let rows = bots.filter { !$0.hidden }.map { b -> WatchBotRow in
             let locked = CloudBotLock.shared.isLocked(b.id)
-            return WatchBotRow(id: b.id, name: b.name, working: locked ? nil : b.activity?.subtitle,
+            let working = locked ? nil : b.activity?.subtitle
+            let steps = locked ? 0 : WatchComplicationText.stepsLeft(running: b.runningTasks, queued: b.queuedTasks, working: working != nil)
+            let approval = locked ? nil : CloudWatchTaskRegistry.approvalByBot[b.id]
+            return WatchBotRow(id: b.id, name: b.name, working: working,
                                preview: locked ? "已上锁" : b.lastPreview, at: b.lastAt,
-                               color: CloudBotAvatarSpec.of(b).color)
+                               color: CloudBotAvatarSpec.of(b).color,
+                               stepsLeft: steps,
+                               waitingApprovals: locked ? 0 : b.waitingApprovals,
+                               taskId: locked ? nil : CloudWatchTaskRegistry.taskIdByBot[b.id],
+                               approvalId: approval?.approval)
         }
         guard rows != lastSent || resolved != lastCurrentId else { return }
         // 干完的 Bot 给手表一下按颜色区分的轻触（手表 App 不可达就不发：不排队，过时的震动没意义）
@@ -55,6 +62,32 @@ final class CloudWatchBridge: NSObject, WCSessionDelegate {
         }
         if let voice = WatchVoiceRequest(message) {
             CloudBotEntry.openVoice(bot: voice.botId)
+            return
+        }
+        if let control = WatchControlRequest(message) {
+            handleControl(control)
+        }
+    }
+
+    private func handleControl(_ c: WatchControlRequest) {
+        switch c.action {
+        case .pause:
+            let tid = c.taskId ?? CloudWatchTaskRegistry.taskIdByBot[c.botId]
+            guard let tid, !tid.isEmpty else { return }
+            Task {
+                if !CloudConnection.shared.isConnected { try? await CloudConnection.shared.connect() }
+                _ = try? await CloudConnection.shared.request(method: "POST", path: "/v1/tasks/\(tid)/cancel", body: nil)
+            }
+        case .approve, .deny:
+            let approval = c.approvalId ?? CloudWatchTaskRegistry.approvalByBot[c.botId]?.approval
+            let tid = c.taskId ?? CloudWatchTaskRegistry.approvalByBot[c.botId]?.task ?? CloudWatchTaskRegistry.taskIdByBot[c.botId]
+            guard let approval, let tid, !approval.isEmpty, !tid.isEmpty else { return }
+            let decision = c.action == .approve ? "approve" : "deny"
+            Task {
+                if !CloudConnection.shared.isConnected { try? await CloudConnection.shared.connect() }
+                _ = try? await CloudConnection.shared.request(method: "POST", path: "/v1/tasks/\(tid)/approvals/\(approval)",
+                                                             body: ["decision": decision])
+            }
         }
     }
 
@@ -76,4 +109,11 @@ final class CloudWatchBridge: NSObject, WCSessionDelegate {
     nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
         Task { @MainActor in self.handleIncoming(userInfo) }
     }
+}
+
+
+/// 对话页把当前任务 / 待审批登记在这里，手表暂停和批准时用。
+enum CloudWatchTaskRegistry {
+    static var taskIdByBot: [String: String] = [:]
+    static var approvalByBot: [String: (task: String, approval: String)] = [:]
 }

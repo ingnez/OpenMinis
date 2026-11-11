@@ -658,6 +658,7 @@ struct CloudSessionView: View {
     @State private var showScanner = false
     @State private var showCaseNote = false
     @State private var showFiles = false
+    @State private var showTemplates = false
     @State private var showVoiceCall = false
     /// 顶部浮动胶囊的实时通话（Bot 模式）
     @StateObject private var call = CloudBotCallController()
@@ -830,6 +831,12 @@ struct CloudSessionView: View {
                                        onPlan: { applyReplyPlan($0) }))
         // 通话中途断开等：也走去处面板（不再往消息列表底下塞灰字，那里还会压住滚动箭头）
         .onChange(of: call.error) { e in if let e, !call.active { reportVoiceProblem(e) } }
+        .onChange(of: activeTaskId) { tid in
+            if let bot = theme?.botId {
+                if let tid { CloudWatchTaskRegistry.taskIdByBot[bot] = tid }
+                else { CloudWatchTaskRegistry.taskIdByBot.removeValue(forKey: bot) }
+            }
+        }
         .sheet(isPresented: Binding(get: { voiceRoute != nil }, set: { if !$0 { voiceRoute = nil } })) {
             CloudVoiceRouteSheet(problem: voiceRoute ?? "", botId: theme?.botId,
                                  onRetry: { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { if let theme { startFloatingCall(theme, pushToTalk: false) } } },
@@ -841,6 +848,9 @@ struct CloudSessionView: View {
         .fullScreenCover(isPresented: $showScanner) { CloudDocumentScanner { attachments.append($0) }.ignoresSafeArea() }
         .sheet(isPresented: $showCaseNote) { CloudCaseNoteSheet { inputPrompt = $0 } }
         .sheet(isPresented: $showFiles) { CloudFilePicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
+        .sheet(isPresented: $showTemplates) {
+            CloudPromptTemplateSheet(text: $inputPrompt, onDismiss: { showTemplates = false })
+        }
         .fullScreenCover(isPresented: $showVoiceCall) {
             if let theme {
                 if voiceMode == "realtime" {
@@ -1211,6 +1221,7 @@ struct CloudSessionView: View {
                         Button { showCaseNote = true } label: { Label("口述病例（脱敏后复盘）", systemImage: "stethoscope") }
                         Button { showPins = true } label: { Label("要点板", systemImage: "pin") }
                         Button { showRealtimeSettings = true } label: { Label("实时语音设置", systemImage: "waveform") }
+                        Button { showTemplates = true } label: { Label("一键模板", systemImage: "text.badge.plus") }
                         Button { if !inputPrompt.hasPrefix("/") { inputPrompt = "/" } } label: { Label("斜杠命令", systemImage: "slash.circle") }
                         Picker("Bot 干活时发消息", selection: $steerInterrupt) {
                             Label("插话：直接告诉它", systemImage: "arrow.turn.up.right").tag(true)
@@ -1222,11 +1233,20 @@ struct CloudSessionView: View {
                     }
                     .accessibilityLabel("添加附件")
                     HStack(alignment: .bottom, spacing: 4) {
+                        Button { showTemplates = true } label: {
+                            Image(systemName: "text.badge.plus").font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 28, height: 40)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("一键模板")
+                        .accessibilityIdentifier("composerTemplatesButton")
                         TextField(CloudBotComposerAction.placeholder(botName: theme.name, localHint: false), text: $inputPrompt, axis: .vertical)
                             .accessibilityIdentifier("botComposerField")
                             .lineLimit(1...6)
-                            .padding(.vertical, 10).padding(.leading, 14)
+                            .padding(.vertical, 10)
                             .disabled(isSubmitting)
+                            .onLongPressGesture(minimumDuration: 0.5) { showTemplates = true; CloudHaptics.selection() }
                         Button { toggleDictation() } label: {
                             Image(systemName: dictation.isRecording ? "stop.circle.fill" : "mic").font(.system(size: 17))
                                 .foregroundStyle(dictation.isRecording ? Color.red : Color.secondary)

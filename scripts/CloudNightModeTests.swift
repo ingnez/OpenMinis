@@ -18,6 +18,13 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(CloudNightMode.isNightHour(20) && CloudNightMode.isNightHour(7) && !CloudNightMode.isNightHour(8), "边界")
         check(CloudNightMode.notifyStyle(muted: true) == CloudNightMode.NotifyStyle(sound: false, interrupt: false), "夜班通知静音")
         check(CloudNightMode.notifyStyle(muted: false) == CloudNightMode.NotifyStyle(sound: true, interrupt: true), "白天通知有声")
+        check(CloudNightMode.active(setting: "schedule", dutyUntil: nil, now: at(23), calendar: cal), "按时间表：深夜")
+        check(!CloudNightMode.active(setting: "schedule", dutyUntil: nil, now: at(14), calendar: cal), "按时间表：白天")
+        check(CloudNightMode.active(setting: "schedule", dutyUntil: nil, now: at(22), calendar: cal, startHour: 22, endHour: 6), "自定义开始")
+        check(!CloudNightMode.active(setting: "schedule", dutyUntil: nil, now: at(21), calendar: cal, startHour: 22, endHour: 6), "自定义开始前")
+        check(CloudNightMode.isNightHour(10, start: 8, end: 18) && !CloudNightMode.isNightHour(19, start: 8, end: 18), "同一天窗口")
+        check(CloudNightMode.isNightHour(12, start: 7, end: 7), "起止相同=全天")
+        check(CloudNightMode.active(setting: "auto", dutyUntil: later, now: at(21), calendar: cal, startHour: 22, endHour: 6) == false, "值班但还没到自定义时段")
         print("PASS：夜班模式生效规则")
     }
 }

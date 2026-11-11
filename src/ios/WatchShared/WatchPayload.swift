@@ -11,6 +11,11 @@ struct WatchBotRow: Equatable, Identifiable {
     var at: Double
     /// 头像颜色下标 0–11（见 CloudAvatarPalette）；没有就按 Bot id 散列节奏
     var color: Int?
+    /// 还剩几步（运行中 + 排队）；0 且没在干活 = 空闲
+    var stepsLeft: Int
+    var waitingApprovals: Int
+    var taskId: String?
+    var approvalId: String?
 
     static let key = "bots"
     static let sentKey = "sent_at"
@@ -20,18 +25,30 @@ struct WatchBotRow: Equatable, Identifiable {
         var d: [String: Any] = ["id": id, "name": name, "preview": preview, "at": at]
         if let working { d["working"] = working }
         if let color { d["color"] = color }
+        if stepsLeft > 0 { d["steps"] = stepsLeft }
+        if waitingApprovals > 0 { d["approvals"] = waitingApprovals }
+        if let taskId, !taskId.isEmpty { d["task"] = taskId }
+        if let approvalId, !approvalId.isEmpty { d["approval"] = approvalId }
         return d
     }
 
-    init(id: String, name: String, working: String?, preview: String, at: Double, color: Int? = nil) {
+    init(id: String, name: String, working: String?, preview: String, at: Double, color: Int? = nil,
+         stepsLeft: Int = 0, waitingApprovals: Int = 0, taskId: String? = nil, approvalId: String? = nil) {
         self.id = id; self.name = name; self.working = working; self.preview = preview; self.at = at; self.color = color
+        self.stepsLeft = max(0, stepsLeft)
+        self.waitingApprovals = max(0, waitingApprovals)
+        self.taskId = taskId
+        self.approvalId = approvalId
     }
 
     init?(_ d: [String: Any]) {
         guard let id = d["id"] as? String, let name = d["name"] as? String else { return nil }
         self.init(id: id, name: name, working: d["working"] as? String, preview: d["preview"] as? String ?? "",
                   at: (d["at"] as? NSNumber)?.doubleValue ?? 0,
-                  color: (d["color"] as? NSNumber)?.intValue)
+                  color: (d["color"] as? NSNumber)?.intValue,
+                  stepsLeft: (d["steps"] as? NSNumber)?.intValue ?? 0,
+                  waitingApprovals: (d["approvals"] as? NSNumber)?.intValue ?? 0,
+                  taskId: d["task"] as? String, approvalId: d["approval"] as? String)
     }
 
     /// 手表上的顺序：在干活的在前，再按时间新到旧

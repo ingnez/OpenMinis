@@ -123,3 +123,22 @@ struct CloudDutyFocusFilter: SetFocusFilterIntent {
         return .result()
     }
 }
+
+
+/// 快捷指令 / 操作按钮：口袋里问 Bot（不掏手机，回复走耳机或手表震动）
+struct StartPocketListenIntent: AppIntent {
+    static var title: LocalizedStringResource = "口袋里问 Bot"
+    static var description = IntentDescription("打开口袋模式并开始和指定 Bot 说话；不填就是主 Bot。可放到操作按钮、锁屏或耳机触发的快捷指令。")
+    static var openAppWhenRun = true
+
+    @Parameter(title: "Bot 名称", optionsProvider: CloudBotNameOptions())
+    var bot: String?
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        UserDefaults.standard.set(true, forKey: CloudPocketMode.key)
+        CloudBotEntry.pendingPocket = true
+        CloudBotEntry.openVoice(bot: bot)
+        return .result()
+    }
+}

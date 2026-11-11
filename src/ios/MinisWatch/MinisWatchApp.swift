@@ -90,6 +90,16 @@ final class WatchModel: NSObject, ObservableObject, WCSessionDelegate {
         send(WatchVoiceRequest(botId: currentId).dict, ok: "正在手机上打开通话")
     }
 
+    func sendControl(_ action: WatchControlRequest.Action, row: WatchBotRow) {
+        let ok: String
+        switch action {
+        case .pause: ok = "已请手机暂停"
+        case .approve: ok = "已请手机批准"
+        case .deny: ok = "已请手机拒绝"
+        }
+        send(WatchControlRequest(action: action, botId: row.id, taskId: row.taskId, approvalId: row.approvalId).dict, ok: ok)
+    }
+
     private func send(_ message: [String: Any], ok: String) {
         let s = WCSession.default
         guard s.activationState == .activated else {
@@ -178,14 +188,22 @@ struct WatchHomeView: View {
                     Text("打开 iPhone 上的 Minis 多 Bot 首页后，这里会显示你的 Bot").font(.footnote).foregroundStyle(.secondary)
                 }
                 ForEach(model.rows) { row in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack {
-                            if row.working != nil { Circle().fill(Color.green).frame(width: 7, height: 7) }
-                            Text(row.name).font(.headline).lineLimit(1)
-                            if row.id == model.currentId { Text("当前").font(.caption2).foregroundStyle(.secondary) }
+                    NavigationLink {
+                        WatchStatusView(row: row, onControl: { model.sendControl($0, row: row) })
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                if row.working != nil { Circle().fill(Color.green).frame(width: 7, height: 7) }
+                                Text(row.name).font(.headline).lineLimit(1)
+                                if row.id == model.currentId { Text("当前").font(.caption2).foregroundStyle(.secondary) }
+                            }
+                            Text(row.working ?? row.preview).font(.caption2)
+                                .foregroundStyle(row.working != nil ? Color.green : Color.secondary).lineLimit(2)
+                            if row.working != nil || row.stepsLeft > 0 || row.waitingApprovals > 0 {
+                                Text(WatchComplicationText.stepsLine(stepsLeft: row.stepsLeft, working: row.working != nil))
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
                         }
-                        Text(row.working ?? row.preview).font(.caption2)
-                            .foregroundStyle(row.working != nil ? Color.green : Color.secondary).lineLimit(2)
                     }
                 }
                 if let sent = model.sentAt {

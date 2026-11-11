@@ -36,6 +36,8 @@ enum CloudBotEntry {
 
     /// 「和 Bot 语音」快捷指令 / 操作按钮：打开对话后自动开通话（对话页 onAppear 取走）
     static var pendingVoiceBot: String?
+    /// 口袋模式深链 / 快捷指令：打开语音时按口袋模式的回复方式来（耳机或手表震动）
+    static var pendingPocket = false
 
     static func openVoice(bot: String?) {
         let model = CloudBotHomeModel.shared
@@ -74,7 +76,9 @@ enum CloudBotEntry {
         let key = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).removingPercentEncoding
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         // minis://bot/<id>?voice=1：控制中心按钮 / 快捷指令直接开语音（没给 Bot 就用主 Bot）
-        if items.first(where: { $0.name == "voice" })?.value == "1" {
+        // minis://bot/<id>?pocket=1：口袋模式，同样开语音，回复走耳机或手表
+        if items.first(where: { $0.name == "voice" })?.value == "1" || CloudPocketMode.isPocket(url) {
+            if CloudPocketMode.isPocket(url) { pendingPocket = true }
             openVoice(bot: (key ?? "").isEmpty ? nil : key)
             return
         }
