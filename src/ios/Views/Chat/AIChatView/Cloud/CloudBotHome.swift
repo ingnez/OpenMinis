@@ -907,6 +907,8 @@ struct CloudBotHubView: View {
             }
             Section {
                 CloudAppearancePicker()
+            } footer: {
+                Text("换聊天字体后，新消息马上用新字体；已经显示的消息重新打开对话后才换。")
             }
             Section {
                 NavigationLink(destination: CloudBotsView()) { Label("我的 Bot（模板、导入导出）", systemImage: "person.3") }
