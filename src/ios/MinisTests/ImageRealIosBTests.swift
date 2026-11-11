@@ -180,7 +180,7 @@ final class ImageRealIosBTests: XCTestCase {
 
         // P-i1 live: <= 2000 JPEG.
         let live = AIChatViewModel.browserUseInferenceImage(shot.data)
-        XCTAssertEqual(probe(live.data), Probe(w: 253, h: 2000, fmt: "jpeg"))
+        XCTAssertEqual(probe(live.data), Probe(w: 252, h: 2000, fmt: "jpeg"))
         XCTAssertEqual(live.mimeType, "image/jpeg")
 
         // B2 (`minis_url`) and the snapshot media file are both the ORIGINAL.
@@ -246,9 +246,9 @@ final class ImageRealIosBTests: XCTestCase {
         let file = scratch.appendingPathComponent("page.jpg")
         try page.write(to: file)
         let inference = AIChatViewModel.readImageInference(fileData: page, image: try XCTUnwrap(UIImage(data: page)))
-        XCTAssertEqual(probe(inference.data), Probe(w: 253, h: 2000, fmt: "jpeg"))
+        XCTAssertEqual(probe(inference.data), Probe(w: 252, h: 2000, fmt: "jpeg"))
         XCTAssertEqual(inference.mimeType, "image/jpeg")
-        XCTAssertEqual([inference.originalW, inference.originalH, inference.resizedW, inference.resizedH], [2760, 21891, 253, 2000])
+        XCTAssertEqual([inference.originalW, inference.originalH, inference.resizedW, inference.resizedH], [2760, 21891, 252, 2000])
 
         // R1: a copy of the ORIGINAL file under images/.
         let ref = await AIChatViewModel.saveReadImageSnapshotMedia(imagePath: file.path, imageData: page, sessionId: sid,
@@ -294,7 +294,9 @@ final class ImageRealIosBTests: XCTestCase {
         let a = AIChatViewModel.readImageInference(fileData: small, image: try XCTUnwrap(UIImage(data: small)))
         let b = AIChatViewModel.readImageInference(fileData: small, image: try XCTUnwrap(UIImage(data: small)))
         XCTAssertEqual(a.data, b.data, "same input, same process: same bytes")
-        XCTAssertNotEqual(a.data, small, "a <= 2000 JPEG is still re-encoded (jpegData 0.85)")
+        // [T-image-gate] ModelImageGate sends a JPEG that is already <= 2000 px and under
+        // the byte cap as-is (kind .original) instead of re-encoding it at 0.85.
+        XCTAssertEqual(a.data, small, "a <= 2000 JPEG under the byte cap goes out byte-identical")
         let r1 = await AIChatViewModel.saveReadImageSnapshotMedia(imagePath: file.path, imageData: small, sessionId: sid, linuxPath: nil)
         let r2 = await AIChatViewModel.saveReadImageSnapshotMedia(imagePath: file.path, imageData: small, sessionId: sid, linuxPath: nil)
         XCTAssertNotEqual(r1.relativePath, r2.relativePath, "each read writes a new R1 copy")

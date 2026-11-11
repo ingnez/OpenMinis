@@ -94,13 +94,17 @@ final class ToolLoopDetectorTests: XCTestCase {
         let post10 = detector.record(toolName: "command_status", params: params, result: stableResult)
         XCTAssertEqual(post10.level, .warning)
 
-        // Continue to 19 — pre-check returns warning (already past threshold)
-        // but throttle keeps it bucketed; we mainly care about the 20th hitting critical.
+        // Continue to 20 recorded polls. The pre-check counts calls already
+        // RECORDED (streak >= criticalThreshold), so 19 recorded still passes and
+        // the call after the 20th recorded one is blocked.
         for _ in 10..<19 {
             _ = detector.record(toolName: "command_status", params: params, result: stableResult)
         }
+        XCTAssertNotEqual(detector.check(toolName: "command_status", params: params).level, .critical,
+                          "19 recorded polls must not block yet")
+        _ = detector.record(toolName: "command_status", params: params, result: stableResult)
 
-        // 20th attempt's pre-check should be CRITICAL.
+        // After 20 identical no-progress polls the next pre-check is CRITICAL.
         let pre20 = detector.check(toolName: "command_status", params: params)
         XCTAssertEqual(pre20.level, .critical, "20 identical no-progress polls should hit critical")
         XCTAssertTrue(pre20.message?.contains("[LOOP BLOCKED]") == true)
@@ -146,11 +150,13 @@ final class ToolLoopDetectorTests: XCTestCase {
         let params: [String: Any] = ["k": "v"]
         let result = "{\"status\":\"same\"}"
 
-        // Record 29 identical no-progress results for a non-poll tool.
+        // Record 29 identical no-progress results for a non-poll tool: not blocked yet.
         for _ in 0..<29 {
             _ = detector.record(toolName: "weird_tool", params: params, result: result)
         }
-        // 30th attempt: global circuit breaker should fire (critical).
+        XCTAssertNotEqual(detector.check(toolName: "weird_tool", params: params).level, .critical)
+        _ = detector.record(toolName: "weird_tool", params: params, result: result)
+        // 30 recorded: the global circuit breaker blocks the next call (critical).
         let pre = detector.check(toolName: "weird_tool", params: params)
         XCTAssertEqual(pre.level, .critical)
         XCTAssertTrue(pre.message?.contains("global circuit breaker") == true)
@@ -174,19 +180,18 @@ final class ToolLoopDetectorTests: XCTestCase {
         // The model is required by tool schema to provide `tool_title` (a UI label).
         // Models often suffix it with a counter ("#1", "#2", ...), which must NOT
         // make logically-identical calls look unique to the detector.
+        // The warning is emitted once per bucket, by the record that crosses the
+        // threshold (the 10th), so that is the call to assert on.
         let detector = ToolLoopDetector()
+        var last = LoopCheckResult.pass
         for i in 1...10 {
             let params: [String: Any] = [
                 "path": "/etc/hostname",
                 "tool_title": "Read /etc/hostname #\(i)",
             ]
-            _ = detector.record(toolName: "file_read", params: params, result: "localhost")
+            last = detector.record(toolName: "file_read", params: params, result: "localhost")
         }
-        let pre = detector.check(
-            toolName: "file_read",
-            params: ["path": "/etc/hostname", "tool_title": "Read /etc/hostname #11"]
-        )
-        XCTAssertNotEqual(pre.level, .none, "tool_title variation must NOT defeat repeat detection")
+        XCTAssertNotEqual(last.level, .none, "tool_title variation must NOT defeat repeat detection")
     }
 
     func testArgsHash_keyOrderInvariant() {
@@ -198,10 +203,10 @@ final class ToolLoopDetectorTests: XCTestCase {
         for _ in 0..<5 {
             _ = detector.record(toolName: "file_read", params: p1, result: "ok")
         }
-        for _ in 0..<5 {
+        for _ in 0..<4 {
             _ = detector.record(toolName: "file_read", params: p2, result: "ok")
         }
-        // 10 total (with stable hashing) → next pre-check sees count=10 → warning.
+        // 10th call in total (with stable hashing) crosses the threshold → warning.
         let post = detector.record(toolName: "file_read", params: p2, result: "ok")
         XCTAssertEqual(post.level, .warning, "key-order-invariant hashing must collapse to a single bucket")
     }

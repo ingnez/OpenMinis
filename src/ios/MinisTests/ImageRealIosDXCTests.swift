@@ -156,6 +156,10 @@ final class ImageRealIosDXCTests: XCTestCase {
     /// four non-Anthropic providers sent the 2760x21891 original after a
     /// reload. The request gate now sends every provider the same <= 2000 image.
     func testReloadedScreenshotGoesOutGatedOnEveryProvider() async throws {
+        // 公开仓库不带 Claude Code OAuth 的识别提示词（ProviderCustomization.xcconfig 只有空模板），
+        // 走 OAuth 的请求按设计在 AnthropicProvider 里 fatalError；这里跳过而不是让整个测试进程崩掉。
+        try XCTSkipIf(ProviderCustomizationGenerated.anthropicOAuthIdentifierPrompt.isEmpty,
+                      "ANTHROPIC_OAUTH_IDENTIFIER_PROMPT 未配置（公开仓库），跳过走 OAuth 路由的用例")
         let original = page(2760, 21891)
         let history = try await reloadedToolTurn(tool: "browser_use", image: original, subdir: "browser",
                                                  linuxPath: "/var/minis/browser/screenshot_1.jpg")
@@ -182,6 +186,10 @@ final class ImageRealIosDXCTests: XCTestCase {
     // MARK: - read_image tool image after a reload
 
     func testReloadedReadImageGoesOutOnEveryProvider() async throws {
+        // 公开仓库不带 Claude Code OAuth 的识别提示词（ProviderCustomization.xcconfig 只有空模板），
+        // 走 OAuth 的请求按设计在 AnthropicProvider 里 fatalError；这里跳过而不是让整个测试进程崩掉。
+        try XCTSkipIf(ProviderCustomizationGenerated.anthropicOAuthIdentifierPrompt.isEmpty,
+                      "ANTHROPIC_OAUTH_IDENTIFIER_PROMPT 未配置（公开仓库），跳过走 OAuth 路由的用例")
         let shot = page(1200, 900)
         let history = try await reloadedToolTurn(tool: "read_image", image: shot, subdir: "images",
                                                  linuxPath: "/var/minis/images/photo.jpg")
@@ -198,6 +206,10 @@ final class ImageRealIosDXCTests: XCTestCase {
     /// [T-anthropic-keyauth-toolimages] The key-auth chain claims the request
     /// token like the OAuth chain, so the tool image rides in the tool_result.
     func testKeyAuthRouteSendsTheToolImage() async throws {
+        // 公开仓库不带 Claude Code OAuth 的识别提示词（ProviderCustomization.xcconfig 只有空模板），
+        // 走 OAuth 的请求按设计在 AnthropicProvider 里 fatalError；这里跳过而不是让整个测试进程崩掉。
+        try XCTSkipIf(ProviderCustomizationGenerated.anthropicOAuthIdentifierPrompt.isEmpty,
+                      "ANTHROPIC_OAUTH_IDENTIFIER_PROMPT 未配置（公开仓库），跳过走 OAuth 路由的用例")
         let history = try await reloadedToolTurn(tool: "browser_use", image: page(800, 600), subdir: "browser",
                                                  linuxPath: "/var/minis/browser/screenshot_2.jpg")
         let b = try serialize(history)

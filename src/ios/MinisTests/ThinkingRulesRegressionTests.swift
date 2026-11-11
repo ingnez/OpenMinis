@@ -49,7 +49,8 @@ final class ThinkingRulesRegressionTests: XCTestCase {
         isOpenRouter: Bool = false,
         maxTokens: Int = 4096,
         offEffort: String? = nil,
-        unifiedReasoningEffort: Bool = false
+        unifiedReasoningEffort: Bool = false,
+        isDashScope: Bool = false
     ) -> [String: Any] {
         var body: [String: Any] = [:]
         OpenAIAgentProvider.injectThinkingParams(
@@ -59,7 +60,8 @@ final class ThinkingRulesRegressionTests: XCTestCase {
             isOpenRouter: isOpenRouter,
             maxTokens: maxTokens,
             offEffort: offEffort,
-            unifiedReasoningEffort: unifiedReasoningEffort
+            unifiedReasoningEffort: unifiedReasoningEffort,
+            isDashScope: isDashScope
         )
         return body
     }
@@ -292,14 +294,18 @@ final class ThinkingRulesRegressionTests: XCTestCase {
                         "on Ark the tier travels in reasoning_effort: \(body)")
     }
 
-    /// Rule: Qwen dual-sends at root AND `extra_body` (DashScope reads extra_body;
-    /// vLLM/SGLang accept top-level). Ref: "[Qwen] sent both at root level and in extra_body" · 25165700.
+    /// Rule: Qwen dual-sends at root AND `extra_body` — but only on DashScope itself
+    /// (672fc4de9, [T-ios-qwen-extra-body-400]); any other endpoint gets root-only.
+    /// Ref: "[Qwen] sent both at root level and in extra_body" · 25165700.
     func testQwenDualSendsAtRootAndExtraBody() {
-        let body = inject(model: model("qwen3-32b"), level: .medium)
+        let body = inject(model: model("qwen3-32b"), level: .medium, isDashScope: true)
         XCTAssertNotNil(body["enable_thinking"], "root enable_thinking expected: \(body)")
         let extra = body["extra_body"] as? [String: Any]
         XCTAssertNotNil(extra?["enable_thinking"],
                         "extra_body.enable_thinking expected (DashScope reads it there): \(body)")
+        let relay = inject(model: model("qwen3-32b"), level: .medium)
+        XCTAssertNotNil(relay["enable_thinking"], "root enable_thinking expected off DashScope: \(relay)")
+        XCTAssertNil(relay["extra_body"], "a non-DashScope endpoint must not get the extra_body envelope: \(relay)")
     }
 
     /// Rule: OpenRouter uses the unified nested `reasoning: {effort:…}` and OMITS the

@@ -54,7 +54,7 @@ final class SubAgentsCollectionTests: XCTestCase {
             XCTAssertEqual(f.path.split(separator: ".", maxSplits: 2).count, 3)
         }
         let leaves = Set(fields.map { $0.path.replacingOccurrences(of: prefix, with: "") })
-        XCTAssertEqual(leaves, ["name", "description", "instructions", "model_group", "built_in"])
+        XCTAssertEqual(leaves, ["name", "description", "instructions", "model_group", "built_in", "thinking"])
     }
 
     /// `childIds()` reports the alias, not the raw id — otherwise `list`
