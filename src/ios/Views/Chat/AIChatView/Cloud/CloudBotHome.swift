@@ -954,6 +954,7 @@ struct CloudBotHubView: View {
                 NavigationLink(destination: CloudDelegationsView()) { Label("委托记录", systemImage: "arrow.triangle.branch") }
                 NavigationLink(destination: CloudPagesView()) { Label("页面", systemImage: "doc.richtext") }
                 NavigationLink(destination: CloudComputerView(botId: nil, sessionId: nil, reason: nil)) { Label("云电脑桌面", systemImage: "display") }
+                    .accessibilityIdentifier("ccDesktopSettingsRow")
             }
             Section {
                 NavigationLink(destination: CloudUsageView()) { Label("用量与每日上限", systemImage: "chart.bar") }

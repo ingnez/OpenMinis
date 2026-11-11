@@ -828,7 +828,10 @@ extension E2EFlowsUITests {
         let gear = app.buttons["设置"]
         XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
         gear.tap()
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "云电脑桌面")).firstMatch
+        // 必须精确匹配：横幅「服务器还没有安装云电脑桌面」也包含这几个字，CONTAINS 会点到横幅（43003171276）
+        let row = app.descendants(matching: .any)["ccDesktopSettingsRow"].exists
+            ? app.descendants(matching: .any)["ccDesktopSettingsRow"]
+            : app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "云电脑桌面")).firstMatch
         XCTAssertTrue(scrollTo(app, row), "Bot 设置里没有「云电脑桌面」")
         row.tap()
 
