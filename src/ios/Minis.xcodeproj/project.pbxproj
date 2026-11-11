@@ -3941,7 +3941,7 @@
 					"$(SRCROOT)/../../deps/frameworks/Rclone.xcframework/ios-arm64/Headers",
 					"$(BUILD_DIR)/../../SourcePackages/checkouts/swift-cmark/src/include",
 					"$(BUILD_DIR)/../../SourcePackages/checkouts/swift-cmark/extensions/include",
-					"$(SRCROOT)/../../deps/RealTimeCutVADLibrary/RealTimeCutVADLibrary/src/include",
+					"$(BUILD_DIR)/../../SourcePackages/checkouts/RealTimeCutVADLibrary/RealTimeCutVADLibrary/src/include",
 				);
 				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3985,7 +3985,7 @@
 					"$(SRCROOT)/../../deps/frameworks/Rclone.xcframework/ios-arm64/Headers",
 					"$(BUILD_DIR)/../../SourcePackages/checkouts/swift-cmark/src/include",
 					"$(BUILD_DIR)/../../SourcePackages/checkouts/swift-cmark/extensions/include",
-					"$(SRCROOT)/../../deps/RealTimeCutVADLibrary/RealTimeCutVADLibrary/src/include",
+					"$(BUILD_DIR)/../../SourcePackages/checkouts/RealTimeCutVADLibrary/RealTimeCutVADLibrary/src/include",
 				);
 				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -4557,9 +4557,13 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		B318C2F47DB3F301A17E49BE /* 本地校验VAD包 */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../../deps/RealTimeCutVADLibrary;
+		B318C2F47DB3F301A17E49BE /* XCRemoteSwiftPackageReference "RealTimeCutVADLibrary" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/helloooideeeeea/RealTimeCutVADLibrary.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.0;
+			};
 		};
 		E52000020 /* XCRemoteSwiftPackageReference "SwiftAnthropic" */ = {
 			isa = XCRemoteSwiftPackageReference;
