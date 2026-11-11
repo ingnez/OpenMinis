@@ -644,6 +644,11 @@ struct CloudSessionView: View {
     @State private var retractable: CloudRetract? = nil
     @State private var outboxTask: Task<Void, Never>? = nil
     @State private var memoryOutbox: [String: (String, [String: Any])] = [:]
+    @State private var showShiftCard = false
+    @State private var showReplay = false
+    @State private var showRelay = false
+    @State private var pendingItems: [CloudOutboxItem] = []
+    @State private var replayTaskId: String? = nil
     @State private var showComputer = false
     @State private var attachments: [CloudPendingAttachment] = []
     /// 服务器上还有更早的消息（分页）
@@ -821,6 +826,10 @@ struct CloudSessionView: View {
         .modifier(CloudSessionExtras(followUp: $followUpNotice, outboxCount: outboxCount, privacyHits: $privacyHits,
                                      onDiscard: discardOutbox, onRedact: sendRedacted, onSend: sendAnyway,
                                      onAppear: resumeOutbox, onDisappear: pauseOutbox))
+        .onReceive(NotificationCenter.default.publisher(for: CloudE2EOffline.flushNotification)) { _ in
+            refreshOutboxCount()
+            flushOutbox()
+        }
         .onAppear {
             callDividers = CloudCallDivider.load(sessionId)
             injectE2EAttachments()
@@ -840,6 +849,18 @@ struct CloudSessionView: View {
         .fullScreenCover(isPresented: $showCamera) { CloudCameraPicker { attachments.append($0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showScanner) { CloudDocumentScanner { attachments.append($0) }.ignoresSafeArea() }
         .sheet(isPresented: $showCaseNote) { CloudCaseNoteSheet { inputPrompt = $0 } }
+        .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
+        .sheet(isPresented: $showReplay) {
+            NavigationStack {
+                if let id = replayTaskId ?? activeTaskId { CloudReplayView(taskId: id) }
+            }
+        }
+        .sheet(isPresented: $showRelay) {
+            CloudBotRelaySheet(fromBot: theme?.botId, fromSession: sessionId,
+                               result: CloudBotRelay.clip(turns.last(where: { $0.message.role == .assistant })?.message.content ?? liveText, 4000),
+                               context: CloudBotRelay.clip(turns.suffix(6).map { ($0.message.role == .user ? "用户：" : "助手：") + $0.message.content }.joined(separator: "\n"), 3000),
+                               excludeId: theme?.botId)
+        }
         .sheet(isPresented: $showFiles) { CloudFilePicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showVoiceCall) {
             if let theme {
@@ -909,6 +930,7 @@ struct CloudSessionView: View {
             case "completed":
                 let summary = turns.last(where: { $0.message.role == .assistant })?.message.content ?? liveText
                 CloudBotLiveActivity.finished(sessionId: sessionId, summary: locked ? "已完成" : CloudMessageText.display(summary).text, succeeded: true)
+                if let tid = activeTaskId { Task { await checkReplay(tid) } }
             case "failed", "cancelled", "interrupted", "limit_reached":
                 CloudBotLiveActivity.finished(sessionId: sessionId, summary: "", succeeded: false)
             default:
@@ -1530,6 +1552,9 @@ struct CloudSessionView: View {
                             }
                             if idx == turns.count - 1, msg.role == .assistant, activeTaskStatus != "running" {
                                 CloudSmartReplyBar(text: msg.content, accent: theme.accent, onPick: quickSend)
+                                CloudTaskActionBar(taskId: replayTaskId ?? activeTaskId, hasReplay: replayTaskId != nil,
+                                                   result: msg.content, fromBot: theme.botId, fromSession: sessionId,
+                                                   accent: theme.accent, showReplay: $showReplay, showRelay: $showRelay)
                             }
                             ForEach(threadRows.filter { threadAnchor($0) == idx }) { CloudBotThreadCollapsedRow(item: $0) }
                             ForEach(callDividers.filter { CloudCallDivider.anchor($0, timestamps: stamps) == idx }) { CloudCallDividerRow(seconds: $0.seconds) }
@@ -1564,6 +1589,9 @@ struct CloudSessionView: View {
                     }
 
                     if let theme {
+                        ForEach(pendingItems) { item in
+                            CloudPendingOutboxRow(item: item, accent: theme.accent)
+                        }
                         themedTaskArea(theme)
                     }
                     Color.clear.frame(height: 1).id("chat-bottom")
@@ -1808,6 +1836,11 @@ struct CloudSessionView: View {
     private func sendTask() {
         let content = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty || !attachments.isEmpty, !isSubmitting else { return }
+        if CloudShiftIntent.isUtterance(content), attachments.isEmpty {
+            inputPrompt = ""
+            showShiftCard = true
+            return
+        }
         if content == "/reset" && attachments.isEmpty {
             inputPrompt = ""
             resetContext()
@@ -1935,7 +1968,12 @@ struct CloudSessionView: View {
 
     @MainActor
     private func refreshOutboxCount() {
-        outboxCount = CloudOutbox.shared.items(for: sessionId).count + memoryOutbox.count
+        let stored = CloudOutbox.shared.items(for: sessionId)
+        outboxCount = stored.count + memoryOutbox.count
+        pendingItems = stored + memoryOutbox.map { nonce, pair in
+            CloudOutboxItem(nonce: nonce, sessionId: sessionId, content: pair.0,
+                            body: CloudOutbox.encode(pair.1) ?? Data(), createdAt: Date().timeIntervalSince1970)
+        }
     }
 
     /// 逐条按原顺序重发；一条失败就退避等待再试，直到发完或离开页面
@@ -1979,7 +2017,29 @@ struct CloudSessionView: View {
         }
     }
 
+    @MainActor
+    private func checkReplay(_ taskId: String) async {
+        if let r = try? await connection.request(method: "GET", path: "/v1/tasks/\(taskId)/replay"),
+           !CloudReplayFrame.list(r).isEmpty {
+            replayTaskId = taskId
+        }
+    }
+
+    private func enqueueE2EVoiceIfNeeded() {
+        guard CloudE2EOffline.forced,
+              ProcessInfo.processInfo.environment["OPENMINIS_E2E_QUEUE_VOICE"] == "1",
+              !CloudOutbox.shared.items(for: sessionId).contains(where: { $0.nonce == "e2e-voice-1" }) else { return }
+        let body = CloudOutbox.encode(["content": "【语音留言】离线语音测试", "model": "bot", "provider": [String: Any](),
+                                       "client_nonce": "e2e-voice-1"]) ?? Data()
+        _ = CloudOutbox.shared.addVoice(nonce: "e2e-voice-1", sessionId: sessionId, content: "【语音留言】离线语音测试",
+                                        body: body, audio: Data("fake-voice-bytes".utf8), ext: "m4a")
+    }
+
     private func resumeOutbox() {
+        #if canImport(Network)
+        CloudOutboxNetwork.start()
+        #endif
+        enqueueE2EVoiceIfNeeded()
         // 「和 Bot 语音」快捷指令 / 操作按钮打开的：直接开通话
         if let theme, CloudBotEntry.pendingVoiceBot == theme.botId {
             CloudBotEntry.pendingVoiceBot = nil

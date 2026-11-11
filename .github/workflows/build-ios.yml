@@ -241,6 +241,12 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOutbox.swift scripts/CloudOutboxTests.swift -o /tmp/cloud_outbox_tests
           /tmp/cloud_outbox_tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudQuietHours.swift scripts/CloudQuietHoursTests.swift -o /tmp/cloud_quiet_tests
+          /tmp/cloud_quiet_tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudShiftSupport.swift scripts/CloudShiftSupportTests.swift -o /tmp/cloud_shift_tests
+          /tmp/cloud_shift_tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotRelay.swift scripts/CloudBotRelayTests.swift -o /tmp/cloud_relay_tests
+          /tmp/cloud_relay_tests
       - name: 夜班模式规则单测
         run: |
           set -o pipefail
@@ -569,7 +575,13 @@ jobs:
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNightMode.swift scripts/CloudNightModeTests.swift -o /tmp/cloud_nightmode_tests
           /tmp/cloud_nightmode_tests | tee /tmp/cloud_nightmode_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOutbox.swift scripts/CloudOutboxTests.swift -o /tmp/cloud_outbox_tests
-          /tmp/cloud_outbox_tests | tee /tmp/cloud_outbox_tests.log
+          /tmp/cloud_outbox_tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudQuietHours.swift scripts/CloudQuietHoursTests.swift -o /tmp/cloud_quiet_tests
+          /tmp/cloud_quiet_tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudShiftSupport.swift scripts/CloudShiftSupportTests.swift -o /tmp/cloud_shift_tests
+          /tmp/cloud_shift_tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotRelay.swift scripts/CloudBotRelayTests.swift -o /tmp/cloud_relay_tests
+          /tmp/cloud_relay_tests | tee /tmp/cloud_outbox_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOneLine.swift scripts/CloudOneLineTests.swift -o /tmp/cloud_oneline_tests
           /tmp/cloud_oneline_tests | tee /tmp/cloud_oneline_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudFollowUp.swift scripts/CloudFollowUpTests.swift -o /tmp/cloud_followup_tests
@@ -937,7 +949,13 @@ jobs:
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNightMode.swift scripts/CloudNightModeTests.swift -o /tmp/cloud_nightmode_tests
           /tmp/cloud_nightmode_tests | tee /tmp/cloud_nightmode_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOutbox.swift scripts/CloudOutboxTests.swift -o /tmp/cloud_outbox_tests
-          /tmp/cloud_outbox_tests | tee /tmp/cloud_outbox_tests.log
+          /tmp/cloud_outbox_tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudQuietHours.swift scripts/CloudQuietHoursTests.swift -o /tmp/cloud_quiet_tests
+          /tmp/cloud_quiet_tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudShiftSupport.swift scripts/CloudShiftSupportTests.swift -o /tmp/cloud_shift_tests
+          /tmp/cloud_shift_tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotRelay.swift scripts/CloudBotRelayTests.swift -o /tmp/cloud_relay_tests
+          /tmp/cloud_relay_tests | tee /tmp/cloud_outbox_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOneLine.swift scripts/CloudOneLineTests.swift -o /tmp/cloud_oneline_tests
           /tmp/cloud_oneline_tests | tee /tmp/cloud_oneline_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudFollowUp.swift scripts/CloudFollowUpTests.swift -o /tmp/cloud_followup_tests
@@ -1163,6 +1181,7 @@ jobs:
             -only-testing:MinisUITests/E2EFlowsUITests \
             -only-testing:MinisUITests/MiscControlsUITests \
             -only-testing:MinisUITests/ReplyModeUITests \
+            -only-testing:MinisUITests/IdeasAUITests \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 150 \
             -maximum-test-execution-time-allowance 240 \

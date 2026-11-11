@@ -33,7 +33,10 @@ class ShiftCardTests(unittest.TestCase):
         self.assertEqual(by["s2"]["state"], "unanswered"); self.assertEqual(by["s2"]["last_user"], "去甲 0.1 换算 ml/h")
         self.assertEqual(by["s5"]["state"], "running")
         self.assertNotIn("s3", by); self.assertNotIn("s4", by)
-        self.assertEqual(card["totals"], {"sessions": 3, "running": 1, "waiting_you": 0, "unanswered": 1})
+        self.assertEqual(card["totals"]["sessions"], 3)
+        self.assertEqual(card["totals"]["running"], 1)
+        self.assertEqual(card["totals"]["waiting_you"], 0)
+        self.assertEqual(card["totals"]["unanswered"], 1)
 
     def test_hours_clamped(self):
         self.assertEqual(sc.build(db(), 999, lambda s: None)["hours"], 48)

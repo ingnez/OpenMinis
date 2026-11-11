@@ -285,6 +285,67 @@ def install_fake_desktop():
     cd.is_desktop_available, cd.execute_desktop_action, cd.read_clipboard, cd.write_clipboard = avail, execute, read, write
 
 
+def seed_ideas(kind):
+    """为交班卡 / 回放 / 接力准备假数据。"""
+    import sqlite3, uuid, time as _t, tempfile
+    import cloud_agent_server as srv
+    import cloud_replay as rp
+    out = {"kind": kind}
+    db = sqlite3.connect(os.environ["OPENMINIS_DB"])
+    now = _t.time()
+    if kind in ("handoff", "all"):
+        sid = None
+        rows = db.execute("SELECT session_id FROM sessions WHERE persona_id = ?", (BOT_ID,)).fetchall()
+        sid = rows[0][0] if rows else None
+        if not sid:
+            sid = "sess_" + uuid.uuid4().hex[:12]
+            db.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, NULL, ?, '', ?, ?)",
+                       (sid, "未完成的文献", now, BOT_ID))
+        tid = "task_e2e_open"
+        db.execute("INSERT OR REPLACE INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
+                   (tid, sid, MODEL, now))
+        db.execute("INSERT OR IGNORE INTO approvals (approval_id, task_id, tool, reason, status, created_at) VALUES (?, ?, 'browser_action', '要打开登录页', 'pending', ?)",
+                   ("appr_e2e_pending", tid, now))
+        db.execute("INSERT OR REPLACE INTO routines (routine_id, name, prompt, schedule, credential, model, instructions, enabled, max_runs, run_count, notify, created_at, updated_at, persona_id) VALUES (?, ?, ?, ?, ?, ?, '', 1, NULL, 0, 1, ?, ?, ?)",
+                   ("r_e2e_watch", "盯化验回报", "有变化告诉我（假数据）", '{"kind":"interval","seconds":3600}', "e2e", MODEL, now, now, BOT_ID))
+        grants = [{"grant_id": "gr_e2e", "bot_id": BOT_ID, "bot_name": BOT_NAME, "tool": "browser_action",
+                   "reason": "本班填写登录页", "created_at": now, "scope": "shift"}]
+        db.execute("INSERT INTO app_settings (name, value) VALUES ('standing_grants', ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+                   (json.dumps(grants, ensure_ascii=False),))
+        db.commit()
+        out["handoff"] = {"session_id": sid, "task_id": tid}
+    if kind in ("replay", "all"):
+        root = srv.replay_dir()
+        os.makedirs(root, exist_ok=True)
+        png = b"\x89PNG\r\n\x1a\n" + b"e2e-frame"
+        with tempfile.TemporaryDirectory() as src:
+            for i, label in enumerate(("打开 example.com", "点击 (10, 20)")):
+                path = os.path.join(src, f"f{i}.png")
+                with open(path, "wb") as f:
+                    f.write(png + str(i).encode())
+                rp.note_action("task_e2e_replay", "browser_action", {"action": "navigate" if i == 0 else "click", "url": "https://example.com", "x": 10, "y": 20})
+                rp.add_frame(root, "task_e2e_replay", path, now=now + i)
+        out["replay"] = {"task_id": "task_e2e_replay", "frames": len(rp.frames(root, "task_e2e_replay"))}
+    db.close()
+    if kind in ("relay", "all"):
+        try:
+            _api("PUT", "/v1/bots/e2escribe", {"name": "E2E记录员", "instructions": "整理记录（假数据）", "model": MODEL, "credential": "e2e"})
+            out["relay"] = {"bot_id": "e2escribe"}
+        except Exception as e:
+            out["relay_error"] = str(e)
+    if kind in ("quiet-flush", "all"):
+        try:
+            _api("PUT", "/v1/quiet-hours", {"enabled": True, "start": "00:00", "end": "23:59",
+                                            "weekdays": [1, 2, 3, 4, 5, 6, 7], "timezone": "Asia/Shanghai"})
+            import cloud_agent_server as _srv
+            _srv._quiet_maybe_hold("task_complete", "文献整理做完了", "假结论", bot_id=BOT_ID)
+            out["quiet"] = _api("POST", "/v1/quiet-hours/flush", {})
+        except Exception as e:
+            out["quiet_error"] = str(e)
+    return out
+
+
+
 def main():
     work = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "/tmp/openminis-e2e")
     os.makedirs(os.path.join(work, "conf"), exist_ok=True)
@@ -312,6 +373,7 @@ def main():
     threading.Thread(target=model_srv.serve_forever, daemon=True).start()
     model_base = f"http://127.0.0.1:{model_srv.server_address[1]}/v1"
 
+    
     class Probe(BaseHTTPRequestHandler):
         def do_GET(self):
             # ?model=e2e-local-model 看本地那边；默认看云端模型。imports = 云端从手机导入的本地会话数（应为 0：本地不进云端）
@@ -356,6 +418,20 @@ def main():
                 body = json.dumps(out, ensure_ascii=False).encode()
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if urlparse(self.path).path == "/_e2e/ideas":
+                q = parse_qs(urlparse(self.path).query)
+                kind = (q.get("seed") or ["all"])[0]
+                try:
+                    out, code = seed_ideas(kind), 200
+                except Exception as e:
+                    out, code = {"error": str(e)}, 500
+                body = json.dumps(out, ensure_ascii=False).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)

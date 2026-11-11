@@ -677,11 +677,24 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - `GET /v1/workbench` → `{"items":[{"task_id","session_id","status":"running|waiting_user","bot_id","bot_name","title","started_at","elapsed_s","steps","last_tool"}],"running","waiting_you"}`（最近 24 小时内创建的任务，按开始时间排序）。
 - 不给「预计还要多久」：没有可靠依据，只给已用时间、工具步数和最后一步用的工具。停止用已有的 `POST /v1/tasks/<id>/cancel`。
 
-## 交班卡（2.36.0）
+## 交班卡（2.36.0，2.51.0 增补）
 
-- `GET /v1/shift-card?hours=12`（1–48）→ `{"hours","since","generated_at","totals":{"sessions","running","waiting_you","unanswered"},"bots":[{"bot_id","bot_name","sessions","messages","last_at","items":[{"session_id","title","state","conclusion","last_user"}]}]}`。
-- `state`：`running`（任务在跑）/ `waiting_you`（等你回答）/ `unanswered`（最后一条是你发的、还没回）/ `done`。`conclusion` 优先取「一句话：」结论。
-- 纯查库，不调模型；无痕对话不进卡。上锁的 Bot 由 App 端隐藏。
+- `GET /v1/shift-card?hours=12`（1–48）→ 最近 N 小时的未完成任务、未收回授权、待盯事项。`totals` 含 `sessions,running,waiting_you,unanswered,unfinished,approvals,grants,watch`；另有 `approvals`、`grants`、`watch`。
+- `GET /v1/shift-card?pending=1` → `{show_on_open, pinned_at, hours, card}`：下次打开 App 要先看到的那张卡。
+- `POST /v1/shift-card {"hours"?}` 生成并钉住；`POST /v1/shift-card/ack` 已看过，下次不再先弹。
+- `state`：`running` / `waiting_you` / `unanswered` / `done`。纯查库，不调模型；无痕对话不进卡。上锁的 Bot 由 App 端隐藏。
+- 用户说「交班」或点「交班」时 App 出卡并钉住。
+
+## 静默时段（2.51.0）
+
+- `GET /v1/quiet-hours` → `{quiet_hours: {enabled,start,end,weekdays,timezone}, active}`。
+- `PUT /v1/quiet-hours` 保存；`GET /v1/quiet-hours/digest` 最近一份下班汇总；`POST /v1/quiet-hours/flush` 立刻汇总（测试或手动）。
+- 时段内只应答主动提问；`task_complete` 等完成类通知先攒着，窗口结束后推送「下班了：静默时段攒下的通知」。审批卡仍立刻出现。
+
+## 多 Bot 接力（2.51.0）
+
+- `POST /v1/relay {"to_bot", "from_bot"?, "from_session"?, "result", "context"?, "goal"?, "client_nonce"?}` → `{session_id, task_id, bot_id, bot_name, deduped}`。
+- 把一个 Bot 的结果交给另一个 Bot 继续做。同一 `client_nonce` 不会开两个任务。
 
 ## 一句话版本（2.35.0）
 

@@ -766,7 +766,11 @@ struct CloudBotHomeScreen: View {
         .modifier(CloudNightModeModifier(dutyUntil: model.dutyUntil))
         .onReceive(NotificationCenter.default.publisher(for: .cloudFocusFilterChanged)) { _ in model.objectWillChange.send() }
         .onAppear { CloudColdStart.markHomeVisible(hasContent: !model.bots.isEmpty) }
-        .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
+        .sheet(isPresented: $showShiftCard, onDismiss: { CloudShiftPin.consume() }) { CloudShiftCardSheet() }
+        .task {
+            if CloudShiftPin.shouldShow { showShiftCard = true; return }
+            if await CloudShiftServerPin.isPending() { showShiftCard = true }
+        }
         .sheet(isPresented: $showWorkbench) { CloudWorkbenchSheet() }
         .sheet(isPresented: $showHub) {
             NavigationStack {
@@ -846,7 +850,8 @@ struct CloudBotHomeScreen: View {
             Menu {
                 Button { showConnectApps = true } label: { Label("连接应用", systemImage: "square.grid.2x2") }
                 Button { showWorkbench = true } label: { Label("工作台（在跑的任务）", systemImage: "rectangle.stack.badge.play") }
-                Button { showShiftCard = true } label: { Label("交班卡", systemImage: "list.clipboard") }
+                Button { showShiftCard = true } label: { Label("交班", systemImage: "list.clipboard") }
+                    .accessibilityIdentifier("handoffButton")
                 Button { path = ["hidden"] } label: {
                     Label(model.hiddenBots.isEmpty ? "已隐藏对话" : "已隐藏对话（\(model.hiddenBots.count)）", systemImage: "eye.slash")
                 }
@@ -945,6 +950,7 @@ struct CloudBotHubView: View {
                     onDone()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { CloudBotEntry.openVoice(bot: id) }
                 })) { Label("控制中心与手表", systemImage: "applewatch") }
+                NavigationLink(destination: CloudQuietHoursView()) { Label("静默时段", systemImage: "moon.zzz") }
                 NavigationLink(destination: CloudBotsView()) { Label("我的 Bot（模板、导入导出）", systemImage: "person.3") }
                 NavigationLink(destination: CloudPluginsView()) { Label("插件市场", systemImage: "puzzlepiece.extension") }
                 NavigationLink(destination: CloudRoutinesView()) { Label("例行任务", systemImage: "clock.arrow.circlepath") }

@@ -14,8 +14,17 @@ struct CloudOutboxBanner: View {
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(.thinMaterial, in: Capsule())
             .padding(.top, 6)
+            .accessibilityIdentifier("pendingOutboxBanner")
             .contextMenu {
                 Button(role: .destructive, action: onDiscard) { Label("放弃待发送的消息", systemImage: "trash") }
+            }
+            .overlay(alignment: .bottom) {
+                if CloudE2EOffline.forced {
+                    Button("模拟网络已恢复") { CloudE2EOffline.goOnline() }
+                        .font(.caption.weight(.semibold))
+                        .padding(.top, 36)
+                        .accessibilityIdentifier("e2eGoOnline")
+                }
             }
             .transition(.opacity)
         }
@@ -99,5 +108,30 @@ struct CloudRetractToast: ViewModifier {
                 }
             }
         }
+    }
+}
+
+/// 对话里一条还没发出去的消息 / 语音：气泡带「待发送」，网络回来后这条会按原 nonce 发出。
+struct CloudPendingOutboxRow: View {
+    let item: CloudOutboxItem
+    var accent: Color = .accentColor
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 40)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(item.isVoice ? (item.content.isEmpty ? "语音留言" : item.content) : item.content)
+                    .font(.body)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                HStack(spacing: 4) {
+                    ProgressView().controlSize(.mini)
+                    Text(CloudOutbox.pendingLabel(item)).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .accessibilityIdentifier("pendingOutboxBubble")
+        .accessibilityLabel(CloudOutbox.pendingLabel(item) + "：" + item.content)
     }
 }
