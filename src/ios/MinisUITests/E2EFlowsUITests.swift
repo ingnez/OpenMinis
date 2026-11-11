@@ -356,8 +356,7 @@ final class E2EFlowsUITests: XCTestCase {
             let input = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
             input.tap(); input.typeText("本地隔离E2E慢任务")
             let send = app.buttons["localComposerSendButton"]
-            let noModel = app.buttons["Model"].exists && ((app.buttons["Model"].value as? String) ?? "").contains("No model")
-            if !noModel, send.waitForExistence(timeout: 10), send.isEnabled {
+            if localModelReady(app), send.waitForExistence(timeout: 10), send.isEnabled {
                 send.tap()
                 localRan = poll(90) { (localProbe()?.requests ?? []).contains { $0.text.contains("本地隔离E2E慢任务") } }
                     && waitText(app, contains: "本地收到", timeout: 20)
@@ -436,6 +435,8 @@ final class E2EFlowsUITests: XCTestCase {
         let app = launch(homeMode: "local", extraEnv: ["OPENMINIS_E2E_LOCAL_PROVIDER": "http://127.0.0.1:18797"],
                          extraArgs: ["-launchScreen", "2"])
         XCTAssertTrue(poll(60) { app.textViews.firstMatch.exists || app.textFields.firstMatch.exists }, "本地模式没打开新对话的输入框")
+        // 本地服务商是启动后异步注入的；模拟器里没选上模型就没法发，如实跳过而不是假装通过
+        try XCTSkipUnless(localModelReady(app), "本地模式没选上注入的假模型（No model selected），本地渲染这条在模拟器里没法验证")
         let input = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
         input.tap(); dismissKeyboardIntro(app); input.typeText("本地请加粗回复")
         let send = app.buttons["localComposerSendButton"]
@@ -447,6 +448,14 @@ final class E2EFlowsUITests: XCTestCase {
     }
 
     // MARK: - 工具
+
+    /// 本地新对话顶上的模型名不再是「No model selected」（最多等 20 秒，注入是异步的）
+    private func localModelReady(_ app: XCUIApplication) -> Bool {
+        poll(20) {
+            let m = app.buttons["Model"]
+            return m.exists && !(((m.value as? String) ?? "").contains("No model"))
+        }
+    }
 
     private func launch(attach: Int = 0, homeMode: String = "bots",
                         extraEnv: [String: String] = [:], extraArgs: [String] = []) -> XCUIApplication {

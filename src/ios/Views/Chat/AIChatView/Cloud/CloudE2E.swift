@@ -32,7 +32,13 @@ enum CloudE2E {
     @MainActor
     static func injectLocalProvider(baseURL: String) {
         let store = ProviderConfigStore.shared
-        if store.instances.contains(where: { $0.label == "E2E本地" }) { return }
+        // 上一个流程已经注入过：只把默认模型组重新指回去（42956011241 里显示 No model selected）
+        if store.instances.contains(where: { $0.label == "E2E本地" }) {
+            if let g = store.config.modelGroups.first(where: { $0.name == "E2E本地" }), store.defaultPrimaryGroupId != g.id {
+                store.defaultPrimaryGroupId = g.id
+            }
+            return
+        }
         let inst = ProviderInstance(label: "E2E本地", providerType: .openAI, credentialType: .apiKey, customBaseURL: baseURL)
         ProviderKeychainHelper.saveAPIKey("sk-e2e-local-fake-0000000000", instanceId: inst.id)
         store.addInstance(inst)
