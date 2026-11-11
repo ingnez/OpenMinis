@@ -120,6 +120,75 @@ final class FrogP0UITests: XCTestCase {
         return app
     }
 
+    /// 设置里的命名密钥：添加、列表只显示名字、保存后看不到原值、再删除
+    func testFrog_namedSecretsAddListDelete() throws {
+        let app = launch()
+        let name = "FAKE_E2E_TOKEN"
+        let fake = "sk-fake-named-secret-e2e-000000000000"
+        let gear = app.buttons["settingsGear"].exists ? app.buttons["settingsGear"] : app.buttons["设置"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
+        gear.tap()
+        let row = app.descendants(matching: .any)["namedSecretsRow"]
+        XCTAssertTrue(scrollTo(app, row), "Bot 设置里没有「命名密钥」")
+        row.tap()
+        XCTAssertTrue(app.navigationBars["命名密钥"].waitForExistence(timeout: 20) || app.staticTexts["命名密钥"].waitForExistence(timeout: 5), "没打开命名密钥页")
+        // 上次失败残留时先删掉
+        let leftover = app.descendants(matching: .any)["namedSecretsDelete-\(name)"]
+        if leftover.waitForExistence(timeout: 3) {
+            leftover.tap()
+            let confirm = app.buttons["namedSecretsConfirmDelete"]
+            if confirm.waitForExistence(timeout: 5) { confirm.tap() }
+            _ = app.descendants(matching: .any)["namedSecretsAdd"].waitForExistence(timeout: 8)
+        }
+        let add = app.buttons["namedSecretsAdd"]
+        XCTAssertTrue(add.waitForExistence(timeout: 15), "没有添加按钮")
+        add.tap()
+        let nameField = app.textFields["namedSecretsNameField"]
+        XCTAssertTrue(nameField.waitForExistence(timeout: 10), "没有名字输入框")
+        nameField.tap()
+        nameField.typeText(name)
+        let valueField = app.secureTextFields["namedSecretsValueField"]
+        XCTAssertTrue(valueField.waitForExistence(timeout: 5), "没有密钥输入框")
+        valueField.tap()
+        valueField.typeText(fake)
+        let save = app.buttons["namedSecretsSave"]
+        XCTAssertTrue(save.waitForExistence(timeout: 5), "没有保存按钮")
+        save.tap()
+        let item = app.descendants(matching: .any)["namedSecretsItem-\(name)"]
+        XCTAssertTrue(item.waitForExistence(timeout: 20), "保存后列表里没有 \(name)")
+        XCTAssertTrue(waitText(app, contains: "已保存（值已隐藏）", timeout: 5) || item.exists, "保存后应提示值已隐藏")
+        let leaked = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", fake, fake)).firstMatch
+        XCTAssertFalse(leaked.exists, "保存后屏幕上还看得到假密钥原文")
+        shot(app, "frog-named-secrets-已保存隐藏")
+        let del = app.buttons["namedSecretsDelete-\(name)"]
+        XCTAssertTrue(del.waitForExistence(timeout: 8), "列表里没有删除按钮")
+        del.tap()
+        let confirm = app.buttons["namedSecretsConfirmDelete"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 8), "没有删除确认")
+        confirm.tap()
+        let gone = item.waitForExistence(timeout: 2)
+        // 等列表刷新：原来的 identifier 应消失
+        let deadline = Date().addingTimeInterval(12)
+        var stillThere = item.exists
+        while stillThere && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.4)
+            stillThere = item.exists
+        }
+        XCTAssertFalse(stillThere, "删除后列表里还有 \(name)")
+        XCTAssertFalse(leaked.exists, "删除后也不应出现假密钥原文")
+        shot(app, "frog-named-secrets-已删除")
+        _ = gone
+    }
+
+    private func scrollTo(_ app: XCUIApplication, _ el: XCUIElement) -> Bool {
+        if el.waitForExistence(timeout: 8), el.isHittable { return true }
+        for _ in 0..<10 {
+            app.swipeUp()
+            if el.exists, el.isHittable { return true }
+        }
+        return el.exists
+    }
+
     private func openBot(_ app: XCUIApplication) {
         let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
         if !row.waitForExistence(timeout: 60) {

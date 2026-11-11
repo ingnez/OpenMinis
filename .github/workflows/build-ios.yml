@@ -8,7 +8,7 @@ on:
         type: boolean
         default: false
       ui_tests:
-        description: "只在 iOS 模拟器上跑 XCUITest 端到端冒烟（MinisSmokeUITests），不出 IPA。模拟器依赖只有 arm64 版，固定用 macos-15（arm64）机器"
+        description: "只跑 XCUITest、跳过 IPA。完整构建（quick=false 且本项为 false）会同时跑 build 和 ui-tests"
         type: boolean
         default: false
       mac_runner:
@@ -296,6 +296,8 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudApprovalActions.swift scripts/CloudApprovalActionsTests.swift -o /tmp/cloud-approval-actions-tests
           /tmp/cloud-approval-actions-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNamedSecretsName.swift scripts/CloudNamedSecretsNameTests.swift -o /tmp/cloud-named-secrets-name-tests
+          /tmp/cloud-named-secrets-name-tests
       - name: Spotlight 搜 Bot 规则测试
         run: |
           set -o pipefail
@@ -566,6 +568,8 @@ jobs:
           /tmp/cloud-secret-mask-tests | tee cloud-secret-mask-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudApprovalActions.swift scripts/CloudApprovalActionsTests.swift -o /tmp/cloud-approval-actions-tests
           /tmp/cloud-approval-actions-tests | tee cloud-approval-actions-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNamedSecretsName.swift scripts/CloudNamedSecretsNameTests.swift -o /tmp/cloud-named-secrets-name-tests
+          /tmp/cloud-named-secrets-name-tests | tee cloud-named-secrets-name-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSpotlightRules.swift scripts/CloudSpotlightTests.swift -o /tmp/cloud-spotlight-tests
           /tmp/cloud-spotlight-tests | tee cloud-spotlight-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSmartField.swift scripts/CloudSmartFieldTests.swift -o /tmp/cloud-smartfield-tests
@@ -862,7 +866,7 @@ jobs:
           retention-days: 30
 
   ui-tests:
-    if: ${{ inputs.ui_tests && !inputs.quick }}
+    if: ${{ !inputs.quick }}
     runs-on: ${{ inputs.mac_runner || 'macos-26' }}
     timeout-minutes: 300
 
@@ -940,6 +944,8 @@ jobs:
           /tmp/cloud-secret-mask-tests | tee cloud-secret-mask-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudApprovalActions.swift scripts/CloudApprovalActionsTests.swift -o /tmp/cloud-approval-actions-tests
           /tmp/cloud-approval-actions-tests | tee cloud-approval-actions-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNamedSecretsName.swift scripts/CloudNamedSecretsNameTests.swift -o /tmp/cloud-named-secrets-name-tests
+          /tmp/cloud-named-secrets-name-tests | tee cloud-named-secrets-name-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSpotlightRules.swift scripts/CloudSpotlightTests.swift -o /tmp/cloud-spotlight-tests
           /tmp/cloud-spotlight-tests | tee cloud-spotlight-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSmartField.swift scripts/CloudSmartFieldTests.swift -o /tmp/cloud-smartfield-tests

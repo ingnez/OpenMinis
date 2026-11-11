@@ -932,6 +932,7 @@ struct CloudBotHubView: View {
                     Label("安装 / 更新服务器 Agent 服务", systemImage: "arrow.down.circle")
                 }
                 CloudVaultSettingsRow()
+                CloudNamedSecretsSettingsRow()
             } footer: {
                 Text("连接 VPS、安装或更新服务器上的 Agent 服务、代理和桌面环境都在「云电脑设置」里。")
             }
