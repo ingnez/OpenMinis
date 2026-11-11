@@ -733,3 +733,12 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - `POST /v1/proxy/import` 和订阅刷新：内容里有顶层 `proxies:` 时按 Clash YAML 读（明文或 base64 包着都行），把 ss / vmess / vless（含 REALITY）/ trojan / hysteria2 节点转成分享链接再走原来的解析；`proxy-groups`、`rules` 忽略。
 - 不支持的节点（wireguard、带 plugin 的 ss 等）计入 `skipped`，`skip_reason` 写第一条原因；一个能用的都没有时返回「Clash 配置里没有 proxies 节点」或「订阅里没有可用节点：…」。
 - 服务器装了 PyYAML 就用它，没装用内置的小解析器（只认 proxies 的行内 `{…}` 和缩进块写法），不新增安装依赖。
+
+## 回复方式：秒回 / 详细（2.50.0）
+
+- `GET/PUT /v1/bots/<bot_id|_default>/reply`：`{mode: "instant"|"verbose", front_model, back_model}`。缺的字段不改，`""` 清空（回到默认）。返回 `{reply, fast_model}`。没设置过 = 秒回。
+- `GET/PUT /v1/sessions/<session_id>/reply`：`{mode: "instant"|"verbose"|null}`，只改这个对话；`null` / `""` / `"bot"` = 跟随 Bot。返回 `{reply: {mode, source: "chat"|"bot", bot_mode, override, front_model, back_model}}`。会话详情 `GET /v1/sessions/<id>` 也带同样的 `reply`。
+- 秒回：前台用快模型（Bot 的 front_model → 资源设置 fast_model → 主模型），只有派活 / 转话 / 表情 / 选项 / 记忆这几个工具（服务器执行时也拦），先流一句话再 `spawn_task`；后台任务用 back_model（没设 = 主模型）。插话照常进前台，前台马上答复并用 `task_message` 转给后台。
+- 详细：和以前完全一样（主模型直接干活、实时步骤）。
+- `GET /v1/workers?session_id=` 每个任务多了 `status_phrase`（一句话进度，例如「分析工作方案」，来自工具的 tool_title 或工具种类）、`needs_decision`（等用户选）、`eta_s`（只在这个 Bot 至少有 3 次已完成的后台任务时给：用时中位数 − 已用时间，不到 5 秒不给）。
+- `/health` 的 `capabilities.reply_modes = true`。

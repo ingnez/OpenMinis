@@ -146,6 +146,8 @@ class TestCloudComputerRobustness(unittest.TestCase):
             f.write(cls.test_token)
         os.chmod(cls.test_token_file, 0o600)
 
+        # 这里测的是 Bot 自己直接用工具（详细模式）；秒回模式另有 test_phase62_reply
+        os.environ["OPENMINIS_REPLY_DEFAULT"] = "verbose"
         cls.mock_llm_server, cls.mock_llm_port = start_mock_server()
         cls.mock_llm_base = f"http://127.0.0.1:{cls.mock_llm_port}/v1"
 
@@ -166,6 +168,7 @@ class TestCloudComputerRobustness(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        os.environ.pop("OPENMINIS_REPLY_DEFAULT", None)
         try:
             cls.agent_server.shutdown()
         except Exception:

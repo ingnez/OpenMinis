@@ -21,6 +21,10 @@ BOT_NAME = "E2E小助手"
 # 本地模式的假服务商（App 用 OPENMINIS_E2E_LOCAL_PROVIDER 指过来）：单独端口、单独模型名，和云端那边的请求分开数
 LOCAL_MODEL = "e2e-local-model"
 LOCAL_MODEL_PORT = 18797
+# 回复方式（秒回）：前台快模型 + 后台干活模型，都是假的；默认把 e2ebot 设成「详细」，老流程不受影响
+FRONT_MODEL = "e2e-front-model"
+BACK_MODEL = "e2e-back-model"
+API_PORT = int(os.environ.get("OPENMINIS_E2E_PORT", "18765"))
 
 
 def last_user_text(data):
@@ -68,6 +72,78 @@ def local_script(data):
     if slow:
         time.sleep(16)
     return {"role": "assistant", "content": reply}
+
+
+def _fresh_tools(data):
+    msgs = data.get("messages", [])
+    users = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
+    return [m for m in msgs[(users[-1] if users else 0):] if m.get("role") == "tool"]
+
+
+def _stream_then_tool(text, call_id, name, args):
+    # 先流出一句回话，再在同一条回复里调工具（和真模型一样：文字在前，tool_calls 在后）
+    return {"_chunks": [text, {"tool_calls": [{"index": 0, "id": call_id, "type": "function",
+                                                "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}}]}],
+            "_delay": 0.02}
+
+
+def front_script(data):
+    """秒回前台：「查一下」→ 先回一句再派后台；后台在跑时「插话」→ 先回再转给后台；其余直接秒回。"""
+    import re
+    text = last_user_text(data)
+    if _fresh_tools(data):
+        return {"role": "assistant", "content": ""}
+    m = re.search(r"(wk_[a-f0-9]{10})「[^」]*」进行中", json.dumps(data.get("messages", []), ensure_ascii=False))
+    if "插话" in text and m:
+        return _stream_then_tool("收到插话，马上转给后台。", "f2", "task_message", {"id": m.group(1), "text": text})
+    if "查一下" in text:
+        title = "慢活" if "慢活" in text else "查资料"
+        return _stream_then_tool("好，我让后台去查，做完告诉你。", "f1", "spawn_task", {"goal": text, "context": "假数据", "title": title})
+    return {"_chunks": ["秒回：", text[:20]], "_delay": 0.02}
+
+
+def back_script(data):
+    """秒回后台：三步带 tool_title 的命令（每步约 4 秒；「慢活」第一步 60 秒），然后给结论（收到插话就注明）。"""
+    msgs = data.get("messages", [])
+    done = sum(1 for m in msgs if m.get("role") == "tool")
+    goal = " ".join(str(m.get("content")) for m in msgs if m.get("role") == "user")
+    if done < 3:
+        secs = 60 if ("慢活" in goal and done == 0) else 4
+        return {"role": "assistant", "content": "", "tool_calls": [{"id": f"b{done}", "type": "function", "function": {
+            "name": "shell_execute", "arguments": json.dumps({"command": f"sleep {secs}; echo e2e-back-step{done}",
+                                                              "tool_title": ["分析工作方案", "查找资料", "整理结果"][done]}, ensure_ascii=False)}}]}
+    heard = any(m.get("role") == "user" and "插话" in str(m.get("content")) for m in msgs)
+    return {"role": "assistant", "content": "后台结论：上海晴（假数据）" + ("（已按插话调整）" if heard else "")}
+
+
+def _api(method, path, body=None):
+    import urllib.request
+    req = urllib.request.Request(f"http://127.0.0.1:{API_PORT}{path}", method=method,
+                                 data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read() or b"{}")
+
+
+def set_reply(mode):
+    """探针 /_e2e/reply?mode=instant|verbose：设 e2ebot 的回复方式、清掉各对话的单独设置、停掉还在跑的后台任务。"""
+    import sqlite3
+    if mode:
+        _api("PUT", f"/v1/bots/{BOT_ID}/reply", {"mode": mode, "front_model": FRONT_MODEL, "back_model": BACK_MODEL})
+        for w in _api("GET", f"/v1/workers?bot={BOT_ID}").get("workers", []):
+            if w.get("status") in ("queued", "running", "waiting_user"):
+                try:
+                    _api("POST", f"/v1/workers/{w['id']}/stop", {})
+                except Exception:
+                    pass
+    db = sqlite3.connect(os.environ["OPENMINIS_DB"])
+    sids = [r[0] for r in db.execute("SELECT session_id FROM sessions WHERE persona_id = ?", (BOT_ID,))]
+    if mode:
+        db.executemany("DELETE FROM session_reply WHERE session_id = ?", [(x,) for x in sids])
+        db.commit()
+    overrides = {r[0]: r[1] for r in db.execute("SELECT session_id, mode FROM session_reply")}
+    db.close()
+    return {"bot": _api("GET", f"/v1/bots/{BOT_ID}/reply").get("reply"), "overrides": overrides}
 
 
 REALTIME_PORT = 18796
@@ -228,6 +304,8 @@ def main():
     import test_phase1_support as sup
     sup.FakeModelHandler.scripts[MODEL] = script
     sup.FakeModelHandler.scripts[LOCAL_MODEL] = local_script
+    sup.FakeModelHandler.scripts[FRONT_MODEL] = front_script
+    sup.FakeModelHandler.scripts[BACK_MODEL] = back_script
     local_srv = ThreadingHTTPServer(("127.0.0.1", LOCAL_MODEL_PORT), sup.FakeModelHandler)
     threading.Thread(target=local_srv.serve_forever, daemon=True).start()
     model_srv = ThreadingHTTPServer(("127.0.0.1", 0), sup.FakeModelHandler)
@@ -265,6 +343,19 @@ def main():
                 body = json.dumps(FAKE_DESK, ensure_ascii=False).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if urlparse(self.path).path == "/_e2e/reply":
+                try:
+                    out = set_reply((parse_qs(urlparse(self.path).query).get("mode") or [""])[0])
+                    code = 200
+                except Exception as e:
+                    out, code = {"error": str(e)}, 500
+                body = json.dumps(out, ensure_ascii=False).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -307,7 +398,7 @@ def main():
     install_fake_desktop()
     srv.SERVER_TOKEN = TOKEN
     srv.init_db()
-    api = ThreadingHTTPServer(("127.0.0.1", int(os.environ.get("OPENMINIS_E2E_PORT", "18765"))), srv.CloudAgentHandler)
+    api = ThreadingHTTPServer(("127.0.0.1", API_PORT), srv.CloudAgentHandler)
     threading.Thread(target=api.serve_forever, daemon=True).start()
 
     import urllib.request
@@ -320,6 +411,7 @@ def main():
 
     call("PUT", "/v1/credentials/e2e", {"api_key": "sk-e2e-fake-000000000000", "base_url": model_base})
     call("PUT", f"/v1/bots/{BOT_ID}", {"name": BOT_NAME, "instructions": "端到端测试 Bot", "model": MODEL, "credential": "e2e"})
+    set_reply("verbose")
     print(f"E2E 云端就绪：API 127.0.0.1:{api.server_address[1]}，假模型 {model_base}，本地假模型 127.0.0.1:{LOCAL_MODEL_PORT}/v1，探针 127.0.0.1:18799", flush=True)
     while True:
         time.sleep(3600)

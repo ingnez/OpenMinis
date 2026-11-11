@@ -230,6 +230,7 @@ struct CloudBotEditSheet: View {
                 CloudWeeklyReviewSection(botId: bot.id, botName: bot.name)
                 CloudBotLockSection(botId: bot.id)
                 CloudChatBackdropSection(botId: bot.id, accent: CloudBotAvatarSpec.of(bot).fill)
+                CloudReplyModeSection(botId: bot.id, credential: bot.credential)
                 Section {
                     Toggle("快速模式", isOn: $bot.fastMode)
                 } footer: {

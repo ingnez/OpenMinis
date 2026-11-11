@@ -21,6 +21,7 @@ struct CloudAssistantTurnView: View {
     /// 已完成的长回复先折叠（正在生成的不折叠）
     var collapsible = false
     @State private var expanded = false
+    @Environment(\.cloudReplyInstant) private var replyInstant
 
     private var isResetNote: Bool {
         message.blocks.count == 1 && (message.blocks[0].toolUseId ?? "").hasPrefix(CloudEventApplier.resetPrefix)
@@ -100,9 +101,14 @@ struct CloudAssistantTurnView: View {
                 case .reset(let block):
                     CloudResetNoteView(block: block)
                 case .tools(let blocks):
-                    CloudToolRunView(blocks: blocks)
+                    let shown = replyInstant ? blocks.filter { !CloudReplyMode.handoffTools.contains(CloudEventApplier.toolName($0) ?? "") } : blocks
+                    if !shown.isEmpty { CloudToolRunView(blocks: shown) }
                 case .card(let card):
-                    CloudCardView(card: card, accent: accent)
+                    if replyInstant, card.kind == .worker {
+                        CloudReplyHandoffLine(title: card.payload["title"] as? String ?? "后台任务", accent: accent)
+                    } else {
+                        CloudCardView(card: card, accent: accent)
+                    }
                 case .notice(let text):
                     CloudNoticeCapsule(text: text, systemImage: "eye")
                 }

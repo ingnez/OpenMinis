@@ -1,0 +1,243 @@
+import XCTest
+
+/// 回复方式（秒回 / 详细）的端到端流程：模拟器里的真 App ↔ 真云端 Agent（scripts/e2e_cloud_stack.py）↔ 假模型。
+/// 秒回：前台假模型 e2e-front-model 马上回一句、派后台；后台假模型 e2e-back-model 分三步干活（每步约 4 秒，「慢活」第一步 60 秒）。
+/// 每个流程开头用探针 /_e2e/reply?mode= 设好 Bot 的回复方式（并清掉对话单独设置、停掉上一个流程的后台任务），结束时恢复「详细」。
+final class ReplyModeUITests: XCTestCase {
+    static let token = "e2e-fake-token-0000000000000000"
+    static let botName = "E2E小助手"
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        executionTimeAllowance = 180
+    }
+
+    override func tearDownWithError() throws {
+        _ = probe("/_e2e/reply?mode=verbose")
+    }
+
+    // MARK: - 流程
+
+    /// 秒回：点发送到对话里出现前台的第一个字 < 1 秒（假模型），请求发给了前台模型
+    func testReply_instantFrontReply() throws {
+        let app = launch(mode: "instant")
+        openBot(app)
+        send(app, "你好秒回")
+        XCTAssertTrue(waitText(app, contains: "秒回：你好秒回", timeout: 20), "前台没回话")
+        let ms = app.descendants(matching: .any)["replyFirstTextMs"]
+        XCTAssertTrue(ms.waitForExistence(timeout: 10), "没记到首字时间")
+        let value = Int(ms.label) ?? Int.max
+        XCTContext.runActivity(named: "首字 \(value) ms") { _ in }
+        XCTAssertLessThan(value, 1000, "秒回首字 \(value) ms，超过 1 秒")
+        XCTAssertTrue(requests(model: "e2e-front-model").contains { $0.contains("你好秒回") }, "消息没交给前台模型")
+        XCTAssertFalse(requests(model: "e2e-vision-model").contains { $0.contains("你好秒回") }, "秒回时主模型也被叫了")
+        shot(app, "reply-01-秒回首字")
+    }
+
+    /// 后台在干活时插话：前台马上答复并转给后台，后台结果里体现插话；输入框按钮始终不是停止键
+    func testReply_interjectWhileWorking() throws {
+        let app = launch(mode: "instant")
+        openBot(app)
+        send(app, "帮我查一下天气")
+        XCTAssertTrue(waitText(app, contains: "好，我让后台去查", timeout: 20), "前台没先回一句")
+        let row = app.descendants(matching: .any)["replyStatusRow"]
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "底部没出现后台状态行")
+        XCTAssertTrue(poll(10) { row.label.contains(Self.botName) && row.label.contains("正在") }, "状态行文字不对：\(row.label)")
+        shot(app, "reply-02a-后台状态行")
+        send(app, "插话：只要上海的")
+        XCTAssertTrue(waitText(app, contains: "收到插话，马上转给后台", timeout: 10), "插话没被前台马上答复")
+        XCTAssertTrue(row.exists, "插话时后台任务不该结束")
+        let button = app.buttons["composerVoiceButton"]
+        XCTAssertFalse(button.label.contains("停止"), "输入框按钮变成了停止键")
+        shot(app, "reply-02b-插话秒回")
+        XCTAssertTrue(waitText(app, contains: "已按插话调整", timeout: 60), "后台结果里没体现插话")
+        shot(app, "reply-02c-后台结果")
+    }
+
+    /// 点状态行看过程、长按给后台补充要求、左滑停止
+    func testReply_statusRowExpandAndSwipeStop() throws {
+        let app = launch(mode: "instant")
+        openBot(app)
+        send(app, "慢活 查一下资料")
+        let row = app.descendants(matching: .any)["replyStatusRow"]
+        XCTAssertTrue(row.waitForExistence(timeout: 20), "底部没出现后台状态行")
+        XCTAssertTrue(poll(10) { (row.value as? String) == "分析工作方案" }, "状态行短语不对：\(String(describing: row.value))")
+        hideKeyboard(app)
+        row.tap()
+        let collapse = app.buttons["收起"]
+        XCTAssertTrue(collapse.waitForExistence(timeout: 10), "点状态行没打开过程")
+        XCTAssertTrue(app.buttons["replyStepsStop"].exists, "过程页没有停止按钮")
+        shot(app, "reply-03a-展开过程")
+        collapse.tap()
+        XCTAssertTrue(waitGone(collapse, timeout: 5))
+
+        row.press(forDuration: 1.0)
+        let field = app.alerts.textFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "长按状态行没弹出补充要求")
+        field.typeText("只看今天")
+        shot(app, "reply-03b-长按补充要求")
+        app.alerts.buttons["发送"].tap()
+        XCTAssertTrue(waitText(app, contains: "已转给后台", timeout: 10), "补充要求没送到后台")
+
+        let start = row.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: row.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)))
+        XCTAssertTrue(waitText(app, contains: "已停止", timeout: 15), "左滑没停止后台任务")
+        shot(app, "reply-03c-左滑停止")
+        XCTAssertTrue(waitGone(row, timeout: 20), "停止后状态行没收起")
+    }
+
+    /// 按对话切换（长按标题菜单）和按 Bot 切换（编辑页），服务器上都生效
+    func testReply_switchPerBotAndPerChat() throws {
+        let app = launch(mode: "verbose")
+        openBot(app)
+        let title = app.buttons["\(Self.botName) 资料"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        title.press(forDuration: 1.2)
+        let menu = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "回复方式")).firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 8), "对话菜单里没有「回复方式」")
+        XCTAssertTrue(menu.label.contains("详细"), "菜单显示的不是当前方式：\(menu.label)")
+        menu.tap()
+        let chatInstant = app.buttons["这个对话：秒回"]
+        XCTAssertTrue(chatInstant.waitForExistence(timeout: 5), "没有「这个对话：秒回」")
+        shot(app, "reply-04a-对话菜单")
+        chatInstant.tap()
+        XCTAssertTrue(poll(10) { (probeReply()?.overrides.values.contains("instant")) == true }, "这个对话的秒回没存到服务器")
+        XCTAssertEqual(probeReply()?.bot.mode, "verbose", "只改对话却改了 Bot")
+        send(app, "帮我查一下天气")
+        XCTAssertTrue(app.descendants(matching: .any)["replyStatusRow"].waitForExistence(timeout: 20), "切成秒回后没有后台状态行")
+        shot(app, "reply-04b-对话切成秒回")
+
+        hideKeyboard(app)
+        title.tap()
+        let edit = app.buttons["编辑"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 10), "没进 Bot 资料页")
+        edit.tap()
+        let picker = app.descendants(matching: .any)["replyModePicker"]
+        var found = picker.waitForExistence(timeout: 5)
+        for _ in 0..<10 where !(found && picker.isHittable) {
+            app.swipeUp()
+            found = picker.exists
+        }
+        XCTAssertTrue(found, "编辑页没有回复方式")
+        let botInstant = picker.buttons["秒回"]
+        XCTAssertTrue(botInstant.waitForExistence(timeout: 10))
+        XCTAssertTrue(poll(10) { botInstant.isEnabled }, "回复方式没读到")
+        botInstant.tap()
+        XCTAssertTrue(poll(10) { probeReply()?.bot.mode == "instant" }, "Bot 的秒回没存到服务器")
+        XCTAssertTrue(waitText(app, contains: "前台模型", timeout: 5), "秒回时没有前台 / 后台模型选择")
+        shot(app, "reply-04c-Bot切成秒回")
+        picker.buttons["详细"].tap()
+        XCTAssertTrue(poll(10) { probeReply()?.bot.mode == "verbose" }, "Bot 切回详细没存到服务器")
+        shot(app, "reply-04d-Bot切回详细")
+    }
+
+    /// 详细模式：和以前一样，主模型直接干活、步骤条显示步骤，没有后台状态行
+    func testReply_verboseModeUnchanged() throws {
+        let app = launch(mode: "verbose")
+        openBot(app)
+        send(app, "跑个命令")
+        XCTAssertTrue(poll(60) { requests(model: "e2e-vision-model").filter { $0.contains("跑个命令") }.count >= 2 }, "主模型没执行步骤")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "e2e-shell-ok")).firstMatch.waitForExistence(timeout: 20)
+                      || app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "e2e-shell-ok")).firstMatch.exists, "详细模式没显示步骤")
+        XCTAssertFalse(app.descendants(matching: .any)["replyStatusRow"].exists, "详细模式出现了后台状态行")
+        XCTAssertFalse(requests(model: "e2e-front-model").contains { $0.contains("跑个命令") }, "详细模式叫了前台模型")
+        shot(app, "reply-05-详细模式")
+    }
+
+    // MARK: - 工具
+
+    private struct ReplyBot: Decodable { let mode: String }
+    private struct ReplyProbe: Decodable { let bot: ReplyBot; let overrides: [String: String] }
+
+    private func probe(_ path: String) -> Data? {
+        guard let url = URL(string: "http://127.0.0.1:18799" + path) else { return nil }
+        return try? Data(contentsOf: url)
+    }
+
+    private func probeReply() -> ReplyProbe? {
+        probe("/_e2e/reply").flatMap { try? JSONDecoder().decode(ReplyProbe.self, from: $0) }
+    }
+
+    private func requests(model: String) -> [String] {
+        struct P: Decodable { let text: String }
+        struct R: Decodable { let requests: [P] }
+        guard let d = probe("/_e2e/requests?model=" + model), let r = try? JSONDecoder().decode(R.self, from: d) else { return [] }
+        return r.requests.map(\.text)
+    }
+
+    private func launch(mode: String) -> XCUIApplication {
+        _ = probe("/_e2e/reset")
+        XCTAssertNotNil(probe("/_e2e/reply?mode=" + mode), "探针设不了回复方式（E2E 云端没起来？）")
+        let app = XCUIApplication()
+        app.launchEnvironment["OPENMINIS_E2E_HOMEMODE"] = "bots"
+        app.launchArguments += ["-OpenMinisCloud_name", "E2E云电脑", "-OpenMinisCloud_host", "127.0.0.1"]
+        app.launchArguments += ["-OpenMinisCloud_lockDefaultsDecided", "(e2ebot)", "-OpenMinisCloud_lockedBots", "()"]
+        app.launchEnvironment["OPENMINIS_E2E_TOKEN"] = Self.token
+        app.launchEnvironment["OPENMINIS_E2E_PORT"] = "18765"
+        app.launch()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 60))
+        dismissKeyboardIntro(app)
+        return app
+    }
+
+    private func openBot(_ app: XCUIApplication) {
+        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
+        if !row.waitForExistence(timeout: 60) {
+            shot(app, "找不到Bot")
+            XCTFail("首页 60 秒内没出现「\(Self.botName)」")
+        }
+        row.tap()
+        if !app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 30) {
+            shot(app, "打开Bot后没有输入框")
+            XCTFail("Bot 对话的输入框没出现")
+        }
+    }
+
+    private func dismissKeyboardIntro(_ app: XCUIApplication) {
+        for label in ["Continue", "继续"] {
+            let b = app.buttons[label]
+            if b.exists && b.isHittable { b.tap(); return }
+        }
+    }
+
+    private func hideKeyboard(_ app: XCUIApplication) {
+        guard app.keyboards.firstMatch.exists else { return }
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7)))
+    }
+
+    private func send(_ app: XCUIApplication, _ text: String) {
+        let field = app.descendants(matching: .any)["botComposerField"]
+        field.tap()
+        dismissKeyboardIntro(app)
+        field.typeText(text)
+        let button = app.buttons["composerVoiceButton"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10))
+        button.tap()
+    }
+
+    private func waitText(_ app: XCUIApplication, contains s: String, timeout: TimeInterval) -> Bool {
+        let p = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", s, s)
+        return app.descendants(matching: .any).matching(p).firstMatch.waitForExistence(timeout: timeout)
+    }
+
+    private func waitGone(_ el: XCUIElement, timeout: TimeInterval) -> Bool {
+        poll(timeout) { !el.exists }
+    }
+
+    private func poll(_ timeout: TimeInterval, _ ok: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if ok() { return true }
+            Thread.sleep(forTimeInterval: 0.3)
+        } while Date() < deadline
+        return false
+    }
+
+    private func shot(_ app: XCUIApplication, _ name: String) {
+        let a = XCTAttachment(screenshot: app.screenshot())
+        a.name = name
+        a.lifetime = .keepAlways
+        add(a)
+    }
+}

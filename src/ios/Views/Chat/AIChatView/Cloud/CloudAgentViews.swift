@@ -684,6 +684,13 @@ struct CloudSessionView: View {
     @State private var eventCursor = 0
     @State private var isStreaming = false
     @State private var lastWarm = Date.distantPast
+    // 回复方式（秒回 / 详细）：秒回时底部一行显示后台在做什么
+    @State private var replyPlan: CloudReplyPlan?
+    @StateObject private var replyStatus = CloudReplyStatusModel()
+    @State private var replyLatency = CloudReplyLatency()
+    @State private var replyExpanded: CloudReplyWorker?
+    @State private var replyInterject: CloudReplyWorker?
+    @State private var replyInterjectText = ""
 
     private let timer = Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()
 
@@ -822,6 +829,22 @@ struct CloudSessionView: View {
             injectE2EAttachments()
         }
         .modifier(CloudDraftKeeper(sessionId: sessionId, text: $inputPrompt))
+        .environment(\.cloudReplyInstant, replyPlan?.isInstant == true)
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: replyStatus.current?.id)
+        .sheet(item: $replyExpanded) { w in CloudReplyStepsSheet(worker: w) { replyStatus.stop(w) } }
+        .alert("给后台补充要求", isPresented: Binding(get: { replyInterject != nil }, set: { if !$0 { replyInterject = nil } })) {
+            TextField("比如：结果用表格列出来", text: $replyInterjectText)
+            Button("发送") { if let w = replyInterject { replyStatus.interject(w, text: replyInterjectText) }; replyInterject = nil }
+            Button("取消", role: .cancel) { replyInterject = nil }
+        } message: {
+            Text("直接送进正在做的「\(replyInterject?.title ?? "后台任务")」，它下一步就能看到")
+        }
+        .overlay(alignment: .bottom) { CloudFollowUpToast(text: $replyStatus.notice, icon: "bolt.horizontal.circle") }
+        .onReceive(NotificationCenter.default.publisher(for: CloudReplyService.changed)) { note in
+            guard note.userInfo?["session_id"] as? String == sessionId else { return }
+            Task { @MainActor in applyReplyPlan(try? await CloudReplyService.session(sessionId)) }
+        }
+        .onDisappear { replyStatus.stopPolling() }
         // 通话中途断开等：也走去处面板（不再往消息列表底下塞灰字，那里还会压住滚动箭头）
         .onChange(of: call.error) { e in if let e, !call.active { reportVoiceProblem(e) } }
         .sheet(isPresented: Binding(get: { voiceRoute != nil }, set: { if !$0 { voiceRoute = nil } })) {
@@ -993,6 +1016,7 @@ struct CloudSessionView: View {
                     if self.messages.count == fresh.count { self.hasOlderHistory = res["has_more"] as? Bool ?? false }
                     self.tasks = freshTasks
                     self.isLoading = false
+                    self.applyReplyPlan(CloudReplyPlan(json: res["reply"] as? [String: Any]))
                     if !self.isStreaming { self.liveText = "" }
                     if let latestTask = self.tasks.first,
                        let tid = latestTask["task_id"] as? String,
@@ -1104,11 +1128,27 @@ struct CloudSessionView: View {
     private func themedComposer(_ theme: CloudBotChatTheme) -> some View {
         let working = activeTaskStatus == "running" || activeTaskStatus == "waiting_user"
         VStack(spacing: 6) {
+            if replyPlan?.isInstant == true, let w = replyStatus.current {
+                // 秒回：后台在做什么（一句话 + 用时），点开看过程、左滑停止、长按补充要求
+                CloudReplyStatusRow(worker: w, count: replyStatus.activeCount, fetchedAt: replyStatus.fetchedAt, theme: theme,
+                                    onExpand: { replyExpanded = w }, onStop: { replyStatus.stop(w) },
+                                    onInterject: { replyInterjectText = ""; replyInterject = w })
+                    .padding(.horizontal, 12)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            #if DEBUG
+            if CloudE2E.token != nil, let ms = replyLatency.firstTextMs {
+                // 只给模拟器 E2E 读：秒回首字时间（点发送 → 对话里出现 Bot 的第一个字）
+                Text("\(ms)").font(.system(size: 1)).opacity(0.02).accessibilityIdentifier("replyFirstTextMs").accessibilityLabel("\(ms)")
+            }
+            #endif
+            if replyPlan?.isInstant != true {
             // 与本地模式同一个步骤条（预览卡 + 状态胶囊 + N/M 翻页），数据来自 Bot 的实时工具事件
             CloudStepBar(message: liveMessage, liveToolId: liveTool?.id, liveOutput: liveTool?.output ?? "", working: working)
                 // 步骤面板复用本地组件：标题写 Bot / 云电脑名字，CPU / 内存读云端，不读这台 iPhone
                 .environment(\.cloudComputer, CloudComputerContext.current(actor: theme.name))
                 .padding(.horizontal, 12)
+            }
             if let r = replyTarget {
                 CloudReplyBanner(excerpt: r.excerpt) { replyTarget = nil }
             }
@@ -1855,6 +1895,7 @@ struct CloudSessionView: View {
         isSubmitting = true
         errorMessage = nil
         sendStartedAt = Date()   // 性能页「首字」实测起点，与本地模式同口径
+        replyLatency.sent()
 
         Task {
             do {
@@ -1901,6 +1942,7 @@ struct CloudSessionView: View {
                 followUpNotice = note
             }
         }
+        if replyPlan?.isInstant == true { await MainActor.run { replyStatus.kick() } }
         pollTaskStatus(taskId: tid)
     }
 
@@ -2079,6 +2121,8 @@ struct CloudSessionView: View {
                         self.liveTool = nil
                     }
                     if let s = batch.rawStatus { self.activeTaskStatus = s }
+                    if !self.liveText.isEmpty || fresh.contains(where: { ["thought", "text", "content", "final"].contains($0["type"] as? String ?? "")
+                        && !((($0["payload"] as? [String: Any])?["content"] as? String) ?? "").isEmpty }) { self.replyLatency.sawText() }
                     // 结束了：正在生成的那段文字已经写进最后一轮，别再单独画一遍
                     if batch.status?.isTerminal == true { self.liveText = ""; self.liveReasoning = ""; self.liveTool = nil }
                 },
@@ -2090,6 +2134,21 @@ struct CloudSessionView: View {
                 self.errorMessage = CloudTaskFailure.text(status: final.rawValue, events: self.taskEvents)
             }
             self.loadSessionDetail()
+        }
+    }
+
+    /// 服务器说这个对话现在是秒回还是详细：秒回就开始看后台任务（老服务器没有这个字段 = 详细，和以前一样）
+    private func applyReplyPlan(_ plan: CloudReplyPlan?) {
+        replyPlan = plan
+        guard let theme else { return }
+        if plan?.isInstant == true {
+            replyStatus.botName = theme.name
+            replyStatus.locked = CloudBotLock.isLockedStored(theme.botId)
+            replyStatus.inRealtimeCall = { showVoiceCall && voiceMode == "realtime" }
+            replyStatus.onWorkerFinished = { loadSessionDetail() }
+            replyStatus.start(sessionId: sessionId)
+        } else {
+            replyStatus.stopPolling()
         }
     }
 

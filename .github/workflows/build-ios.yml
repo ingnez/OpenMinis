@@ -281,6 +281,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSmartField.swift scripts/CloudSmartFieldTests.swift -o /tmp/cloud-smartfield-tests
           /tmp/cloud-smartfield-tests
+      - name: 回复方式（秒回 / 详细）状态行逻辑测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReplyMode.swift scripts/CloudReplyModeTests.swift -o /tmp/cloud-reply-mode-tests
+          /tmp/cloud-reply-mode-tests
       - name: Spotlight 搜 Bot 规则测试
         run: |
           set -o pipefail
@@ -1150,6 +1155,7 @@ jobs:
             -only-testing:MinisUITests/ComposerVoiceButtonUITests \
             -only-testing:MinisUITests/E2EFlowsUITests \
             -only-testing:MinisUITests/MiscControlsUITests \
+            -only-testing:MinisUITests/ReplyModeUITests \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 150 \
             -maximum-test-execution-time-allowance 240 \

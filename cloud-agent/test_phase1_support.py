@@ -127,6 +127,7 @@ class CloudServerTestCase(unittest.TestCase):
     token = "phase1-test-token"
     extra_env = {}
     approval_mode = None   # "ask" = 这一组测试要看审批卡（服务端默认「一律批准」）
+    reply_default = "verbose"   # 老测试测的是「详细」那条路；回复方式自己的测试设成 None，按真实默认（秒回）跑
 
     @classmethod
     def setUpClass(cls):
@@ -137,6 +138,10 @@ class CloudServerTestCase(unittest.TestCase):
         os.environ.pop("OPENMINIS_MASTER_KEY", None)
         for k, v in cls.extra_env.items():
             os.environ[k] = v
+        if cls.reply_default:
+            os.environ["OPENMINIS_REPLY_DEFAULT"] = cls.reply_default
+        else:
+            os.environ.pop("OPENMINIS_REPLY_DEFAULT", None)
         import cloud_secrets
         cloud_secrets.reset()
         import cloud_agent_server as srv

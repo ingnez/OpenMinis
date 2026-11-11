@@ -984,6 +984,7 @@ struct CloudBotChatView: View {
     let botId: String
     @ObservedObject private var model = CloudBotHomeModel.shared
     @State private var sessionId: String?
+    @State private var replyPlan: CloudReplyPlan?
     @State private var history: [[String: Any]] = []
     @State private var errorText: String?
     @State private var showDetail = false
@@ -1076,6 +1077,9 @@ struct CloudBotChatView: View {
                         if let sid = sessionId {
                             Button { speakLatest(sid) } label: { Label("朗读最新回复", systemImage: "speaker.wave.2") }
                             Button { showComputer = true } label: { Label("电脑", systemImage: "display") }
+                            if incognito == nil, replyPlan != nil {
+                                CloudReplyChatMenu(sessionId: sid, plan: $replyPlan)
+                            }
                         }
                         if history.count > 1 {
                             Section("历史对话") {
@@ -1104,6 +1108,14 @@ struct CloudBotChatView: View {
             }
         }
         .task { await prepare() }
+        .task(id: sessionId) {
+            // 这个对话的回复方式（老服务器没有这个接口：菜单里就不出现）
+            if let sid = sessionId { replyPlan = try? await CloudReplyService.session(sid) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: CloudReplyService.changed)) { note in
+            guard let sid = sessionId, note.userInfo?["session_id"] as? String == sid else { return }
+            Task { replyPlan = try? await CloudReplyService.session(sid) }
+        }
         .alert("没能开无痕对话", isPresented: Binding(get: { incognitoError != nil }, set: { if !$0 { incognitoError = nil } })) {
             Button("好", role: .cancel) {}
         } message: { Text(incognitoError ?? "") }
