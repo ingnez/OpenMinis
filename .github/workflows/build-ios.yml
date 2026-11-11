@@ -1124,6 +1124,13 @@ jobs:
           assert s2 != s and "MinisUITests" in s2
           open(d + "MinisE2E.xcscheme", "w").write(s2)
           PY
+          # 主线程卡死取证：模拟器里的 App 是本机进程，CPU 连续 10 秒占满就 sample 一次调用栈（最多 4 份）
+          mkdir -p hang-samples
+          ( n=0; hot=0; while [ $n -lt 4 ]; do sleep 2
+              pid=$(pgrep -f '/Minis.app/Minis$' | head -1); [ -z "$pid" ] && { hot=0; continue; }
+              cpu=$(ps -o %cpu= -p "$pid" | awk '{print int($1)}'); [ "${cpu:-0}" -ge 90 ] && hot=$((hot+1)) || hot=0
+              if [ $hot -ge 5 ]; then n=$((n+1)); hot=0; sample "$pid" 3 -file "hang-samples/hang-$n-$(date +%H%M%S).txt" >/dev/null 2>&1 || true; sleep 20; fi
+            done ) &
           xcodebuild test \
             -project src/ios/Minis.xcodeproj \
             -scheme MinisE2E \
@@ -1168,6 +1175,7 @@ jobs:
             ui-tests-tests.json
             e2e-shots
             e2e-cloud-stack.log
+            hang-samples
           retention-days: 7
 
       - name: iOS 单元测试 MinisTests（模拟器，MinisUnitTests 方案）

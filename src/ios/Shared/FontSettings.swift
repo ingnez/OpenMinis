@@ -153,6 +153,7 @@ final class FontSettings: ObservableObject {
     /// 系统设置里的字号（含启动参数 UIPreferredContentSizeCategoryName）；窗口上的覆盖不影响它
     @Published private(set) var systemTypeSize: DynamicTypeSize = FontSettings.currentSystemTypeSize()
     private var systemSizeObserver: NSObjectProtocol?
+    private var activeObserver: NSObjectProtocol?
 
     /// App 实际用的字号：系统字号叠上 App 里的字号档
     var appTypeSize: DynamicTypeSize { appBaseScale.dynamicTypeSize(stackedOn: systemTypeSize) }
@@ -168,6 +169,14 @@ final class FontSettings: ObservableObject {
         appBaseScale = FontScaleLevel(rawValue: ud.integer(forKey: Keys.appBase)) ?? .default
         // Defer to after first window is available
         DispatchQueue.main.async { [weak self] in self?.applyAppScaleToAllWindows() }
+        activeObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,
+                                                                object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let now = Self.currentSystemTypeSize()
+                if now != self.systemTypeSize { self.systemTypeSize = now; self.applyAppScaleToAllWindows() }
+            }
+        }
         systemSizeObserver = NotificationCenter.default.addObserver(forName: UIContentSizeCategory.didChangeNotification,
                                                                     object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -234,11 +243,14 @@ final class FontSettings: ObservableObject {
 
 /// Applies app-base font scaling via `dynamicTypeSize`.
 /// Use on sheet content and any view that doesn't inherit the root environment.
+/// 叠在环境里的系统字号上（环境值就是系统「更大字体」，含启动参数）：默认档完全不改。
+/// 不用 UIApplication.preferredContentSizeCategory：App 很早读到的是 .large，CI 里调大字号后首页一点没变
 private struct AppFontScaleModifier: ViewModifier {
     @ObservedObject private var fontSettings = FontSettings.shared
+    @Environment(\.dynamicTypeSize) private var system
 
     func body(content: Content) -> some View {
-        content.dynamicTypeSize(fontSettings.appTypeSize)
+        content.dynamicTypeSize(fontSettings.appBaseScale.dynamicTypeSize(stackedOn: system))
     }
 }
 

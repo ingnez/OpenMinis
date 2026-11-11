@@ -198,7 +198,8 @@ final class RealtimeVoiceSession: ObservableObject {
                 emit(connectionProtocol.setup(model: model, voice: voice, instructions: instructions, tools: voiceTools))
             }
             timeoutTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 25_000_000_000)
+                // 被取消（握手通过、开始开麦）要直接返回：以前 try? 吞掉取消，马上报「握手超时」——42986042936 test21
+                do { try await Task.sleep(nanoseconds: 25_000_000_000) } catch { return }
                 guard let self, self.epoch == generation, self.active, !self.connected else { return }
                 self.fail("实时握手超时。该服务商可能未开放 WebSocket 实时音频接口，请更换支持 Realtime 的服务商。")
             }
@@ -543,7 +544,7 @@ final class RealtimeVoiceSession: ObservableObject {
         }
         // 3 秒内麦克风一帧都没有：收音根本没起来，别让一个不计时的「连接中」挂着
         healthTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            do { try await Task.sleep(nanoseconds: 3_000_000_000) } catch { return }
             guard let self, self.active, self.epoch == generation, !self.connected else { return }
             self.fail("麦克风没有声音进来：收音没启动（可能被听写、朗读或别的 App 占用），通话已停止。")
         }

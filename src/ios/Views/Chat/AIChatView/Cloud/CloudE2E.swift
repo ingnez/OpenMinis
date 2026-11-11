@@ -26,7 +26,8 @@ enum CloudE2E {
             if Thread.isMainThread { MainActor.assumeIsolated { injectRealtimeProvider(url: rt) } }
             else { Task { @MainActor in injectRealtimeProvider(url: rt) } }
         }
-        if let base = env["OPENMINIS_E2E_LOCAL_PROVIDER"], !base.isEmpty {
+        let local = env["OPENMINIS_E2E_LOCAL_PROVIDER"].flatMap { $0.isEmpty ? nil : $0 }
+        if let base = local {
             // 同步注入：异步 Task 跑在首屏之后，对话页先按「没有服务商」画出来（No model selected）
             if Thread.isMainThread {
                 MainActor.assumeIsolated { injectLocalProvider(baseURL: base) }
@@ -34,6 +35,7 @@ enum CloudE2E {
                 Task { @MainActor in injectLocalProvider(baseURL: base) }
             }
         }
+        if let base = local { Task { @MainActor in keepInjected(localBaseURL: base) } }
     }
 
     static let localModelId = "e2e-local-model"
@@ -74,26 +76,47 @@ enum CloudE2E {
         d.set("{}", forKey: "realtimeVoice.protocolsByProvider")
     }
 
-    /// 本地模式用的假服务商：OpenAI 兼容，指向 e2e 栈里单独的假模型端口（和云端用的假模型分开记录请求）。全是假数据
+    /// 本地模式用的假服务商：OpenAI 兼容，指向 e2e 栈里单独的假模型端口（和云端用的假模型分开记录请求）。全是假数据。
+    /// 服务商、模型、模型组、默认组分别检查、缺哪样补哪样：服务商库启动后异步用数据库 dump 换掉内存配置，
+    /// 只补服务商不补组时就是「No model selected」（42986042936 test20 / test23）
     @MainActor
     static func injectLocalProvider(baseURL: String) {
         let store = ProviderConfigStore.shared
-        // 上一个流程已经注入过：只把默认模型组重新指回去（42956011241 里显示 No model selected）
-        if store.instances.contains(where: { $0.label == "E2E本地" }) {
-            if let g = store.config.modelGroups.first(where: { $0.name == "E2E本地" }), store.defaultPrimaryGroupId != g.id {
+        let inst: ProviderInstance
+        if let old = store.instances.first(where: { $0.label == "E2E本地" }) { inst = old } else {
+            inst = ProviderInstance(label: "E2E本地", providerType: .openAI, credentialType: .apiKey, customBaseURL: baseURL)
+            ProviderKeychainHelper.saveAPIKey("sk-e2e-local-fake-0000000000", instanceId: inst.id)
+            store.addInstance(inst)
+        }
+        let entry: ModelEntry
+        if let old = store.config.modelEntries.first(where: { $0.providerInstanceId == inst.id && $0.model.id == localModelId }) { entry = old } else {
+            entry = ModelEntry(providerInstanceId: inst.id, model: LLMModel(id: localModelId, displayName: "E2E 本地模型", provider: "openai"))
+            _ = store.addEntry(entry)
+        }
+        if let g = store.config.modelGroups.first(where: { $0.name == "E2E本地" }) {
+            if !g.memberEntryIds.contains(entry.id) || store.defaultPrimaryGroupId != g.id {
+                var fixed = g
+                if !fixed.memberEntryIds.contains(entry.id) { fixed.memberEntryIds = [entry.id] }
+                store.updateGroup(fixed)
                 store.defaultPrimaryGroupId = g.id
             }
-            return
+        } else {
+            let group = ModelGroup(name: "E2E本地", memberEntryIds: [entry.id])
+            store.addGroup(group)
+            store.defaultPrimaryGroupId = group.id
         }
-        let inst = ProviderInstance(label: "E2E本地", providerType: .openAI, credentialType: .apiKey, customBaseURL: baseURL)
-        ProviderKeychainHelper.saveAPIKey("sk-e2e-local-fake-0000000000", instanceId: inst.id)
-        store.addInstance(inst)
-        let entry = ModelEntry(providerInstanceId: inst.id, model: LLMModel(id: localModelId, displayName: "E2E 本地模型", provider: "openai"))
-        _ = store.addEntry(entry)
-        let group = ModelGroup(name: "E2E本地", memberEntryIds: [entry.id])
-        store.addGroup(group)
-        store.defaultPrimaryGroupId = group.id
         store.addAgentLoopEntry(entry.id)
+    }
+
+    /// 启动后 30 秒内每半秒看一眼：服务商库异步加载把注入的本地配置冲掉了就再补上（注入本身是幂等的；实时服务商在点声波时注入）
+    @MainActor
+    static func keepInjected(localBaseURL: String) {
+        Task { @MainActor in
+            for _ in 0..<60 {
+                injectLocalProvider(baseURL: localBaseURL)
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
     }
     #else
     static func applyLaunchDefaults() {}

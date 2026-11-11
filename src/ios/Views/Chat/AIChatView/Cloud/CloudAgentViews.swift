@@ -1587,6 +1587,8 @@ struct CloudSessionView: View {
                 .padding()
             }
             .environment(\.cloudChatActions, chatActions)
+            // 往下拖消息收起键盘（和信息 App 一样）；以前键盘只能点别处收，拖动时键盘一直顶着，叠放卡片被挤到导航栏下面
+            .scrollDismissesKeyboard(.interactively)
             // 病区语音：打开「双击消息区开语音」后，戴手套也能双击屏幕任意处开始和 Bot 说话（只在 Bot 对话里）
             .simultaneousGesture(TapGesture(count: 2).onEnded {
                 let drafting = !inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

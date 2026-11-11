@@ -634,11 +634,15 @@ struct CloudBotLibraryView: View {
         }
         .task { await load() }
         .refreshable { await load() }
-        // 看图推一页进来（以前用 sheet：同一个视图上已经挂了分享 sheet 和快速查看，
-        // 模拟器里点了媒体没弹出来——42976420696 test18 两次都是这样）
-        .navigationDestination(isPresented: Binding(get: { preview != nil }, set: { if !$0 { preview = nil } })) {
-            if let p = preview { CloudLibraryPreviewPage(preview: p) }
+        // 看图直接盖在本页上（sheet 和第二个 navigationDestination 在模拟器里都没弹出来——
+        // 42976420696、42986042936 的 test18；这页已经挂了分享 sheet、快速查看和页面跳转）
+        .overlay {
+            if let p = preview {
+                CloudLibraryPreviewOverlay(preview: p) { preview = nil }
+                    .transition(.opacity)
+            }
         }
+        .animation(.easeInOut(duration: 0.2), value: preview?.id)
     }
 
     private var filtered: [[String: Any]] {
@@ -690,7 +694,9 @@ struct CloudBotLibraryView: View {
                          : (kind == "media" ? "图片" : "页面") + (at > 0 ? " · " + Self.ago(at) : "")) + sharedNote(item))
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
+                Spacer(minLength: 0)
             }
+            .contentShape(Rectangle())     // 整行都能点（以前只有图标和文字那一小块）
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("libraryItem.\(kind)")
@@ -881,33 +887,56 @@ struct CloudActivitySheet: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
 
-/// 资料库里点开的一张图（推进来的一页）
-struct CloudLibraryPreviewPage: View {
+/// 资料库里点开的一张图：盖在资料库上面，左上角关闭
+struct CloudLibraryPreviewOverlay: View {
+    let preview: CloudLibraryPreview
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button(action: onClose) {
+                    Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).frame(width: 36, height: 36)
+                        .background(Circle().fill(Color(.secondarySystemBackground)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭")
+                .accessibilityIdentifier("libraryPreviewClose")
+                Spacer()
+                Text(preview.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Spacer()
+                if let image = preview.image {
+                    ShareLink(item: Image(uiImage: image), preview: SharePreview(preview.title, image: Image(uiImage: image))) {
+                        Image(systemName: "square.and.arrow.up").frame(width: 36, height: 36)
+                    }
+                } else {
+                    Color.clear.frame(width: 36, height: 36)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            CloudLibraryPreviewContent(preview: preview)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(Color(.systemBackground).ignoresSafeArea())
+    }
+}
+
+struct CloudLibraryPreviewContent: View {
     let preview: CloudLibraryPreview
 
     var body: some View {
-        Group {
-            if let image = preview.image {
-                ScrollView([.horizontal, .vertical]) {
-                    Image(uiImage: image).resizable().scaledToFit()
-                        .accessibilityLabel("资料库图片").accessibilityIdentifier("libraryPreviewImage")
-                }
-            } else if let err = preview.error {
-                Label(err, systemImage: "exclamationmark.triangle")
-                    .font(.footnote).foregroundStyle(.red).padding()
-                    .accessibilityIdentifier("libraryPreviewError")
-            } else {
-                ProgressView().accessibilityIdentifier("libraryPreviewLoading")
+        if let image = preview.image {
+            ScrollView([.horizontal, .vertical]) {
+                Image(uiImage: image).resizable().scaledToFit()
+                    .frame(maxWidth: UIScreen.main.bounds.width)
+                    .accessibilityLabel("资料库图片").accessibilityIdentifier("libraryPreviewImage")
             }
-        }
-        .navigationTitle(preview.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                if let image = preview.image {
-                    ShareLink(item: Image(uiImage: image), preview: SharePreview(preview.title, image: Image(uiImage: image)))
-                }
-            }
+        } else if let err = preview.error {
+            Label(err, systemImage: "exclamationmark.triangle")
+                .font(.footnote).foregroundStyle(.red).padding()
+                .accessibilityIdentifier("libraryPreviewError")
+        } else {
+            ProgressView().accessibilityIdentifier("libraryPreviewLoading")
         }
     }
 }
