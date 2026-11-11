@@ -236,6 +236,36 @@ struct CloudPluginsView: View {
                 Text("MCP 插件需在“我的 Bot”详情页授权给具体 Bot；不属于任何 Bot 的对话使用“默认授权”的插件。")
             }
 
+            Section("插件目录") {
+                if loading && catalog.isEmpty {
+                    ProgressView()
+                        .accessibilityIdentifier("pluginCatalogLoading")
+                }
+                // 保持服务端顺序（e2e-echo 在首位）；已安装的仍留在目录里，显示「已安装」而不是「安装」
+                ForEach(catalog) { p in
+                    HStack {
+                        pluginRow(p)
+                        Spacer()
+                        if p.installed {
+                            Text("已安装").font(.caption).foregroundStyle(.secondary)
+                            NavigationLink("打开") {
+                                CloudPluginDetailView(plugin: installed.first(where: { $0.id == p.id }) ?? p, onChanged: { await reload() })
+                            }
+                            .accessibilityIdentifier("pluginOpen-\(p.id)")
+                        } else if busyId == p.id {
+                            ProgressView()
+                                .accessibilityIdentifier("pluginInstalling-\(p.id)")
+                        } else {
+                            Button("安装") { run(busyId: p.id) { try await CloudPluginService.install(catalogId: p.id) } }
+                                .buttonStyle(.borderless)
+                                .disabled(busy)
+                                .accessibilityIdentifier("pluginInstall-\(p.id)")
+                        }
+                    }
+                    .accessibilityIdentifier("pluginCatalog-\(p.id)")
+                }
+            }
+
             if !deps.isEmpty {
                 Section {
                     ForEach(deps) { d in
@@ -259,31 +289,6 @@ struct CloudPluginsView: View {
                     Text("运行依赖")
                 } footer: {
                     Text("不少 MCP 插件通过 npx（Node.js）或 uvx（uv）运行。安装时从官方地址下载并校验 SHA-256，装到云电脑用户目录 ~/.local/bin，不需要 root。")
-                }
-            }
-
-            Section("插件目录") {
-                ForEach(catalog.filter { !$0.installed }) { p in
-                    HStack {
-                        pluginRow(p)
-                        Spacer()
-                        if p.installed {
-                            Text("已安装").font(.caption).foregroundStyle(.secondary)
-                            NavigationLink("打开") {
-                                CloudPluginDetailView(plugin: installed.first(where: { $0.id == p.id }) ?? p, onChanged: { await reload() })
-                            }
-                            .accessibilityIdentifier("pluginOpen-\(p.id)")
-                        } else if busyId == p.id {
-                            ProgressView()
-                                .accessibilityIdentifier("pluginInstalling-\(p.id)")
-                        } else {
-                            Button("安装") { run(busyId: p.id) { try await CloudPluginService.install(catalogId: p.id) } }
-                                .buttonStyle(.borderless)
-                                .disabled(busy)
-                                .accessibilityIdentifier("pluginInstall-\(p.id)")
-                        }
-                    }
-                    .accessibilityIdentifier("pluginCatalog-\(p.id)")
                 }
             }
 

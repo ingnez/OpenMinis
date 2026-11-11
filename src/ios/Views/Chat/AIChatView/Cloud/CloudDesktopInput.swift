@@ -63,6 +63,14 @@ struct CloudScrollAccumulator: Equatable {
     }
 }
 
+/// 捏合策略（与 UIKit 手势识别器解耦，方便 Linux 单测）。
+/// XCUITest 合成的 pinch 经常 numberOfTouches == 0，且可能只有 began/ended、没有 changed；
+/// 不能因此丢掉缩放。真机抬起一根手指时中心会跳，那种情况只缩放、不跟锚点平移。
+enum CloudPinchPolicy {
+    static func followAnchor(numberOfTouches: Int) -> Bool { numberOfTouches >= 2 }
+    static func shouldFlushScaleOnEnd(_ scale: CGFloat) -> Bool { scale != 1 }
+}
+
 /// 远端画面的缩放与平移（作用在网页里的画面层上）；放大后光标靠近边缘时自动跟随
 struct CloudZoom: Equatable {
     static let minScale: CGFloat = 1, maxScale: CGFloat = 4

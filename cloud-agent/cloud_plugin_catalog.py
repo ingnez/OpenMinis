@@ -97,10 +97,11 @@ CATALOG = [
 def entries():
     """当前插件目录。e2e 可通过 OPENMINIS_E2E_FAKE_PLUGIN 追加一个不访问网络的假 stdio MCP。"""
     items = list(CATALOG)
-    path = (os.environ.get("OPENMINIS_E2E_FAKE_PLUGIN") or "").strip()
+    path = os.path.abspath(os.path.expanduser((os.environ.get("OPENMINIS_E2E_FAKE_PLUGIN") or "").strip())) if (os.environ.get("OPENMINIS_E2E_FAKE_PLUGIN") or "").strip() else ""
     if not path:
         return items
-    script = path if os.path.isfile(path) else os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_fake_mcp_server.py")
+    fallback = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_fake_mcp_server.py")
+    script = path if os.path.isfile(path) else fallback
     if not os.path.isfile(script):
         return items
     if any(c["id"] == "e2e-echo" for c in items):

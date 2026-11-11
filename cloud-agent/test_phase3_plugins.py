@@ -239,5 +239,48 @@ class E2ECatalogTests(unittest.TestCase):
                 os.environ[key] = old
 
 
+class E2ECatalogHTTPTests(CloudServerTestCase):
+    """应用读的是 GET /v1/plugins，不只是 entries()；在同样的 HTTP 路径上复现 e2e 注入。"""
+
+    def setUp(self):
+        self.srv.PLUGINS.close_all()
+        self.srv.PLUGINS.plugin_dir = os.path.join(self.tmp.name, "plugin-files")
+
+    def test_e2e_echo_is_first_in_v1_plugins(self):
+        key = "OPENMINIS_E2E_FAKE_PLUGIN"
+        old = os.environ.get(key)
+        os.environ[key] = FAKE
+        try:
+            status, res = self.request("GET", "/v1/plugins")
+            self.assertEqual(status, 200)
+            catalog = res["catalog"]
+            ids = [c["id"] for c in catalog]
+            self.assertEqual(ids[0], "e2e-echo", "GET /v1/plugins 必须把 e2e-echo 放在首位（应用只读这个接口）")
+            self.assertEqual(catalog[0]["name"], "E2E 回声")
+            self.assertFalse(catalog[0].get("installed"), "假插件默认不应标成已安装，否则目录区会被过滤掉")
+            self.assertIn("fetch", ids)
+        finally:
+            if old is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old
+
+    def test_v1_plugins_omits_e2e_echo_without_env(self):
+        key = "OPENMINIS_E2E_FAKE_PLUGIN"
+        old = os.environ.get(key)
+        os.environ.pop(key, None)
+        try:
+            status, res = self.request("GET", "/v1/plugins")
+            self.assertEqual(status, 200)
+            ids = [c["id"] for c in res["catalog"]]
+            self.assertNotIn("e2e-echo", ids)
+            self.assertEqual(ids[0], "fetch")
+        finally:
+            if old is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old
+
+
 if __name__ == "__main__":
     unittest.main()
