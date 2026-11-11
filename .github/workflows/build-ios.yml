@@ -12,7 +12,7 @@ on:
         type: boolean
         default: false
       mac_runner:
-        description: "macOS 机器标签。arm64 机器紧张时 GitHub 会在约 15 分钟后报「job was not acquired by Runner of type hosted」并取消；那时换 macos-15-intel（Intel 机器池，同样有 Xcode 26）"
+        description: "macOS 机器标签。build 可走 macos-15-intel；ui-tests 的模拟器只有 arm64，选 intel 时仍会落到 macos-26"
         type: choice
         options: [macos-15, macos-15-intel, macos-26, macos-latest]
         default: macos-15
@@ -867,7 +867,8 @@ jobs:
 
   ui-tests:
     if: ${{ !inputs.quick }}
-    runs-on: ${{ inputs.mac_runner || 'macos-26' }}
+    # 模拟器依赖只有 arm64：macos-15-intel / macos-latest 可能是 x86_64，pick_ios_simulator 会直接失败（43021055665）
+    runs-on: ${{ (inputs.mac_runner == 'macos-15' && 'macos-15') || 'macos-26' }}
     timeout-minutes: 300
 
     steps:
