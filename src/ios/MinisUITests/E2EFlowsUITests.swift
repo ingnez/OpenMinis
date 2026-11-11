@@ -636,9 +636,13 @@ final class E2EFlowsUITests: XCTestCase {
     /// 系统键盘第一次弹出时的「滑行输入」引导（Speed up your typing… Continue）会盖住下半屏；有就点掉。
     /// CI 已在模拟器里写了不再显示的偏好，这里兜底
     private func dismissKeyboardIntro(_ app: XCUIApplication) {
-        for label in ["Continue", "继续"] {
-            let b = app.buttons[label]
-            if b.exists && b.isHittable { b.tap(); return }
+        // 只点系统键盘 / 弹窗上的 Continue。对话里的「继续」不能点，否则会当成一条消息发出去（43027845469 「秒回：继续」）。
+        let springs = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        for root in [app.keyboards, app.alerts, springs.alerts] {
+            for label in ["Continue", "继续"] {
+                let b = root.buttons[label]
+                if b.waitForExistence(timeout: 0.3), b.isHittable { b.tap(); return }
+            }
         }
     }
 
@@ -820,18 +824,25 @@ extension E2EFlowsUITests {
     }
 
     /// 不要用无超时的 `.exists`：粘贴权限弹窗会卡住 App 主线程，exists 先等空闲就会挂死（43013143801 test25）。
+    /// 也不要在底栏附近乱点：会进全屏或让剪贴板菜单挡住「键盘」（43027845469）。
     private func ccAllowPaste(_ app: XCUIApplication) {
         let sb = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        // 触发 interruption monitor
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92)).tap()
-        for _ in 0..<8 {
-            for label in ["Allow Paste", "允许粘贴"] {
-                let a = app.buttons[label]
-                if a.waitForExistence(timeout: 0.4) { a.tap(); return }
-                let b = sb.alerts.buttons[label]
-                if b.waitForExistence(timeout: 0.3) { b.tap(); return }
-            }
+        for label in ["Allow Paste", "允许粘贴"] {
+            let a = app.buttons[label]
+            if a.waitForExistence(timeout: 1.0) { a.tap(); return }
+            let b = sb.alerts.buttons[label]
+            if b.waitForExistence(timeout: 0.5) { b.tap(); return }
         }
+    }
+
+    /// 关掉剪贴板菜单 / 退出全屏，让底栏「键盘」露出来
+    private func ccRevealDesktopBar(_ app: XCUIApplication) {
+        let keyboard = app.buttons["键盘"]
+        if keyboard.waitForExistence(timeout: 1) { return }
+        let exitFull = app.buttons["退出全屏"]
+        if exitFull.waitForExistence(timeout: 1) { exitFull.tap() }
+        // 点画面中上部，收起可能还开着的菜单，避免点到底栏
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap()
     }
 
     @objc func test25_CC_pinchZoomAndClipboard() throws {
@@ -907,6 +918,7 @@ extension E2EFlowsUITests {
         XCTAssertTrue(poll(20) { self.ccDesk()?.clip_sets.contains(phone) ?? false }, "手机剪贴板没到云电脑：\(String(describing: ccDesk()))")
 
         // 7. 手机输入法打中文 → 云电脑；云端「剪贴板 + 粘贴」改了远端剪贴板，手机不能把它当成远端复制再拷回来
+        ccRevealDesktopBar(app)
         let keyboard = app.buttons["键盘"]
         XCTAssertTrue(keyboard.waitForExistence(timeout: 10), "底栏没有键盘按钮")
         keyboard.tap()

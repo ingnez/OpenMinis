@@ -254,8 +254,8 @@ struct CloudTypingStatusRow<Avatar: View>: View {
     var body: some View {
         HStack(spacing: 8) {
             avatar.frame(width: 22, height: 22)
-                .scaleEffect(phase ? 1.08 : 0.94)
-                .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: phase)
+                .scaleEffect(phase && !CloudE2E.pauseIdleAnimations ? 1.08 : 0.94)
+                .animation(CloudE2E.pauseIdleAnimations ? .default : .easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: phase)
             Text(text).font(.caption.weight(.medium)).foregroundStyle(tint)
             Spacer()
             if let onStop {
@@ -267,7 +267,7 @@ struct CloudTypingStatusRow<Avatar: View>: View {
                 .accessibilityLabel("停止")
             }
         }
-        .onAppear { phase = true }
+        .onAppear { if !CloudE2E.pauseIdleAnimations { phase = true } }
         .accessibilityElement(children: .combine)
     }
 }

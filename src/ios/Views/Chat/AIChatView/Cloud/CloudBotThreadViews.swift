@@ -370,9 +370,9 @@ struct CloudChatSkeleton: View {
             Spacer()
         }
         .padding(16)
-        .opacity(dim ? 0.55 : 1)
-        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dim)
-        .onAppear { dim = true }
+        .opacity(dim && !CloudE2E.pauseIdleAnimations ? 0.55 : 1)
+        .animation(CloudE2E.pauseIdleAnimations ? .default : .easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dim)
+        .onAppear { if !CloudE2E.pauseIdleAnimations { dim = true } }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("正在载入对话")
     }
