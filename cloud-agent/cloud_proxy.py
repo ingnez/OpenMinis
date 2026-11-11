@@ -24,6 +24,8 @@ import time
 import urllib.parse
 import urllib.request
 
+from cloud_clash import ClashError, looks_like_clash, to_links as clash_to_links
+
 SINGBOX_VERSION = "1.14.4"
 # GitHub release 资源的 sha256（与 GitHub API 的 digest 字段一致）。镜像下载的文件必须和这里一致才会安装。
 SINGBOX_SHA256 = {
@@ -368,16 +370,30 @@ def _parse_hy2(u):
 
 
 def parse_subscription(text):
-    """订阅内容（base64 或一行一条）→ (节点列表, 跳过的条数, 第一条跳过原因)。"""
+    """订阅内容（base64、一行一条，或 Clash / mihomo 的 YAML）→ (节点列表, 跳过的条数, 第一条跳过原因)。"""
     text = (text or "").strip()
     if not text:
         raise ProxyError("订阅内容为空")
-    if "://" not in text:
+    clash_skipped, clash_why = 0, None
+    if not looks_like_clash(text) and "://" not in text:
+        try:
+            decoded = _b64decode(re.sub(r"\s+", "", text))
+            if looks_like_clash(decoded):
+                text = decoded
+        except Exception:
+            pass
+    if looks_like_clash(text):
+        try:
+            links, clash_skipped, clash_why = clash_to_links(text)
+        except ClashError as e:
+            raise ProxyError(str(e))
+        text = "\n".join(links)
+    elif "://" not in text:
         try:
             text = _b64decode(re.sub(r"\s+", "", text))
         except Exception:
-            raise ProxyError("订阅内容既不是分享链接也不是 base64（Clash / sing-box 配置文件格式暂不支持）")
-    nodes, skipped, why = [], 0, None
+            raise ProxyError("订阅内容既不是分享链接、base64，也不是 Clash 配置（sing-box 配置文件格式暂不支持）")
+    nodes, skipped, why = [], clash_skipped, clash_why
     for line in text.splitlines():
         line = line.strip()
         if not line or "://" not in line:

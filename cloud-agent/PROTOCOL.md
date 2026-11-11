@@ -727,3 +727,9 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - `install.sh` 在系统 Python 里没有 `PIL` 时装 `python3-pil`；`install-desktop.sh` 在服务用的 venv 里 `pip install Pillow`。装不上只警告、不中断安装。
 - 有 Pillow：附件图片超过 1.4 MB 时缩到长边 1600 / 1280 / 1024 / 800 重压 JPEG 再给模型。没有：JPEG / PNG / WebP / GIF 原图 ≤ 8 MB 照发，更大的放弃。
 - 有图片没能给模型看时，任务状态里写清原因：缺 Pillow 时提示「更新服务器 Agent 会自动装上，或关掉保留原图」，否则写「文件不在或格式不认识」。
+
+## 代理导入认 Clash / mihomo 订阅（2.49.0）
+
+- `POST /v1/proxy/import` 和订阅刷新：内容里有顶层 `proxies:` 时按 Clash YAML 读（明文或 base64 包着都行），把 ss / vmess / vless（含 REALITY）/ trojan / hysteria2 节点转成分享链接再走原来的解析；`proxy-groups`、`rules` 忽略。
+- 不支持的节点（wireguard、带 plugin 的 ss 等）计入 `skipped`，`skip_reason` 写第一条原因；一个能用的都没有时返回「Clash 配置里没有 proxies 节点」或「订阅里没有可用节点：…」。
+- 服务器装了 PyYAML 就用它，没装用内置的小解析器（只认 proxies 的行内 `{…}` 和缩进块写法），不新增安装依赖。
