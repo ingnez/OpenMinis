@@ -532,6 +532,98 @@ struct AIChatView: View {
     /// (file was deleted, the session was pruned, or iCloud hasn't synced yet).
     @State var missingMinisFileName: String?
 
+    /// 聊天底部：交给 Bot 卡片、工具预览、输入框和斜杠 / @ 弹层
+    @ViewBuilder
+    private var composerStack: some View {
+        ZStack(alignment: .bottom) {
+            // Tap-outside catcher placed UNDER the popup (declared
+            // first → lower z-order). When the popup is visible,
+            // the catcher fills the ZStack and absorbs taps that
+            // land outside the popup card. Taps on the popup
+            // itself naturally fall through to the popup view
+            // because it sits on top in z-order.
+            if vm.showSlashMenu || vm.showMentionMenu {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if vm.showSlashMenu { vm.dismissSlashMenu() }
+                        else if vm.showMentionMenu { vm.dismissMentionMenu() }
+                    }
+            }
+            VStack(spacing: 0) {
+                // 交给 Bot 的卡片（本地做不完转云端）
+                LocalBotHandoffCards(sessionKey: vm.sessionId ?? "draft")
+                    .frame(maxWidth: maxContentWidth)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
+                    .modifier(ChatSearchComposerHider(hidden: isChatSearchActive))
+                floatingToolPreview
+                    // [T-in-chat-search] Leaves with the composer while searching.
+                    .modifier(ChatSearchComposerHider(hidden: isChatSearchActive))
+                    .shadow(color: Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0, alpha: 0.25) : UIColor(white: 0, alpha: 0) }), radius: 6, x: 0, y: 4)
+                #if DEBUG
+                if isReadOnly {
+                    forkBanner
+                } else {
+                    inputBar
+                        .modifier(ChatSearchComposerHider(hidden: isChatSearchActive))
+                }
+                #else
+                inputBar
+                    .modifier(ChatSearchComposerHider(hidden: isChatSearchActive))
+                #endif
+            }
+            // Register the composer (tool preview + input bar) as a
+            // region the global speech capsule must not cover.
+            .capsuleProtectedFrame("inputBar")
+            // [T-p1-delegate-task] Hosted on the stable VStack, not on
+            // the capsule itself: the capsule unmounts the moment the
+            // helper finishes, which would yank an open sheet away.
+            // [T-agent-transcript-halfsheet] Same resizable sheet as
+            // the tool-sheet route, so the transcript looks and
+            // behaves the same whichever way it was opened. This
+            // route now serves only openers that have no tool sheet
+            // of their own (notification tap, intent, debug RPC);
+            // opening from a tool sheet stacks on that sheet instead.
+            .sheet(item: $helperSheetTarget) { target in
+                HelperTranscriptPage(target: target)
+                    .helperTranscriptSheetStyle()
+            }
+            .sheet(item: $agentCallbackDetail) { target in
+                if target.opensScheduledTaskPage {
+                    // [T-scheduled-task-detail] A scheduled task's own
+                    // page: parameters, status, run history.
+                    ScheduledTaskDetailView(callback: target.callback,
+                                            hostSessionId: target.hostSessionId)
+                } else {
+                    // [T-agent-result-display] Same frame as any other
+                    // tool result (nav bar + bottom status bar), with
+                    // HelperDetailCard as the body.
+                    ToolLiveSheet(toolBlocks: [target.block], initialIdx: 0, browserPool: nil)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openAgentCallback)) { note in
+                if let block = note.userInfo?["block"] as? AssistantBlock {
+                    agentCallbackDetail = AgentCallbackDetailTarget(block: block)
+                    return
+                }
+                guard let cb = note.userInfo?["callback"] as? AgentCallback else { return }
+                if let sid = note.userInfo?["sessionId"] as? String, !sid.isEmpty,
+                   let mine = vm.sessionId, sid != mine { return }
+                agentCallbackDetail = AgentCallbackDetailTarget(callback: cb, hostSessionId: vm.sessionId)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openHelperSheet)) { note in
+                guard let childId = note.userInfo?["childSessionId"] as? String else { return }
+                if let parent = note.userInfo?["parentSessionId"] as? String, !parent.isEmpty,
+                   let mine = vm.sessionId, parent != mine { return }
+                let title = (note.userInfo?["title"] as? String) ?? ""
+                helperSheetTarget = HelperSheetTarget(id: childId, title: title)
+            }
+            inputPopupOverlay
+                .padding(.bottom, inputBarHeight)
+        }
+    }
+
     var body: some View {
         // [T-ios-chat-body-stack-erase] Type-erase the page's content before
         // the ~80-modifier chain below. Most of those modifiers (.sheet,
@@ -605,93 +697,8 @@ struct AIChatView: View {
                     //      top edge. inputBarHeight here is just the input
                     //      bar (NOT including toolbar) so popup covers
                     //      toolbar when both visible.
-                    ZStack(alignment: .bottom) {
-                        // Tap-outside catcher placed UNDER the popup (declared
-                        // first → lower z-order). When the popup is visible,
-                        // the catcher fills the ZStack and absorbs taps that
-                        // land outside the popup card. Taps on the popup
-                        // itself naturally fall through to the popup view
-                        // because it sits on top in z-order.
-                        if vm.showSlashMenu || vm.showMentionMenu {
-                            Color.clear
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    if vm.showSlashMenu { vm.dismissSlashMenu() }
-                                    else if vm.showMentionMenu { vm.dismissMentionMenu() }
-                                }
-                        }
-                        VStack(spacing: 0) {
-                            // 交给 Bot 的卡片（本地做不完转云端）
-                            LocalBotHandoffCards(sessionKey: vm.sessionId ?? "draft")
-                                .frame(maxWidth: maxContentWidth)
-                                .padding(.horizontal, 12)
-                                .padding(.bottom, 6)
-                                .modifier(ChatSearchComposerHider(hidden: isChatSearchActive))
-                            floatingToolPreview
-                                // [T-in-chat-search] Leaves with the composer while searching.
-                                .modifier(ChatSearchComposerHider(hidden: isChatSearchActive))
-                                .shadow(color: Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0, alpha: 0.25) : UIColor(white: 0, alpha: 0) }), radius: 6, x: 0, y: 4)
-                            #if DEBUG
-                            if isReadOnly {
-                                forkBanner
-                            } else {
-                                inputBar
-                                    .modifier(ChatSearchComposerHider(hidden: isChatSearchActive))
-                            }
-                            #else
-                            inputBar
-                                .modifier(ChatSearchComposerHider(hidden: isChatSearchActive))
-                            #endif
-                        }
-                        // Register the composer (tool preview + input bar) as a
-                        // region the global speech capsule must not cover.
-                        .capsuleProtectedFrame("inputBar")
-                        // [T-p1-delegate-task] Hosted on the stable VStack, not on
-                        // the capsule itself: the capsule unmounts the moment the
-                        // helper finishes, which would yank an open sheet away.
-                        // [T-agent-transcript-halfsheet] Same resizable sheet as
-                        // the tool-sheet route, so the transcript looks and
-                        // behaves the same whichever way it was opened. This
-                        // route now serves only openers that have no tool sheet
-                        // of their own (notification tap, intent, debug RPC);
-                        // opening from a tool sheet stacks on that sheet instead.
-                        .sheet(item: $helperSheetTarget) { target in
-                            HelperTranscriptPage(target: target)
-                                .helperTranscriptSheetStyle()
-                        }
-                        .sheet(item: $agentCallbackDetail) { target in
-                            if target.opensScheduledTaskPage {
-                                // [T-scheduled-task-detail] A scheduled task's own
-                                // page: parameters, status, run history.
-                                ScheduledTaskDetailView(callback: target.callback,
-                                                        hostSessionId: target.hostSessionId)
-                            } else {
-                                // [T-agent-result-display] Same frame as any other
-                                // tool result (nav bar + bottom status bar), with
-                                // HelperDetailCard as the body.
-                                ToolLiveSheet(toolBlocks: [target.block], initialIdx: 0, browserPool: nil)
-                            }
-                        }
-                        .onReceive(NotificationCenter.default.publisher(for: .openAgentCallback)) { note in
-                            if let block = note.userInfo?["block"] as? AssistantBlock {
-                                agentCallbackDetail = AgentCallbackDetailTarget(block: block)
-                                return
-                            }
-                            guard let cb = note.userInfo?["callback"] as? AgentCallback else { return }
-                            if let sid = note.userInfo?["sessionId"] as? String, !sid.isEmpty,
-                               let mine = vm.sessionId, sid != mine { return }
-                            agentCallbackDetail = AgentCallbackDetailTarget(callback: cb, hostSessionId: vm.sessionId)
-                        }
-                        .onReceive(NotificationCenter.default.publisher(for: .openHelperSheet)) { note in
-                            guard let childId = note.userInfo?["childSessionId"] as? String else { return }
-                            if let parent = note.userInfo?["parentSessionId"] as? String, !parent.isEmpty,
-                               let mine = vm.sessionId, parent != mine { return }
-                            let title = (note.userInfo?["title"] as? String) ?? ""
-                            helperSheetTarget = HelperSheetTarget(id: childId, title: title)
-                        }
-                        inputPopupOverlay
-                            .padding(.bottom, inputBarHeight)
-                    }
+                    // 输入框那一层拆成单独属性：整段写在 body 里，CI 上编译器报「unable to type-check this expression in reasonable time」（42996856646）
+                    composerStack
                 }
                 // Collapse the expanded speech player on a tap anywhere in the chat
                 // area. Attached as a SIMULTANEOUS TapGesture directly on the content
