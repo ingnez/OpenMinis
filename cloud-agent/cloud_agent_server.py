@@ -74,6 +74,7 @@ import cloud_desktop_control
 import cloud_botstatus
 import cloud_botthreads
 import cloud_duty
+import cloud_backup_meta
 import cloud_events
 import cloud_exams
 import cloud_sysnap
@@ -8066,6 +8067,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if ok else 400, {"undone": True, "message": msg} if ok else {"error": msg})
             return
 
+        if path == "/v1/backup/preview":
+            try:
+                conn = get_db_connection()
+                try:
+                    existing = cloud_backup_meta.existing_from_db(conn)
+                finally:
+                    conn.close()
+                stats = cloud_backup_meta.preview(req_json.get("backup"), existing)
+            except cloud_backup_meta.BackupError as e:
+                self._send(400, {"error": str(e)})
+                return
+            self._send(200, {"preview": stats})
+            return
         if path == "/v1/backup/import":
             try:
                 stats = restore_backup(req_json.get("backup"), bool(req_json.get("include_settings")))

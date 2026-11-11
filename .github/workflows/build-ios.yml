@@ -470,6 +470,12 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library scripts/CloudHandoffTestSupport.swift src/ios/Views/Chat/AIChatView/Cloud/CloudLocalHandoff.swift scripts/CloudLocalHandoffTests.swift -o /tmp/cloud-handoff-tests
           /tmp/cloud-handoff-tests
+      - name: 备份命名、计数、自校验与历史测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBackupPackage.swift scripts/CloudBackupPackageTests.swift -o /tmp/cloud-backup-package-tests
+          /tmp/cloud-backup-package-tests
+
       - name: 云端 API 路径规则测试
         run: |
           set -o pipefail
@@ -739,6 +745,8 @@ jobs:
           /tmp/cloud-avatar-tests | tee cloud-avatar-test.log
           swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudCardsStub.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTaskPump.swift src/ios/Views/Chat/AIChatView/Cloud/CloudEventLedger.swift src/ios/Views/Chat/AIChatView/Cloud/CloudStepFeed.swift -o /tmp/cloud-chat-tests
           /tmp/cloud-chat-tests | tee cloud-chat-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBackupPackage.swift scripts/CloudBackupPackageTests.swift -o /tmp/cloud-backup-package-tests
+          /tmp/cloud-backup-package-tests | tee cloud-backup-package-tests.log
           xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift src/ios/WatchShared/*.swift 2>&1 | tee cloud-connection-typecheck.log
 
       - name: Show toolchain
@@ -1240,7 +1248,8 @@ jobs:
           MinisUITests/ComposerVoiceButtonUITests
           MinisUITests/E2EFlowsUITests
           MinisUITests/MiscControlsUITests
-          MinisUITests/ReplyModeUITests"
+          MinisUITests/ReplyModeUITests
+          MinisUITests/BackupUXUITests"
           ONLY_SRC="${ONLY_TESTING:-}"
           if [ -z "$(printf '%s' "$ONLY_SRC" | tr -d '[:space:]')" ]; then
             ONLY_SRC="$DEFAULT_ONLY_TESTING"

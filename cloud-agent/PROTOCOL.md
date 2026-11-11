@@ -742,3 +742,10 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 详细：和以前完全一样（主模型直接干活、实时步骤）。
 - `GET /v1/workers?session_id=` 每个任务多了 `status_phrase`（一句话进度，例如「分析工作方案」，来自工具的 tool_title 或工具种类）、`needs_decision`（等用户选）、`eta_s`（只在这个 Bot 至少有 3 次已完成的后台任务时给：用时中位数 − 已用时间，不到 5 秒不给）。
 - `/health` 的 `capabilities.reply_modes = true`。
+
+
+## 备份与恢复预览（2.51.0）
+
+- `POST /v1/backup/preview`：请求体 `{backup}`，按与 `POST /v1/backup/import` 相同的跳过规则做干跑，不写库。返回 `{preview: {bots, sessions, messages, groups, memory, skills, skipped}}`，表示将新增的数量与跳过已有的条数。
+- 已有 `GET /v1/backup?messages=0|1` 与 `POST /v1/backup/import` 不变。备份格式仍是 `openminis-backup/1`，不含任何密钥、Token 或服务商凭证。
+- App 生成文件名为 `OpenMinis备份-YYYY-MM-DD-HHmm.minisbackup`（Asia/Shanghai），写入前先读回自校验，通过才显示成功卡。恢复前先调 preview 再确认。
