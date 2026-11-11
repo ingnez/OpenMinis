@@ -1059,8 +1059,8 @@ jobs:
           grep -q "E2E 云端就绪" e2e-cloud-stack.log
 
       - name: XCUITest 端到端冒烟（模拟器）
-        # 卡住时尽快失败：整步最多 45 分钟，单个测试默认 150 秒、最多 240 秒（xcodebuild 会把超时的测试记成失败并截图）
-        timeout-minutes: 45
+        # 卡住时尽快失败：整步最多 60 分钟（编译约 20 分钟 + 模拟器启动约 3 分钟 + 流程约 15 分钟），单个测试默认 150 秒、最多 240 秒（xcodebuild 会把超时的测试记成失败并截图）
+        timeout-minutes: 60
         run: |
           set -o pipefail
           DEV=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")

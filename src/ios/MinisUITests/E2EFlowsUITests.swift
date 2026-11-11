@@ -134,7 +134,15 @@ final class E2EFlowsUITests: XCTestCase {
             XCTFail("首页 60 秒内没出现「\(Self.botName)」（云端没连上？）")
         }
         row.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 30), "Bot 对话的输入框没出现")
+        if !app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 30) {
+            // 留下当时的画面和控件树，失败原因一眼能看出来
+            shot(app, "打开Bot后没有输入框")
+            let tree = XCTAttachment(string: app.debugDescription)
+            tree.name = "打开Bot后的控件树"
+            tree.lifetime = .keepAlways
+            add(tree)
+            XCTFail("Bot 对话的输入框没出现")
+        }
     }
 
     private func send(_ app: XCUIApplication, _ text: String) {
