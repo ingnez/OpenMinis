@@ -207,6 +207,36 @@ struct CloudPluginsView: View {
             if let errorText { Section { Text(errorText).font(.footnote).foregroundStyle(.red).accessibilityIdentifier("pluginMarketError") } }
             if let infoText { Section { Text(infoText).font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("pluginMarketInfo") } }
 
+            Section("插件目录") {
+                if loading && catalog.isEmpty {
+                    ProgressView()
+                        .accessibilityIdentifier("pluginCatalogLoading")
+                }
+                // 保持服务端顺序（e2e-echo 在首位）；已安装的仍留在目录里，显示「已安装」而不是「安装」
+                ForEach(catalog) { p in
+                    HStack {
+                        pluginRow(p, catalogId: "pluginCatalog-\(p.id)")
+                        Spacer()
+                        if p.installed {
+                            Text("已安装").font(.caption).foregroundStyle(.secondary)
+                            NavigationLink("打开") {
+                                CloudPluginDetailView(plugin: installed.first(where: { $0.id == p.id }) ?? p, onChanged: { await reload() })
+                            }
+                            .accessibilityIdentifier("pluginOpen-\(p.id)")
+                        } else if busyId == p.id {
+                            ProgressView()
+                                .accessibilityIdentifier("pluginInstalling-\(p.id)")
+                        } else {
+                            Button("安装") { run(busyId: p.id) { try await CloudPluginService.install(catalogId: p.id) } }
+                                .buttonStyle(.borderless)
+                                .disabled(busy)
+                                .accessibilityIdentifier("pluginInstall-\(p.id)")
+                        }
+                    }
+                    .accessibilityIdentifier("pluginCatalog-\(p.id)")
+                }
+            }
+
             Section {
                 if installed.isEmpty && !loading {
                     Text("还没有安装插件。").font(.footnote).foregroundStyle(.secondary)
@@ -234,36 +264,6 @@ struct CloudPluginsView: View {
                 Text("已安装")
             } footer: {
                 Text("MCP 插件需在“我的 Bot”详情页授权给具体 Bot；不属于任何 Bot 的对话使用“默认授权”的插件。")
-            }
-
-            Section("插件目录") {
-                if loading && catalog.isEmpty {
-                    ProgressView()
-                        .accessibilityIdentifier("pluginCatalogLoading")
-                }
-                // 保持服务端顺序（e2e-echo 在首位）；已安装的仍留在目录里，显示「已安装」而不是「安装」
-                ForEach(catalog) { p in
-                    HStack {
-                        pluginRow(p)
-                        Spacer()
-                        if p.installed {
-                            Text("已安装").font(.caption).foregroundStyle(.secondary)
-                            NavigationLink("打开") {
-                                CloudPluginDetailView(plugin: installed.first(where: { $0.id == p.id }) ?? p, onChanged: { await reload() })
-                            }
-                            .accessibilityIdentifier("pluginOpen-\(p.id)")
-                        } else if busyId == p.id {
-                            ProgressView()
-                                .accessibilityIdentifier("pluginInstalling-\(p.id)")
-                        } else {
-                            Button("安装") { run(busyId: p.id) { try await CloudPluginService.install(catalogId: p.id) } }
-                                .buttonStyle(.borderless)
-                                .disabled(busy)
-                                .accessibilityIdentifier("pluginInstall-\(p.id)")
-                        }
-                    }
-                    .accessibilityIdentifier("pluginCatalog-\(p.id)")
-                }
             }
 
             if !deps.isEmpty {
@@ -352,7 +352,7 @@ struct CloudPluginsView: View {
         }
     }
 
-    private func pluginRow(_ p: CloudPlugin) -> some View {
+    private func pluginRow(_ p: CloudPlugin, catalogId: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 Image(systemName: p.kind == "skill" ? "book.closed" : "puzzlepiece.extension")
@@ -364,6 +364,8 @@ struct CloudPluginsView: View {
                 Text(p.statusText).font(.caption2).foregroundStyle(p.status == "ready" ? Color.green : Color.orange)
             }
         }
+        .accessibilityIdentifier(catalogId ?? "pluginRow-\(p.id)")
+        .accessibilityLabel(p.name)
     }
 
     private func run(busyId id: String? = nil, _ op: @escaping @MainActor () async throws -> String?) {

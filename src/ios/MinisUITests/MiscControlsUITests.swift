@@ -95,28 +95,31 @@ final class MiscControlsUITests: XCTestCase {
         app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", s, s)).firstMatch.exists
     }
 
+    /// 只在 List（collection/table）上拖。Bot 设置是 sheet，对整页向下拖会把插件市场关掉。
     private func scrollTo(_ app: XCUIApplication, _ el: XCUIElement) -> Bool {
         if el.exists, el.isHittable { return true }
-        // 先滚到顶部再往下找。只 swipeUp 会把目录开头滚出 List 虚拟化窗口。
-        // 从屏幕中下部拖，避免触发 List 的下拉刷新。
-        for _ in 0..<10 {
-            if el.exists, el.isHittable { return true }
-            drag(app, from: CGVector(dx: 0.5, dy: 0.35), to: CGVector(dx: 0.5, dy: 0.85))
+        let cv = app.collectionViews.firstMatch
+        let tb = app.tables.firstMatch
+        let scroller = cv.exists ? cv : (tb.exists ? tb : app)
+        let onList = cv.exists || tb.exists
+        func flick(from dy0: CGFloat, to dy1: CGFloat) {
+            let start = scroller.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: dy0))
+            let end = scroller.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: dy1))
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
+        if onList {
+            for _ in 0..<10 {
+                if el.exists, el.isHittable { return true }
+                flick(from: 0.35, to: 0.80)
+            }
         }
         if el.exists, el.isHittable { return true }
         for _ in 0..<14 {
             if el.exists, el.isHittable { return true }
-            drag(app, from: CGVector(dx: 0.5, dy: 0.80), to: CGVector(dx: 0.5, dy: 0.30))
+            flick(from: 0.80, to: 0.35)
         }
         return el.exists
     }
-
-    private func drag(_ app: XCUIApplication, from: CGVector, to: CGVector) {
-        let a = app.coordinate(withNormalizedOffset: from)
-        let b = app.coordinate(withNormalizedOffset: to)
-        a.press(forDuration: 0.05, thenDragTo: b)
-    }
-
     private func shot(_ app: XCUIApplication, _ name: String) {
         let a = XCTAttachment(screenshot: app.screenshot())
         a.name = name
