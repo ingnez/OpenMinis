@@ -70,6 +70,104 @@ def local_script(data):
     return {"role": "assistant", "content": reply}
 
 
+REALTIME_PORT = 18796
+# 假实时服务（OpenAI Realtime 协议，标准库手写 WebSocket）：App 发 input_audio_buffer.append，够 1 秒后回一段字幕 + 声音
+REALTIME = {"connections": 0, "session_updates": 0, "appends": 0, "audio_bytes_in": 0, "replies": 0, "events": []}
+REALTIME_REPLY = "e2e-realtime-ok 我听到了"
+
+
+def start_fake_realtime():
+    import base64, hashlib, math, socketserver, struct
+
+    def send(sock, obj):
+        data = json.dumps(obj, ensure_ascii=False).encode()
+        n = len(data)
+        head = bytes([0x81]) + (bytes([n]) if n < 126 else (bytes([126]) + struct.pack(">H", n) if n < 65536 else bytes([127]) + struct.pack(">Q", n)))
+        sock.sendall(head + data)
+
+    def recv_exact(f, n):
+        b = f.read(n)
+        if len(b) < n:
+            raise EOFError
+        return b
+
+    def recv(f):
+        b1, b2 = recv_exact(f, 2)
+        op, n = b1 & 0x0F, b2 & 0x7F
+        if n == 126:
+            n = struct.unpack(">H", recv_exact(f, 2))[0]
+        elif n == 127:
+            n = struct.unpack(">Q", recv_exact(f, 8))[0]
+        mask = recv_exact(f, 4) if b2 & 0x80 else b"\0\0\0\0"
+        data = bytes(c ^ mask[i % 4] for i, c in enumerate(recv_exact(f, n)))
+        return op, data
+
+    tone = b"".join(int(6000 * math.sin(2 * math.pi * 330 * i / 24000)).to_bytes(2, "little", signed=True) for i in range(12000))
+
+    class H(socketserver.StreamRequestHandler):
+        def handle(self):
+            head = b""
+            while b"\r\n\r\n" not in head:
+                c = self.request.recv(1024)
+                if not c:
+                    return
+                head += c
+            key = ""
+            for line in head.decode("latin-1").split("\r\n"):
+                if line.lower().startswith("sec-websocket-key:"):
+                    key = line.split(":", 1)[1].strip()
+            acc = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+            self.request.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                                  f"Sec-WebSocket-Accept: {acc}\r\n\r\n").encode())
+            REALTIME["connections"] += 1
+            sock = self.request
+            send(sock, {"type": "session.created", "session": {"id": "sess_e2e"}})
+            appends, replied = 0, False
+            try:
+                while True:
+                    op, data = recv(self.rfile)
+                    if op == 8:
+                        return
+                    if op == 9:
+                        sock.sendall(bytes([0x8A, len(data)]) + data)
+                        continue
+                    if op != 1:
+                        continue
+                    ev = json.loads(data)
+                    ty = ev.get("type", "")
+                    if len(REALTIME["events"]) < 200:
+                        REALTIME["events"].append(ty)
+                    if ty == "session.update":
+                        REALTIME["session_updates"] += 1
+                        send(sock, {"type": "session.updated", "session": ev.get("session", {})})
+                    elif ty == "input_audio_buffer.append":
+                        appends += 1
+                        REALTIME["appends"] += 1
+                        REALTIME["audio_bytes_in"] += len(base64.b64decode(ev.get("audio", "")))
+                        if appends >= 10 and not replied:
+                            replied = True
+                            REALTIME["replies"] += 1
+                            send(sock, {"type": "input_audio_buffer.speech_started", "item_id": "u1"})
+                            send(sock, {"type": "input_audio_buffer.committed", "item_id": "u1"})
+                            send(sock, {"type": "conversation.item.input_audio_transcription.completed", "item_id": "u1", "transcript": "（假）用户说话"})
+                            send(sock, {"type": "response.created", "response": {"id": "r1"}})
+                            send(sock, {"type": "response.output_audio_transcript.delta", "response_id": "r1", "item_id": "a1", "delta": REALTIME_REPLY})
+                            for i in range(0, len(tone), 4800):
+                                send(sock, {"type": "response.output_audio.delta", "response_id": "r1", "item_id": "a1",
+                                            "content_index": 0, "delta": base64.b64encode(tone[i:i + 4800]).decode()})
+                            send(sock, {"type": "response.output_audio_transcript.done", "response_id": "r1", "item_id": "a1", "transcript": REALTIME_REPLY})
+                            send(sock, {"type": "response.done", "response": {"id": "r1", "status": "completed"}})
+            except (EOFError, ConnectionError, OSError, ValueError):
+                return
+
+    class S(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    srv = S(("127.0.0.1", REALTIME_PORT), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+
 def main():
     work = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "/tmp/openminis-e2e")
     os.makedirs(os.path.join(work, "conf"), exist_ok=True)
@@ -115,6 +213,14 @@ def main():
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if urlparse(self.path).path == "/_e2e/realtime":
+                body = json.dumps(REALTIME, ensure_ascii=False).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             want = (parse_qs(urlparse(self.path).query).get("model") or [MODEL])[0]
             reqs = [{"model": r.get("model"), "images": image_count(r), "text": last_user_text(r)[:200]}
                     for r in sup.FakeModelHandler.requests if r.get("model") == want]
@@ -137,6 +243,7 @@ def main():
         def log_message(self, *a):
             pass
 
+    start_fake_realtime()
     probe = ThreadingHTTPServer(("127.0.0.1", 18799), Probe)
     threading.Thread(target=probe.serve_forever, daemon=True).start()
 
