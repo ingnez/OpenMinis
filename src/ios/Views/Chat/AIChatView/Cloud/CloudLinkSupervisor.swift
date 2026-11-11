@@ -355,9 +355,13 @@ final class CloudLinkSupervisor: ObservableObject {
                 content.title = "OpenMinis"
                 content.body = "有一条新消息（已上锁的 Bot）"
             }
+            let duty = CloudDutyMode.isOn(dutyUntil: CloudBotHomeModel.shared.dutyUntil)
             let night = CloudNightMode.notifyStyle()
-            content.sound = night.sound ? .default : nil
-            if !night.interrupt { content.interruptionLevel = .passive }
+            content.sound = CloudDutyMode.allowSound(onDuty: duty, nightSound: night.sound) ? .default : nil
+            if duty || !night.interrupt { content.interruptionLevel = .passive }
+            if CloudDutyMode.shouldVibrate(onDuty: duty, nightHapticsMuted: CloudNightMode.hapticsMuted) {
+                CloudHaptics.warning()
+            }
             content.threadIdentifier = "cloud-" + (item["bot_id"] as? String ?? sid ?? "main")
             var info: [String: Any] = ["cloud_kind": item["kind"] as? String ?? ""]
             if let sid { info["cloud_session_id"] = sid }

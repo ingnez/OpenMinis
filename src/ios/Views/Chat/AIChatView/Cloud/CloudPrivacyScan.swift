@@ -24,6 +24,7 @@ enum CloudPrivacyScan {
         Rule(kind: "住院号/病案号", pattern: #"(?:住院号|病案号|病历号|门诊号|登记号|MRN|ID号)\s*[:：]?\s*([A-Za-z0-9-]{4,})"#, group: 1, replacement: "[已隐去]"),
         Rule(kind: "姓名", pattern: #"(?:患者|病人|病患|姓名\s*[:：]?)\s*([\x{4e00}-\x{9fa5}]{2,3}?)(?=[，,。；;\s、]|男|女|先生|女士|$)"#, group: 1, replacement: "某某"),
         Rule(kind: "床号+姓名", pattern: #"\d{1,3}\s*床\s*([\x{4e00}-\x{9fa5}]{2,3}?)(?=[，,。；;\s、]|男|女|$)"#, group: 1, replacement: "某某"),
+        Rule(kind: "床号", pattern: #"(\d{1,3}\s*床)"#, group: 1, replacement: "[床号]"),
     ]
 
     static func hits(_ text: String) -> [Hit] {

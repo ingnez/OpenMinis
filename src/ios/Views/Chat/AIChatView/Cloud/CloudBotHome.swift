@@ -605,15 +605,16 @@ struct CloudBotHomeScreen: View {
                         }
                         CloudLinkBanner(onOpenSettings: openCloudSettings)
                             .padding(.horizontal, 16).padding(.bottom, 8)
-                        if let until = model.dutyUntil, until > Date() {
+                        if let until = CloudDutyMode.until(dutyUntil: model.dutyUntil) {
                             HStack(spacing: 8) {
                                 Image(systemName: "cross.case.fill").foregroundStyle(.red)
-                                Text("值班中 · 到 \(until.formatted(date: .omitted, time: .shortened))：回答极简，主动消息攒到下班汇总")
+                                Text(CloudDutyMode.bannerText(until: until))
                                     .font(.footnote)
                                 Spacer()
                                 Button("结束") { Task { await model.setDuty(hours: nil) } }.font(.footnote)
                             }
                             .padding(.vertical, 4).padding(.horizontal, 16)
+                            .accessibilityIdentifier("dutyModeBanner")
                         }
                         if let digest = model.dutyDigest {
                             CloudDutyDigestCard(text: digest.text, onDismiss: model.dismissDutyDigest)

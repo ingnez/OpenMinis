@@ -679,6 +679,7 @@ struct CloudSessionView: View {
     @State private var liveReasoning = ""
     @State private var liveTool: CloudLiveTool?
     @AppStorage(CloudSteerMode.key) private var steerInterrupt = true
+    @AppStorage(CloudOneHandMode.key) private var oneHandMode = false
     @State private var isInjecting = false
     @State private var liveSeq = -1
     @State private var eventCursor = 0
@@ -1220,7 +1221,15 @@ struct CloudSessionView: View {
                               })
                     .padding(.horizontal, 12)
             } else {
+                if let hit = CloudLastRef.hit(for: inputPrompt, messages: messages) {
+                    Label(hit.chip, systemImage: "quote.bubble")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 12)
+                        .frame(maxWidth: .infinity, alignment: CloudOneHandMode.isOn(stored: oneHandMode) ? .trailing : .leading)
+                        .accessibilityIdentifier("lastRefChip")
+                }
                 HStack(alignment: .bottom, spacing: 8) {
+                    if CloudOneHandMode.isOn(stored: oneHandMode) { Spacer(minLength: 24) }
                     Menu {
                         Button { showPhotos = true } label: { Label("照片或视频", systemImage: "photo.on.rectangle") }
                         Button { showCamera = true } label: { Label("拍照", systemImage: "camera") }
@@ -1235,6 +1244,11 @@ struct CloudSessionView: View {
                         Picker("Bot 干活时发消息", selection: $steerInterrupt) {
                             Label("插话：直接告诉它", systemImage: "arrow.turn.up.right").tag(true)
                             Label("排队：这一轮做完再发", systemImage: "text.badge.plus").tag(false)
+                        }
+                        Button {
+                            oneHandMode.toggle()
+                        } label: {
+                            Label(oneHandMode ? "关闭单手模式" : "单手模式（控件靠右）", systemImage: "hand.point.up.left")
                         }
                     } label: {
                         Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).foregroundStyle(.primary)
@@ -1256,6 +1270,7 @@ struct CloudSessionView: View {
                         .accessibilityIdentifier("botDictationButton")
                     }
                     .background(Capsule().fill(Color(.systemGray6)))
+                    .frame(maxWidth: CloudOneHandMode.isOn(stored: oneHandMode) ? CloudOneHandMode.fieldMaxWidth : .infinity)
                     // 最右边一个会变形的圆按钮：没字 = 声波（实时语音，长按按住说话），有字 = 发送；干活时有字 = 插话 / 排队。底色是头像色
                     CloudMorphButton(action: CloudBotComposerAction.of(hasDraft: hasDraft, working: working,
                                                                        submitting: isSubmitting || isInjecting, steerInterrupt: steerInterrupt),
@@ -1269,6 +1284,7 @@ struct CloudSessionView: View {
                         .accessibilityIdentifier("composerVoiceButton")
                 }
                 .padding(.horizontal, 12)
+                .accessibilityIdentifier(CloudOneHandMode.isOn(stored: oneHandMode) ? "oneHandComposer" : "standardComposer")
             }
         }
         .padding(.vertical, 8)
@@ -1827,7 +1843,10 @@ struct CloudSessionView: View {
     }
 
     private func sendTask() {
-        let content = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        var content = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let hit = CloudLastRef.hit(for: content, messages: messages) {
+            content = CloudLastRef.annotate(content, hit: hit)
+        }
         guard !content.isEmpty || !attachments.isEmpty, !isSubmitting else { return }
         switch CloudInCallSend.route(inCall: call.active, text: content, hasAttachments: !attachments.isEmpty) {
         case .realtimeSpeak:

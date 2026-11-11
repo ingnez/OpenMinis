@@ -31,20 +31,37 @@ struct CloudOutboxBanner: View {
     }
 }
 
-/// 发送前的隐私提醒对话框
+/// 发送前的脱敏护栏：身份信息只在手机上识别，提醒打码，确认前不发出去。
 struct CloudPrivacyDialog: ViewModifier {
     @Binding var hits: [CloudPrivacyScan.Hit]
     let onRedact: () -> Void
     let onSend: () -> Void
 
     func body(content: Content) -> some View {
-        content.confirmationDialog("发现可能的病人身份信息", isPresented: Binding(get: { !hits.isEmpty }, set: { if !$0 { hits = [] } }),
-                                   titleVisibility: .visible) {
-            Button("隐去后发送", action: onRedact)
-            Button("照原样发送", action: onSend)
-            Button("取消", role: .cancel) { hits = [] }
-        } message: {
-            Text(CloudPrivacyScan.summary(hits) + "。只在手机上检查，不会上传。")
+        content.overlay(alignment: .bottom) {
+            if !hits.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("发现可能的病人身份信息").font(.subheadline.weight(.semibold))
+                    Text(CloudPrivacyScan.summary(hits) + "。只在手机上检查，不会上传。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        Button("隐去后发送", action: onRedact)
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("privacyRedactButton")
+                        Button("照原样发送", action: onSend)
+                            .accessibilityIdentifier("privacySendAnyway")
+                        Button("取消", role: .cancel) { hits = [] }
+                    }
+                    .font(.footnote.weight(.semibold))
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 12)
+                .padding(.bottom, 96)
+                .accessibilityIdentifier("privacyGuardBanner")
+                .accessibilityElement(children: .contain)
+            }
         }
     }
 }

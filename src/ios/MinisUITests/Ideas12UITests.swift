@@ -81,6 +81,61 @@ final class Ideas12UITests: XCTestCase {
         shot(app, "i4-补发时间")
     }
 
+    func testIdea5_lastRef() throws {
+        executionTimeAllowance = 180
+        let app = launch(extraEnv: ["OPENMINIS_E2E_LAST_REF": "1"])
+        openBot(app)
+        let field = app.descendants(matching: .any)["botComposerField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 30), "没有输入框")
+        field.tap()
+        dismissKeyboardIntro(app)
+        field.typeText("刚才那个是什么意思")
+        XCTAssertTrue(app.descendants(matching: .any)["lastRefChip"].waitForExistence(timeout: 8)
+                      || waitText(app, contains: "排班表.jpg", timeout: 5),
+                      "说「刚才那个」没有定位到上一张图")
+        shot(app, "i5-刚才那个引用")
+    }
+
+    func testIdea6_oneHand() throws {
+        executionTimeAllowance = 180
+        let app = launch(extraEnv: ["OPENMINIS_E2E_ONE_HAND": "1"])
+        openBot(app)
+        XCTAssertTrue(app.descendants(matching: .any)["oneHandComposer"].waitForExistence(timeout: 15),
+                      "单手模式没有把输入/发送/语音集中到右下角")
+        shot(app, "i6-单手模式")
+    }
+
+    func testIdea7_dutyMode() throws {
+        executionTimeAllowance = 180
+        let app = launch(extraEnv: ["OPENMINIS_E2E_DUTY": "1"])
+        XCTAssertTrue(app.descendants(matching: .any)["dutyModeBanner"].waitForExistence(timeout: 30)
+                      || waitText(app, contains: "仅震动", timeout: 10),
+                      "值班模式横幅没有出现")
+        XCTAssertTrue(waitText(app, contains: "不推送", timeout: 3) || waitText(app, contains: "结论", timeout: 2))
+        shot(app, "i7-值班模式")
+    }
+
+    func testIdea8_privacyGuard() throws {
+        executionTimeAllowance = 180
+        let app = launch()
+        openBot(app)
+        let field = app.descendants(matching: .any)["botComposerField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 30), "没有输入框")
+        field.tap()
+        dismissKeyboardIntro(app)
+        // 全部是编造的假数据，只用来触发本机护栏
+        field.typeText("患者张三，12床，住院号 A123456")
+        let send = app.buttons["发送"]
+        if send.waitForExistence(timeout: 3), send.isHittable { send.tap() }
+        else { app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "发送")).firstMatch.tap() }
+        XCTAssertTrue(app.descendants(matching: .any)["privacyGuardBanner"].waitForExistence(timeout: 10)
+                      || waitText(app, contains: "身份信息", timeout: 6),
+                      "含姓名/床号/住院号时没有弹出脱敏护栏")
+        shot(app, "i8-脱敏护栏")
+        let redact = app.buttons["privacyRedactButton"]
+        if redact.waitForExistence(timeout: 3) { /* 露出「隐去后发送」，截图已取 */ }
+    }
+
     // MARK: - helpers
 
     private func launch(extraEnv: [String: String] = [:]) -> XCUIApplication {
