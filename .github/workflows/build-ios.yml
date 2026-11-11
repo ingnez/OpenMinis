@@ -1117,7 +1117,14 @@ jobs:
         timeout-minutes: 80
         run: |
           set -o pipefail
-          DEV=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          # 用 xcodebuild -showdestinations 选这套 scheme 真正能用的 iPhone 模拟器，
+          # 不要只信 simctl：设备可能列得出、也能 boot，但 scheme（Minis 排除了模拟器 x86_64）并不接受。
+          DEV=$(python3 scripts/pick_ios_simulator.py \
+            --project src/ios/Minis.xcodeproj \
+            --scheme Minis \
+            --configuration Debug \
+            --derived-data build \
+            --cloned-source-packages "$GITHUB_WORKSPACE/build/SourcePackages")
           echo "模拟器：$DEV"
           xcrun simctl boot "$DEV" || true
           # 关掉系统键盘的「滑行输入」新手引导（Speed up your typing… Continue），它会盖住下半屏挡住后面的点按
@@ -1199,7 +1206,14 @@ jobs:
         run: |
           set -o pipefail
           # 和 UI 测试同一台模拟器（上一步结束后它可能已被关掉，所以不按「已启动」找）
-          DEV=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          # 用 xcodebuild -showdestinations 选这套 scheme 真正能用的 iPhone 模拟器，
+          # 不要只信 simctl：设备可能列得出、也能 boot，但 scheme（Minis 排除了模拟器 x86_64）并不接受。
+          DEV=$(python3 scripts/pick_ios_simulator.py \
+            --project src/ios/Minis.xcodeproj \
+            --scheme Minis \
+            --configuration Debug \
+            --derived-data build \
+            --cloned-source-packages "$GITHUB_WORKSPACE/build/SourcePackages")
           xcrun simctl boot "$DEV" 2>/dev/null || true
           echo "模拟器：$DEV"
           # Minis.app（带 Minis.debug.dylib）上一步已经编进 build/；MinisTests 链接它，跑在 MinisTestHost 里
