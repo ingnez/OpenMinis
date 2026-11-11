@@ -1086,8 +1086,9 @@ jobs:
           grep -q "E2E 云端就绪" e2e-cloud-stack.log
 
       - name: XCUITest 端到端冒烟（模拟器）
-        # 卡住时尽快失败：整步最多 60 分钟（编译约 20 分钟 + 模拟器启动约 3 分钟 + 流程约 15 分钟），单个测试默认 150 秒、最多 240 秒（xcodebuild 会把超时的测试记成失败并截图）
-        timeout-minutes: 60
+        # 卡住时尽快失败：整步最多 80 分钟（编译约 20 分钟 + 模拟器启动约 3 分钟 + 17 个流程串行约 30 分钟 + 失败重试），单个测试默认 150 秒、最多 240 秒（xcodebuild 会把超时的测试记成失败并截图）
+        # 不用并行克隆模拟器（克隆冷启动「Timed out while launching application」）；失败的流程自动重试一次，汇总里注明重试次数
+        timeout-minutes: 80
         run: |
           set -o pipefail
           DEV=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
@@ -1119,13 +1120,16 @@ jobs:
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 150 \
             -maximum-test-execution-time-allowance 240 \
+            -parallel-testing-enabled NO \
+            -retry-tests-on-failure -test-iterations 2 \
             -resultBundlePath ui-tests.xcresult \
             CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= | tee ui-tests.log
 
       - name: 端到端流程结果与截图
         if: always()
         run: |
-          python3 scripts/e2e_summary.py ui-tests.log > e2e-summary.md || true
+          xcrun xcresulttool get test-results summary --path ui-tests.xcresult --format json > ui-tests-summary.json 2>/dev/null || true
+          python3 scripts/e2e_summary.py ui-tests.log ui-tests-summary.json > e2e-summary.md || true
           cat e2e-summary.md
           mkdir -p e2e-shots
           xcrun xcresulttool export attachments --path ui-tests.xcresult --output-path e2e-shots 2>&1 | tail -3 || true
@@ -1137,7 +1141,10 @@ jobs:
         timeout-minutes: 30
         run: |
           set -o pipefail
-          DEV=$(xcrun simctl list devices booted -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for v in d.values() for x in v))")
+          # 和 UI 测试同一台模拟器（上一步结束后它可能已被关掉，所以不按「已启动」找）
+          DEV=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          xcrun simctl boot "$DEV" 2>/dev/null || true
+          echo "模拟器：$DEV"
           # Minis.app（带 Minis.debug.dylib）上一步已经编进 build/；MinisTests 链接它，跑在 MinisTestHost 里
           xcodebuild test \
             -project src/ios/Minis.xcodeproj \
@@ -1161,6 +1168,7 @@ jobs:
             ui-tests.log
             ui-tests.xcresult
             e2e-summary.md
+            ui-tests-summary.json
             e2e-shots
             e2e-cloud-stack.log
             unit-tests.log

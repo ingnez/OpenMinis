@@ -96,6 +96,22 @@ def main():
         def do_GET(self):
             # ?model=e2e-local-model 看本地那边；默认看云端模型。imports = 云端从手机导入的本地会话数（应为 0：本地不进云端）
             from urllib.parse import urlparse, parse_qs
+            if urlparse(self.path).path == "/_e2e/reset":
+                # 每个流程开头清空假 Bot 的对话：历史越积越长，控件树大到 XCUITest 取快照超时（test08 实测）
+                import sqlite3
+                db = sqlite3.connect(os.environ["OPENMINIS_DB"])
+                sids = [r[0] for r in db.execute("SELECT session_id FROM sessions WHERE persona_id = ?", (BOT_ID,))]
+                for sid in sids:
+                    db.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+                db.commit()
+                db.close()
+                body = json.dumps({"cleared_sessions": len(sids)}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             want = (parse_qs(urlparse(self.path).query).get("model") or [MODEL])[0]
             reqs = [{"model": r.get("model"), "images": image_count(r), "text": last_user_text(r)[:200]}
                     for r in sup.FakeModelHandler.requests if r.get("model") == want]

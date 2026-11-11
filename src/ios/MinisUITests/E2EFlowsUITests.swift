@@ -108,9 +108,12 @@ final class E2EFlowsUITests: XCTestCase {
         let app = launch()
         openBot(app)
         send(app, "跑个命令")
-        XCTAssertTrue(waitText(app, contains: "e2e-shell-ok", timeout: 60) || waitText(app, contains: "echo", timeout: 10), "没看到云端执行的步骤")
+        // 先等云端真的跑完这一步（假模型第二轮收到工具结果），再看界面；只查文字控件，不扫整棵树
+        XCTAssertTrue(poll(60) { (cloudProbe()?.requests ?? []).filter { $0.text.contains("跑个命令") }.count >= 2 }, "云端没执行步骤")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "e2e-shell-ok")).firstMatch.waitForExistence(timeout: 20)
+                      || app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "e2e-shell-ok")).firstMatch.exists, "没看到云端执行的步骤")
         shot(app, "08a-步骤")
-        XCTAssertFalse(anyElement(app, contains: "Minis is using"), "Bot 模式里出现本地英文「Minis is using」")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Minis is using")).firstMatch.exists, "Bot 模式里出现本地英文「Minis is using」")
         shot(app, "08b-步骤面板")
     }
 
@@ -377,6 +380,8 @@ final class E2EFlowsUITests: XCTestCase {
 
     private func launch(attach: Int = 0, userName: String = "", homeMode: String = "bots",
                         extraEnv: [String: String] = [:], extraArgs: [String] = []) -> XCUIApplication {
+        // 每个流程从空对话开始（历史太长时控件树取快照会超时）
+        if let url = URL(string: "http://127.0.0.1:18799/_e2e/reset") { _ = try? Data(contentsOf: url) }
         let app = XCUIApplication()
         // 首页模式不用 -OpenMinis_homeMode 启动参数（参数域盖住 App 里的切换），用环境变量让 App 启动时写进自己的设置
         app.launchEnvironment["OPENMINIS_E2E_HOMEMODE"] = homeMode
