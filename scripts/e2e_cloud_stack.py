@@ -42,7 +42,7 @@ def script(data):
     from test_phase1_support import tool_call, tool_turns
     text = last_user_text(data)
     if "慢任务" in text and not tool_turns(data):
-        return tool_call("c2", "shell_execute", {"command": "sleep 20; echo e2e-slow-done"})
+        return tool_call("c2", "shell_execute", {"command": "sleep 40; echo e2e-slow-done"})
     if "跑个命令" in text and not tool_turns(data):
         return tool_call("c1", "shell_execute", {"command": "echo e2e-shell-ok; sleep 2"})
     if "加粗" in text:

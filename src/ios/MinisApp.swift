@@ -134,6 +134,7 @@ struct MinisApp: App {
         // `install` is idempotent, so the later onAppLaunch() call is a no-op.
         CrashSignalHandler.install()
         SharedContainerStore.recoverCloudSyncPreferences()
+        CloudE2E.applyLaunchDefaults()
         // [T-crash-breadcrumbs] Rotate the previous run's breadcrumbs and start
         // this run's ring + 15 s resource sampling, before anything else runs.
         CrashBreadcrumbs.start()
