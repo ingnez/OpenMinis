@@ -109,6 +109,6 @@ struct CloudGroupVoiceBar: View {
         if let b = call.speakingBot { return "\(botName(b)) 正在说…" }
         if call.muted { return "已静音" }
         if dictation.isRecording { return dictation.transcript.isEmpty ? "正在听你说…" : dictation.transcript }
-        return "等 Bot 回答…"
+        return "等 Bot 回答…（Bot 们轮流说，同一时间只有一个声音）"
     }
 }

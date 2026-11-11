@@ -674,7 +674,7 @@ struct CloudBackupView: View {
                     ShareLink(item: exportURL) { Label("分享 / 存到文件", systemImage: "square.and.arrow.up") }
                 }
             } header: { Text("备份") } footer: {
-                Text("包含 Bot、会话、群聊、记忆、技能和资源设置。不含任何密钥、Token 或服务商凭证，恢复后需在新服务器重新填写。")
+                Text("包含 Bot、会话、群聊、记忆、技能和资源设置。不含任何密钥、Token 或服务商凭证，恢复后需在新服务器重新填写。备份不会自动上传 iCloud：导出后请自己存进「文件」（可选 iCloud 云盘）。")
             }
             Section {
                 Button("从文件恢复…") { showImporter = true }.disabled(working)

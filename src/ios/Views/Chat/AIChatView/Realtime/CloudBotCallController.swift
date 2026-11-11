@@ -161,9 +161,9 @@ struct CloudBotCallSettingsSheet: View {
                     Toggle("静音", isOn: Binding(get: { call.muted }, set: { _ in call.toggleMute() }))
                 }
                 Section {
-                    Picker("声音", selection: $voice) { ForEach(voices, id: \.self) { Text($0).tag($0) } }
+                    Picker("声音（下次通话生效）", selection: $voice) { ForEach(voices, id: \.self) { Text($0).tag($0) } }
                 } footer: {
-                    Text("声音下次通话生效。语速、语言和说话风格跟随这个 Bot 的灵魂设定与语音设置。")
+                    Text("这一通还用原来的声音，挂断后下次通话换成新声音。语速、语言和说话风格跟随这个 Bot 的灵魂设定与语音设置。")
                 }
             }
             .navigationTitle("通话设置")
