@@ -238,4 +238,13 @@ func typeOrderTests() {
     check(CloudIMECommit.events(old: CloudIMECommit.sentinel, new: CloudIMECommit.sentinel + " ", composing: false) == [.text(" ")], "空格")
     check(CloudIMECommit.events(old: CloudIMECommit.sentinel, new: CloudIMECommit.sentinel + "\n", composing: false) == [.text("\n")], "换行")
     check(CloudIMECommit.shouldFlushAgain(sent: "a", fieldNow: "a1 "), "打字撞上清 sentinel 时要再冲")
+    let han = CloudTypeOrder.serverPayload(.text("你好，云电脑"))
+    check(han["action"] as? String == "type" && han["text"] as? String == "你好，云电脑", "中文原文进 type，不拆成 Latin-1 键码")
+    guard let data = try? JSONSerialization.data(withJSONObject: han, options: []),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        check(false, "中文请求能做 UTF-8 JSON")
+        return
+    }
+    check(obj["text"] as? String == "你好，云电脑", "JSON 编解码后仍是汉字，不是乱码")
+    check(CloudKey.keysym(for: "你") == nil && CloudKey.keysym(for: "好") == nil && CloudKey.keysym(for: "，") == nil, "汉字和中文标点没有 Latin-1 keysym")
 }

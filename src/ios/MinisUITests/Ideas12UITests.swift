@@ -136,6 +136,71 @@ final class Ideas12UITests: XCTestCase {
         if redact.waitForExistence(timeout: 3) { /* 露出「隐去后发送」，截图已取 */ }
     }
 
+    func testIdea9_oralStruct() throws {
+        executionTimeAllowance = 180
+        let app = launch(extraEnv: ["OPENMINIS_E2E_ORAL_TEXT": "交班：12床，诊断肺炎，目前平稳，血压120/80，今晚关注血氧"])
+        openBot(app)
+        let plus = app.buttons["添加附件"]
+        XCTAssertTrue(plus.waitForExistence(timeout: 15), "没有附件菜单")
+        plus.tap()
+        let oral = app.buttons["口述转结构化（交班单 / 病例摘要）"]
+        XCTAssertTrue(oral.waitForExistence(timeout: 8), "菜单里没有口述转结构化")
+        oral.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["oralStructSheet"].waitForExistence(timeout: 10)
+                      || waitText(app, contains: "口述转结构化", timeout: 8),
+                      "没有出现结构化页")
+        XCTAssertTrue(app.descendants(matching: .any)["oralStructPreview"].waitForExistence(timeout: 8)
+                      || waitText(app, contains: "交班单", timeout: 5),
+                      "没有交班单预览")
+        shot(app, "i9-口述转结构化")
+    }
+
+    func testIdea10_trackpadIME() throws {
+        executionTimeAllowance = 180
+        let app = launch(extraEnv: ["OPENMINIS_E2E_FAKE_DESKTOP": "1"])
+        let gear = app.buttons["设置"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
+        gear.tap()
+        let row = app.descendants(matching: .any)["ccDesktopSettingsRow"].exists
+            ? app.descendants(matching: .any)["ccDesktopSettingsRow"]
+            : app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "云电脑桌面")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "设置里没有云电脑桌面")
+        row.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["ccTrackpadSurface"].waitForExistence(timeout: 30)
+                      || waitText(app, contains: "触控板", timeout: 10),
+                      "云电脑页没有触控板")
+        _ = app.descendants(matching: .any)["desktopIMEButton"].waitForExistence(timeout: 5)
+            || app.buttons["键盘"].waitForExistence(timeout: 3)
+        shot(app, "i10-触控板与手机输入法")
+    }
+
+    func testIdea11_desktopResume() throws {
+        executionTimeAllowance = 180
+        let app = launch(extraEnv: ["OPENMINIS_E2E_DESKTOP_RESUME": "1"])
+        XCTAssertTrue(app.descendants(matching: .any)["desktopResumeBanner"].waitForExistence(timeout: 30)
+                      || waitText(app, contains: "从断点继续", timeout: 10),
+                      "没有云电脑断点续跑横幅")
+        shot(app, "i11-云电脑断点续跑")
+    }
+
+    func testIdea12_ipaChecklist() throws {
+        executionTimeAllowance = 180
+        let app = launch()
+        let gear = app.buttons["设置"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
+        gear.tap()
+        let row = app.descendants(matching: .any)["ipaChecklistRow"].exists
+            ? app.descendants(matching: .any)["ipaChecklistRow"]
+            : app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "测试清单")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "设置里没有测试清单")
+        row.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["ipaChecklist"].waitForExistence(timeout: 10)
+                      || waitText(app, contains: "已测流程", timeout: 8),
+                      "没有打开测试清单")
+        XCTAssertTrue(waitText(app, contains: "需真机验证", timeout: 5))
+        shot(app, "i12-IPA测试清单")
+    }
+
     // MARK: - helpers
 
     private func launch(extraEnv: [String: String] = [:]) -> XCUIApplication {

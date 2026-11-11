@@ -657,6 +657,7 @@ struct CloudSessionView: View {
     @State private var showCamera = false
     @State private var showScanner = false
     @State private var showCaseNote = false
+    @State private var showOralStruct = false
     @State private var showFiles = false
     @State private var showVoiceCall = false
     /// 顶部浮动胶囊的实时通话（Bot 模式）
@@ -861,6 +862,7 @@ struct CloudSessionView: View {
         .fullScreenCover(isPresented: $showCamera) { CloudCameraPicker { attachments.append($0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showScanner) { CloudDocumentScanner { attachments.append($0) }.ignoresSafeArea() }
         .sheet(isPresented: $showCaseNote) { CloudCaseNoteSheet { inputPrompt = $0 } }
+        .sheet(isPresented: $showOralStruct) { CloudOralStructSheet { inputPrompt = $0 } }
         .sheet(isPresented: $showFiles) { CloudFilePicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showVoiceCall) {
             if let theme {
@@ -1238,6 +1240,7 @@ struct CloudSessionView: View {
                         }
                         Button { showFiles = true } label: { Label("选择文件", systemImage: "folder") }
                         Button { showCaseNote = true } label: { Label("口述病例（脱敏后复盘）", systemImage: "stethoscope") }
+                        Button { showOralStruct = true } label: { Label("口述转结构化（交班单 / 病例摘要）", systemImage: "list.clipboard") }
                         Button { showPins = true } label: { Label("要点板", systemImage: "pin") }
                         Button { showRealtimeSettings = true } label: { Label("实时语音设置", systemImage: "waveform") }
                         Button { if !inputPrompt.hasPrefix("/") { inputPrompt = "/" } } label: { Label("斜杠命令", systemImage: "slash.circle") }

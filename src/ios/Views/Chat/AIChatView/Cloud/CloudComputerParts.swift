@@ -129,6 +129,7 @@ struct CloudComputerBottomBar: View {
                 mainButton
                 if ctl.controlling {
                     Button { keyboardFocused.toggle() } label: { roundIcon("keyboard", on: keyboardFocused) }.accessibilityLabel("键盘")
+                        .accessibilityIdentifier("desktopIMEButton")
                 }
             }
         }
@@ -149,6 +150,7 @@ struct CloudComputerBottomBar: View {
             roundIcon(ctl.mode == .trackpad ? "rectangle.and.hand.point.up.left" : "hand.point.up.left")
         }
         .accessibilityLabel(ctl.mode == .trackpad ? "触控板模式（点按切换到直接触控）" : "直接触控（点按切换到触控板）")
+        .accessibilityIdentifier("desktopTrackpadMode")
         Button(action: onDictate) { roundIcon(dictating ? "mic.fill" : "mic", on: dictating) }.accessibilityLabel("语音输入到云电脑")
     }
 

@@ -620,6 +620,14 @@ struct CloudBotHomeScreen: View {
                             CloudDutyDigestCard(text: digest.text, onDismiss: model.dismissDutyDigest)
                                 .padding(.horizontal, 16).padding(.bottom, 8)
                         }
+                        if let cp = CloudDesktopCheckpoint.load() {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "desktopcomputer.trianglebadge.exclamationmark")
+                                Text(cp.bannerText).font(.footnote)
+                            }
+                            .padding(.vertical, 4).padding(.horizontal, 16)
+                            .accessibilityIdentifier("desktopResumeBanner")
+                        }
                         if model.syncing {
                             HStack(spacing: 6) {
                                 ProgressView().controlSize(.mini)
@@ -983,6 +991,8 @@ struct CloudBotHubView: View {
                 NavigationLink(destination: FaceIDProtectionSettingsView()) { Label("Face ID 锁（打开 App 先验证）", systemImage: "faceid") }
                 NavigationLink(destination: CloudExamListView()) { Label("考试倒计时", systemImage: "calendar.badge.clock") }
                 NavigationLink(destination: CloudErrorLogView()) { Label("导出错误日志", systemImage: "ladybug") }
+                NavigationLink(destination: CloudIPAChecklistView()) { Label("测试清单（已测流程 / 需真机验证）", systemImage: "checklist") }
+                    .accessibilityIdentifier("ipaChecklistRow")
                 NavigationLink(destination: CloudReplayListView()) { Label("录屏回放（Bot 用浏览器 / 桌面的截图）", systemImage: "play.rectangle") }
                 NavigationLink(destination: CloudLiveStatsView()) { Label("实时资源（CPU / 内存 / 网速）", systemImage: "gauge.with.dots.needle.33percent") }
                 NavigationLink(destination: CloudSystemSnapshotsView()) { Label("系统快照（装软件前自动拍）", systemImage: "camera.metering.matrix") }

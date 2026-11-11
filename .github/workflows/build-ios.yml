@@ -366,6 +366,16 @@ jobs:
           /tmp/cloud-onehand-tests
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDutyMode.swift scripts/CloudDutyModeTests.swift -o /tmp/cloud-duty-mode-tests
           /tmp/cloud-duty-mode-tests
+      - name: 口述结构化、云电脑断点与 IPA 清单单测
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOralStruct.swift scripts/CloudOralStructTests.swift -o /tmp/cloud-oral-struct-tests
+          /tmp/cloud-oral-struct-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopCheckpoint.swift scripts/CloudDesktopCheckpointTests.swift -o /tmp/cloud-desktop-checkpoint-tests
+          /tmp/cloud-desktop-checkpoint-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudIPAChecklist.swift scripts/CloudIPAChecklistTests.swift -o /tmp/cloud-ipa-checklist-tests
+          /tmp/cloud-ipa-checklist-tests
+          python3 scripts/build_ipa_checklist.py --out /tmp/测试清单.md --commit "${GITHUB_SHA:-local}"
       - name: 夜班模式规则单测
         run: |
           set -o pipefail
@@ -709,6 +719,13 @@ jobs:
           /tmp/cloud-onehand-tests | tee /tmp/cloud-onehand-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDutyMode.swift scripts/CloudDutyModeTests.swift -o /tmp/cloud-duty-mode-tests
           /tmp/cloud-duty-mode-tests | tee /tmp/cloud-duty-mode-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOralStruct.swift scripts/CloudOralStructTests.swift -o /tmp/cloud-oral-struct-tests
+          /tmp/cloud-oral-struct-tests | tee /tmp/cloud-oral-struct-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopCheckpoint.swift scripts/CloudDesktopCheckpointTests.swift -o /tmp/cloud-desktop-checkpoint-tests
+          /tmp/cloud-desktop-checkpoint-tests | tee /tmp/cloud-desktop-checkpoint-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudIPAChecklist.swift scripts/CloudIPAChecklistTests.swift -o /tmp/cloud-ipa-checklist-tests
+          /tmp/cloud-ipa-checklist-tests | tee /tmp/cloud-ipa-checklist-tests.log
+          python3 scripts/build_ipa_checklist.py --out /tmp/测试清单.md --commit "${GITHUB_SHA:-local}"
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOneLine.swift scripts/CloudOneLineTests.swift -o /tmp/cloud_oneline_tests
           /tmp/cloud_oneline_tests | tee /tmp/cloud_oneline_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudFollowUp.swift scripts/CloudFollowUpTests.swift -o /tmp/cloud_followup_tests
@@ -926,7 +943,12 @@ jobs:
           mkdir Payload
           cp -R "$APP" Payload/
           zip -qry Minis-unsigned.ipa Payload
-          ls -lh Minis-unsigned.ipa
+          python3 scripts/build_ipa_checklist.py --out 测试清单.md --commit "$(git rev-parse HEAD)"
+          APP_DIR=$(find Payload -maxdepth 1 -name '*.app' | head -n 1)
+          cp 测试清单.md "$APP_DIR/"
+          rm -f Minis-unsigned.ipa
+          zip -qry Minis-unsigned.ipa Payload
+          ls -lh Minis-unsigned.ipa 测试清单.md
           shasum -a 256 Minis-unsigned.ipa | tee SHA256SUMS
           git rev-parse HEAD > SOURCE_COMMIT.txt
           /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist"
@@ -941,6 +963,7 @@ jobs:
           name: Minis-unsigned-ipa
           path: |
             Minis-unsigned.ipa
+            测试清单.md
             SHA256SUMS
             SOURCE_COMMIT.txt
             xcodebuild.log
@@ -1091,6 +1114,13 @@ jobs:
           /tmp/cloud-onehand-tests | tee /tmp/cloud-onehand-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDutyMode.swift scripts/CloudDutyModeTests.swift -o /tmp/cloud-duty-mode-tests
           /tmp/cloud-duty-mode-tests | tee /tmp/cloud-duty-mode-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOralStruct.swift scripts/CloudOralStructTests.swift -o /tmp/cloud-oral-struct-tests
+          /tmp/cloud-oral-struct-tests | tee /tmp/cloud-oral-struct-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopCheckpoint.swift scripts/CloudDesktopCheckpointTests.swift -o /tmp/cloud-desktop-checkpoint-tests
+          /tmp/cloud-desktop-checkpoint-tests | tee /tmp/cloud-desktop-checkpoint-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudIPAChecklist.swift scripts/CloudIPAChecklistTests.swift -o /tmp/cloud-ipa-checklist-tests
+          /tmp/cloud-ipa-checklist-tests | tee /tmp/cloud-ipa-checklist-tests.log
+          python3 scripts/build_ipa_checklist.py --out /tmp/测试清单.md --commit "${GITHUB_SHA:-local}"
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudOneLine.swift scripts/CloudOneLineTests.swift -o /tmp/cloud_oneline_tests
           /tmp/cloud_oneline_tests | tee /tmp/cloud_oneline_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudFollowUp.swift scripts/CloudFollowUpTests.swift -o /tmp/cloud_followup_tests
