@@ -59,6 +59,9 @@ def script(data):
 def local_script(data):
     text = last_user_text(data)
     reply = "本地收到：" + text[:30]
+    if "加粗" in text:
+        md = "> 这是**结论：**引用里的中文加粗，还有**「重点」**和**加粗的中文**。\n\n本地正文第二段。"
+        return {"_chunks": [md]} if data.get("stream") else {"role": "assistant", "content": md}
     slow = "慢" in text      # 本地慢任务：约 16 秒流完，测试趁它还在跑时切到云端
     if data.get("stream"):
         return {"_chunks": ["本地收到：", text[:30]] + ["。"] * (6 if slow else 0), "_delay": 2.0 if slow else 0.3}

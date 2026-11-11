@@ -416,6 +416,20 @@ final class E2EFlowsUITests: XCTestCase {
         shot(app, "19-步骤面板云电脑")
     }
 
+    func test20_localMarkdownBoldInQuoteCJK() throws {
+        let app = launch(homeMode: "local", extraEnv: ["OPENMINIS_E2E_LOCAL_PROVIDER": "http://127.0.0.1:18797"],
+                         extraArgs: ["-launchScreen", "2"])
+        XCTAssertTrue(poll(60) { app.textViews.firstMatch.exists || app.textFields.firstMatch.exists }, "本地模式没打开新对话的输入框")
+        let input = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
+        input.tap(); dismissKeyboardIntro(app); input.typeText("本地请加粗回复")
+        let send = app.buttons["localComposerSendButton"]
+        XCTAssertTrue(send.waitForExistence(timeout: 10)); send.tap()
+        XCTAssertTrue(waitText(app, contains: "引用里的中文加粗", timeout: 90), "本地引用回复没显示出来")
+        XCTAssertFalse(anyElement(app, contains: "**"), "本地 Markdown 星号原样露出来了")
+        XCTAssertFalse(anyElement(app, contains: "\u{200B}"), "零宽空格留在了正文里")
+        shot(app, "20-本地引用里中文加粗")
+    }
+
     // MARK: - 工具
 
     private func launch(attach: Int = 0, homeMode: String = "bots",
