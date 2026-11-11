@@ -62,6 +62,8 @@ final class ChatMessage: Identifiable, ObservableObject {
     @Published var usage: TokenUsage?
     /// Structured metadata for user-attached files (images & documents).
     @Published var attachments: [AttachmentMeta] = []
+    /// 本地模式：这一轮助手交出来的文件 / 链接卡片
+    @Published var deliverables: [CloudDeliverable] = []
     /// Raw input attachments for preview before queue drain (cache URLs still valid).
     @Published var inputAttachments: [InputAttachment] = []
     /// True when all tool calls have completed and we're waiting for the model's next response.

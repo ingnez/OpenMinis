@@ -161,7 +161,7 @@ def model_content(role, content, meta):
 
 def public_meta(meta):
     """消息列表里给 App 的字段。"""
-    keep = ("worker_id", "worker_status", "choice", "reply_to", "milestone", "page", "teammate", "beats")
+    keep = ("worker_id", "worker_status", "choice", "reply_to", "milestone", "page", "teammate", "beats", "deliverables", "delegation_id")
     return {k: meta[k] for k in keep if k in meta}
 
 

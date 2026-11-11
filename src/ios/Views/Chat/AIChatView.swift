@@ -328,6 +328,8 @@ struct AIChatView: View {
     // [T-p3-agent-callback-cell] Detail sheet for a tapped agent callback cell.
     @State private var agentCallbackDetail: AgentCallbackDetailTarget?
     @State private var showFileBrowser = false
+    @State private var showChatFiles = false
+    @State private var openDeliverableLink: URL?
     // [T-browser-download-ux-v2] Downloads panel + "Show in Files" locate target.
     @State private var showDownloadsPanel = false
     @State private var locateDownloadTarget: DownloadLocateTarget?
@@ -1046,6 +1048,19 @@ struct AIChatView: View {
                     }
                 }
             })
+        }
+        .sheet(isPresented: $showChatFiles) {
+            NavigationView {
+                CloudChatFilesPage(sessionId: vm.sessionId ?? "local",
+                                   localItems: vm.messages.flatMap(\.deliverables).reversed())
+            }
+        }
+        .sheet(item: Binding(get: { openDeliverableLink.map { ChatFileLink($0) } }, set: { openDeliverableLink = $0?.url })) { item in
+            MinisSafariView(url: item.url, localFile: false)
+                .accessibilityIdentifier("deliverablePreview")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .cloudDeliverableLink)) { note in
+            openDeliverableLink = note.object as? URL
         }
         .sheet(isPresented: $showFileBrowser) {
             NavigationStack {
@@ -1974,6 +1989,7 @@ struct AIChatView: View {
             onOpenTerminal: { showTerminal = true },
             onOpenBrowser: { showBrowserSheet = true },
             onBrowseFiles: { showFileBrowser = true },
+            onChatFiles: { showChatFiles = true },
             onSkills: { showSessionSkills = true },
             onMCPs: { showSessionMCPs = true },
             onMemories: { showSessionMemory = true },
@@ -5605,6 +5621,7 @@ private struct ChatTrailingMenu: View, Equatable {
     let onOpenTerminal: () -> Void
     let onOpenBrowser: () -> Void
     let onBrowseFiles: () -> Void
+    let onChatFiles: () -> Void
     let onSkills: () -> Void
     let onMCPs: () -> Void
     let onMemories: () -> Void
@@ -5679,6 +5696,9 @@ private struct ChatTrailingMenu: View, Equatable {
                 Label(AppLocalized("Open Browser"), systemImage: "globe")
             }
 
+            Button { onChatFiles() } label: {
+                Label("文件", systemImage: "folder")
+            }
             Button { onBrowseFiles() } label: {
                 Label(AppLocalized("Browse Chat Files"), systemImage: "folder")
             }
@@ -5788,6 +5808,7 @@ private struct ChatTrailingMenuButton: UIViewRepresentable {
     let onOpenTerminal: () -> Void
     let onOpenBrowser: () -> Void
     let onBrowseFiles: () -> Void
+    let onChatFiles: () -> Void
     let onSkills: () -> Void
     let onMCPs: () -> Void
     let onMemories: () -> Void
@@ -5929,6 +5950,8 @@ private struct ChatTrailingMenuButton: UIViewRepresentable {
                      image: UIImage(systemName: "terminal")) { _ in coordinator.parent.onOpenTerminal() },
             UIAction(title: AppLocalized("Open Browser"),
                      image: UIImage(systemName: "globe")) { _ in coordinator.parent.onOpenBrowser() },
+            UIAction(title: "文件",
+                     image: UIImage(systemName: "folder")) { _ in coordinator.parent.onChatFiles() },
             UIAction(title: AppLocalized("Browse Chat Files"),
                      image: UIImage(systemName: "folder")) { _ in coordinator.parent.onBrowseFiles() },
         ]))
@@ -7023,4 +7046,11 @@ final class ComposerActionChannel {
     /// an early arrow/tab key keeps its default text-view behaviour).
     @discardableResult
     func send(_ action: Action) -> Bool { handler?(action) ?? false }
+}
+
+
+private struct ChatFileLink: Identifiable {
+    let url: URL
+    init(_ url: URL) { self.url = url }
+    var id: String { url.absoluteString }
 }

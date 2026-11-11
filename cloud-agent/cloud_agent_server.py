@@ -96,6 +96,7 @@ import cloud_runmodel
 import cloud_shift_card
 import cloud_workbench
 import cloud_desktop_files
+import cloud_deliver
 import cloud_snapshots
 import cloud_plugins
 import cloud_oauth
@@ -429,6 +430,12 @@ def is_task_cancelled(task_id):
 SHARED_WORKSPACE = os.path.join(GLOBAL_WORKSPACE, "shared")
 ACTIVE_SLOTS = {}   # session_id -> 同一 Bot 的并发槽（>0 时用独立子工作区 / 屏幕）
 
+def shared_workspace():
+    """与当前 GLOBAL_WORKSPACE 同步（测试会改 GLOBAL_WORKSPACE）。"""
+    d = os.path.join(GLOBAL_WORKSPACE, "shared")
+    os.makedirs(d, exist_ok=True)
+    return d
+
 def get_session_workspace(session_id):
     """Bot 会话用 Bot 自己的工作区 workspace/bots/<id>/workspace（并发槽 k>0 用 bots/<id>/slots/<k>）；
     旧会话已有 workspace/<session_id> 目录时继续用，升级不丢文件。"""
@@ -451,8 +458,7 @@ def safe_path_resolve(session_id, user_path):
         return None, "Missing path"
     if user_path == "@shared" or user_path.startswith("@shared/"):
         # 所有 Bot 共用的交换目录
-        os.makedirs(SHARED_WORKSPACE, exist_ok=True)
-        ws, user_path = SHARED_WORKSPACE, user_path[len("@shared"):].lstrip("/") or "."
+        ws, user_path = shared_workspace(), user_path[len("@shared"):].lstrip("/") or "."
     try:
         joined = os.path.join(ws, user_path)
         real_target = os.path.realpath(joined)
@@ -640,7 +646,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.51.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.52.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1505,7 +1511,7 @@ def task_env(session_id):
     env.update(proxy_env())   # 云电脑代理开着时：终端、git、pip、npm 走本机 sing-box（按规则分流）
     pid = session_persona_id(session_id)
     ports = iso.bot_port_range(s, slot_index("bot:" + pid) if pid else 0)
-    env["OPENMINIS_SHARED"] = SHARED_WORKSPACE
+    env["OPENMINIS_SHARED"] = shared_workspace()
     env["OPENMINIS_PORTS"] = f"{ports[0]}-{ports[-1]}" if ports else ""
     if ports:
         env["PORT"] = str(ports[0])
@@ -2697,7 +2703,7 @@ def list_delegations(session_id=None, limit=50):
     finally:
         conn.close()
 
-def _post_when_idle(session_id, text, timeout=1800):
+def _post_when_idle(session_id, text, timeout=1800, meta=None):
     """等会话空闲后把一条 assistant 消息写进去（不在别的任务的工具调用中间插消息）。"""
     deadline = time.time() + timeout
     while True:
@@ -2705,8 +2711,8 @@ def _post_when_idle(session_id, text, timeout=1800):
         try:
             busy = conn.execute("SELECT 1 FROM tasks WHERE session_id = ? AND status IN ('running', 'waiting_user')", (session_id,)).fetchone()
             if not busy or time.time() > deadline:
-                conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'assistant', ?, ?)",
-                             (session_id, text, time.time()))
+                conn.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'assistant', ?, ?, ?)",
+                             (session_id, text, time.time(), json.dumps(meta, ensure_ascii=False) if meta else None))
                 conn.commit()
                 return True
         finally:
@@ -3363,7 +3369,16 @@ def _report_delegation(did):
     row = _delegation_row(did)
     target = get_persona(row["to_bot"]) or {}
     text = deleg.result_text(_bot_label(target), row["status"], row["result"])
-    _post_when_idle(row["from_session"], text)
+    meta = {"delegation_id": did}
+    try:
+        items = cloud_deliver.copy_items_to_session(
+            row["to_session"], row["from_session"], cloud_deliver.items_from_session(row["to_session"]), source="delegate")
+        items = cloud_deliver.merge_items(items, [], cloud_deliver.extract_links(text))
+        if items:
+            meta["deliverables"] = items
+    except Exception as e:
+        print(f"deliver propagate failed: {type(e).__name__}", flush=True)
+    _post_when_idle(row["from_session"], text, meta=meta)
     cfg = current_notify_config()
     if not _bot_muted(row["from_session"]):
         user_notify(cfg, "task_completed", f"{_bot_label(target)} 完成了委托"[:120], (row["result"] or "")[:600], session_id=row["from_session"])
@@ -4424,6 +4439,7 @@ TOOL_DEFINITIONS.append({"type": "function", "function": {
         "query": {"type": "string", "description": "Keywords to filter titles / content (optional)."}}}}})
 
 TOOL_TITLE_PARAM = {"type": "string", "description": "A concise 4-12 word summary of what this call does, shown to the user (same language as the user, e.g. '读取服务器连接信息'). Not passed to the tool."}
+TOOL_DEFINITIONS.append(cloud_deliver.TOOL_DEFINITION)
 for _t in TOOL_DEFINITIONS:
     _props = _t["function"].setdefault("parameters", {"type": "object"}).setdefault("properties", {})
     _props.setdefault("tool_title", TOOL_TITLE_PARAM)
@@ -4650,7 +4666,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         system_text += cloud_reply.FRONT_INSTANT_NOTE
     elif front_session:
         system_text += FRONT_NOTE
-    system_text += cloud_runmodel.ATTACHMENT_NOTE
+    system_text += cloud_runmodel.ATTACHMENT_NOTE + cloud_deliver.DELIVER_NOTE
     if depth == 0:
         system_text += cloud_runmodel.REPLY_STYLE_NOTE + cloud_runmodel.MEMORY_NOTE
         if not session_incognito(session_id):
@@ -4706,6 +4722,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     if _bot_fast(session_id) and effort not in (None, "", "off"):
         effort = "low"
     log_event(task_id, "started", {"message": "Started", "model": model, "reasoning_effort": effort})
+    cloud_deliver.begin_task(task_id, session_id)
     final_status = "completed"
     seen_tool_ids = set()
     answered = False            # 本任务是否已经给用户写出过回答文字
@@ -5084,6 +5101,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     elif fn_name == "send_to_bot" and depth == 0: res = tool_send_to_bot(task_id, session_id, fn_args, model, provider_config)
                     elif fn_name == "delegate_task" and depth == 0: res = tool_delegate_task(task_id, session_id, fn_args, model, provider_config)
                     elif fn_name == "image_generate": res = tool_image_generate(task_id, session_id, fn_args, provider_config)
+                    elif fn_name == "deliver_file": res = cloud_deliver.tool_deliver_file(task_id, session_id, fn_args)
                     elif fn_name == "send_message": res = tool_send_message(task_id, session_id, fn_args)
                     elif fn_name in plugin_map:
                         res = PLUGINS.call(plugin_map[fn_name][0], plugin_map[fn_name][1], fn_args)
@@ -5200,6 +5218,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         with active_tasks_lock:
             active_tasks.pop(task_id, None)
         try:
+            try:
+                cloud_deliver.finish_task(task_id, session_id, final_status)
+            except Exception as e:
+                print(f"deliver capture failed: {type(e).__name__}", flush=True)
             if depth == 0:
                 on_task_finished(task_id, session_id, final_status)
         except Exception as e:
@@ -6286,11 +6308,28 @@ class Handler(BaseHTTPRequestHandler):
                     "streaming": True,
                     "perf": True,
                     "plugins": True,
-                    "reply_modes": True
+                    "reply_modes": True,
+                    "deliverables": True
                 },
                 "timestamp": time.time()
             })
             return
+
+        # 交付文件：列表 / 元数据 / 下载（支持 Range）/ 缩略图
+        if "/deliveries" in path and path.startswith("/v1/sessions/"):
+            auth = self.headers.get("Authorization", "")
+            if not auth.startswith("Bearer ") or not token_ok(auth[7:].strip()):
+                self._send(401, {"error": "Unauthorized"})
+                return
+            if ".." in path:
+                self._send(400, {"error": "Invalid path"})
+                return
+            try:
+                if cloud_deliver.handle_get(self, path, query_params):
+                    return
+            except Exception as e:
+                self._send(500, {"error": str(e)})
+                return
 
         # Attachment download endpoint with path security & Bearer auth
         if "/attachments/" in path:

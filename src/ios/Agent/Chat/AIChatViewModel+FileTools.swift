@@ -706,4 +706,52 @@ extension AIChatViewModel {
         return FileToolResult(output: result, success: true)
     }
 
+
+    /// 把本轮新产生的文件记成交付卡片，任务结束时挂到助手消息上。
+    func recordDeliveredPaths(_ paths: [String]) {
+        let skipNames: Set<String> = [".ds_store", "thumbs.db", "nohup.out"]
+        for path in paths {
+            let name = (path as NSString).lastPathComponent
+            let ext = (name as NSString).pathExtension.lowercased()
+            if name.hasPrefix(".") || skipNames.contains(name.lowercased()) { continue }
+            if ["pyc", "pyo", "swp", "tmp", "log"].contains(ext) { continue }
+            if path.contains("/.outputs/") || path.contains("/deliveries/") { continue }
+            if pendingDeliveries.contains(where: { $0.path == path }) { continue }
+            var bytes = 0
+            var stored = path
+            if let host = resolveHostPath(path) {
+                stored = host.path
+                if let n = try? FileManager.default.attributesOfItem(atPath: host.path)[.size] as? NSNumber {
+                    bytes = n.intValue
+                }
+            }
+            let id = "dl_" + String(path.hashValue).replacingOccurrences(of: "-", with: "n").prefix(16)
+            pendingDeliveries.append(CloudDeliverable(localId: String(id), path: stored, name: name, bytes: bytes))
+        }
+    }
+
+    func flushDeliveries() {
+        defer {
+            pendingDeliveries = []
+        }
+        guard let idx = messages.lastIndex(where: { $0.role == .assistant }) else { return }
+        var items = messages[idx].deliverables
+        items.append(contentsOf: pendingDeliveries)
+        let links = CloudLinkExtract.links(in: messages[idx].content)
+        for link in links where !items.contains(where: { $0.href == link.href }) {
+            items.append(link)
+        }
+        var seen = Set<String>()
+        items = items.filter { item in
+            let key = item.id + "|" + (item.path ?? item.href ?? item.name)
+            if seen.contains(key) { return false }
+            seen.insert(key)
+            return true
+        }
+        if items != messages[idx].deliverables {
+            messages[idx].deliverables = items
+        }
+    }
+
+
 }

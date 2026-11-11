@@ -269,8 +269,9 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
 # ---------------- 按需发送工具 ----------------
 
 CORE_TOOLS = {"shell_execute", "file_read", "file_write", "file_edit", "memory_write", "memory_search", "skill_load",
-              "subagent_task", "background_jobs"}
+              "subagent_task", "background_jobs", "deliver_file"}
 TOOL_TRIGGERS = {
+    "deliver_file": r"ppt|pptx|pdf|docx?|xlsx?|ipa|zip|html?|文件|课件|文档|交付|安装包|压缩包|网页|图片|照片",
     "create_bot": r"bot|机器人|助手|新建|创建|建一个|加一个",
     "update_bot": r"bot|机器人|助手|改|设置|提示词|模型|头像",
     "delete_bot": r"bot|机器人|助手|删",

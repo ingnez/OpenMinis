@@ -331,6 +331,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopInput.swift scripts/CloudDesktopInputTests.swift -o /tmp/cloud-desktop-input-tests
           /tmp/cloud-desktop-input-tests
+      - name: 交付卡片与缓存测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDeliverable.swift scripts/CloudDeliverableTests.swift -o /tmp/cloud-deliverable-tests
+          /tmp/cloud-deliverable-tests
       - name: 回头提醒解析单测
         run: |
           set -o pipefail
@@ -685,6 +690,8 @@ jobs:
           /tmp/cloud_followup_tests | tee /tmp/cloud_followup_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopInput.swift scripts/CloudDesktopInputTests.swift -o /tmp/cloud-desktop-input-tests
           /tmp/cloud-desktop-input-tests | tee cloud-desktop-input-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDeliverable.swift scripts/CloudDeliverableTests.swift -o /tmp/cloud-deliverable-tests
+          /tmp/cloud-deliverable-tests | tee cloud-deliverable-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift scripts/WatchPayloadTests.swift -o /tmp/watch-payload-tests
           /tmp/watch-payload-tests | tee watch-payload-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudTypingPhase.swift scripts/CloudTypingPhaseTests.swift -o /tmp/cloud-typing-phase-tests
@@ -1057,6 +1064,8 @@ jobs:
           /tmp/cloud_followup_tests | tee /tmp/cloud_followup_tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopInput.swift scripts/CloudDesktopInputTests.swift -o /tmp/cloud-desktop-input-tests
           /tmp/cloud-desktop-input-tests | tee cloud-desktop-input-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDeliverable.swift scripts/CloudDeliverableTests.swift -o /tmp/cloud-deliverable-tests
+          /tmp/cloud-deliverable-tests | tee cloud-deliverable-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift scripts/WatchPayloadTests.swift -o /tmp/watch-payload-tests
           /tmp/watch-payload-tests | tee watch-payload-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudTypingPhase.swift scripts/CloudTypingPhaseTests.swift -o /tmp/cloud-typing-phase-tests

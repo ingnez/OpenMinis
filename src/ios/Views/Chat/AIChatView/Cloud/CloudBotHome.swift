@@ -990,6 +990,8 @@ struct CloudBotChatView: View {
     @State private var errorText: String?
     @State private var showDetail = false
     @State private var showComputer = false
+    @State private var showFilesPage = false
+    @State private var openDeliverableLink: URL?
 
     @ObservedObject private var lock = CloudBotLock.shared
     /// 当前是无痕对话时记下它和之前的对话，结束后删掉并回到原来的对话
@@ -1078,6 +1080,7 @@ struct CloudBotChatView: View {
                         if let sid = sessionId {
                             Button { speakLatest(sid) } label: { Label("朗读最新回复", systemImage: "speaker.wave.2") }
                             Button { showComputer = true } label: { Label("电脑", systemImage: "display") }
+                            Button { showFilesPage = true } label: { Label("文件", systemImage: "folder") }
                             if incognito == nil {
                                 CloudReplyChatMenu(sessionId: sid, plan: $replyPlan)
                             }
@@ -1094,14 +1097,30 @@ struct CloudBotChatView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                // … 打开 Bot 资料页；新对话 / 历史 / 朗读 / 电脑 在长按标题的菜单里
-                Button { showDetail = true } label: { Image(systemName: "ellipsis") }
-                    .accessibilityLabel("Bot 资料")
+                HStack(spacing: 12) {
+                    Button { showFilesPage = true } label: { Image(systemName: "folder") }
+                        .accessibilityLabel("文件")
+                        .accessibilityIdentifier("chatFilesButton")
+                        .disabled(sessionId == nil)
+                    // … 打开 Bot 资料页；新对话 / 历史 / 朗读 / 电脑 / 文件 在长按标题的菜单里
+                    Button { showDetail = true } label: { Image(systemName: "ellipsis") }
+                        .accessibilityLabel("Bot 资料")
+                }
             }
         }
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $showComputer) {
             CloudComputerView(botId: botId, sessionId: sessionId, reason: nil)
+        }
+        .navigationDestination(isPresented: $showFilesPage) {
+            CloudChatFilesPage(sessionId: sessionId ?? "", botName: model.bot(botId)?.name)
+        }
+        .sheet(item: Binding(get: { openDeliverableLink.map { FileLink($0) } }, set: { openDeliverableLink = $0?.url })) { item in
+            MinisSafariView(url: item.url, localFile: false)
+                .accessibilityIdentifier("deliverablePreview")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .cloudDeliverableLink)) { note in
+            openDeliverableLink = note.object as? URL
         }
         .navigationDestination(isPresented: $showDetail) {
             if let bot = model.bot(botId) {
@@ -1293,4 +1312,11 @@ final class CloudIncognitoGuard: ObservableObject {
             Task { @MainActor in await CloudBotService.deleteIncognito(sid) }
         }
     }
+}
+
+
+private struct FileLink: Identifiable {
+    let url: URL
+    init(_ url: URL) { self.url = url }
+    var id: String { url.absoluteString }
 }

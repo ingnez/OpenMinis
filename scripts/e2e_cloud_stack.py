@@ -54,6 +54,16 @@ def script(data):
         return tool_call("c1", "shell_execute", {"command": "echo e2e-shell-ok; sleep 2"})
     if "加粗" in text:
         return {"role": "assistant", "content": "> 这是**结论：**引用里的中文加粗，还有**「重点」**和**加粗的中文**。\n\n正文第二段。"}
+    if ("生成交付物" in text or "做一份PPT" in text or "做一份课件" in text) and not tool_turns(data):
+        cmd = (
+            "python3 -c 'import zipfile;"
+            "open(\"说明.pdf\",\"wb\").write(b\"%PDF-1.1\\n1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\\n2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\\n3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>endobj\\ntrailer<< /Root 1 0 R >>\\n%%EOF\\n\");"
+            "open(\"图.png\",\"wb\").write(bytes.fromhex(\"89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c49444154789c63f8cfc0000000030001000518d84e0000000049454e44ae426082\"));"
+            "z=zipfile.ZipFile(\"课件.pptx\",\"w\");z.writestr(\"ppt/slides/slide1.xml\",\"<s/>\");z.close()'"
+        )
+        return tool_call("d1", "shell_execute", {"command": cmd})
+    if "生成交付物" in text or "做一份PPT" in text or "做一份课件" in text:
+        return {"role": "assistant", "content": "课件做好了，说明见 https://example.com/guide"}
     n = image_count(data)
     if n:
         return {"role": "assistant", "content": f"收到 {n} 张图片"}
@@ -63,6 +73,8 @@ def script(data):
 def local_script(data):
     text = last_user_text(data)
     reply = "本地收到：" + text[:30]
+    if "生成交付物" in text or "做一份PPT" in text or "做一份课件" in text:
+        return {"role": "assistant", "content": "本地课件做好了，说明见 https://example.com/guide"}
     if "加粗" in text:
         md = "> 这是**结论：**引用里的中文加粗，还有**「重点」**和**加粗的中文**。\n\n本地正文第二段。"
         return {"_chunks": [md]} if data.get("stream") else {"role": "assistant", "content": md}

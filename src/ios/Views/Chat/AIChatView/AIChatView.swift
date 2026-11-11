@@ -327,6 +327,8 @@ struct AIChatView: View {
     // [T-p3-agent-callback-cell] Detail sheet for a tapped agent callback cell.
     @State private var agentCallbackDetail: AgentCallbackDetailTarget?
     @State var showFileBrowser = false
+    @State var showChatFiles = false
+    @State var openDeliverableLink: URL?
     // [T-browser-download-ux-v2] Downloads panel + "Show in Files" locate target.
     @State var showDownloadsPanel = false
     @State private var locateDownloadTarget: DownloadLocateTarget?
@@ -1136,6 +1138,19 @@ struct AIChatView: View {
 
     private var chatBodySheets: some View {
         chatBodyMedia
+        .sheet(isPresented: $showChatFiles) {
+            NavigationView {
+                CloudChatFilesPage(sessionId: vm.sessionId ?? "local",
+                                   localItems: vm.messages.flatMap(\.deliverables).reversed())
+            }
+        }
+        .sheet(item: Binding(get: { openDeliverableLink.map { ChatFileLink($0) } }, set: { openDeliverableLink = $0?.url })) { item in
+            MinisSafariView(url: item.url, localFile: false)
+                .accessibilityIdentifier("deliverablePreview")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .cloudDeliverableLink)) { note in
+            openDeliverableLink = note.object as? URL
+        }
         .sheet(isPresented: $showFileBrowser) {
             NavigationStack {
                 let base = RootfsManager.shared.dataPath
@@ -1888,4 +1903,11 @@ struct AIChatView: View {
         // `vm.isProcessing` without threading the vm through every level.
         .environmentObject(vm)
     }
+}
+
+
+private struct ChatFileLink: Identifiable {
+    let url: URL
+    init(_ url: URL) { self.url = url }
+    var id: String { url.absoluteString }
 }

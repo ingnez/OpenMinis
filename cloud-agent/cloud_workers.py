@@ -154,9 +154,19 @@ def post_result(conn, w):
     """把结果作为 Bot 的一条消息写进前台对话（只写一次）。返回是否写了。"""
     if not claim_report(conn, w["worker_id"]):
         return False
+    text = result_text(w)
+    meta = {"worker_id": w["worker_id"], "worker_status": w["status"]}
+    try:
+        import cloud_deliver
+        items = cloud_deliver.copy_items_to_session(
+            w["worker_session"], w["front_session"], cloud_deliver.items_from_session(w["worker_session"]), source="worker")
+        items = cloud_deliver.merge_items(items, [], cloud_deliver.extract_links(text))
+        if items:
+            meta["deliverables"] = items
+    except Exception as e:
+        print(f"worker deliver propagate failed: {type(e).__name__}", flush=True)
     conn.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'assistant', ?, ?, ?)",
-                 (w["front_session"], result_text(w), time.time(),
-                  json.dumps({"worker_id": w["worker_id"], "worker_status": w["status"]}, ensure_ascii=False)))
+                 (w["front_session"], text, time.time(), json.dumps(meta, ensure_ascii=False)))
     conn.commit()
     return True
 

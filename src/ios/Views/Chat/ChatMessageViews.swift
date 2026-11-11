@@ -603,6 +603,17 @@ struct ChatMessageRow: View {
                 )
             }
 
+            if !message.deliverables.isEmpty {
+                let images = message.deliverables.filter { $0.kind == .image }
+                let rest = message.deliverables.filter { $0.kind != .image }
+                if !images.isEmpty {
+                    CloudDeliverableImageStack(items: images, sessionId: "")
+                }
+                ForEach(rest) { item in
+                    CloudFileCardView(item: item, sessionId: "", accent: Color.accentColor)
+                }
+            }
+
             // Typing indicator — "request out, nothing back yet", evaluated per
             // ROUND. See `ChatMessage.shouldShowTypingIndicator`.
             if isActiveMessage && message.shouldShowTypingIndicator {

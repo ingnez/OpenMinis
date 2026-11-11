@@ -650,6 +650,7 @@ extension AIChatViewModel {
                     ensureParentDirsInMetaDB(for: path)
                     ensureFakefsMetadata(for: path, isDirectory: isDir.boolValue)
                 }
+                recordDeliveredPaths(newOrModified.keys.sorted())
                 toolOutput += "\n\n[minis] New/modified files:"
                 for path in newOrModified.keys.sorted() {
                     if let url = linuxPathToMinisURL(path) {
@@ -699,9 +700,11 @@ extension AIChatViewModel {
             if fileResult.success,
                let data = argsJson.data(using: .utf8),
                let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let writtenPath = dict["path"] as? String,
-               writtenPath.contains("/skills/") && writtenPath.hasSuffix("SKILL.md") {
-                await MainActor.run { SkillStore.shared.reload() }
+               let writtenPath = dict["path"] as? String {
+                recordDeliveredPaths([writtenPath])
+                if writtenPath.contains("/skills/") && writtenPath.hasSuffix("SKILL.md") {
+                    await MainActor.run { SkillStore.shared.reload() }
+                }
             }
 
         case "file_edit":

@@ -5,7 +5,7 @@ import SwiftUI
 enum CloudCards {
     static let cardPrefix = "cloudcard-"
 
-    enum Kind: String { case worker, choice, page, milestone }
+    enum Kind: String { case worker, choice, page, milestone, deliverable }
 
     struct Card {
         let kind: Kind
@@ -21,6 +21,11 @@ enum CloudCards {
         if let p = m["page"] as? [String: Any] { out.append(Card(kind: .page, payload: p, messageId: mid)) }
         if let w = m["milestone"] as? String {
             out.append(Card(kind: .milestone, payload: ["worker_id": w, "text": m["content"] as? String ?? ""], messageId: mid))
+        }
+        if let arr = m["deliverables"] as? [[String: Any]] {
+            for d in arr {
+                out.append(Card(kind: .deliverable, payload: d, messageId: mid))
+            }
         }
         return out
     }

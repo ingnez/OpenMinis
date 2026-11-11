@@ -27,6 +27,7 @@ private let logger = AppLogger(category: "AIChatVM")
 
 extension AIChatViewModel {
     func playCompletionHaptic() {
+        flushDeliveries()
         // [T-p0-programmatic-prompt] A turn started by submitProgrammaticPrompt
         // (CLI / Shortcut / job) has no user tap behind it — a buzz out of
         // nowhere is a bug, not feedback. The flag is cleared at loop end

@@ -1329,6 +1329,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
 
     // Attachments
     @Published var attachments: [InputAttachment] = []
+    /// 这一轮新产生、还没挂到助手消息上的交付文件
+    var pendingDeliveries: [CloudDeliverable] = []
     /// [OpenMinis#433] The composer holds something worth keeping when the
     /// user leaves: non-blank text (which also covers `[Pasted#N]`
     /// placeholders, whose buffer lives on this VM) or an attachment.

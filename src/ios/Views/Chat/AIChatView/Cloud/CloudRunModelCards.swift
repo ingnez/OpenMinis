@@ -4,6 +4,7 @@ import SwiftUI
 struct CloudCardView: View {
     let card: CloudCards.Card
     let accent: Color
+    @Environment(\.cloudChatActions) private var chatActions
 
     var body: some View {
         switch card.kind {
@@ -16,6 +17,10 @@ struct CloudCardView: View {
         case .milestone:
             Label((card.payload["text"] as? String ?? "").replacingOccurrences(of: "⏳ ", with: ""), systemImage: "flag.checkered")
                 .font(.footnote).foregroundStyle(.secondary)
+        case .deliverable:
+            if let item = CloudDeliverable(card.payload) {
+                CloudFileCardView(item: item, sessionId: chatActions.sessionId, accent: accent)
+            }
         }
     }
 }
