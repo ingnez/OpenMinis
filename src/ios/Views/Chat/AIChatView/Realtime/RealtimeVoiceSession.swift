@@ -225,6 +225,12 @@ final class RealtimeVoiceSession: ObservableObject {
 
     private func handle(_ event: [String: Any], model: String, voice: String, preview: Bool) throws {
         let type = event["type"] as? String ?? ""
+        // 百炼的裸错误没有 type（例如密钥限制模型时的 AccessDenied），以前落到 default 被丢掉
+        if type.isEmpty, connectionProtocol.isDashScope, let e = RealtimeDashScope.serverError(event) {
+            fail(RealtimeDashScope.friendlyError(code: e.code, message: e.message)
+                 ?? "实时服务错误（\(String(e.code.prefix(100)))）：\(RealtimeConnectionProtocol.safeDetail(e.message, key: diagnosticKey))")
+            return
+        }
         if RealtimeCallHealth.isServerHeard(type) { health.serverHeard(at: Date()); if notice?.hasPrefix(RealtimeCallHealth.deafPrefix) == true { notice = nil } }
         switch type {
         case "session.created":
@@ -237,7 +243,7 @@ final class RealtimeVoiceSession: ObservableObject {
             guard !seeded else { return }; seeded = true
             if validationRoundTrip {
                 status = "握手通过，正在测试一来一回"
-                if connectionProtocol.isDashScope { emit(["type": "response.create"]) } else { sendValidationText() }
+                sendValidationText()
                 return
             }
             if completeValidation() { return }
@@ -321,6 +327,7 @@ final class RealtimeVoiceSession: ObservableObject {
             if code == "response_cancel_not_active" { return }
             let message = detail["message"] as? String ?? "未提供错误详情"
             if connectionProtocol.isDashScope && RealtimeDashScope.isBenignError(code: code, message: message) { return }
+            if connectionProtocol.isDashScope, let friendly = RealtimeDashScope.friendlyError(code: code, message: message) { fail(friendly); return }
             fail("实时服务错误（\(String(code.prefix(100)))）：\(RealtimeConnectionProtocol.safeDetail(message, key: diagnosticKey))")
         default: break
         }
@@ -384,6 +391,7 @@ final class RealtimeVoiceSession: ObservableObject {
     }
     /// 一来一回测试：发一句固定文字（不含任何聊天内容）
     private func sendValidationText() {
+        // 百炼也走这条：实测光发 response.create 会被拒（没有输入），先插一条用户文字服务端就接受
         emit(RealtimeVoiceProtocol.history(role: "user", text: "连接测试：请只回答一个字「好」。"))
         requestResponse()
     }
@@ -444,6 +452,7 @@ final class RealtimeVoiceSession: ObservableObject {
             }
         }
         guard active, epoch == generation else { return }
+        if connectionProtocol.isDashScope, let friendly = RealtimeDashScope.friendlyError(code: "", message: details) { fail(friendly); return }
         let protocolInfo = "\n当前协议：\(connectionProtocol.title)。"
         let hint = code == 400 ? "\nHTTP 400 表示服务端拒绝请求；请核对模型的实时权限、协议和服务商路由，不是单凭此状态就能判断网络故障。" : ""
         fail(baseline + protocolInfo + hint + RealtimeConnectionProtocol.safeDetail(details, key: diagnosticKey))

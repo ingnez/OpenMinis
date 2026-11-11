@@ -57,9 +57,16 @@ def serve(conn, verdict_path):
     accept = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
     conn.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                   f"Sec-WebSocket-Accept: {accept}\r\n\r\n").encode())
-    send_text(conn, {"type": "session.created", "event_id": "e0", "session": {"id": "sess_fake"}})
+    # session.created 的字段形状照真百炼（2026-11 实测 qwen3.8-omni-flash-realtime）
+    send_text(conn, {"type": "session.created", "event_id": "e0", "session": {
+        "id": "sess_fake", "object": "realtime.session", "model": "fake", "modalities": ["text", "audio"], "voice": "Tina",
+        "input_audio_format": "pcm", "output_audio_format": "pcm",
+        "input_audio_transcription": {"model": "qwen3-asr-flash-realtime"},
+        "turn_detection": {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300, "silence_duration_ms": 800,
+                           "create_response": True, "interrupt_response": True}}})
     appends = 0
     cancelled = False
+    items_since_response = 0
     while True:
         try:
             op, data = read_frame(conn)
@@ -88,7 +95,31 @@ def serve(conn, verdict_path):
                 send_text(conn, {"type": "response.audio.delta", "response_id": "resp_1", "item_id": "item_a1",
                                  "content_index": 0, "delta": base64.b64encode(b"\0\0" * 240).decode()})
             if appends == 3:
-                send_text(conn, {"type": "input_audio_buffer.speech_started", "item_id": "item_u2"})
+                send_text(conn, {"type": "input_audio_buffer.speech_started", "audio_start_ms": 0, "item_id": "item_u2"})
+                # 真百炼在转写完成前会发 delta（字段是 text / stash，不是 delta），客户端应忽略
+                send_text(conn, {"type": "conversation.item.input_audio_transcription.delta", "item_id": "item_u2",
+                                 "content_index": 0, "text": "", "stash": "等", "language": "zh"})
+        elif t == "conversation.item.create":
+            item = ev.get("item", {})
+            v.setdefault("items", []).append(item)
+            items_since_response += 1
+            send_text(conn, {"type": "conversation.item.created", "item": dict(item, id="item_t1", object="realtime.item", status="completed")})
+        elif t == "response.create":
+            if items_since_response == 0:
+                # 真百炼对「什么都没插就 response.create」的原话
+                v["errors"].append("bare_response_create")
+                send_text(conn, {"type": "error", "error": {"type": "invalid_request_error",
+                                 "message": "Cannot create response without input, history, or instructions", "param": "response"}})
+                continue
+            items_since_response = 0
+            send_text(conn, {"type": "response.created", "response": {"id": "resp_2", "status": "in_progress"}})
+            send_text(conn, {"type": "response.audio_transcript.delta", "response_id": "resp_2", "item_id": "item_a2", "delta": "好"})
+            send_text(conn, {"type": "response.audio.delta", "response_id": "resp_2", "item_id": "item_a2",
+                             "content_index": 0, "delta": base64.b64encode(b"\0\0" * 240).decode()})
+            send_text(conn, {"type": "response.audio_transcript.done", "response_id": "resp_2", "item_id": "item_a2", "transcript": "好"})
+            send_text(conn, {"type": "response.done", "response": {"id": "resp_2", "status": "completed"}})
+            # 真百炼在密钥限制模型时发的裸错误（没有 type），之后断开
+            send_text(conn, {"code": "AccessDenied", "message": "Access denied by API-Key restrictions.", "request_id": "fake-req"})
         elif t == "response.cancel":
             cancelled = True
             send_text(conn, {"type": "response.done", "response": {"id": "resp_1", "status": "cancelled"}})

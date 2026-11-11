@@ -145,6 +145,32 @@ enum RealtimeDashScope {
         return ["type": "session.update", "session": session]
     }
 
+    /// 服务端错误有两种形状（都实测见过）：
+    /// - 标准：{"type":"error","error":{"type":"invalid_request_error","code"?:…,"message":…}}（code 可能缺）
+    /// - 没有 type 的裸错误：{"code":"AccessDenied","message":"Access denied by API-Key restrictions.","request_id":…}
+    ///   （密钥限制了可用模型时，session.created 之后紧跟这一条，然后断开；以前被当成未知事件丢掉）
+    static func serverError(_ event: [String: Any]) -> (code: String, message: String)? {
+        let type = event["type"] as? String ?? ""
+        if type == "error" {
+            let d = event["error"] as? [String: Any] ?? [:]
+            return (d["code"] as? String ?? d["type"] as? String ?? "unknown", d["message"] as? String ?? "未提供错误详情")
+        }
+        guard type.isEmpty, let code = event["code"] as? String, !code.isEmpty else { return nil }
+        return (code, event["message"] as? String ?? "未提供错误详情")
+    }
+
+    /// 常见拒绝原因换成能照着改的中文
+    static func friendlyError(code: String, message: String) -> String? {
+        let s = (code + " " + message).lowercased()
+        if s.contains("accessdenied") || s.contains("access denied") {
+            return "百炼拒绝了这个模型：API Key 没开通它或被限制了可用模型（Access denied）。请在百炼控制台给这个密钥放开所选实时模型，或换一个已开通的模型。"
+        }
+        if s.contains("invalidapikey") || s.contains("invalid_api_key") || s.contains("invalid api-key") {
+            return "百炼密钥无效：请在服务商设置里重新填写 API Key（地域要和密钥一致）。"
+        }
+        return nil
+    }
+
     /// 取消一个已结束的回复属于正常竞态，不应挂断通话
     static func isBenignError(code: String, message: String) -> Bool {
         let s = (code + " " + message).lowercased()

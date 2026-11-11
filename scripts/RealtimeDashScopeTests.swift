@@ -46,6 +46,22 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
         check(folded.hasPrefix("角色") && folded.contains("用户：你好") && folded.contains("助手：在"), "历史并进 instructions")
         check(D.isBenignError(code: "invalid_request_error", message: "Cancellation failed: no active response found"), "取消竞态不挂断")
         check(!D.isBenignError(code: "invalid_api_key", message: "bad key"), "真错误要报")
+        // 真百炼实测过的两种错误形状（值都是假的）
+        let bare: [String: Any] = ["code": "AccessDenied", "message": "Access denied by API-Key restrictions.", "request_id": "fake-req"]
+        check(D.serverError(bare)?.code == "AccessDenied", "没有 type 的裸错误也要认出来")
+        let typed: [String: Any] = ["type": "error", "error": ["type": "invalid_request_error", "message": "Cannot create response without input, history, or instructions"]]
+        check(D.serverError(typed)?.code == "invalid_request_error", "缺 code 时用 error.type")
+        check(D.serverError(["type": "response.done"]) == nil && D.serverError([:]) == nil, "正常事件不是错误")
+        check(D.friendlyError(code: "AccessDenied", message: "x")?.contains("Access denied") == true, "AccessDenied 给中文原因")
+        check(D.friendlyError(code: "", message: "Access denied by API-Key restrictions.") != nil, "关闭原因里的 Access denied 也认")
+        check(D.friendlyError(code: "invalid_request_error", message: "other") == nil, "别的错误不乱翻译")
+        // 「一来一回」：真百炼光发 response.create 会被拒，App 先插用户文字（RealtimeVoiceSession.sendValidationText）
+        let probe: [[String: Any]] = [RealtimeVoiceProtocol.history(role: "user", text: "测"), ["type": "response.create"]]
+        let probeItem = probe.first?["item"] as? [String: Any]
+        let probeContent = (probeItem?["content"] as? [[String: Any]])?.first
+        check(probe.count == 2 && probe.first?["type"] as? String == "conversation.item.create"
+              && probeItem?["role"] as? String == "user" && probeContent?["type"] as? String == "input_text"
+              && probe.last?["type"] as? String == "response.create", "一来一回先插用户文字再 response.create")
 
         // 事件往返（假服务）
         guard let port = CommandLine.arguments.dropFirst().first else { print("PASS：百炼纯协议（未跑假服务）"); return }
@@ -69,6 +85,9 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
         var heard = ""
         var userText = ""
         var benignSkipped = false
+        var probeReply = ""
+        var probeDone = false
+        var deniedParsed = false
         loop: while true {
             let ev = try await next()
             let t = ev["type"] as? String ?? ""
@@ -80,22 +99,34 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
                 let pcm = Data(count: 3200)   // 100 ms 静音 @16k
                 for _ in 0..<3 { try await send(P.dashScope.audio(pcm)) }
             case "response.created": responding = true
-            case "response.audio_transcript.delta": heard += ev["delta"] as? String ?? ""
+            case "response.audio_transcript.delta":
+                if ev["response_id"] as? String == "resp_2" { probeReply += ev["delta"] as? String ?? "" } else { heard += ev["delta"] as? String ?? "" }
             case "input_audio_buffer.speech_started":
                 // 和 RealtimeVoiceSession 一样：百炼由客户端发 response.cancel
                 if responding { try await send(["type": "response.cancel"]) }
-            case "response.done": responding = false
+            case "response.done":
+                responding = false
+                let r = ev["response"] as? [String: Any] ?? [:]
+                if r["id"] as? String == "resp_2" { probeDone = r["status"] as? String == "completed" }
             case "conversation.item.input_audio_transcription.completed": userText = ev["transcript"] as? String ?? ""
             case "error":
                 let e = ev["error"] as? [String: Any] ?? [:]
                 check(D.isBenignError(code: e["code"] as? String ?? "", message: e["message"] as? String ?? ""), "假服务的取消竞态应被忽略")
                 benignSkipped = true
+                // 接着测「一来一回」：和 RealtimeVoiceSession 一样先插用户文字再要回复
+                try await send(RealtimeVoiceProtocol.history(role: "user", text: "连接测试：请只回答一个字「好」。"))
+                try await send(["type": "response.create"])
+            case "":
+                // 假服务最后发一条没有 type 的 AccessDenied（真百炼的形状）
+                deniedParsed = D.serverError(ev)?.code == "AccessDenied"
                 break loop
             default: break
             }
         }
         ws.cancel(with: .normalClosure, reason: nil)
         check(heard == "你好" && userText == "等一下" && benignSkipped && !responding, "事件顺序：\(seen)")
-        print("PASS：百炼协议识别、地址、音色映射、会话配置、历史合并，假服务往返（握手→配置→16k 音频→回复→插话取消→转写）")
+        check(probeReply == "好" && probeDone, "一来一回：插用户文字后假服务回复「好」：\(seen)")
+        check(deniedParsed, "裸 AccessDenied 错误被识别：\(seen)")
+        print("PASS：百炼协议识别、地址、音色映射、会话配置、历史合并，假服务往返（握手→配置→16k 音频→回复→插话取消→转写→一来一回→裸错误）")
     }
 }

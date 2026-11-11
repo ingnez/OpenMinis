@@ -35,5 +35,11 @@ with tempfile.TemporaryDirectory() as d:
     assert s["instructions"] == "测试角色"
     assert v["audio_even_bytes"] and v["cancel_received"]
     assert "conversation.item.truncate" not in v["client_events"], "百炼不发 truncate"
+    assert not v["errors"], ("一来一回不能只发 response.create（真百炼会拒）", v["errors"])
+    probe = v["items"][0]
+    assert probe["role"] == "user" and probe["content"][0]["type"] == "input_text", probe
     assert "test-fake-dashscope-key" not in json.dumps(v["session"]), "密钥不能进会话配置"
+    sess_src = (rt / "RealtimeVoiceSession.swift").read_text()
+    assert 'isDashScope { emit(["type": "response.create"]) }' not in sess_src, "百炼一来一回不能只发 response.create"
+    assert "RealtimeDashScope.serverError(event)" in sess_src, "没有 type 的百炼裸错误要处理"
     print("PASS：假百炼服务看到正确的地址、鉴权头、session.update、16k 音频和插话取消")
