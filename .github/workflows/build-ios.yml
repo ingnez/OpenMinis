@@ -1141,6 +1141,7 @@ jobs:
           ls e2e-shots | head -50
 
       - name: iOS 单元测试 MinisTests（模拟器，MinisUnitTests 方案）
+        id: unit
         if: always()
         continue-on-error: true
         timeout-minutes: 30
@@ -1179,3 +1180,10 @@ jobs:
             e2e-cloud-stack.log
             unit-tests.log
           retention-days: 14
+
+      - name: MinisTests 必须全部通过（先传完日志再判定）
+        if: always() && steps.unit.outcome == 'failure'
+        run: |
+          echo "::error::MinisTests 有失败，见 unit-tests.log 的 Failing tests"
+          grep -A40 "Failing tests:" unit-tests.log | head -45 || true
+          exit 1
