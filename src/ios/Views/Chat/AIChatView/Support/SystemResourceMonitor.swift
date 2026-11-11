@@ -29,7 +29,18 @@ class SystemResourceMonitor: ObservableObject {
     private var timer: Timer?
     private var prevCPUTicks: (user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)?
 
+    /// true = 读云电脑的 /v1/live-stats（云端任务的工具面板），不是这台 iPhone 的 mach 统计
+    var remote = false
+
     func start() {
+        timer?.invalidate()
+        if remote {
+            sampleRemote()
+            timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                DispatchQueue.main.async { self?.sampleRemote() }
+            }
+            return
+        }
         sampleCPU() // prime the previous ticks
         updateMemory()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -43,6 +54,17 @@ class SystemResourceMonitor: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
+    }
+
+    private func sampleRemote() {
+        Task { @MainActor [weak self] in
+            guard let d = try? await CloudConnection.shared.request(method: "GET", path: "/v1/live-stats") else { return }
+            let s = CloudLiveStats(d)
+            guard let self, self.remote else { return }
+            self.cpuUsage = s.now?.cpu ?? 0
+            self.memUsed = UInt64(max(0, s.now?.memUsedMB ?? 0)) * 1_048_576
+            self.memTotal = UInt64(max(0, s.memoryTotalMB)) * 1_048_576
+        }
     }
 
     private func sampleCPU() {

@@ -906,6 +906,8 @@ struct ToolLiveSheet: View {
     var onTakeoverDone: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.chatSessionId) private var sessionId
+    /// 非 nil = 云端任务：标题写云电脑 / Bot 名字，资源读数来自云端
+    @Environment(\.cloudComputer) private var cloudComputer
 
     /// [T-sub-agents-resume] True for an agent block whose run the app lost —
     /// the payload still says "running" but no job is alive to back it.
@@ -1060,6 +1062,7 @@ struct ToolLiveSheet: View {
         .background(Color(UIColor.systemGroupedBackground))
         .onAppear {
             startBrowserTimer()
+            resourceMonitor.remote = cloudComputer != nil
             if isLive && isCurrentShell { resourceMonitor.start() }
             MinisOpenURLBroker.shared.toolSheetVisible = true
         }
@@ -1165,8 +1168,9 @@ struct ToolLiveSheet: View {
                 // out to the step pill's trailing column (under the
                 // elapsed-duration "5s" text) so it lives next to where the
                 // user is already scanning timing info.
-                Text("Minis Computer")
+                Text(cloudComputer?.computerName ?? "Minis Computer")
                     .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
 
                 Spacer()
 
@@ -2846,6 +2850,7 @@ struct ToolLiveSheet: View {
     }
 
     private var toolTitle: String {
+        if let cloudComputer { return cloudComputer.activity(Self.cloudToolKey(block.kind)) }
         switch block.kind {
         case .shellTool: return "Minis is using Shell"
         case .fileReadTool: return "Minis is reading File"
@@ -2859,6 +2864,21 @@ struct ToolLiveSheet: View {
         case .info: return "Minis"
         case .text: return "Minis"
         case .thinking: return "Minis"
+        }
+    }
+
+    static func cloudToolKey(_ kind: AssistantBlockKind) -> String {
+        switch kind {
+        case .shellTool: return "shell"
+        case .fileReadTool: return "read"
+        case .fileWriteTool: return "write"
+        case .fileEditTool: return "edit"
+        case .browserTool: return "browser"
+        case .readImageTool: return "image"
+        case .memoryTool: return "memory"
+        case .delegateTool: return "agent"
+        case .userAskTool: return "ask"
+        default: return ""
         }
     }
 
@@ -2941,6 +2961,7 @@ private struct ToolPreviewThumbnail: View {
     @State private var browserSnapshot: UIImage?
     @State private var snapshotTimer: Timer?
     @StateObject private var resourceMonitor = SystemResourceMonitor()
+    @Environment(\.cloudComputer) private var cloudComputer
 
     /// True while the SUB AGENT IS RUNNING A TOOL — any tool, not just the
     /// browser.
@@ -3062,6 +3083,7 @@ private struct ToolPreviewThumbnail: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
         .onAppear {
+            resourceMonitor.remote = cloudComputer != nil
             if isLive && isShell { resourceMonitor.start() }
         }
         .onDisappear { resourceMonitor.stop() }

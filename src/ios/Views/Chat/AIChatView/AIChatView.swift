@@ -776,6 +776,8 @@ struct AIChatView: View {
             }
         }
         .environment(\.chatSessionId, vm.sessionId)
+        // 交给云电脑执行的会话：工具面板写云电脑名字、读云端资源（以前显示 iPhone 自己的 CPU / 内存和英文 "Minis is using Shell"）
+        .environment(\.cloudComputer, vm.isCloudExecutionActive ? CloudComputerContext.current() : nil)
         .modifier(NavBarStyleModifier(topSafeAreaInset: $topSafeAreaInset))
         // [T-scheduled-banner] Next run of this chat's scheduled task, pinned
         // under the navigation bar. Outside NavBarStyleModifier on purpose:
