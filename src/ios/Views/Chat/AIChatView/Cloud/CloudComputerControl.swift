@@ -480,7 +480,8 @@ struct CloudTrackpadSurface: UIViewRepresentable {
     }
 }
 
-/// 捏合手势的共同处理（触控板层和观看层共用）：两指中心的移动带着画面走；抬起一根手指时中心会跳，先不平移
+/// 捏合手势的共同处理（触控板层和观看层共用）：两指中心的移动带着画面走；抬起一根手指时中心会跳，只缩放不平移。
+/// 不在 began 清掉 scale，并在 ended 补一次：XCUITest 合成捏合常常 numberOfTouches == 0，有时还没有 changed。
 @MainActor
 enum CloudPinchTracker {
     /// 返回新的锚点（手势结束返回 nil）
@@ -488,14 +489,19 @@ enum CloudPinchTracker {
         let p = g.location(in: g.view)
         switch g.state {
         case .began:
-            g.scale = 1
             return p
         case .changed:
-            guard g.numberOfTouches >= 2 else { g.scale = 1; return nil }
-            controller.pinch(by: g.scale, around: p, from: anchor ?? p)
+            let follow = CloudPinchPolicy.followAnchor(numberOfTouches: g.numberOfTouches)
+            let around = follow ? p : (anchor ?? p)
+            let from = follow ? (anchor ?? p) : around
+            controller.pinch(by: g.scale, around: around, from: from)
             g.scale = 1
-            return p
+            return follow ? p : (anchor ?? p)
         default:
+            if CloudPinchPolicy.shouldFlushScaleOnEnd(g.scale) {
+                let around = anchor ?? p
+                controller.pinch(by: g.scale, around: around, from: around)
+            }
             controller.pinchEnded()
             return nil
         }

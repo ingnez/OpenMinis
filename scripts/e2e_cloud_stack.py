@@ -318,8 +318,11 @@ def main():
         "OPENMINIS_WORKSPACE": os.path.join(work, "workspace"),
         "OPENMINIS_PLUGIN_DIR": os.path.join(work, "data", "plugin-files"),
         # 插件市场 e2e：目录里多一个不访问网络的假 stdio MCP（E2E 回声）
-        "OPENMINIS_E2E_FAKE_PLUGIN": os.path.join(HERE, "..", "cloud-agent", "test_fake_mcp_server.py"),
+        "OPENMINIS_E2E_FAKE_PLUGIN": os.path.abspath(os.path.join(HERE, "..", "cloud-agent", "test_fake_mcp_server.py")),
     })
+    fake_plugin = os.environ["OPENMINIS_E2E_FAKE_PLUGIN"]
+    if not os.path.isfile(fake_plugin):
+        raise SystemExit("e2e 假插件脚本不存在: " + fake_plugin)
     os.makedirs(os.path.join(work, "data"), exist_ok=True)
     os.makedirs(os.path.join(work, "workspace"), exist_ok=True)
 
@@ -436,15 +439,24 @@ def main():
 
     import urllib.request
 
-    def call(method, path, body):
+    def call(method, path, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        headers = {"Authorization": "Bearer " + TOKEN}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
         req = urllib.request.Request(f"http://127.0.0.1:{api.server_address[1]}{path}", method=method,
-                                     data=json.dumps(body).encode(), headers={"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"})
+                                     data=data, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read() or b"{}")
 
     call("PUT", "/v1/credentials/e2e", {"api_key": "sk-e2e-fake-000000000000", "base_url": model_base})
     call("PUT", f"/v1/bots/{BOT_ID}", {"name": BOT_NAME, "instructions": "端到端测试 Bot", "model": MODEL, "credential": "e2e"})
     set_reply("verbose")
+    plugins = call("GET", "/v1/plugins")
+    ids = [c["id"] for c in (plugins.get("catalog") or [])]
+    print("插件目录 %d 项，首位 %s" % (len(ids), ids[:1]), flush=True)
+    if ids[:1] != ["e2e-echo"]:
+        raise SystemExit("GET /v1/plugins 没有把 e2e-echo 放在首位：" + ",".join(ids))
     print(f"E2E 云端就绪：API 127.0.0.1:{api.server_address[1]}，假模型 {model_base}，本地假模型 127.0.0.1:{LOCAL_MODEL_PORT}/v1，探针 127.0.0.1:18799", flush=True)
     while True:
         time.sleep(3600)

@@ -113,6 +113,9 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(scrollTo(app, market), "Bot 设置里没有「插件市场」")
         market.tap()
         XCTAssertTrue(app.navigationBars["插件市场"].waitForExistence(timeout: 15) || waitText(app, contains: "插件目录", timeout: 15), "插件市场页没打开")
+        // 目录来自 GET /v1/plugins，标题「插件目录」在列表还空时就会出现；先等到真正的条目
+        XCTAssertTrue(waitText(app, contains: "E2E 回声", timeout: 30) || waitText(app, contains: "Fetch", timeout: 5),
+                      "插件目录没加载出来")
         let echo = app.descendants(matching: .any)["pluginCatalog-e2e-echo"]
         let echoName = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "E2E 回声")).firstMatch
         XCTAssertTrue(scrollTo(app, echo) || scrollTo(app, echoName) || waitText(app, contains: "E2E 回声", timeout: 5),

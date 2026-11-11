@@ -238,4 +238,11 @@ func typeOrderTests() {
     check(CloudIMECommit.events(old: CloudIMECommit.sentinel, new: CloudIMECommit.sentinel + " ", composing: false) == [.text(" ")], "空格")
     check(CloudIMECommit.events(old: CloudIMECommit.sentinel, new: CloudIMECommit.sentinel + "\n", composing: false) == [.text("\n")], "换行")
     check(CloudIMECommit.shouldFlushAgain(sent: "a", fieldNow: "a1 "), "打字撞上清 sentinel 时要再冲")
+        // XCUITest 合成捏合：0 触点仍要缩放；结束时若 scale 还在就补一次
+        check(!CloudPinchPolicy.followAnchor(numberOfTouches: 0), "合成捏合 0 触点不跟锚点平移")
+        check(!CloudPinchPolicy.followAnchor(numberOfTouches: 1), "单指不跟锚点平移")
+        check(CloudPinchPolicy.followAnchor(numberOfTouches: 2), "两指跟锚点平移")
+        check(CloudPinchPolicy.shouldFlushScaleOnEnd(2.5), "ended 时还有未消耗的 scale 要补上")
+        check(!CloudPinchPolicy.shouldFlushScaleOnEnd(1), "scale 已归 1 不用再补")
 }
+
