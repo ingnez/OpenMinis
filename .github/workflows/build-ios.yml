@@ -317,6 +317,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudComputerContext.swift scripts/CloudComputerLabelTests.swift -o /tmp/cloud-computerlabel-tests
           /tmp/cloud-computerlabel-tests
+      - name: 中文加粗星号回归（引用 / 中文标点）
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Agent/Markdown/MarkdownCJKEmphasis.swift scripts/MarkdownCJKEmphasisTests.swift -o /tmp/cjk-emphasis-tests
+          /tmp/cjk-emphasis-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -493,6 +498,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Agent/Markdown/MarkdownCJKEmphasis.swift scripts/MarkdownCJKEmphasisTests.swift -o /tmp/cjk-emphasis-tests
+          /tmp/cjk-emphasis-tests | tee cjk-emphasis-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudComputerContext.swift scripts/CloudComputerLabelTests.swift -o /tmp/cloud-computerlabel-tests
           /tmp/cloud-computerlabel-tests | tee cloud-computerlabel-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudAttachmentLines.swift scripts/CloudAttachmentLinesTests.swift -o /tmp/cloud-attachlines-tests
@@ -846,6 +853,8 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Agent/Markdown/MarkdownCJKEmphasis.swift scripts/MarkdownCJKEmphasisTests.swift -o /tmp/cjk-emphasis-tests
+          /tmp/cjk-emphasis-tests | tee cjk-emphasis-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudComputerContext.swift scripts/CloudComputerLabelTests.swift -o /tmp/cloud-computerlabel-tests
           /tmp/cloud-computerlabel-tests | tee cloud-computerlabel-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudAttachmentLines.swift scripts/CloudAttachmentLinesTests.swift -o /tmp/cloud-attachlines-tests
@@ -1055,8 +1064,9 @@ jobs:
           DEV=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
           echo "模拟器：$DEV"
           xcrun simctl boot "$DEV" || true
-          # 单元测试目标 MinisTests 在这里会报「Unable to resolve module dependency: 'Minis'」，
-          # 而 -only-testing 也挡不住它被编译，所以临时生成一个只含 MinisUITests 的方案
+          # Minis 方案里挂着的 MinisTests 只依赖 MinisTestHost、不依赖 Minis（设计上走 MinisUnitTests 方案、先单独编 App，
+          # 见 scripts/ios-unit-tests.sh），并行编译时扫描不到 Minis 模块就报「Unable to resolve module dependency: 'Minis'」，
+          # -only-testing 也挡不住它被编译。这里只在运行机上生成一个不含它的方案跑 UI 流程；单元测试在下一步按它自己的方案跑。
           python3 - <<'PY'
           import re
           d = "src/ios/Minis.xcodeproj/xcshareddata/xcschemes/"
@@ -1089,6 +1099,26 @@ jobs:
           xcrun xcresulttool export attachments --path ui-tests.xcresult --output-path e2e-shots 2>&1 | tail -3 || true
           ls e2e-shots | head -50
 
+      - name: iOS 单元测试 MinisTests（模拟器，MinisUnitTests 方案）
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          DEV=$(xcrun simctl list devices booted -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for v in d.values() for x in v))")
+          # Minis.app（带 Minis.debug.dylib）上一步已经编进 build/；MinisTests 链接它，跑在 MinisTestHost 里
+          xcodebuild test \
+            -project src/ios/Minis.xcodeproj \
+            -scheme MinisUnitTests \
+            -configuration Debug \
+            -destination "id=$DEV" \
+            -derivedDataPath build \
+            -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
+            -scmProvider system \
+            -disableAutomaticPackageResolution \
+            -resultBundlePath unit-tests.xcresult \
+            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= 2>&1 | tee unit-tests.log
+          grep -E "Executed [0-9]+ tests" unit-tests.log | tail -1 || true
+
       - name: Upload UI test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -1100,4 +1130,5 @@ jobs:
             e2e-summary.md
             e2e-shots
             e2e-cloud-stack.log
+            unit-tests.log
           retention-days: 14

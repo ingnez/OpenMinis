@@ -3280,6 +3280,7 @@ final class DebugJSONRPC: @unchecked Sendable {
                     case .imageGen:      return m.contains(.imageOutput)
                     case .speechOut:     return m.contains(.audioOutput)
                     case .transcription: return m.contains(.audioInput)
+                    case .realtime:      return false   // 实时模型走 WebSocket 快速测试，不在这个 HTTP 批量测试里
                     }
                 }
             }
