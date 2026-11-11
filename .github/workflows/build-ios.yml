@@ -1149,6 +1149,7 @@ jobs:
             -only-testing:MinisUITests/MinisSmokeUITests \
             -only-testing:MinisUITests/ComposerVoiceButtonUITests \
             -only-testing:MinisUITests/E2EFlowsUITests \
+            -only-testing:MinisUITests/MiscControlsUITests \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 150 \
             -maximum-test-execution-time-allowance 240 \
