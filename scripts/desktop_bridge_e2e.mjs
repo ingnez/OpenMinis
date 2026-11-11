@@ -101,7 +101,10 @@ if (recStart && recMsg.started) {
   await viewer.ev('om.ptr(10,10,0)');
   await sleep(1500);
   await viewer.ev('om.rec(false)');
-  check(await until(() => viewer.ev("__msgs.some(m=>m.type==='rec'&&(m.data||'').length>100)"), 6000), '录屏拿到视频数据');
+  const recOk = await until(() => viewer.ev("__msgs.some(m=>m.type==='rec'&&(m.data||'').indexOf('data:video')===0&&m.data.length>100)"), 6000);
+  let recDetail = '';
+  if (!recOk) recDetail = '（' + await viewer.ev("JSON.stringify((__msgs.filter(m=>m.type==='rec')||[]).map(m=>({started:!!m.started,error:m.error||'',mime:m.mime||'',len:(m.data||'').length})))") + '）';
+  check(recOk, '录屏拿到视频数据' + recDetail);
 } else {
   console.log('skip 录屏：这个浏览器没有 MediaRecorder（' + JSON.stringify(recMsg) + '）');
 }
