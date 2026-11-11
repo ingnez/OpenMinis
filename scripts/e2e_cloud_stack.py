@@ -18,6 +18,9 @@ TOKEN = "e2e-fake-token-0000000000000000"
 MODEL = "e2e-vision-model"
 BOT_ID = "e2ebot"
 BOT_NAME = "E2E小助手"
+# 本地模式的假服务商（App 用 OPENMINIS_E2E_LOCAL_PROVIDER 指过来）：单独端口、单独模型名，和云端那边的请求分开数
+LOCAL_MODEL = "e2e-local-model"
+LOCAL_MODEL_PORT = 18797
 
 
 def last_user_text(data):
@@ -53,6 +56,17 @@ def script(data):
     return {"role": "assistant", "content": "收到：" + text[:30]}
 
 
+def local_script(data):
+    text = last_user_text(data)
+    reply = "本地收到：" + text[:30]
+    slow = "慢" in text      # 本地慢任务：约 16 秒流完，测试趁它还在跑时切到云端
+    if data.get("stream"):
+        return {"_chunks": ["本地收到：", text[:30]] + ["。"] * (6 if slow else 0), "_delay": 2.0 if slow else 0.3}
+    if slow:
+        time.sleep(16)
+    return {"role": "assistant", "content": reply}
+
+
 def main():
     work = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "/tmp/openminis-e2e")
     os.makedirs(os.path.join(work, "conf"), exist_ok=True)
@@ -71,15 +85,30 @@ def main():
 
     import test_phase1_support as sup
     sup.FakeModelHandler.scripts[MODEL] = script
+    sup.FakeModelHandler.scripts[LOCAL_MODEL] = local_script
+    local_srv = ThreadingHTTPServer(("127.0.0.1", LOCAL_MODEL_PORT), sup.FakeModelHandler)
+    threading.Thread(target=local_srv.serve_forever, daemon=True).start()
     model_srv = ThreadingHTTPServer(("127.0.0.1", 0), sup.FakeModelHandler)
     threading.Thread(target=model_srv.serve_forever, daemon=True).start()
     model_base = f"http://127.0.0.1:{model_srv.server_address[1]}/v1"
 
     class Probe(BaseHTTPRequestHandler):
         def do_GET(self):
+            # ?model=e2e-local-model 看本地那边；默认看云端模型。imports = 云端从手机导入的本地会话数（应为 0：本地不进云端）
+            from urllib.parse import urlparse, parse_qs
+            want = (parse_qs(urlparse(self.path).query).get("model") or [MODEL])[0]
             reqs = [{"model": r.get("model"), "images": image_count(r), "text": last_user_text(r)[:200]}
-                    for r in sup.FakeModelHandler.requests if r.get("model") == MODEL]
-            body = json.dumps({"requests": reqs}, ensure_ascii=False).encode()
+                    for r in sup.FakeModelHandler.requests if r.get("model") == want]
+            all_texts = [last_user_text(r)[:200] for r in sup.FakeModelHandler.requests if r.get("model") != LOCAL_MODEL]
+            imports = 0
+            try:
+                import sqlite3
+                db = sqlite3.connect(os.environ["OPENMINIS_DB"])
+                imports = db.execute("SELECT COUNT(*) FROM sessions WHERE local_session_id IS NOT NULL AND local_session_id != ''").fetchone()[0]
+                db.close()
+            except Exception:
+                imports = -1
+            body = json.dumps({"requests": reqs, "cloud_texts": all_texts, "imports": imports}, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -108,7 +137,7 @@ def main():
 
     call("PUT", "/v1/credentials/e2e", {"api_key": "sk-e2e-fake-000000000000", "base_url": model_base})
     call("PUT", f"/v1/bots/{BOT_ID}", {"name": BOT_NAME, "instructions": "端到端测试 Bot", "model": MODEL, "credential": "e2e"})
-    print(f"E2E 云端就绪：API 127.0.0.1:{api.server_address[1]}，假模型 {model_base}，探针 127.0.0.1:18799", flush=True)
+    print(f"E2E 云端就绪：API 127.0.0.1:{api.server_address[1]}，假模型 {model_base}，本地假模型 127.0.0.1:{LOCAL_MODEL_PORT}/v1，探针 127.0.0.1:18799", flush=True)
     while True:
         time.sleep(3600)
 

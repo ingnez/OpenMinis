@@ -18,6 +18,31 @@ enum CloudE2E {
         guard env["OPENMINIS_E2E_TOKEN"] != nil else { return }
         if let mode = env["OPENMINIS_E2E_HOMEMODE"] { UserDefaults.standard.set(mode, forKey: CloudBotHome.modeKey) }
         if let name = env["OPENMINIS_E2E_USERNAME"] { UserDefaults.standard.set(name, forKey: CloudHomeHeaderRules.userNameKey) }
+        // 模拟老用户手机：旧版本地「云电脑」开关留下的「本地对话在云端执行」偏好（启动时应被 LocalCloudIsolation 清掉）
+        if env["OPENMINIS_E2E_LEGACY_CLOUD_EXEC"] == "1" {
+            UserDefaults.standard.set(true, forKey: LocalCloudIsolation.legacyDefaultKey)
+        }
+        if let base = env["OPENMINIS_E2E_LOCAL_PROVIDER"], !base.isEmpty {
+            Task { @MainActor in injectLocalProvider(baseURL: base) }
+        }
+    }
+
+    static let localModelId = "e2e-local-model"
+
+    /// 本地模式用的假服务商：OpenAI 兼容，指向 e2e 栈里单独的假模型端口（和云端用的假模型分开记录请求）。全是假数据
+    @MainActor
+    static func injectLocalProvider(baseURL: String) {
+        let store = ProviderConfigStore.shared
+        if store.instances.contains(where: { $0.label == "E2E本地" }) { return }
+        let inst = ProviderInstance(label: "E2E本地", providerType: .openAI, credentialType: .apiKey, customBaseURL: baseURL)
+        ProviderKeychainHelper.saveAPIKey("sk-e2e-local-fake-0000000000", instanceId: inst.id)
+        store.addInstance(inst)
+        let entry = ModelEntry(providerInstanceId: inst.id, model: LLMModel(id: localModelId, displayName: "E2E 本地模型", provider: "openai"))
+        _ = store.addEntry(entry)
+        let group = ModelGroup(name: "E2E本地", memberEntryIds: [entry.id])
+        store.addGroup(group)
+        store.defaultPrimaryGroupId = group.id
+        store.addAgentLoopEntry(entry.id)
     }
     #else
     static func applyLaunchDefaults() {}

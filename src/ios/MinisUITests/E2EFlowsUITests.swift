@@ -331,12 +331,57 @@ final class E2EFlowsUITests: XCTestCase {
         shot(app, "16c-干完状态消失")
     }
 
+    // MARK: - 本地 / 云端隔离（11-11 真机 P0：本地任务出现在云端主 Bot 对话里）
+
+    func test17_localRunNeverReachesCloud() throws {
+        executionTimeAllowance = 240
+        let baseline = cloudProbe()?.imports ?? 0
+        // 模拟老用户手机：旧版本地「云电脑」开关留下的偏好还在；本地服务商指向单独的假模型端口
+        let app = launch(homeMode: "local", extraEnv: ["OPENMINIS_E2E_LEGACY_CLOUD_EXEC": "1",
+                                                      "OPENMINIS_E2E_LOCAL_PROVIDER": "http://127.0.0.1:18797"],
+                         extraArgs: ["-launchScreen", "2"])
+        let send = app.buttons["localComposerSendButton"]
+        XCTAssertTrue(poll(60) { app.textViews.firstMatch.exists || app.textFields.firstMatch.exists }, "本地模式没打开新对话的输入框")
+        shot(app, "17a-本地新对话")
+        let input = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
+        input.tap(); input.typeText("本地隔离E2E慢任务")
+        XCTAssertTrue(send.waitForExistence(timeout: 10)); send.tap()
+        XCTAssertTrue(poll(90) { (localProbe()?.requests ?? []).contains { $0.text.contains("本地隔离E2E慢任务") } },
+                      "本地假模型没收到这轮（本地对话没在本机跑）")
+        XCTAssertTrue(waitText(app, contains: "本地收到", timeout: 20), "本地回复没开始显示")
+        shot(app, "17b-本地正在跑")
+        // 本地还在流式输出时切到云端
+        goBack(app)
+        let gear = app.buttons["localSettingsButton"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 15), "回不到本地首页")
+        gear.tap()
+        let row = app.descendants(matching: .any)["homeModeRow"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10)); row.tap()
+        let cloud = app.buttons["homeMode.bots"]
+        XCTAssertTrue(cloud.waitForExistence(timeout: 10)); cloud.tap()
+        XCTAssertTrue(app.buttons["userAvatar"].waitForExistence(timeout: 15), "没切到云端首页")
+        XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 60))
+        XCTAssertFalse(anyElement(app, contains: "本地隔离"), "云端首页出现了本地对话的内容")
+        XCTAssertFalse(app.descendants(matching: .any)["homeCenterStatus"].exists, "云端首页显示有 Bot 在干活（本地那轮漏进云端）")
+        shot(app, "17c-云端首页干净")
+        openBot(app)
+        XCTAssertFalse(anyElement(app, contains: "本地隔离"), "云端 Bot 对话里出现了本地那轮")
+        XCTAssertFalse(waitText(app, contains: "正在输入", timeout: 3), "云端 Bot 对话显示正在输入")
+        shot(app, "17d-云端对话干净")
+        let after = cloudProbe()
+        XCTAssertEqual(after?.imports ?? -1, baseline, "云端多了从手机导入的本地会话（本地那轮被导到云端执行）")
+        XCTAssertFalse((after?.cloud_texts ?? []).contains { $0.contains("本地隔离") }, "云端模型收到了本地那轮的请求（双份消耗）")
+    }
+
     // MARK: - 工具
 
-    private func launch(attach: Int = 0, userName: String = "") -> XCUIApplication {
+    private func launch(attach: Int = 0, userName: String = "", homeMode: String = "bots",
+                        extraEnv: [String: String] = [:], extraArgs: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         // 首页模式不用 -OpenMinis_homeMode 启动参数（参数域盖住 App 里的切换），用环境变量让 App 启动时写进自己的设置
-        app.launchEnvironment["OPENMINIS_E2E_HOMEMODE"] = "bots"
+        app.launchEnvironment["OPENMINIS_E2E_HOMEMODE"] = homeMode
+        for (k, v) in extraEnv { app.launchEnvironment[k] = v }
+        app.launchArguments += extraArgs
         app.launchEnvironment["OPENMINIS_E2E_USERNAME"] = userName
         app.launchArguments += ["-OpenMinisCloud_name", "E2E云电脑", "-OpenMinisCloud_host", "127.0.0.1"]
         // 假 Bot 带自己的模型凭据，App 会按「存了密钥的 Bot 默认上锁」把它锁上，打开要 Face ID（模拟器没录入）。
@@ -412,6 +457,14 @@ final class E2EFlowsUITests: XCTestCase {
     }
 
     private struct Probe: Decodable { let images: Int; let text: String }
+    private struct ProbeAll: Decodable { let requests: [Probe]; let cloud_texts: [String]; let imports: Int }
+
+    private func cloudProbe() -> ProbeAll? { probeAll("") }
+    private func localProbe() -> ProbeAll? { probeAll("?model=e2e-local-model") }
+    private func probeAll(_ q: String) -> ProbeAll? {
+        guard let url = URL(string: "http://127.0.0.1:18799/_e2e/requests" + q), let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(ProbeAll.self, from: data)
+    }
 
     /// 假模型最近一次收到的、用户文字包含 s 的请求
     private func lastProbe(containing s: String) -> Probe? {
