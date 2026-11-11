@@ -399,8 +399,17 @@ def main():
                 sids = [r[0] for r in db.execute("SELECT session_id FROM sessions WHERE persona_id = ?", (BOT_ID,))]
                 for sid in sids:
                     db.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+                # 还要把进行中的任务停掉：否则首页中间「E2E小助手正在…」会抢走 openBot 的点击，
+                # 离线队列 flush 也会一直等 running（43016296558）
+                db.execute("UPDATE tasks SET status = 'cancelled' WHERE status IN ('running', 'queued', 'waiting_user')")
+                db.execute("DELETE FROM app_settings WHERE name = 'shift_card_pin'")
                 db.commit()
                 db.close()
+                try:
+                    import test_phase1_support as _sup
+                    _sup.FakeModelHandler.requests = []
+                except Exception:
+                    pass
                 FAKE_DESK.update({"on": False, "clip": "", "typed": [], "keys": [], "clip_sets": []})
                 body = json.dumps({"cleared_sessions": len(sids)}).encode()
                 self.send_response(200)

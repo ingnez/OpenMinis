@@ -21,7 +21,12 @@ final class MiscControlsUITests: XCTestCase {
         let gear = app.buttons["设置"]
         XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
         gear.tap()
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "控制中心与手表")).firstMatch
+        XCTAssertTrue(app.descendants(matching: .any)["botHubView"].waitForExistence(timeout: 10)
+                      || app.descendants(matching: .any)["homeModeRow"].waitForExistence(timeout: 5),
+                      "Bot 设置页没打开")
+        let row = app.descendants(matching: .any)["controlsWatchRow"].exists
+            ? app.descendants(matching: .any)["controlsWatchRow"]
+            : app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "控制中心与手表")).firstMatch
         XCTAssertTrue(scrollTo(app, row), "Bot 设置里没有「控制中心与手表」")
         row.tap()
         XCTAssertTrue(waitText(app, contains: "快捷指令", timeout: 15), "说明页没有提到 iOS 16/17 的快捷指令兜底")
@@ -49,7 +54,7 @@ final class MiscControlsUITests: XCTestCase {
             for label in ["允许", "Allow", "好", "OK"] where alert.buttons[label].exists { alert.buttons[label].tap(); return true }
             return false
         }
-        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch.waitForExistence(timeout: 60),
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND identifier != %@", Self.botName, "homeCenterStatus")).firstMatch.waitForExistence(timeout: 60),
                       "首页没有出现 Bot")
         app.open(URL(string: "minis://bot/e2ebot?voice=1")!)
         app.tap()

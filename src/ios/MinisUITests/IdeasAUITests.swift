@@ -17,7 +17,8 @@ final class IdeasAUITests: XCTestCase {
         openBot(app)
         send(app, "交班")
         let sheet = app.descendants(matching: .any)["shiftCardSheet"]
-        XCTAssertTrue(sheet.waitForExistence(timeout: 20), "说交班没有出现交班卡")
+        XCTAssertTrue(sheet.waitForExistence(timeout: 20) || waitText(app, contains: "交班卡", timeout: 5),
+                      "说交班没有出现交班卡")
         XCTAssertTrue(waitText(app, contains: "未收回授权", timeout: 10), "交班卡没有「未收回授权」")
         XCTAssertTrue(anyElement(app, contains: "本班填写登录页") || anyElement(app, contains: "未收回"), "交班卡没有未收回的授权")
         XCTAssertTrue(anyElement(app, contains: "待盯") || anyElement(app, contains: "盯化验回报"), "交班卡没有待盯事项")
@@ -68,7 +69,12 @@ final class IdeasAUITests: XCTestCase {
         let gear = app.buttons["设置"]
         XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
         gear.tap()
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "录屏回放")).firstMatch
+        XCTAssertTrue(app.descendants(matching: .any)["botHubView"].waitForExistence(timeout: 10)
+                      || app.descendants(matching: .any)["homeModeRow"].waitForExistence(timeout: 5),
+                      "Bot 设置页没打开")
+        let row = app.descendants(matching: .any)["replayListRow"].exists
+            ? app.descendants(matching: .any)["replayListRow"]
+            : app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "录屏回放")).firstMatch
         XCTAssertTrue(scrollTo(app, row), "Bot 设置里没有「录屏回放」")
         row.tap()
         XCTAssertTrue(waitText(app, contains: "帧", timeout: 20), "回放列表是空的")
@@ -100,7 +106,12 @@ final class IdeasAUITests: XCTestCase {
         let gear = app.buttons["设置"]
         XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
         gear.tap()
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "静默时段")).firstMatch
+        XCTAssertTrue(app.descendants(matching: .any)["botHubView"].waitForExistence(timeout: 10)
+                      || app.descendants(matching: .any)["homeModeRow"].waitForExistence(timeout: 5),
+                      "Bot 设置页没打开")
+        let row = app.descendants(matching: .any)["quietHoursRow"].exists
+            ? app.descendants(matching: .any)["quietHoursRow"]
+            : app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "静默时段")).firstMatch
         XCTAssertTrue(scrollTo(app, row), "Bot 设置里没有「静默时段」")
         row.tap()
         let page = app.descendants(matching: .any)["quietHoursView"]
@@ -179,7 +190,7 @@ final class IdeasAUITests: XCTestCase {
     }
 
     private func openBot(_ app: XCUIApplication) {
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
+        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND identifier != %@", Self.botName, "homeCenterStatus")).firstMatch
         if !row.waitForExistence(timeout: 60) {
             shot(app, "找不到Bot")
             XCTFail("首页 60 秒内没出现「\(Self.botName)」")

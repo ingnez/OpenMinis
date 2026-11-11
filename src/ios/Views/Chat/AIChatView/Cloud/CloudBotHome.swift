@@ -743,6 +743,15 @@ struct CloudBotHomeScreen: View {
                 compactStack
             }
         }
+        // 交班卡单独挂在 background 上：和「Bot 设置」sheet 写在同一条修饰链上时，点齿轮设置页出不来（43016296558 插件市场/模式/云电脑桌面/静默时段/录屏回放/控制中心 全找不到）。
+        .background(
+            Color.clear
+                .sheet(isPresented: $showShiftCard, onDismiss: { CloudShiftPin.consume() }) { CloudShiftCardSheet() }
+                .task {
+                    if CloudShiftPin.shouldShow { showShiftCard = true; return }
+                    if await CloudShiftServerPin.isPending() { showShiftCard = true }
+                }
+        )
         .sheet(isPresented: $showCreate) {
             CloudBotCreateSheet(onCreated: { id in
                 await model.refresh()
@@ -766,11 +775,6 @@ struct CloudBotHomeScreen: View {
         .modifier(CloudNightModeModifier(dutyUntil: model.dutyUntil))
         .onReceive(NotificationCenter.default.publisher(for: .cloudFocusFilterChanged)) { _ in model.objectWillChange.send() }
         .onAppear { CloudColdStart.markHomeVisible(hasContent: !model.bots.isEmpty) }
-        .sheet(isPresented: $showShiftCard, onDismiss: { CloudShiftPin.consume() }) { CloudShiftCardSheet() }
-        .task {
-            if CloudShiftPin.shouldShow { showShiftCard = true; return }
-            if await CloudShiftServerPin.isPending() { showShiftCard = true }
-        }
         .sheet(isPresented: $showWorkbench) { CloudWorkbenchSheet() }
         .sheet(isPresented: $showHub) {
             NavigationStack {
@@ -834,6 +838,8 @@ struct CloudBotHomeScreen: View {
     }
 
     private func openBotSettings() {
+        // 交班卡正开着时再推设置 sheet，两个 sheet 会打架，设置列表是空的
+        if showShiftCard { showShiftCard = false }
         hubOpensCloud = false
         showHub = true
     }
@@ -950,9 +956,12 @@ struct CloudBotHubView: View {
                     onDone()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { CloudBotEntry.openVoice(bot: id) }
                 })) { Label("控制中心与手表", systemImage: "applewatch") }
+                    .accessibilityIdentifier("controlsWatchRow")
                 NavigationLink(destination: CloudQuietHoursView()) { Label("静默时段", systemImage: "moon.zzz") }
+                    .accessibilityIdentifier("quietHoursRow")
                 NavigationLink(destination: CloudBotsView()) { Label("我的 Bot（模板、导入导出）", systemImage: "person.3") }
                 NavigationLink(destination: CloudPluginsView()) { Label("插件市场", systemImage: "puzzlepiece.extension") }
+                    .accessibilityIdentifier("pluginMarketRow")
                 NavigationLink(destination: CloudRoutinesView()) { Label("例行任务", systemImage: "clock.arrow.circlepath") }
                 NavigationLink(destination: CloudEventTriggersView()) { Label("事件触发（GitHub、邮件、Telegram）", systemImage: "bolt.badge.clock") }
                 NavigationLink(destination: CloudMemoryTimelineView()) { Label("云端记忆", systemImage: "brain") }
@@ -969,6 +978,7 @@ struct CloudBotHubView: View {
                 NavigationLink(destination: CloudExamListView()) { Label("考试倒计时", systemImage: "calendar.badge.clock") }
                 NavigationLink(destination: CloudErrorLogView()) { Label("导出错误日志", systemImage: "ladybug") }
                 NavigationLink(destination: CloudReplayListView()) { Label("录屏回放（Bot 用浏览器 / 桌面的截图）", systemImage: "play.rectangle") }
+                    .accessibilityIdentifier("replayListRow")
                 NavigationLink(destination: CloudLiveStatsView()) { Label("实时资源（CPU / 内存 / 网速）", systemImage: "gauge.with.dots.needle.33percent") }
                 NavigationLink(destination: CloudSystemSnapshotsView()) { Label("系统快照（装软件前自动拍）", systemImage: "camera.metering.matrix") }
             }
@@ -981,6 +991,7 @@ struct CloudBotHubView: View {
         .navigationDestination(isPresented: $showCloud) { CloudAgentSettingsView() }
         .onAppear { if openCloudFirst && !showCloud { showCloud = true } }
         .navigationTitle("Bot 设置")
+        .accessibilityIdentifier("botHubView")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { onDone() } } }
     }

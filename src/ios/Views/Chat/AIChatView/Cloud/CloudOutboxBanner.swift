@@ -7,25 +7,24 @@ struct CloudOutboxBanner: View {
 
     var body: some View {
         if count > 0 {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
-                Text("\(count) 条待发送 · 网络回来自动发").font(.caption.weight(.medium))
-            }
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(.thinMaterial, in: Capsule())
-            .padding(.top, 6)
-            .accessibilityIdentifier("pendingOutboxBanner")
-            .contextMenu {
-                Button(role: .destructive, action: onDiscard) { Label("放弃待发送的消息", systemImage: "trash") }
-            }
-            .overlay(alignment: .bottom) {
+            VStack(spacing: 6) {
+                HStack(spacing: 6) {
+                    if !CloudE2E.pauseIdleAnimations { ProgressView().controlSize(.mini) }
+                    Text("\(count) 条待发送 · 网络回来自动发").font(.caption.weight(.medium))
+                }
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(.thinMaterial, in: Capsule())
+                .accessibilityIdentifier("pendingOutboxBanner")
+                .contextMenu {
+                    Button(role: .destructive, action: onDiscard) { Label("放弃待发送的消息", systemImage: "trash") }
+                }
                 if CloudE2EOffline.forced {
                     Button("模拟网络已恢复") { CloudE2EOffline.goOnline() }
                         .font(.caption.weight(.semibold))
-                        .padding(.top, 36)
                         .accessibilityIdentifier("e2eGoOnline")
                 }
             }
+            .padding(.top, 6)
             .transition(.opacity)
         }
     }
@@ -125,7 +124,7 @@ struct CloudPendingOutboxRow: View {
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 HStack(spacing: 4) {
-                    ProgressView().controlSize(.mini)
+                    if !CloudE2E.pauseIdleAnimations { ProgressView().controlSize(.mini) }
                     Text(CloudOutbox.pendingLabel(item)).font(.caption2).foregroundStyle(.secondary)
                 }
             }

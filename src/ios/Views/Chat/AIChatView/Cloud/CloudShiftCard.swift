@@ -48,6 +48,7 @@ struct CloudShiftCardSheet: View {
             .task(id: hours) { await load() }
             .onAppear { if pinOnOpen { CloudShiftPin.mark() } }
         }
+        .accessibilityIdentifier("shiftCardSheet")
     }
 
     @MainActor

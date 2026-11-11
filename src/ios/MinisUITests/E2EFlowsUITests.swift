@@ -95,7 +95,12 @@ final class E2EFlowsUITests: XCTestCase {
         let gear = app.buttons["设置"]
         XCTAssertTrue(gear.waitForExistence(timeout: 60))
         gear.tap()
-        let market = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "插件市场")).firstMatch
+        XCTAssertTrue(app.descendants(matching: .any)["botHubView"].waitForExistence(timeout: 10)
+                      || app.descendants(matching: .any)["homeModeRow"].waitForExistence(timeout: 5),
+                      "Bot 设置页没打开")
+        let market = app.descendants(matching: .any)["pluginMarketRow"].exists
+            ? app.descendants(matching: .any)["pluginMarketRow"]
+            : app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "插件市场")).firstMatch
         XCTAssertTrue(scrollTo(app, market), "Bot 设置里没有「插件市场」")
         market.tap()
         XCTAssertTrue(waitText(app, contains: "Fetch", timeout: 30) || waitText(app, contains: "抓取网页", timeout: 5), "插件目录没加载出来")
@@ -271,6 +276,9 @@ final class E2EFlowsUITests: XCTestCase {
         let gear0 = app.buttons["settingsGear"]
         XCTAssertTrue(gear0.waitForExistence(timeout: 60))
         gear0.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["botHubView"].waitForExistence(timeout: 10)
+                      || app.descendants(matching: .any)["homeModeRow"].waitForExistence(timeout: 8),
+                      "Bot 设置页没打开")
         let row = app.descendants(matching: .any)["homeModeRow"]
         XCTAssertTrue(row.waitForExistence(timeout: 10), "Bot 设置里没有「模式」")
         XCTAssertTrue(waitText(app, contains: "云端模式", timeout: 3), "Bot 设置的「模式」不是云端模式")
@@ -567,7 +575,7 @@ final class E2EFlowsUITests: XCTestCase {
 
     /// 首页 Bot 那一行的高度和名字的高度（找不到返回 nil）
     private func homeRowMetrics(_ app: XCUIApplication) -> (row: CGFloat, title: CGFloat?)? {
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
+        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND identifier != %@", Self.botName, "homeCenterStatus")).firstMatch
         guard row.waitForExistence(timeout: 60) else { return nil }
         let title = app.descendants(matching: .any).matching(identifier: "homeRowTitle").firstMatch
         return (row.frame.height, title.exists ? title.frame.height : nil)
@@ -616,7 +624,7 @@ final class E2EFlowsUITests: XCTestCase {
     }
 
     private func openBot(_ app: XCUIApplication) {
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
+        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND identifier != %@", Self.botName, "homeCenterStatus")).firstMatch
         if !row.waitForExistence(timeout: 60) {
             shot(app, "找不到Bot")
             XCTFail("首页 60 秒内没出现「\(Self.botName)」（云端没连上？）")
@@ -841,6 +849,9 @@ extension E2EFlowsUITests {
         let gear = app.buttons["设置"]
         XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
         gear.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["botHubView"].waitForExistence(timeout: 10)
+                      || app.descendants(matching: .any)["homeModeRow"].waitForExistence(timeout: 5),
+                      "Bot 设置页没打开")
         // 必须精确匹配：横幅「服务器还没有安装云电脑桌面」也包含这几个字，CONTAINS 会点到横幅（43003171276）
         let row = app.descendants(matching: .any)["ccDesktopSettingsRow"].exists
             ? app.descendants(matching: .any)["ccDesktopSettingsRow"]

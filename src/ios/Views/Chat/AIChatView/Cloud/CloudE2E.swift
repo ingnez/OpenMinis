@@ -17,6 +17,10 @@ enum CloudE2E {
         let env = ProcessInfo.processInfo.environment
         guard env["OPENMINIS_E2E_TOKEN"] != nil else { return }
         CrashReporter.forgetCrashLoopForE2E()
+        // 上一次「模拟网络已恢复」写进 UserDefaults 的标志会带到下一轮启动；离线队列测试必须每次从断网开始。
+        UserDefaults.standard.set(false, forKey: CloudE2EOffline.onlineKey)
+        // 交班卡的本机钉也一样会留到下一轮，挡住 Bot 设置 sheet。下次打开先看到交班卡走服务器 pin（reset: false 时保留）。
+        UserDefaults.standard.set(false, forKey: CloudShiftPin.key)
         if let mode = env["OPENMINIS_E2E_HOMEMODE"] { UserDefaults.standard.set(mode, forKey: CloudBotHome.modeKey) }
         // 模拟老用户手机：旧版本地「云电脑」开关留下的「本地对话在云端执行」偏好（启动时应被 LocalCloudIsolation 清掉）
         if env["OPENMINIS_E2E_LEGACY_CLOUD_EXEC"] == "1" {

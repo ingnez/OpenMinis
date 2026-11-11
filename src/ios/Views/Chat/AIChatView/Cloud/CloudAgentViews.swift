@@ -849,7 +849,9 @@ struct CloudSessionView: View {
         .fullScreenCover(isPresented: $showCamera) { CloudCameraPicker { attachments.append($0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showScanner) { CloudDocumentScanner { attachments.append($0) }.ignoresSafeArea() }
         .sheet(isPresented: $showCaseNote) { CloudCaseNoteSheet { inputPrompt = $0 } }
-        .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
+        .background(
+            Color.clear.sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
+        )
         .sheet(isPresented: $showReplay) {
             NavigationStack {
                 if let id = replayTaskId ?? activeTaskId { CloudReplayView(taskId: id) }
@@ -1218,6 +1220,7 @@ struct CloudSessionView: View {
                               onStop: { dictation.stop() },
                               onSend: {
                                   dictation.stop()
+                                  if CloudShiftIntent.isUtterance(inputPrompt), attachments.isEmpty { sendTask(); return }
                                   if working { steerOrQueue() } else { sendTask() }
                               })
                     .padding(.horizontal, 12)
@@ -1264,6 +1267,8 @@ struct CloudSessionView: View {
                                      tint: theme.accent, inCall: call.active,
                                      onTap: {
                                          if dictation.isRecording { dictation.stop() }
+                                         // 交班必须走 sendTask 拦截：任务正在跑时按钮会走 steerOrQueue，卡出不来（43016296558）
+                                         if CloudShiftIntent.isUtterance(inputPrompt), attachments.isEmpty { sendTask(); return }
                                          if !hasDraft { openVoiceCall() } else if working { steerOrQueue() } else { sendTask() }
                                      },
                                      onPushToTalk: { on in pushToTalk(on, theme: theme) })
