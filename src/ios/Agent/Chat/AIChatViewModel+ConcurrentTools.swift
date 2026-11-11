@@ -1045,7 +1045,7 @@ extension AIChatViewModel {
                 toolSuccess = statusResult.success
             }
             if let note = CloudReplyFrontAction.note(tool: tu.name, args: toolArgs) {
-                replyStatus.noteDecision(note.line, action: note.action.rawValue)
+                noteReplyFrontDecision(note.line, action: note.action.rawValue)
             }
             if tu.name == "task_message", toolSuccess {
                 messages.last(where: { $0.role == .user })?.adoptedMark = true

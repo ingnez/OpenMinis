@@ -261,6 +261,7 @@ struct LocalReplyChatChrome: ViewModifier {
     let sessionId: String
     let instant: Bool
     let botName: String
+    var viewModel: AIChatViewModel
     @ObservedObject var status: CloudReplyStatusModel
     var onPlan: (CloudReplyPlan) -> Void
     @State private var text = ""
@@ -310,6 +311,10 @@ struct LocalReplyChatChrome: ViewModifier {
         #if DEBUG
         if CloudE2E.replySpeak { status.inRealtimeCall = { true } }
         #endif
+        let status = status
+        viewModel.onReplyFrontDecision = { [weak status] line, action in
+            status?.noteDecision(line, action: action)
+        }
     }
 
     private func send() {

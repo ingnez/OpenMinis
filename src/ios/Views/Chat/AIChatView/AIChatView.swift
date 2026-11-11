@@ -586,7 +586,7 @@ struct AIChatView: View {
             // region the global speech capsule must not cover.
             .capsuleProtectedFrame("inputBar")
             .modifier(LocalReplyChatChrome(sessionId: vm.sessionId ?? "", instant: localReplyPlan.isInstant,
-                                           botName: soulName, status: localReplyStatus,
+                                           botName: soulName, viewModel: vm, status: localReplyStatus,
                                            onPlan: { localReplyPlan = $0 }))
             // [T-p1-delegate-task] Hosted on the stable VStack, not on
             // the capsule itself: the capsule unmounts the moment the
