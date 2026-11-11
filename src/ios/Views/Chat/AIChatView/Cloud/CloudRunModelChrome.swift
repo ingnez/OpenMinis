@@ -122,6 +122,7 @@ struct CloudUserTurnRow: View {
     let accent: Color
     let extras: CloudMessageExtras
     let onReply: (CloudReplyTarget) -> Void
+    var onRetry: (() -> Void)? = nil
 
     private var content: String { message.content }
 
@@ -138,7 +139,7 @@ struct CloudUserTurnRow: View {
                     }
                 })
             })
-            MessageSendStatusRow(tick: message.sendTick, adopted: message.adoptedMark)
+            MessageSendStatusRow(failed: message.sendTick == .failed, adopted: message.adoptedMark, onRetry: onRetry)
             if let e = extras.botReaction {
                 // Bot 用表情回应了这条（代替文字回复）
                 CloudReactionPill(emoji: e).padding(.trailing, 14).offset(y: -12).padding(.bottom, -12)

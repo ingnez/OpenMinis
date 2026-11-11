@@ -86,7 +86,6 @@ extension AIChatViewModel {
         if isInstantFrontTurn, isProcessing {
             enqueuePrompt(deferUntilIdle: false, overrideText: usingComposer ? nil : text)
             if let last = messages.last(where: { $0.role == .user }) {
-                last.sendTick = last.sendTick ?? .sending
                 last.isQueued = false
             }
             return
@@ -244,7 +243,6 @@ extension AIChatViewModel {
         let pastePlanned = planPastedCards(for: text)
         let displayText = text.isEmpty && pendingAttachments.isEmpty ? "" : text
         let userMsg = ChatMessage(role: .user, content: displayText)
-        if isInstantFrontTurn { userMsg.sendTick = .sending }
         userMsg.awaitingHistoryEntry = true  // [T-edit-anchor-link] cleared when the entry lands
         userMsg.attachments = pastePlanned.metas
         // [T-ios-user-attach-two-phase-birth] Attach the user's OWN selection before
@@ -277,7 +275,6 @@ extension AIChatViewModel {
         scrollToBottomSignal.send()
 
         isProcessing = true
-        if isInstantFrontTurn { userMsg.sendTick = .sent }
         errorMessage = nil
         logger.info("🔄SESSION [vm=\(self.vmInstanceId)] send START session=\(self.sessionId ?? "nil")")
 

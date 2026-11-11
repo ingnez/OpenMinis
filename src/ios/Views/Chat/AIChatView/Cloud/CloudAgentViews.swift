@@ -620,6 +620,7 @@ struct CloudSessionView: View {
     @State private var isLoading = false
     @State private var isSubmitting = false
     @StateObject private var delivery = CloudDeliveryBox()
+    @State private var failedSends: [UUID: CloudDeliveryBox.Item] = [:]
     @AppStorage(CloudWardVoice.doubleTapKey) private var doubleTapVoice = false
     @State private var watchedTasks: Set<String> = []
     /// 与本地模式同一个消息模型：服务器历史转换后的回合、正在进行任务的那条助手消息
@@ -1503,7 +1504,8 @@ struct CloudSessionView: View {
                             let msg = turn.message
                             if msg.role == .user {
                                 CloudUserTurnRow(message: msg, accent: theme.accent, extras: CloudMessageExtras(turn.raw),
-                                                 onReply: { replyTarget = $0 })
+                                                 onReply: { replyTarget = $0 },
+                                                 onRetry: { retryUserSend(msg) })
                             } else {
                                 let prevAssistant = idx > 0 && turns[idx - 1].message.role == .assistant
                                 let extras = reactionExtras(CloudMessageExtras(turn.textRaw))
@@ -1861,7 +1863,6 @@ struct CloudSessionView: View {
     private func beginOptimisticSend(content: String, nonce: String) {
         inputPrompt = ""
         let msg = ChatMessage(role: .user, content: content)
-        msg.sendTick = .sending
         let row: [String: Any] = ["role": "user", "content": content, "timestamp": Date().timeIntervalSince1970, "client_nonce": nonce]
         messages.append(row)
         turns.append(CloudHistoryAdapter.Turn(message: msg, raw: row))
@@ -1870,9 +1871,24 @@ struct CloudSessionView: View {
     }
 
     private func markUserSent(content: String) {
-        if let t = turns.last(where: { $0.message.role == .user && $0.message.content == content && $0.message.sendTick == .sending }) {
-            t.message.sendTick = .sent
+        if let t = turns.last(where: { $0.message.role == .user && $0.message.content == content && $0.message.sendTick == .failed }) {
+            t.message.sendTick = nil
+            failedSends[t.message.id] = nil
         }
+    }
+
+    private func markUserFailed(item: CloudDeliveryBox.Item) {
+        if let t = turns.last(where: { $0.message.role == .user && $0.message.content == item.content }) {
+            t.message.sendTick = .failed
+            failedSends[t.message.id] = item
+        }
+    }
+
+    private func retryUserSend(_ message: ChatMessage) {
+        guard let item = failedSends.removeValue(forKey: message.id) else { return }
+        message.sendTick = nil
+        delivery.items.append(item)
+        pumpDelivery()
     }
 
     private func markUserAdopted() {
@@ -1916,6 +1932,7 @@ struct CloudSessionView: View {
                 await postSessionMessage(item)
             case .failed(let why):
                 errorMessage = "插话没送到：\(why)"
+                markUserFailed(item: item)
             }
             return
         }
@@ -1938,7 +1955,8 @@ struct CloudSessionView: View {
         } catch let error where CloudOutbox.isTransient(error) {
             queueForRetry(content: item.content, body: item.body)
         } catch {
-            errorMessage = "发送失败: \(error.localizedDescription)（输入已保留）"
+            errorMessage = "发送失败: \(error.localizedDescription)"
+            markUserFailed(item: item)
         }
     }
 

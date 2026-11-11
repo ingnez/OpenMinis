@@ -48,9 +48,9 @@ struct AttachmentMeta: Identifiable, Equatable {
 }
 
 
-/// 用户气泡角上的发送状态：先出泡再等送达。
+/// 用户气泡角上只在真正失败时出现。发送中 / 已送达都不画，气泡一点击就按已发出显示。
 enum MessageSendTick: String, Equatable {
-    case sending, sent
+    case failed
 }
 
 final class ChatMessage: Identifiable, ObservableObject {
@@ -74,7 +74,7 @@ final class ChatMessage: Identifiable, ObservableObject {
     @Published var isAwaitingModelResponse = false
     /// True when this message is queued but not yet injected into the agent loop.
     @Published var isQueued = false
-    /// 秒回乐观发送：先上屏再等送达。nil = 普通消息（不是这次乐观发送）。
+    /// 秒回发送失败：nil = 看起来已发出（包括刚点发送）。只有真正失败才是 .failed。
     @Published var sendTick: MessageSendTick?
     /// 后台任务已经收下这条插话（按新要求改了）。
     @Published var adoptedMark = false

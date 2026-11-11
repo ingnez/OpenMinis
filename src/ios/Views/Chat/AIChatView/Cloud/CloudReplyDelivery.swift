@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 秒回连发：气泡先上屏，网络发送在后台按顺序排队。
+/// 秒回连发：气泡先上屏，网络发送在后台按顺序排队（队列本身不画出来）。
 final class CloudDeliveryBox: ObservableObject {
     struct Item {
         let content: String
@@ -12,20 +12,24 @@ final class CloudDeliveryBox: ObservableObject {
     var running = false
 }
 
-/// 用户气泡下的发送勾和「已采纳」。
+/// 用户气泡旁：成功时什么都不画；失败才出红色重试；后台收下插话后标「已采纳」。
 struct MessageSendStatusRow: View {
-    let tick: MessageSendTick?
+    var failed: Bool = false
     var adopted: Bool = false
+    var onRetry: (() -> Void)? = nil
 
     var body: some View {
-        if tick != nil || adopted {
+        if failed || adopted {
             HStack(spacing: 6) {
-                if let tick {
-                    Image(systemName: tick == .sending ? "ellipsis" : "checkmark")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .accessibilityIdentifier("replySendTick")
-                        .accessibilityValue(tick.rawValue)
+                if failed {
+                    Button(action: { onRetry?() }) {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("replySendRetry")
+                    .accessibilityLabel("发送失败，点一下重试")
                 }
                 if adopted {
                     Text("已采纳")

@@ -198,7 +198,9 @@ final class ReplyModeUITests: XCTestCase {
             let t0 = Date()
             button.tap()
             XCTAssertTrue(waitText(app, contains: text, timeout: 0.5), "「\(text)」气泡没有在 0.5 秒内出现（\(Date().timeIntervalSince(t0))s）")
+            assertNoSendingIndicator(app)
         }
+        assertNoSendingIndicator(app)
         for hint in ["10页", "上海", "大纲"] {
             XCTAssertTrue(waitText(app, contains: "你想", timeout: 25) && waitText(app, contains: hint, timeout: 8), "前台答复没有体现「\(hint)」")
         }
@@ -397,7 +399,9 @@ final class ReplyModeUITests: XCTestCase {
             let t0 = Date()
             button.tap()
             XCTAssertTrue(waitText(app, contains: text, timeout: 0.5), "本地「\(text)」气泡没有在 0.5 秒内出现（\(Date().timeIntervalSince(t0))s）")
+            assertNoSendingIndicator(app)
         }
+        assertNoSendingIndicator(app)
         for hint in ["10页", "上海", "大纲"] {
             XCTAssertTrue(waitText(app, contains: "你想", timeout: 25) && waitText(app, contains: hint, timeout: 8), "本地前台答复没有体现「\(hint)」")
         }
@@ -580,6 +584,15 @@ final class ReplyModeUITests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.3)
         } while Date() < deadline
         return false
+    }
+
+
+    private func assertNoSendingIndicator(_ app: XCUIApplication, file: StaticString = #file, line: UInt = #line) {
+        XCTAssertFalse(app.descendants(matching: .any)["replySendTick"].exists, "气泡旁不该出现发送中/已送达标记", file: file, line: line)
+        let sending = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "发送中", "发送中")
+        ).firstMatch
+        XCTAssertFalse(sending.exists, "界面上不该出现「发送中」", file: file, line: line)
     }
 
     private func shot(_ app: XCUIApplication, _ name: String) {
