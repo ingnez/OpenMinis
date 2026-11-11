@@ -412,10 +412,14 @@ extension AIChatViewModel {
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
 
         let knownImageExts = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp", "tiff"]
-        let normalizedExt: String = {
+        let sniffedExt: String = {
             if let e = fileExtension?.lowercased(), knownImageExts.contains(e) { return e }
             return Self.detectImageType(from: data) ?? "bin"
         }()
+        // 「保留原图 / 自动压缩」开关（和 Bot 模式同一个）：默认缩到长边 1600，HEIC 一律转 JPEG
+        let prepared = ImageSendEncoder.prepare(data, ext: sniffedExt)
+        let data = prepared?.data ?? data
+        let normalizedExt = prepared?.ext ?? sniffedExt
         let fileName = "photo_\(UUID().uuidString.prefix(8)).\(normalizedExt)"
         let url = dir.appendingPathComponent(fileName)
         do {
@@ -452,10 +456,14 @@ extension AIChatViewModel {
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
 
         let knownImageExts = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp", "tiff"]
-        let normalizedExt: String = {
+        let sniffedExt: String = {
             if let e = fileExtension?.lowercased(), knownImageExts.contains(e) { return e }
             return Self.detectImageType(from: data) ?? "bin"
         }()
+        // 「保留原图 / 自动压缩」开关（和 Bot 模式同一个）：默认缩到长边 1600，HEIC 一律转 JPEG
+        let prepared = ImageSendEncoder.prepare(data, ext: sniffedExt)
+        let data = prepared?.data ?? data
+        let normalizedExt = prepared?.ext ?? sniffedExt
         let fileName = "photo_\(UUID().uuidString.prefix(8)).\(normalizedExt)"
         let url = dir.appendingPathComponent(fileName)
         do {

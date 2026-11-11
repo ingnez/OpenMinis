@@ -115,6 +115,9 @@ extension AIChatView {
                     .onPreferenceChange(AttachmentGridHeightKey.self) { attachmentGridHeight = $0 }
                     .padding(.top, 8)
                 }
+                if vm.attachments.contains(where: { $0.kind == .image }) {
+                    LocalKeepOriginalToggle()
+                }
 
                 inputFieldOrWaveform
 
