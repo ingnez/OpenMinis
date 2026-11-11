@@ -39,7 +39,8 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         // 只用文档保留地址，绝不写用户真实 IP
         let ok = CloudServerDraft.commit(CloudServerProfile(name: "丙", host: "vps-c.example.test", sshPort: 22, username: "root"), into: list)
         check(ok.error == nil && ok.list.count == 3 && ok.list.contains(where: { $0.host == "vps-c.example.test" }), "合法草稿才写入")
-        check(list.count == 2 && list[0].host == "vps-a.example.test", "commit 不改原来那份列表，更不会切换当前那台")
+        // list[0].host 在上面改名时已是 VPS-A.example.test；id 才是小写。commit 返回新列表，不得改原来那份。
+        check(list.count == 2 && list[0].id == a.id && list[0].name == "甲改名", "commit 不改原来那份列表，更不会切换当前那台")
         print("PASS：多台云电脑的去重、存取、负载分数、选最闲那台、草稿不激活")
 
     }
