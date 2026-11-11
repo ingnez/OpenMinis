@@ -393,7 +393,7 @@ jobs:
           python3 -m unittest discover -s cloud-agent -p 'test*.py' 2>&1 | tail -40
 
   cloud-computer-linux:
-    if: ${{ !inputs.quick }}
+    if: ${{ !inputs.quick && inputs.only_testing == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -854,8 +854,71 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # GitHub 托管 Mac 排队约 15 分钟领不到机器就会取消（「job was not acquired」），这段时间不算进 job 的 timeout-minutes。
+  # 先在 Ubuntu 上等到本仓库其他 macOS 任务结束，再开始领 Mac，避免排队时间把 ui-tests 误杀掉。
+  wait-mac:
+    if: ${{ inputs.ui_tests && !inputs.quick }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: 等到本仓库没有其他 macOS 任务在跑或在领机器
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 <<'PY'
+          import json, os, time, urllib.error, urllib.request
+          repo = os.environ["GITHUB_REPOSITORY"]
+          me = str(os.environ["GITHUB_RUN_ID"])
+          token = os.environ["GH_TOKEN"]
+          deadline = time.time() + 170 * 60
+
+          def api(path):
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}{path}",
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                      "User-Agent": "openminis-wait-mac",
+                  },
+              )
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.load(r)
+
+          while time.time() < deadline:
+              try:
+                  runs = (api("/actions/runs?status=in_progress&per_page=30").get("workflow_runs") or [])
+                  busy = []
+                  for run in runs:
+                      if str(run.get("id")) == me:
+                          continue
+                      jobs = (api(f"/actions/runs/{run['id']}/jobs?per_page=50").get("jobs") or [])
+                      for j in jobs:
+                          labels = " ".join(j.get("labels") or []).lower()
+                          if "macos" not in labels:
+                              continue
+                          if j.get("status") in ("queued", "in_progress", "waiting", "pending"):
+                              busy.append(f"{run['id']}/{j.get('name')} {j.get('status')} {labels}")
+                  if not busy:
+                      print("没有其他 macOS 任务在跑，开始领机器", flush=True)
+                      break
+                  print("仍在等：", flush=True)
+                  for line in busy:
+                      print("  " + line, flush=True)
+              except urllib.error.HTTPError as e:
+                  print(f"查询失败 HTTP {e.code}，稍后重试", flush=True)
+                  time.sleep(90)
+                  continue
+              time.sleep(60)
+          else:
+              print("等到上限仍有任务，继续尝试领机器", flush=True)
+          PY
+
   ui-tests:
     if: ${{ inputs.ui_tests && !inputs.quick }}
+    needs: [wait-mac]
     runs-on: ${{ inputs.mac_runner || 'macos-26' }}
     timeout-minutes: 300
 
