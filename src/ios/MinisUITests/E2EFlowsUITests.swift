@@ -1007,3 +1007,52 @@ extension E2EFlowsUITests {
         _ = ccDesk(["on": "0"])
     }
 }
+
+// MARK: - 多台云电脑：添加另一台立刻出表单；取消不丢掉已有那台
+
+extension E2EFlowsUITests {
+    func test26_addAnotherServerShowsFormAndCancelKeepsFirst() throws {
+        let app = launch()
+        let gear = app.buttons["设置"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
+        gear.tap()
+        let cloud = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "云电脑设置")).firstMatch
+        XCTAssertTrue(scrollTo(app, cloud), "设置里没有「云电脑设置」")
+        cloud.tap()
+        let multi = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "多台云电脑")).firstMatch
+        XCTAssertTrue(scrollTo(app, multi), "云电脑设置里没有「多台云电脑」")
+        multi.tap()
+        let first = app.descendants(matching: .any)["cloudServer-127.0.0.1:22:root"]
+        XCTAssertTrue(first.waitForExistence(timeout: 10), "列表里没有已有的 E2E 云电脑")
+        XCTAssertEqual(first.value as? String, "已选用", "进页时第一台不是当前选用的")
+
+        let add = app.buttons["添加另一台"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5), "没有「添加另一台」")
+        add.tap()
+        let form = app.descendants(matching: .any)["cloudAddServerForm"]
+        let cancel = app.buttons["取消"]
+        let save = app.buttons["保存"]
+        let nameField = app.textFields["cloudAddServerName"]
+        XCTAssertTrue(form.waitForExistence(timeout: 1) || cancel.waitForExistence(timeout: 1),
+                      "点「添加另一台」后 1 秒内没有出现添加表单")
+        XCTAssertTrue(save.waitForExistence(timeout: 1), "表单上没有「保存」")
+        XCTAssertTrue(cancel.exists || cancel.waitForExistence(timeout: 1), "表单上没有「取消」")
+        XCTAssertTrue(nameField.waitForExistence(timeout: 1), "表单上没有名称输入框")
+        shot(app, "26a-添加另一台表单")
+
+        cancel.tap()
+        XCTAssertTrue(waitGone(form, timeout: 3) || waitGone(nameField, timeout: 3), "取消后表单还在")
+        XCTAssertTrue(first.waitForExistence(timeout: 5), "取消后列表里没有第一台")
+        XCTAssertEqual(first.value as? String, "已选用", "取消后第一台不再是当前选用的")
+        XCTAssertFalse(anyElement(app, contains: "还没有连接云电脑"), "还在列表页就出现了未连接提示")
+        shot(app, "26b-取消后第一台仍选用")
+
+        goBack(app) // 多台云电脑 → 云电脑设置
+        goBack(app) // 云电脑设置 → 设置
+        goBack(app) // 设置 → 首页
+        XCTAssertTrue(app.buttons["设置"].waitForExistence(timeout: 10) || app.buttons["settingsGear"].waitForExistence(timeout: 5),
+                      "没回到首页")
+        XCTAssertFalse(anyElement(app, contains: "还没有连接云电脑"), "取消添加后首页出现了「还没有连接云电脑」横幅")
+        shot(app, "26c-回到首页无未连接横幅")
+    }
+}

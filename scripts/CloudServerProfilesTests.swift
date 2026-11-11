@@ -28,6 +28,19 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(CloudServerList.leastLoaded([a.id: idle, b.id: idle], current: a.id) == a.id, "一样闲就不切")
         check(CloudServerList.leastLoaded([b.id: idle], current: a.id) == b.id, "当前这台测不到时选测到的")
         check(CloudServerList.leastLoaded([:], current: a.id) == nil, "都测不到")
-        print("PASS：多台云电脑的去重、存取、负载分数、选最闲那台")
+        let blank = CloudServerDraft.blank(count: list.count)
+        check(blank.name == "云电脑 3" && blank.host.isEmpty && blank.sshPort == 22, "空白草稿默认名和端口")
+        check(CloudServerDraft.validate(blank) == "请填写 IP 地址或域名", "空地址不能保存")
+        check(CloudServerDraft.validate(CloudServerProfile(name: "乙", host: "  ", sshPort: 22, username: "root")) == "请填写 IP 地址或域名", "只有空格的地址不能保存")
+        check(CloudServerDraft.validate(CloudServerProfile(name: "乙", host: "192.0.2.10", sshPort: 22, username: " ")) == "请填写用户名", "空用户名不能保存")
+        check(CloudServerDraft.validate(CloudServerProfile(name: "乙", host: "192.0.2.10", sshPort: 0, username: "root")) == "SSH 端口必须在 1–65535 之间", "非法端口不能保存")
+        let rejected = CloudServerDraft.commit(blank, into: list)
+        check(rejected.error != nil && rejected.list == list, "未通过校验的草稿不写入列表")
+        // 只用文档保留地址，绝不写用户真实 IP
+        let ok = CloudServerDraft.commit(CloudServerProfile(name: "丙", host: "vps-c.example.test", sshPort: 22, username: "root"), into: list)
+        check(ok.error == nil && ok.list.count == 3 && ok.list.contains(where: { $0.host == "vps-c.example.test" }), "合法草稿才写入")
+        check(list.count == 2 && list[0].host == "vps-a.example.test", "commit 不改原来那份列表，更不会切换当前那台")
+        print("PASS：多台云电脑的去重、存取、负载分数、选最闲那台、草稿不激活")
+
     }
 }
