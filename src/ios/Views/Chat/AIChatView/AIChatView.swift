@@ -637,6 +637,12 @@ struct AIChatView: View {
     }
 
     var body: some View {
+        // 把原本 80 多个修饰符的一条长链拆成几段 some View，让编译器分段做类型检查。
+        // 整段写在 body 里时，CI 调试构建会报「unable to type-check this expression in reasonable time」（43007523387，AIChatView.swift:627）。
+        chatBodyLifecycle
+    }
+
+    private var chatBodyCanvas: some View {
         // [T-ios-chat-body-stack-erase] Type-erase the page's content before
         // the ~80-modifier chain below. Most of those modifiers (.sheet,
         // .onChange, .onReceive, .alert, ...) return an opaque `some View`
@@ -780,6 +786,10 @@ struct AIChatView: View {
             // Full-screen kernel boot overlay
             kernelBootOverlay
         })
+    }
+
+    private var chatBodyChrome: some View {
+        chatBodyCanvas
         .background(ChatColors.background)
         .onDrop(of: [.image, .movie, .fileURL, .data], isTargeted: $isDropTargeted) { providers in
             handleDropProviders(providers)
@@ -842,6 +852,10 @@ struct AIChatView: View {
         // [T-ios-navbar-menu-baritem] Outside the equatable host on purpose:
         // its update pass is what refreshes the menu's action closures.
         .background(navBarMenuInstaller)
+    }
+
+    private var chatBodyPrompts: some View {
+        chatBodyChrome
         .sheet(item: $titlePillEditSession) { session in
             SessionEditSheet(session: session) { newTitle, newCategory in
                 Task {
@@ -998,6 +1012,10 @@ struct AIChatView: View {
             Text(AppLocalized("Messages above this point will be compacted into a summary. This cannot be undone."))
         }
         .offloadPermissionDialog()
+    }
+
+    private var chatBodyMedia: some View {
+        chatBodyPrompts
         .environment(\.openMinisURL, OpenMinisURLAction { url in
             handleMinisURLTap(url)
         })
@@ -1126,6 +1144,10 @@ struct AIChatView: View {
                 }
             })
         }
+    }
+
+    private var chatBodySheets: some View {
+        chatBodyMedia
         .sheet(isPresented: $showFileBrowser) {
             NavigationStack {
                 let base = RootfsManager.shared.dataPath
@@ -1370,6 +1392,10 @@ struct AIChatView: View {
                 minisLogger.error("File import failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    private var chatBodyLifecycle: some View {
+        chatBodySheets
         // [T-minisurl-wrong-active-session] A draft opened from the UI has
         // sessionId nil at onAppear; when send() creates the real session,
         // adopt it as the frontmost one here — this view being mounted IS the
