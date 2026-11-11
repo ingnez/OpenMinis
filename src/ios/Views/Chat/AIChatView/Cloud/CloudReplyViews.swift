@@ -55,6 +55,10 @@ final class CloudReplyStatusModel: ObservableObject {
     @Published private(set) var fetchedAt = Date()
     @Published private(set) var finishedAt: [String: Date] = [:]
     @Published var notice: String?
+    /// 点开状态行：看这个后台任务的过程
+    @Published var expanded: CloudReplyWorker?
+    /// 长按状态行：给这个后台任务补充要求
+    @Published var interjecting: CloudReplyWorker?
 
     private var tracker = CloudReplyTracker()
     private var loop: Task<Void, Never>?
@@ -489,5 +493,71 @@ private struct CloudReplyTintedLabel: LabelStyle {
             configuration.icon.foregroundStyle(accent)
             configuration.title
         }
+    }
+}
+
+/// 对话页输入框上方的秒回状态行（单独一个小视图，免得对话页的大表达式再变长）
+struct CloudReplyComposerSlot: View {
+    let instant: Bool
+    @ObservedObject var status: CloudReplyStatusModel
+    let theme: CloudBotChatTheme
+    let firstTextMs: Int?
+
+    var body: some View {
+        if instant, let w = status.current {
+            // 秒回：后台在做什么（一句话 + 用时），点开看过程、左滑停止、长按补充要求
+            CloudReplyStatusRow(worker: w, count: status.activeCount, fetchedAt: status.fetchedAt, theme: theme,
+                                onExpand: { status.expanded = w }, onStop: { status.stop(w) },
+                                onInterject: { status.interjecting = w })
+                .padding(.horizontal, 12)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+        #if DEBUG
+        if CloudE2E.token != nil, let ms = firstTextMs {
+            // 只给模拟器 E2E 读：首字时间（点发送 → 对话里出现 Bot 的第一个字）
+            Text("\(ms)").font(.system(size: 1)).opacity(0.02)
+                .accessibilityIdentifier("replyFirstTextMs").accessibilityLabel("\(ms)")
+        }
+        #endif
+    }
+}
+
+/// 对话页上和秒回有关的外壳：过程页、补充要求弹窗、提示条、菜单改了方式后重新读
+struct CloudReplyChatChrome: ViewModifier {
+    let sessionId: String
+    let instant: Bool
+    @ObservedObject var status: CloudReplyStatusModel
+    var onPlan: (CloudReplyPlan?) -> Void
+    @State private var text = ""
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.cloudReplyInstant, instant)
+            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: status.current?.id)
+            .sheet(item: $status.expanded) { w in CloudReplyStepsSheet(worker: w) { status.stop(w) } }
+            .alert("给后台补充要求", isPresented: interjectShown) {
+                TextField("比如：结果用表格列出来", text: $text)
+                Button("发送") { send() }
+                Button("取消", role: .cancel) { status.interjecting = nil }
+            } message: {
+                Text("直接送进正在做的「\(status.interjecting?.title ?? "后台任务")」，它下一步就能看到")
+            }
+            .overlay(alignment: .bottom) { CloudFollowUpToast(text: $status.notice, icon: "bolt.horizontal.circle") }
+            .onReceive(NotificationCenter.default.publisher(for: CloudReplyService.changed)) { note in
+                guard note.userInfo?["session_id"] as? String == sessionId else { return }
+                let sid = sessionId
+                Task { @MainActor in onPlan(try? await CloudReplyService.session(sid)) }
+            }
+            .onDisappear { status.stopPolling() }
+    }
+
+    private var interjectShown: Binding<Bool> {
+        Binding(get: { status.interjecting != nil }, set: { if !$0 { status.interjecting = nil } })
+    }
+
+    private func send() {
+        if let w = status.interjecting { status.interject(w, text: text) }
+        text = ""
+        status.interjecting = nil
     }
 }
