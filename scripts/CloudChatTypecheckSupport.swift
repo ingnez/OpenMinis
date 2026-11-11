@@ -24,7 +24,9 @@ enum AssistantBlockKind: Equatable {
  case text, thinking
  case shellTool(command: String), fileReadTool(path: String), fileWriteTool(path: String), fileEditTool(path: String)
  case browserTool(action: String), info, userAskTool
+ case delegateTool(title: String)
 }
+enum MessageSendTick: String, Equatable { case failed }
 final class AssistantBlock: ObservableObject {
  @Published var kind: AssistantBlockKind
  @Published var content: String
@@ -42,10 +44,13 @@ final class AssistantBlock: ObservableObject {
 }
 enum ChatMessageRole { case user, assistant }
 final class ChatMessage: ObservableObject {
+ let id = UUID()
  let role: ChatMessageRole
  @Published var content: String
  @Published var blocks: [AssistantBlock]
  @Published var error: String?
+ @Published var sendTick: MessageSendTick?
+ @Published var adoptedMark = false
  init(role: ChatMessageRole, content: String, blocks: [AssistantBlock] = []) { self.role=role; self.content=content; self.blocks=blocks }
 }
 struct ModelEntry { let providerInstanceId: String; let model: LLMModel }
