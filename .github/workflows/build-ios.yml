@@ -36,8 +36,9 @@ jobs:
   # GitHub 托管 Mac（尤其是 macos-15 arm64）排队约 15 分钟领不到机器就会取消，
   # 报「The job was not acquired by Runner of type hosted even after multiple attempts」。
   # 这是平台侧的领机器时限，不是 job 的 timeout-minutes（timeout 从真正跑起来才计）。
-  # 也不是 concurrency / cancel-in-progress。先在 Linux 上等到本仓库没有其他 Mac 任务，
-  # 再去排队，避免自己把 15 分钟窗口耗在等自己的任务上；若仍领不到，见文末自动重排。
+  # 所有 Mac 任务共用仓库级 concurrency（cancel-in-progress: false）：第二个会 pending，
+  # 不会跟第一个一起挤进 15 分钟领机器窗口。先在 Linux 上等到本仓库没有其他 Mac 任务，
+  # 再去排队；非主线还会给 grokbot-phase2 让路。若仍领不到，见文末自动重排。
   wait-mac:
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -54,6 +55,8 @@ jobs:
           repo = os.environ["GITHUB_REPOSITORY"]
           me = str(os.environ["GITHUB_RUN_ID"])
           token = os.environ["GH_TOKEN"]
+          branch = os.environ.get("GITHUB_REF_NAME") or ""
+          main_branch = "grokbot-phase2"
           deadline = time.time() + 170 * 60
 
           def api(path):
@@ -68,11 +71,29 @@ jobs:
               with urllib.request.urlopen(req, timeout=30) as r:
                   return json.load(r)
 
+          def list_runs():
+              seen, out = set(), []
+              # 只查 in_progress 会漏掉整次运行还在 queued 的（Mac 任务已排队但 Linux 已结束）。
+              for st in ("in_progress", "queued", "waiting", "pending"):
+                  try:
+                      batch = (api(f"/actions/runs?status={st}&per_page=30").get("workflow_runs") or [])
+                  except urllib.error.HTTPError as e:
+                      if e.code == 422:
+                          continue
+                      raise
+                  for run in batch:
+                      rid = run.get("id")
+                      if rid in seen:
+                          continue
+                      seen.add(rid)
+                      out.append(run)
+              return out
+
+          clear_since = None
           while time.time() < deadline:
               try:
-                  runs = (api("/actions/runs?status=in_progress&per_page=30").get("workflow_runs") or [])
                   busy = []
-                  for run in runs:
+                  for run in list_runs():
                       if str(run.get("id")) == me:
                           continue
                       jobs = (api(f"/actions/runs/{run['id']}/jobs?per_page=50").get("jobs") or [])
@@ -82,9 +103,21 @@ jobs:
                               continue
                           if j.get("status") in ("queued", "in_progress", "waiting", "pending"):
                               busy.append(f"{run['id']}/{j.get('name')} {j.get('status')} {labels}")
+                      # 非主线给主线让路：主线刚派发时可能还在 wait-mac，Mac 任务尚未出现。
+                      # 主线本身不抢已经在跑或在领机器的其他任务（由 concurrency 排队，不取消）。
+                      if branch != main_branch and run.get("head_branch") == main_branch:
+                          rid = str(run.get("id"))
+                          if run.get("status") in ("in_progress", "queued", "waiting", "pending") and not any(x.startswith(rid + "/") for x in busy):
+                              busy.append(f"{rid} 主线 {run.get('head_branch')} {run.get('status')}（让主线先领 Mac）")
                   if not busy:
+                      if clear_since is None:
+                          clear_since = time.time()
+                          print("暂无其他 macOS 任务，再确认一次以免刚派发的跑空", flush=True)
+                          time.sleep(20)
+                          continue
                       print("没有其他 macOS 任务在跑，开始领机器", flush=True)
                       break
+                  clear_since = None
                   print("仍在等：", flush=True)
                   for line in busy:
                       print("  " + line, flush=True)
@@ -103,6 +136,9 @@ jobs:
     needs: [wait-mac]
     runs-on: ${{ inputs.mac_runner || 'macos-26' }}
     timeout-minutes: 20
+    concurrency:
+      group: ${{ github.repository }}-macos
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - name: 选择 Xcode 26（macos-15 / latest 镜像上默认可能是 Xcode 16）
@@ -556,6 +592,9 @@ jobs:
     needs: [wait-mac]
     runs-on: ${{ inputs.mac_runner || 'macos-26' }}
     timeout-minutes: 350
+    concurrency:
+      group: ${{ github.repository }}-macos
+      cancel-in-progress: false
 
     steps:
       - name: Checkout source
@@ -925,6 +964,9 @@ jobs:
     needs: [wait-mac]
     runs-on: ${{ inputs.mac_runner || 'macos-26' }}
     timeout-minutes: 300
+    concurrency:
+      group: ${{ github.repository }}-macos
+      cancel-in-progress: false
 
     steps:
       - name: Checkout source
@@ -1356,9 +1398,12 @@ jobs:
 
   # 若 Mac 任务因「job was not acquired」被平台取消（排队满约 15 分钟仍没领到机器，
   # 步骤列表为空），自动重跑失败任务，换一段新的 15 分钟窗口。人工取消或已开跑后取消不重排。
+  # if 必须是 always()：ui-tests 被平台取消时，在 if 里再写 needs.*.result == 'cancelled'
+  # 会被 GitHub 直接跳过这个任务（43069823758 / 43069832887 已证实）。不 depends 于
+  # quick-linux。是否真的该重排由下面脚本根据注释与步骤判断。
   retry-if-mac-not-acquired:
     needs: [quick-typecheck, build, ui-tests]
-    if: ${{ always() && github.run_attempt < 6 && (needs.quick-typecheck.result == 'cancelled' || needs.build.result == 'cancelled' || needs.ui-tests.result == 'cancelled') }}
+    if: ${{ always() && github.run_attempt < 6 }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

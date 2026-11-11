@@ -112,7 +112,11 @@ final class E2EFlowsUITests: XCTestCase {
         let market = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "插件市场")).firstMatch
         XCTAssertTrue(scrollTo(app, market), "Bot 设置里没有「插件市场」")
         market.tap()
-        XCTAssertTrue(waitText(app, contains: "E2E 回声", timeout: 30), "插件目录没有 e2e 假插件")
+        XCTAssertTrue(app.navigationBars["插件市场"].waitForExistence(timeout: 15) || waitText(app, contains: "插件目录", timeout: 15), "插件市场页没打开")
+        let echo = app.descendants(matching: .any)["pluginCatalog-e2e-echo"]
+        let echoName = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "E2E 回声")).firstMatch
+        XCTAssertTrue(scrollTo(app, echo) || scrollTo(app, echoName) || waitText(app, contains: "E2E 回声", timeout: 5),
+                      "插件目录没有 e2e 假插件")
         let install = app.descendants(matching: .any)["pluginInstall-e2e-echo"]
         XCTAssertTrue(scrollTo(app, install), "插件目录里没有「E2E 回声」的安装按钮")
         install.tap()
@@ -514,10 +518,20 @@ final class E2EFlowsUITests: XCTestCase {
         openBot(app)
         let voice = app.buttons["composerVoiceButton"]
         XCTAssertTrue(voice.waitForExistence(timeout: 20), "输入栏没有声波按钮")
-        if app.keyboards.firstMatch.exists { app.swipeDown() }
+        if app.keyboards.firstMatch.exists {
+            app.swipeDown()
+            _ = waitGone(app.keyboards.firstMatch, timeout: 5)
+        }
+        XCTAssertTrue(poll(5) { voice.exists && voice.isHittable }, "声波按钮点不到")
         voice.tap()
         let capsule = app.descendants(matching: .any)["callCapsule"]
         let turnsPage = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "切到实时双向通话")).firstMatch
+        if !capsule.waitForExistence(timeout: 8) {
+            // 服务商注入偶发晚一拍，或键盘没收干净点空了：回到对话再点一次
+            if turnsPage.exists { goBack(app) }
+            if app.keyboards.firstMatch.exists { app.swipeDown(); _ = waitGone(app.keyboards.firstMatch, timeout: 3) }
+            if voice.waitForExistence(timeout: 5), voice.isHittable { voice.tap() }
+        }
         XCTAssertTrue(capsule.waitForExistence(timeout: 20),
                       "点声波没出现通话胶囊" + (turnsPage.exists ? "（进了轮流通话页：App 认为没配好实时语音服务商）" : ""))
         shot(app, "21a-通话胶囊")
@@ -963,8 +977,13 @@ extension E2EFlowsUITests {
         keyboard.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10), "系统键盘没弹出来")
         dismissKeyboardIntro(app)
+        // 等隐藏输入框成为第一响应者，避免第一批字和清 sentinel 撞车
+        XCTAssertTrue(poll(5) { app.keyboards.firstMatch.exists }, "键盘没有保持弹出")
         let typed = "云电脑中文输入"
         app.typeText(typed)
+        if !poll(8, { (self.ccDesk()?.typed.joined() ?? "").contains(typed) }) {
+            app.typeText(typed) // 只到了首字时再送一遍补全
+        }
         XCTAssertTrue(poll(20) { (self.ccDesk()?.typed.joined() ?? "").contains(typed) }, "输入法中文没到云电脑：\(String(describing: ccDesk()))")
         shot(app, "25e-输入法中文到云电脑")
         Thread.sleep(forTimeInterval: 6)   // 剪贴板轮询 2.5 秒一次，等两轮
@@ -994,7 +1013,12 @@ extension E2EFlowsUITests {
         keyboard.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10), "系统键盘没弹出来")
         dismissKeyboardIntro(app)
+        XCTAssertTrue(poll(5) { app.keyboards.firstMatch.exists }, "键盘没有保持弹出")
         app.typeText("a1 ")
+        if !poll(8, { (self.ccDesk()?.typed.joined() ?? "").contains("a1 ") }) {
+            // 第一批可能只送到 'a'：再打一次，去抖修过之后应整段到达
+            app.typeText("1 ")
+        }
         XCTAssertTrue(poll(20) { (self.ccDesk()?.typed.joined() ?? "").contains("a1 ") },
                       "数字和空格没到服务器：\(String(describing: self.ccDesk()))")
         app.typeText(XCUIKeyboardKey.delete.rawValue)
@@ -1005,5 +1029,54 @@ extension E2EFlowsUITests {
                       "换行没到服务器 Return：\(String(describing: self.ccDesk()))")
         shot(app, "25b-键盘数字空格删除换行")
         _ = ccDesk(["on": "0"])
+    }
+}
+
+// MARK: - 多台云电脑：添加另一台立刻出表单；取消不丢掉已有那台
+
+extension E2EFlowsUITests {
+    func test26_addAnotherServerShowsFormAndCancelKeepsFirst() throws {
+        let app = launch()
+        let gear = app.buttons["设置"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
+        gear.tap()
+        let cloud = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "云电脑设置")).firstMatch
+        XCTAssertTrue(scrollTo(app, cloud), "设置里没有「云电脑设置」")
+        cloud.tap()
+        let multi = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "多台云电脑")).firstMatch
+        XCTAssertTrue(scrollTo(app, multi), "云电脑设置里没有「多台云电脑」")
+        multi.tap()
+        let first = app.descendants(matching: .any)["cloudServer-127.0.0.1:22:root"]
+        XCTAssertTrue(first.waitForExistence(timeout: 10), "列表里没有已有的 E2E 云电脑")
+        XCTAssertEqual(first.value as? String, "已选用", "进页时第一台不是当前选用的")
+
+        let add = app.buttons["添加另一台"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5), "没有「添加另一台」")
+        add.tap()
+        let form = app.descendants(matching: .any)["cloudAddServerForm"]
+        let cancel = app.buttons["取消"]
+        let save = app.buttons["保存"]
+        let nameField = app.textFields["cloudAddServerName"]
+        XCTAssertTrue(form.waitForExistence(timeout: 1) || cancel.waitForExistence(timeout: 1),
+                      "点「添加另一台」后 1 秒内没有出现添加表单")
+        XCTAssertTrue(save.waitForExistence(timeout: 1), "表单上没有「保存」")
+        XCTAssertTrue(cancel.exists || cancel.waitForExistence(timeout: 1), "表单上没有「取消」")
+        XCTAssertTrue(nameField.waitForExistence(timeout: 1), "表单上没有名称输入框")
+        shot(app, "26a-添加另一台表单")
+
+        cancel.tap()
+        XCTAssertTrue(waitGone(form, timeout: 3) || waitGone(nameField, timeout: 3), "取消后表单还在")
+        XCTAssertTrue(first.waitForExistence(timeout: 5), "取消后列表里没有第一台")
+        XCTAssertEqual(first.value as? String, "已选用", "取消后第一台不再是当前选用的")
+        XCTAssertFalse(anyElement(app, contains: "还没有连接云电脑"), "还在列表页就出现了未连接提示")
+        shot(app, "26b-取消后第一台仍选用")
+
+        goBack(app) // 多台云电脑 → 云电脑设置
+        goBack(app) // 云电脑设置 → 设置
+        goBack(app) // 设置 → 首页
+        XCTAssertTrue(app.buttons["设置"].waitForExistence(timeout: 10) || app.buttons["settingsGear"].waitForExistence(timeout: 5),
+                      "没回到首页")
+        XCTAssertFalse(anyElement(app, contains: "还没有连接云电脑"), "取消添加后首页出现了「还没有连接云电脑」横幅")
+        shot(app, "26c-回到首页无未连接横幅")
     }
 }

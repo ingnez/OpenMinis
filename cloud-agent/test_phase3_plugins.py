@@ -222,5 +222,22 @@ class PluginTests(CloudServerTestCase):
             self.request("DELETE", f"/v1/plugins/{pid}")
 
 
+class E2ECatalogTests(unittest.TestCase):
+    def test_e2e_echo_is_first_in_catalog(self):
+        import cloud_plugin_catalog
+        key = "OPENMINIS_E2E_FAKE_PLUGIN"
+        old = os.environ.get(key)
+        os.environ[key] = FAKE
+        try:
+            ids = [c["id"] for c in cloud_plugin_catalog.entries()]
+            self.assertEqual(ids[0], "e2e-echo", "假插件必须排在目录最前，否则控件树里看不到")
+            self.assertIn("fetch", ids)
+        finally:
+            if old is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old
+
+
 if __name__ == "__main__":
     unittest.main()

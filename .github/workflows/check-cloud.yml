@@ -7,6 +7,9 @@ jobs:
   check:
     runs-on: macos-26
     timeout-minutes: 20
+    concurrency:
+      group: ${{ github.repository }}-macos
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - name: 真实云端模块类型检查

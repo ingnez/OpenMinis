@@ -105,7 +105,9 @@ def entries():
         return items
     if any(c["id"] == "e2e-echo" for c in items):
         return items
-    items.append({
+    # 插到目录最前面：插件市场「插件目录」在运行依赖下面，假插件若排在最后会滚出控件树，
+    # XCUITest 等「E2E 回声」会误判成目录里没有。
+    items.insert(0, {
         "id": "e2e-echo", "kind": "mcp", "name": "E2E 回声",
         "description": "端到端测试用假 stdio MCP，不访问网络。",
         "mcp": {"transport": "stdio", "command": sys.executable, "args": [script]},
