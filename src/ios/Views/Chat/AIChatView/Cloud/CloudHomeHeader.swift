@@ -189,9 +189,11 @@ struct CloudTodayCard: View {
 }
 
 /// 读滚动位置：首页内容顶部相对滚动视图的 y（下拉为正）
+/// 可选值：VStack 里别的子视图不设这个偏好时贡献的是 defaultValue，以前 reduce 直接用 nextValue()
+/// 会被后面兄弟视图的 0 盖掉，下拉永远读到 0（42963481185 test13「今天」卡片不出来）
 struct CloudHomeScrollTopKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    static let defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) { value = value ?? nextValue() }
 }
 
 struct CloudHomeScrollProbe: View {

@@ -532,6 +532,7 @@ struct CloudBotHomeScreen: View {
     @State private var showHub = false
     /// 下拉首页露出的「今天」卡片
     @State private var showToday = false
+    @State private var restScrollTop: CGFloat?
     @State private var showShiftCard = false
     @State private var showWorkbench = false
     /// 打开 Bot 设置时直接进「云电脑设置」（连接出问题的修复按钮用）
@@ -644,8 +645,11 @@ struct CloudBotHomeScreen: View {
                     }
                 }
                 .coordinateSpace(name: "cloudHomeScroll")
-                .onPreferenceChange(CloudHomeScrollTopKey.self) { top in
-                    let next = CloudHomeHeaderRules.todayVisible(was: showToday, scrollTop: Double(top))
+                .onPreferenceChange(CloudHomeScrollTopKey.self) { value in
+                    guard let top = value else { return }
+                    // 静止时内容顶部在导航栏下面（iOS 26 约 116pt），以第一次读到的位置为 0，下拉为正
+                    if restScrollTop == nil { restScrollTop = top }
+                    let next = CloudHomeHeaderRules.todayVisible(was: showToday, scrollTop: Double(top - (restScrollTop ?? top)))
                     if next != showToday { withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { showToday = next } }
                 }
                 .refreshable { await model.refresh() }
