@@ -742,3 +742,18 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 详细：和以前完全一样（主模型直接干活、实时步骤）。
 - `GET /v1/workers?session_id=` 每个任务多了 `status_phrase`（一句话进度，例如「分析工作方案」，来自工具的 tool_title 或工具种类）、`needs_decision`（等用户选）、`eta_s`（只在这个 Bot 至少有 3 次已完成的后台任务时给：用时中位数 − 已用时间，不到 5 秒不给）。
 - `/health` 的 `capabilities.reply_modes = true`。
+
+
+## 群聊体验：折叠、收尾、只听、额度、与我相关（2.53.0）
+
+- 客户端按一轮里前 2 条 Bot 回复展示，其余折叠为「N 位 Bot 回了话」（G1）。多个 Bot 同时输入时标明「回复会错开出现」（G2）。
+- `GET /v1/groups`、`GET /v1/groups/{id}` 增加 `last_read_id`、`notify_mode`（默认 `relevant`）、`missed` / `missed_count`：相对已读位置的不在时速览（条数、发言的人、预览）（G3）。
+- `POST /v1/groups/{id}/read` `{last_id}` 更新已读位置。
+- `POST /v1/groups/{id}/wrap`：根据最近消息写出总结和分歧（启发式，不调用模型），以 `kind=wrap` 贴进群，meta 含 `summary`、`disagreements`（G4）。
+- 客户端可「只听某个 Bot」，聊天与群语音都只保留该 Bot 的闲聊（用户、系统、任务、收尾仍可见）（G5）。
+- `POST /v1/groups/{id}/messages` 接受 `reply_to`。消息所在回复串在客户端展开（G7）。
+- 群聊语音仍是轮流说，状态条显示谁在说（可插话）、正在听你、静音（G8）。
+- `POST /v1/groups/{id}/spin-task` `{bot_id, goal?}`：把讨论做成任务交给该成员，结果贴回群（G9）。没给 goal 时用收尾摘要。
+- 群详情和消息长轮询带 `quota`：`{turns, turns_max, tokens, tokens_max, hit, hint}`。打到上限时贴 `kind=system` 且 meta `quota`（G10）。
+- `notify_mode`：`relevant`（默认）只推回复你的、被 @ 的、任务、收尾、额度提示；`all` 推除表情外的消息；可用 `PUT /v1/groups/{id}` 修改（G11）。
+- `/health` 的 `capabilities.group_wrap`、`group_spin_task` 为 true。

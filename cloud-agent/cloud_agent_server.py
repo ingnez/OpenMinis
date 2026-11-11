@@ -640,7 +640,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.51.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.53.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -3886,6 +3886,10 @@ GROUPS = cloud_groups.GroupEngine({
     "start_task": lambda group, bot, task, msg_id: _group_start_task(group, bot, task, msg_id),
 })
 
+def _group_names(g):
+    return {bid: (get_persona(bid) or {}).get("name") or bid for bid in (g.get("members") or [])}
+
+
 def group_payload(conn, g, after=0):
     members = []
     for bid in g["members"]:
@@ -3897,6 +3901,11 @@ def group_payload(conn, g, after=0):
     out["member_bots"] = members
     out["typing"] = GROUPS.typing_list(g["group_id"])
     out["messages"] = cloud_groups.messages_after(conn, g["group_id"], after, 300) if after is not None else []
+    names = {m["bot_id"]: m["name"] for m in members}
+    # 不在时速览：相对 last_read_id 的新消息；轮询额度给客户端提示条用
+    src = out["messages"] if after is not None else cloud_groups.messages_after(conn, g["group_id"], 0, 300)
+    out["missed"] = cloud_groups.missed_digest(src, g.get("last_read_id") or 0, names)
+    out["quota"] = GROUPS.quota(g["group_id"])
     return out
 
 # 对外发消息：先以草稿形式挂起审批，用户确认后才发送（不受自定义策略影响）
@@ -6282,6 +6291,8 @@ class Handler(BaseHTTPRequestHandler):
                     "bots": True,
                     "delegation": True,
                     "group_chat": True,
+                    "group_wrap": True,
+                    "group_spin_task": True,
                     "event_longpoll": True,
                     "streaming": True,
                     "perf": True,
@@ -6659,6 +6670,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, GATE.status())
             return
 
+
         if path == "/v1/groups":
             conn = get_db_connection()
             try:
@@ -6698,7 +6710,7 @@ class Handler(BaseHTTPRequestHandler):
                     msgs = cloud_groups.messages_after(conn, gid, after)
                 finally:
                     conn.close()
-            self._send(200, {"messages": msgs, "typing": typing})
+            self._send(200, {"messages": msgs, "typing": typing, "quota": GROUPS.quota(gid)})
             return
 
         if path == "/v1/search":
@@ -8172,6 +8184,66 @@ class Handler(BaseHTTPRequestHandler):
             self._send(202, {"status": "warming"})
             return
 
+
+        m_grp_act = re.match(r"^/v1/groups/(grp_[a-f0-9]{10})/(wrap|read|spin-task)$", path)
+        if m_grp_act:
+            gid, act = m_grp_act.group(1), m_grp_act.group(2)
+            conn = get_db_connection()
+            try:
+                g = cloud_groups.get_group(conn, gid)
+                if not g:
+                    self._send(404, {"error": "Group not found"})
+                    return
+                if act == "read":
+                    last_id = req_json.get("last_id") or req_json.get("last_read_id")
+                    try:
+                        last_id = int(last_id or 0)
+                    except (TypeError, ValueError):
+                        self._send(400, {"error": "last_id 必须是消息 id"})
+                        return
+                    g = cloud_groups.mark_read(conn, gid, last_id)
+                    self._send(200, group_payload(conn, g, 0))
+                    return
+                if act == "wrap":
+                    names = _group_names(g)
+                    wr = GROUPS.wrap(gid, names)
+                    if not wr:
+                        self._send(404, {"error": "Group not found"})
+                        return
+                    self._send(201, {**wr, "quota": GROUPS.quota(gid)})
+                    return
+                # spin-task：把讨论做成任务交给某个成员，结果回群
+                bot_id = req_json.get("bot_id") or (g["members"][0] if g["members"] else None)
+                if not bot_id or bot_id not in g["members"]:
+                    self._send(400, {"error": "bot_id 必须是群成员"})
+                    return
+                bot = get_persona(bot_id)
+                if not bot:
+                    self._send(400, {"error": "Bot 不存在"})
+                    return
+                goal = req_json.get("goal")
+                if not isinstance(goal, str) or not goal.strip():
+                    msgs = cloud_groups.messages_after(conn, gid, 0, 80)
+                    goal = cloud_groups.compose_wrap(msgs, _group_names(g))["summary"]
+                else:
+                    goal = goal.strip()[:8000]
+                provider_req = req_json.get("provider")
+                if provider_req:
+                    provider, _st, p_err = resolve_provider(provider_req)
+                    if not p_err:
+                        GROUP_FALLBACK[gid] = (req_json.get("model") or "gpt-4o", provider)
+                mid = cloud_groups.add_message(
+                    conn, gid, "user", "text",
+                    f"把讨论交给 {bot.get('name') or bot_id}：{goal[:500]}",
+                    meta={"spin_task": True})
+            finally:
+                conn.close()
+            if act == "spin-task":
+                _group_start_task(g, bot, goal, mid)
+                GROUPS.notify()
+                self._send(202, {"message_id": mid, "bot_id": bot_id, "goal": goal})
+            return
+
         if path == "/v1/groups":
             try:
                 fields = cloud_groups.validate_fields(req_json, lambda b: bool(get_persona(b)))
@@ -8213,7 +8285,17 @@ class Handler(BaseHTTPRequestHandler):
                     provider, _st, p_err = resolve_provider(provider_req)
                     if not p_err:
                         GROUP_FALLBACK[gid] = (req_json.get("model") or "gpt-4o", provider)
-                mid = cloud_groups.add_message(conn, gid, "user", "text", content.strip())
+                reply_to = req_json.get("reply_to")
+                if reply_to is not None:
+                    try:
+                        reply_to = int(reply_to)
+                    except (TypeError, ValueError):
+                        self._send(400, {"error": "reply_to 必须是消息 id"})
+                        return
+                    if reply_to <= 0:
+                        self._send(400, {"error": "reply_to 必须是消息 id"})
+                        return
+                mid = cloud_groups.add_message(conn, gid, "user", "text", content.strip(), reply_to=reply_to)
                 if nonce_key:
                     with GROUP_NONCE_LOCK:
                         GROUP_NONCES[nonce_key] = (mid, time.time())

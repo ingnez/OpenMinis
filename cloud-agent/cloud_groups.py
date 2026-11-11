@@ -26,7 +26,9 @@ SCHEMA = [
         members TEXT NOT NULL,
         activity TEXT,
         created_at REAL,
-        updated_at REAL
+        updated_at REAL,
+        last_read_id INTEGER DEFAULT 0,
+        notify_mode TEXT DEFAULT 'relevant'
     )""",
     """CREATE TABLE IF NOT EXISTS group_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,12 +63,20 @@ class GroupError(ValueError):
 def ensure_schema(conn):
     for s in SCHEMA:
         conn.execute(s)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(groups)").fetchall()}
+    if "last_read_id" not in cols:
+        conn.execute("ALTER TABLE groups ADD COLUMN last_read_id INTEGER DEFAULT 0")
+    if "notify_mode" not in cols:
+        conn.execute("ALTER TABLE groups ADD COLUMN notify_mode TEXT DEFAULT 'relevant'")
     conn.commit()
 
 
 def _group_row(r):
-    return {"group_id": r[0], "name": r[1], "members": json.loads(r[2] or "[]"), "activity": r[3],
-            "created_at": r[4], "updated_at": r[5]}
+    d = {"group_id": r[0], "name": r[1], "members": json.loads(r[2] or "[]"), "activity": r[3],
+         "created_at": r[4], "updated_at": r[5],
+         "last_read_id": (r[6] if len(r) > 6 else 0) or 0,
+         "notify_mode": (r[7] if len(r) > 7 else None) or "relevant"}
+    return d
 
 
 def validate_fields(body, bot_exists, partial=False):
@@ -97,6 +107,11 @@ def validate_fields(body, bot_exists, partial=False):
         if a not in (None, "", "quiet", "normal", "lively"):
             raise GroupError("activity 只能是 quiet、normal、lively 或留空（跟随全局设置）")
         out["activity"] = a or None
+    if "notify_mode" in body:
+        n = body.get("notify_mode") or "relevant"
+        if n not in ("relevant", "all"):
+            raise GroupError("notify_mode 只能是 relevant（只推与我相关）或 all")
+        out["notify_mode"] = n
     return out
 
 
@@ -110,18 +125,23 @@ def create_group(conn, fields):
 
 
 def get_group(conn, gid):
-    r = conn.execute("SELECT group_id, name, members, activity, created_at, updated_at FROM groups WHERE group_id = ?", (gid,)).fetchone()
+    r = conn.execute("SELECT group_id, name, members, activity, created_at, updated_at, last_read_id, notify_mode FROM groups WHERE group_id = ?", (gid,)).fetchone()
     return _group_row(r) if r else None
 
 
 def list_groups(conn):
-    rows = conn.execute("SELECT group_id, name, members, activity, created_at, updated_at FROM groups ORDER BY updated_at DESC").fetchall()
+    rows = conn.execute("SELECT group_id, name, members, activity, created_at, updated_at, last_read_id, notify_mode FROM groups ORDER BY updated_at DESC").fetchall()
     out = []
     for r in rows:
         g = _group_row(r)
         last = conn.execute("SELECT sender, kind, content, timestamp FROM group_messages WHERE group_id = ? AND kind != 'reaction' "
                             "ORDER BY id DESC LIMIT 1", (g["group_id"],)).fetchone()
         g["last_message"] = {"sender": last[0], "kind": last[1], "content": (last[2] or "")[:200], "timestamp": last[3]} if last else None
+        mid = g.get("last_read_id") or 0
+        g["missed_count"] = conn.execute(
+            "SELECT COUNT(*) FROM group_messages WHERE group_id = ? AND id > ? AND kind IN "
+            "('text','task','task_result','wrap','system')",
+            (g["group_id"], mid)).fetchone()[0]
         out.append(g)
     return out
 
@@ -131,8 +151,9 @@ def update_group(conn, gid, fields):
     if not g:
         return None
     merged = {**g, **fields}
-    conn.execute("UPDATE groups SET name = ?, members = ?, activity = ?, updated_at = ? WHERE group_id = ?",
-                 (merged["name"], json.dumps(merged["members"]), merged.get("activity"), time.time(), gid))
+    conn.execute("UPDATE groups SET name = ?, members = ?, activity = ?, notify_mode = ?, updated_at = ? WHERE group_id = ?",
+                 (merged["name"], json.dumps(merged["members"]), merged.get("activity"),
+                  merged.get("notify_mode") or "relevant", time.time(), gid))
     conn.commit()
     return get_group(conn, gid)
 
@@ -339,6 +360,7 @@ class GroupEngine:
         self.rounds = {}       # gid -> round id
         self.budget = TokenBudget()
         self.thinking = {}     # gid -> 正在想的 Bot 数
+        self.round_quota = {}  # gid -> {turns, max, capped, token_capped}
 
     # ---- 状态 / 长轮询 ----
     def notify(self):
@@ -404,7 +426,9 @@ class GroupEngine:
             return
         act = self._activity(group, s)
         a = ACTIVITY.get(act, ACTIVITY["normal"])
-        state = {"turns": 0, "max": s.get("group_max_bot_turns", 6) or 10 ** 6, "lock": threading.Lock(), "spoke": []}
+        tmax = s.get("group_max_bot_turns", 6) or 10 ** 6
+        state = {"turns": 0, "max": tmax, "lock": threading.Lock(), "spoke": [], "capped": False, "token_capped": False}
+        self.round_quota[gid] = state
         sem_n = s.get("group_max_concurrent", 2) or 64
         sem = threading.Semaphore(sem_n)
         threads = []
@@ -421,13 +445,20 @@ class GroupEngine:
             lo, hi = a["delay"]
             base += self.rng.uniform(lo, hi) * (0.6 if reason == "mention" else 1.0) if i else self.rng.uniform(lo * 0.5, lo)
             schedule(bid, reason, msg_id, text, base)
-        # 等这一轮所有回复（包括接话）结束
+        # 等这一轮所有回复（包括接话）结束，再贴额度提示，避免和发言抢同一条连接
         while True:
             alive = [t for t in list(threads) if t.is_alive()]
             if not alive:
                 break
             for t in alive:
                 t.join(timeout=0.5)
+        if state.get("capped"):
+            self._say(gid, "system", "system",
+                      f"本轮 Bot 发言已达上限 {state['max']} 条。", meta={"quota": "turns"})
+        elif state.get("token_capped"):
+            limit = s.get("group_tokens_per_min", 60000)
+            self._say(gid, "system", "system",
+                      f"本群每分钟 token 额度已用完（{limit}）。", meta={"quota": "tokens"})
 
     def _say(self, gid, sender, kind, text, meta=None):
         conn = self.h["db"]()
@@ -498,6 +529,35 @@ class GroupEngine:
                 self._say(gid, b["persona_id"], "text", t, meta={"vote": "ballot"})
         self._say(gid, "system", "system", cloud_debate.tally(choices, options), meta={"vote": "result"})
 
+
+    def quota(self, gid, settings=None):
+        s = settings or self.h["settings"]()
+        tmax = s.get("group_max_bot_turns", 6) or 10 ** 6
+        st = self.round_quota.get(gid) or {"turns": 0, "max": tmax}
+        limit = s.get("group_tokens_per_min", 60000) or 0
+        rem = self.budget.remaining(gid, limit)
+        used = max(0, (limit or 0) - rem) if limit else 0
+        q = {"turns": int(st.get("turns") or 0), "turns_max": int(st.get("max") or tmax),
+             "tokens": int(used), "tokens_max": int(limit or 0),
+             "hit": bool(st.get("capped") or st.get("token_capped"))}
+        q["hint"] = quota_hint(q)
+        return q
+
+    def wrap(self, gid, names=None):
+        """一键收尾：根据最近消息写出总结和分歧，作为 kind=wrap 贴进群。"""
+        conn = self.h["db"]()
+        try:
+            if not get_group(conn, gid):
+                return None
+            msgs = recent_messages(conn, gid, 80)
+            payload = compose_wrap(msgs, names or {})
+            mid = add_message(conn, gid, "system", "wrap", payload["content"],
+                              meta={"summary": payload["summary"], "disagreements": payload["disagreements"]})
+        finally:
+            conn.close()
+        self.notify()
+        return {"message_id": mid, **payload}
+
     def _round_active(self, gid, rid):
         with self.cond:
             return self.rounds.get(gid) == rid
@@ -509,8 +569,11 @@ class GroupEngine:
             return
         with state["lock"]:
             if state["turns"] >= state["max"]:
+                state["capped"] = True
+                self.round_quota[gid] = state
                 return
             state["turns"] += 1          # 先占名额，回 [PASS] 时再还回去
+            self.round_quota[gid] = state
         bot = next((m for m in members if m["persona_id"] == bid), None)
         if not bot:
             return
@@ -530,6 +593,8 @@ class GroupEngine:
                 if not self.budget.reserve(gid, limit, est):
                     with state["lock"]:
                         state["turns"] -= 1
+                        state["token_capped"] = True
+                        self.round_quota[gid] = state
                     return
                 try:
                     out, tokens = self.h["llm"](bot, msgs, fallback)
@@ -596,3 +661,152 @@ class GroupEngine:
                 finally:
                     conn.close()
                 self.notify()
+
+
+# ---------------- G1–G11 纯逻辑（Linux / 服务器单测） ----------------
+
+FOLD_KEEP = 2  # 一轮里先露出这么多条 Bot 回复，其余折叠，避免刷屏
+
+
+def missed_digest(messages, last_read_id, names=None):
+    """不在时错过的消息速览：条数、发言的人、一句预览。"""
+    names = names or {}
+    new = [m for m in messages if (m.get("id") or 0) > (last_read_id or 0)
+           and m.get("kind") in ("text", "task", "task_result", "wrap", "system")]
+    senders, seen = [], set()
+    for m in new:
+        s = m.get("sender") or ""
+        if s in ("user", "system"):
+            continue
+        if s not in seen:
+            seen.add(s)
+            senders.append(names.get(s, s))
+    preview = ""
+    for m in new:
+        if m.get("kind") in ("text", "wrap", "task_result") and (m.get("content") or "").strip():
+            who = "我" if m.get("sender") == "user" else names.get(m.get("sender"), m.get("sender") or "")
+            preview = (who + "：" if who else "") + (m.get("content") or "").replace("\n", " ")[:80]
+    return {"count": len(new), "senders": senders, "preview": preview, "from_id": last_read_id or 0}
+
+
+def detect_disagreements(messages, names=None):
+    """从一轮讨论里挑出明显对立的说法（赞成 / 反对），没有则空列表。"""
+    names = names or {}
+    pos, neg = [], []
+    pos_kw = ("同意", "赞成", "支持", "可以", "应该", "赞同")
+    neg_kw = ("不同意", "反对", "不赞成", "不行", "不应该", "反对这个")
+    for m in messages:
+        if m.get("kind") != "text" or m.get("sender") in ("user", "system"):
+            continue
+        text = m.get("content") or ""
+        who = names.get(m["sender"], m["sender"])
+        if any(k in text for k in neg_kw):
+            neg.append((who, text))
+        elif any(k in text for k in pos_kw):
+            pos.append((who, text))
+    out = []
+    if pos and neg:
+        out.append(f"{pos[0][0]} 赞成，{neg[0][0]} 反对")
+    return out
+
+
+def compose_wrap(messages, names=None):
+    """一键收尾：总结 + 分歧。不调用模型，方便单测；服务器也可以把这段当兜底。"""
+    names = names or {}
+    bots = []
+    seen = set()
+    for m in messages:
+        if m.get("kind") != "text" or m.get("sender") in ("user", "system"):
+            continue
+        if m["sender"] in seen:
+            continue
+        seen.add(m["sender"])
+        who = names.get(m["sender"], m["sender"])
+        line = (m.get("content") or "").replace("\n", " ").strip()
+        bots.append(f"{who}：{line[:40]}")
+    summary = "；".join(bots) if bots else "这一轮还没有充分讨论。"
+    disagreements = detect_disagreements(messages, names)
+    parts = ["总结：" + summary]
+    parts.append("分歧：" + ("；".join(disagreements) if disagreements else "没有明显分歧。"))
+    return {"summary": summary, "disagreements": disagreements, "content": "\n".join(parts)}
+
+
+def quota_hint(q):
+    """额度提示文案。q 含 turns / turns_max / tokens / tokens_max / hit。"""
+    if not q:
+        return None
+    tmax = int(q.get("turns_max") or 0)
+    turns = int(q.get("turns") or 0)
+    tok_max = int(q.get("tokens_max") or 0)
+    toks = int(q.get("tokens") or 0)
+    if tmax and turns >= tmax:
+        return f"本轮 Bot 发言已达上限 {tmax} 条"
+    if tok_max and toks >= tok_max:
+        return f"本群每分钟 token 额度已用完（{tok_max}）"
+    if tmax and turns >= max(1, tmax - 1) and turns > 0 and turns < tmax:
+        return f"本轮还剩 {tmax - turns} 条 Bot 发言额度"
+    if tok_max and toks * 5 >= tok_max * 4 and toks > 0:
+        return f"本群 token 额度已用 {toks} / {tok_max}"
+    return None
+
+
+def is_relevant_to_user(msg, history=None, notify_mode="relevant"):
+    """G11：只推与我相关。all=除表情外都推；relevant=回复我的、任务、收尾、额度提示。"""
+    kind = (msg or {}).get("kind") or "text"
+    if kind == "reaction":
+        return False
+    if (msg or {}).get("sender") == "user":
+        return False
+    if notify_mode == "all":
+        return kind in ("text", "task", "task_result", "wrap", "system")
+    if kind in ("wrap", "task", "task_result"):
+        return True
+    meta = msg.get("meta") if isinstance(msg.get("meta"), dict) else {}
+    if meta.get("quota") or kind == "system" and "上限" in (msg.get("content") or ""):
+        return True
+    if meta.get("reason") == "mention":
+        return True
+    rid = msg.get("reply_to")
+    if rid and history:
+        parent = next((m for m in history if m.get("id") == rid), None)
+        if parent and parent.get("sender") == "user":
+            return True
+    return False
+
+
+def fold_sections(messages, keep=FOLD_KEEP):
+    """把一轮里过多的 Bot 回复折起来。返回 [{type, messages, hidden}]。"""
+    visible = [m for m in messages if m.get("kind") != "reaction"]
+    out, burst = [], []
+
+    def flush():
+        nonlocal burst
+        if not burst:
+            return
+        if len(burst) > keep:
+            out.append({"type": "burst", "messages": burst[:keep], "hidden": burst[keep:]})
+        else:
+            for m in burst:
+                out.append({"type": "message", "messages": [m], "hidden": []})
+        burst = []
+
+    for m in visible:
+        is_bot_text = m.get("kind") == "text" and m.get("sender") not in ("user", "system")
+        if is_bot_text:
+            burst.append(m)
+        else:
+            flush()
+            out.append({"type": "message", "messages": [m], "hidden": []})
+    flush()
+    return out
+
+
+def mark_read(conn, gid, last_id):
+    g = get_group(conn, gid)
+    if not g:
+        return None
+    last_id = max(0, int(last_id or 0))
+    conn.execute("UPDATE groups SET last_read_id = ? WHERE group_id = ?", (last_id, gid))
+    conn.commit()
+    g["last_read_id"] = last_id
+    return g
