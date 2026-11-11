@@ -432,6 +432,9 @@ struct CloudBotHomeRow: View {
     let bot: CloudBot
     let unread: Bool
     var presence = CloudBotPresence(state: .idle, unread: 0, routine: .none, muted: false)
+    /// 头像跟着系统字号一起变大，但不超过 60pt（首页一行一个 Bot，太大挤掉名字）
+    @ScaledMetric(relativeTo: .headline) private var scaledAvatar: CGFloat = 46
+    private var avatar: CGFloat { min(max(scaledAvatar, 40), 60) }
 
     var body: some View {
         let status = CloudBotStatus.of(bot)
@@ -440,27 +443,29 @@ struct CloudBotHomeRow: View {
             Group {
                 if bot.activity != nil, !CloudBotLock.shared.isLocked(bot.id) {
                     // 正在回复：头像换成 Bot 颜色的三个点
-                    CloudTypingAvatarDots(color: spec.fill, size: 46)
+                    CloudTypingAvatarDots(color: spec.fill, size: avatar)
                         .transition(.cloudTypingMorph(reduceMotion: reduceMotion))
                 } else if status == .working {
-                    CloudBotLivelyAvatar(spec: CloudBotAvatarSpec.of(bot), size: 46)
+                    CloudBotLivelyAvatar(spec: CloudBotAvatarSpec.of(bot), size: avatar)
                 } else {
                     // 列表里的头像也跟着手指看，并按状态换表情
-                    CloudBotWatchingAvatar(spec: CloudBotAvatarSpec.of(bot), size: 46, mood: CloudBotMood.of(status, unread: unread, lastTaskStatus: bot.lastTaskStatus, lastAt: bot.lastAt))
+                    CloudBotWatchingAvatar(spec: CloudBotAvatarSpec.of(bot), size: avatar, mood: CloudBotMood.of(status, unread: unread, lastTaskStatus: bot.lastTaskStatus, lastAt: bot.lastAt))
                 }
             }
-            .frame(width: 46, height: 50)
+            .frame(width: avatar, height: avatar + 4)
             .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.45, dampingFraction: 0.75), value: bot.activity?.kind)
             .overlay(alignment: .bottomTrailing) { CloudPresenceBadge(presence: presence, size: 13) }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(bot.name)，\(presence.accessibilityText)")
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(bot.name).font(.system(size: 17, weight: .semibold)).lineLimit(1)
+                    // 系统字体样式，跟着「更大字体」缩放（以前写死 17pt）
+                    Text(bot.name).font(.headline).lineLimit(1)
+                        .accessibilityIdentifier("homeRowTitle")
                     CloudPresenceFlags(presence: presence)
                     Spacer(minLength: 8)
                     Text(CloudBotHome.timeText(CloudTypingRules.sortTime(lastAt: max(bot.lastAt, showsThread ? bot.threadAt : 0), working: bot.activity != nil)))
-                        .font(.footnote).foregroundStyle(.tertiary)
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 8) {
                     if status.busy && typing == nil { CloudBotStatusChip(status: status) }
@@ -488,6 +493,8 @@ struct CloudBotHomeRow: View {
         }
         .padding(.vertical, 10)
         .contentShape(Rectangle())
+        // 密集的列表行：字号最多放大到辅助功能 2 档，再大就一行放不下名字
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
     }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

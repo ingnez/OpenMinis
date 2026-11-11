@@ -154,16 +154,17 @@ struct CloudGroupHomeRow: View {
             CloudGroupStackAvatar(bots: members)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(group.name).font(.system(size: 17, weight: .semibold)).lineLimit(1)
+                    Text(group.name).font(.headline).lineLimit(1)
                     Text("\(group.members.count + 1)").font(.caption).foregroundStyle(.tertiary)
                     Spacer(minLength: 8)
-                    Text(CloudBotHome.timeText(group.lastAt)).font(.footnote).foregroundStyle(.tertiary)
+                    Text(CloudBotHome.timeText(group.lastAt)).font(.caption).foregroundStyle(.secondary)
                 }
                 Text(preview).font(.subheadline).foregroundStyle(group.typing.isEmpty ? Color.secondary : Color.green).lineLimit(1)
             }
         }
         .padding(.vertical, 10)
         .contentShape(Rectangle())
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
     }
 
     private var members: [CloudBot] { group.members.compactMap { id in bots.first(where: { $0.id == id }) } }

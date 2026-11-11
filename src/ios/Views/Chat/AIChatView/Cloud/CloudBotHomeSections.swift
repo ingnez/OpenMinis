@@ -72,7 +72,7 @@ struct CloudBotTopAvatar: View {
                         CloudPresenceBadge(presence: presence, size: max(12, size * 0.16))
                     }
                 HStack(spacing: 5) {
-                    Text(bot.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
+                    Text(bot.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
                     CloudPresenceFlags(presence: presence)
                     CloudUnreadMark(presence: presence)
                 }
