@@ -105,3 +105,32 @@ struct CloudPromptTemplateEditor: View {
         }
     }
 }
+
+
+extension Notification.Name {
+    static let openLocalPromptTemplates = Notification.Name("OpenMinisOpenLocalPromptTemplates")
+}
+
+/// 本地对话输入栏的一键模板入口。单独抽成小视图，避免把 AIChatView 的类型检查再加深一层。
+struct LocalPromptTemplateEntry: View {
+    @Binding var text: String
+    @State private var show = false
+
+    var body: some View {
+        Button { show = true } label: {
+            Image(systemName: "text.badge.plus")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.secondary)
+                .frame(width: 28, height: 34)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("一键模板")
+        .accessibilityIdentifier("localComposerTemplatesButton")
+        .sheet(isPresented: $show) {
+            CloudPromptTemplateSheet(text: $text, onDismiss: { show = false })
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openLocalPromptTemplates)) { _ in
+            show = true
+        }
+    }
+}

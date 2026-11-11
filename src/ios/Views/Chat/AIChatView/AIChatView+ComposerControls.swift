@@ -49,6 +49,9 @@ extension AIChatView {
                 Button { vm.handoffToBot(instruction: vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines), target: nil) } label: {
                     Label("交给 Bot 在云端继续", systemImage: "arrow.up.forward.circle")
                 }
+                Button { NotificationCenter.default.post(name: .openLocalPromptTemplates, object: nil) } label: {
+                    Label("一键模板", systemImage: "text.badge.plus")
+                }
             } label: {
                 icon
             }
@@ -64,6 +67,9 @@ extension AIChatView {
                 Button { vm.handoffToBot(instruction: vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines), target: nil) } label: {
                     Label("交给 Bot 在云端继续", systemImage: "arrow.up.forward.circle")
                 }
+                Button { NotificationCenter.default.post(name: .openLocalPromptTemplates, object: nil) } label: {
+                    Label("一键模板", systemImage: "text.badge.plus")
+                }
             }
         }
     }
@@ -74,6 +80,7 @@ extension AIChatView {
     var inputBottomRow: AnyView {
         let row = HStack(spacing: 12) {
             attachmentMenuButton
+            LocalPromptTemplateEntry(text: inputTextBinding)
             slashMenuButton
             if vm.editingMessageIndex != nil { editExitButton }
 
@@ -128,7 +135,7 @@ extension AIChatView {
     /// 12pt HStack gaps between them. Everything left over is what the
     /// read-aloud capsule may use.
     /// 通话按钮并进了右侧 38pt 变形圆按钮：现在是 3 个 34pt + 1 个 38pt + 4 个间距
-    private static let readAloudRowFixedWidth: CGFloat = 34 * 3 + 38 + 12 * 4
+    private static let readAloudRowFixedWidth: CGFloat = 34 * 3 + 28 + 38 + 12 * 5
 
     /// Free width below which the toggle drops its text and becomes icon-only.
     ///

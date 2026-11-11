@@ -52,6 +52,50 @@ final class IdeasBUITests: XCTestCase {
         shot(app, "ideasB-模板发送成功")
     }
 
+    func testIdeas_localPromptTemplates() throws {
+        let app = launchLocal()
+        XCTAssertTrue(poll(60) { app.textViews.firstMatch.exists || app.textFields.firstMatch.exists }, "本地模式没打开新对话的输入框")
+        let button = app.buttons["localComposerTemplatesButton"]
+        XCTAssertTrue(button.waitForExistence(timeout: 20), "本地输入栏没有一键模板按钮")
+        button.tap()
+        let sheet = app.descendants(matching: .any)["promptTemplateSheet"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 10) || waitText(app, contains: "一键模板", timeout: 10), "本地一键模板没弹出列表")
+        XCTAssertTrue(waitText(app, contains: "总结成三句话", timeout: 8), "默认模板没出现")
+        shot(app, "ideasB-本地模板列表")
+
+        let add = app.buttons["addPromptTemplate"]
+        XCTAssertTrue(add.waitForExistence(timeout: 8), "没有新增模板按钮")
+        add.tap()
+        let title = app.descendants(matching: .any)["promptTemplateTitle"]
+        XCTAssertTrue(title.waitForExistence(timeout: 8), "新增页没有标题框")
+        title.tap()
+        title.typeText("本地模板")
+        let prompt = app.descendants(matching: .any)["promptTemplatePrompt"]
+        prompt.tap()
+        prompt.typeText("你好本地模板")
+        shot(app, "ideasB-本地新增模板")
+        app.buttons["savePromptTemplate"].tap()
+
+        let named = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "本地模板")).firstMatch
+        XCTAssertTrue(named.waitForExistence(timeout: 10), "刚存的本地模板没出现在列表里")
+        named.tap()
+
+        let field = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "用了模板后输入框没回来")
+        let value = ((field.value as? String) ?? field.label)
+        XCTAssertTrue(value.contains("你好本地模板"), "模板没有填进本地输入框：\(value)")
+        shot(app, "ideasB-本地模板已填入")
+
+        if localModelReady(app) {
+            let send = localSendButton(app)
+            XCTAssertTrue(send.waitForExistence(timeout: 10) && send.isEnabled, "本地发送键不可用")
+            send.tap()
+            XCTAssertTrue(poll(45) { self.localProbe()?.requests.contains { $0.text.contains("你好本地模板") } ?? false },
+                          "点发送后本地模型没收到模板文字")
+            shot(app, "ideasB-本地模板发送成功")
+        }
+    }
+
     func testIdeas_nightEyeCare() throws {
         let app = launch(args: ["-OpenMinisNightMode", "off"])
         openSettings(app, "夜间护眼")
@@ -154,6 +198,47 @@ final class IdeasBUITests: XCTestCase {
     }
 
     // MARK: - helpers
+
+    private func launchLocal() -> XCUIApplication {
+        if let url = URL(string: "http://127.0.0.1:18799/_e2e/reset") { _ = try? Data(contentsOf: url) }
+        let app = XCUIApplication()
+        app.launchEnvironment["OPENMINIS_E2E_HOMEMODE"] = "local"
+        app.launchEnvironment["OPENMINIS_E2E_LOCAL_PROVIDER"] = "http://127.0.0.1:18797"
+        app.launchArguments += ["-launchScreen", "2"]
+        app.launchArguments += ["-OpenMinisCloud_name", "E2E云电脑", "-OpenMinisCloud_host", "127.0.0.1"]
+        app.launchArguments += ["-OpenMinisCloud_lockDefaultsDecided", "(e2ebot)", "-OpenMinisCloud_lockedBots", "()"]
+        app.launchEnvironment["OPENMINIS_E2E_TOKEN"] = Self.token
+        app.launchEnvironment["OPENMINIS_E2E_PORT"] = "18765"
+        app.launch()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 60))
+        for label in ["Continue", "继续"] {
+            let b = app.buttons[label]
+            if b.exists && b.isHittable { b.tap(); break }
+        }
+        return app
+    }
+
+    private func localSendButton(_ app: XCUIApplication) -> XCUIElement {
+        let q = app.buttons.matching(identifier: "localComposerSendButton")
+        var found: XCUIElement?
+        _ = poll(10) { found = q.allElementsBoundByIndex.first { $0.frame.width > 1 }; return found != nil }
+        return found ?? q.firstMatch
+    }
+
+    private func localModelReady(_ app: XCUIApplication) -> Bool {
+        poll(20) {
+            let m = app.buttons["Model"]
+            return m.exists && !(((m.value as? String) ?? "").contains("No model"))
+        }
+    }
+
+    private struct LocalProbeItem: Decodable { let text: String }
+    private struct LocalProbeAll: Decodable { let requests: [LocalProbeItem] }
+    private func localProbe() -> LocalProbeAll? {
+        guard let url = URL(string: "http://127.0.0.1:18799/_e2e/requests?model=e2e-local-model"),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(LocalProbeAll.self, from: data)
+    }
 
     private func launch(args: [String] = []) -> XCUIApplication {
         if let url = URL(string: "http://127.0.0.1:18799/_e2e/reset") { _ = try? Data(contentsOf: url) }

@@ -79,6 +79,7 @@ jobs:
           set -o pipefail
           xcrun --sdk watchos --show-sdk-version
           xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk watchos --show-sdk-path)" -target arm64_32-apple-watchos9.0 src/ios/MinisWatch/*.swift src/ios/WatchShared/*.swift 2>&1 | tee watch-typecheck.log
+          xcrun swiftc -swift-version 5 -typecheck -sdk "$(xcrun --sdk watchos --show-sdk-path)" -target arm64_32-apple-watchos9.0 src/ios/MinisWatchWidgets/*.swift src/ios/WatchShared/*.swift 2>&1 | tee watch-widget-typecheck.log
 
   # 与平台无关的快速检查：Python 脚本、只依赖 Foundation 的 Swift 规则测试、云端服务全部单元测试。Linux 机器基本不用排队。
   quick-linux:
@@ -797,6 +798,8 @@ jobs:
             build | tee watch-build.log
           W=$(find build/watch -maxdepth 3 -name 'MinisWatch.app' -path '*watchos*' | head -n 1)
           test -n "$W"
+          test -d "$W/PlugIns/WatchStatusWidget.appex"
+          echo "表盘小组件已打进手表 App：$W/PlugIns/WatchStatusWidget.appex"
           APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)
           mkdir -p "$APP/Watch"
           cp -R "$W" "$APP/Watch/"

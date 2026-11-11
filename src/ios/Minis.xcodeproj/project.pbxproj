@@ -304,6 +304,7 @@
 		E5H00000V /* CloudVoiceControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5H00001V /* CloudVoiceControl.swift */; };
 		E5H000003 /* AgentActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5G000014 /* AgentActivityAttributes.swift */; };
 		E5H000009 /* AgentWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E5H000010 /* AgentWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		E5WW00009 /* WatchStatusWidget.appex in Embed Watch App Extensions */ = {isa = PBXBuildFile; fileRef = E5WW00010 /* WatchStatusWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		E5HBV0001 /* HelperBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5HBV0011 /* HelperBlockView.swift */; };
 		E5I000001 /* SpeechRecognitionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5I000011 /* SpeechRecognitionManager.swift */; };
 		E5I000002 /* AudioWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5I000012 /* AudioWaveformView.swift */; };
@@ -667,6 +668,13 @@
 			remoteGlobalIDString = E5TH00070;
 			remoteInfo = MinisTestHost;
 		};
+		E5WW00081 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E51000060 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E5WW00070;
+			remoteInfo = WatchStatusWidget;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -710,6 +718,17 @@
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E5WW00015 /* Embed Watch App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				E5WW00009 /* WatchStatusWidget.appex in Embed Watch App Extensions */,
+			);
+			name = "Embed Watch App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		E5TH0H000 /* Embed Minis.debug.dylib */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -733,6 +752,7 @@
 
 /* Begin PBXFileReference section */
 		E5WA00010 /* MinisWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MinisWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E5WW00010 /* WatchStatusWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WatchStatusWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		0ED149397BEA7E0408C92688 /* GroupVoiceModelsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GroupVoiceModelsView.swift; sourceTree = "<group>"; };
 		0F5379380323FA8C6477708C /* GroupSlotPicker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GroupSlotPicker.swift; sourceTree = "<group>"; };
 		16FF3462D09402F14B610CD6 /* VoiceWaveformView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VoiceWaveformView.swift; sourceTree = "<group>"; };
@@ -1478,6 +1498,7 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		E5WA00012 /* MinisWatch */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = MinisWatch; sourceTree = "<group>"; };
 		E5WA00013 /* WatchShared */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = WatchShared; sourceTree = "<group>"; };
+		E5WW00012 /* MinisWatchWidgets */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = MinisWatchWidgets; sourceTree = "<group>"; };
 		AA0838CB2F3CA8A900049557 /* Terminal */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Terminal; sourceTree = "<group>"; };
 		AA8A568C2F6FBB7A00A3E54E /* MinisUITests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = MinisUITests; sourceTree = "<group>"; };
 		BB1000012F700000000000AA /* MinisTests */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (E5EXC0001 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (Standalone, ); path = MinisTests; sourceTree = "<group>"; };
@@ -1490,6 +1511,13 @@
 
 /* Begin PBXFrameworksBuildPhase section */
 		E5WA00020 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E5WW00020 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -1717,6 +1745,7 @@
 				E5TH0G000 /* MinisTests Embedded */,
 				E5WA00012 /* MinisWatch */,
 				E5WA00013 /* WatchShared */,
+				E5WW00012 /* MinisWatchWidgets */,
 				AA26BD0E2F2E5FA500AECF2D /* Frameworks */,
 				E51000032 /* Products */,
 				AACCC6B4300B9D590053F20D /* Recovered References */,
@@ -1769,6 +1798,7 @@
 				BB1000010F700000000000AA /* MinisTests.xctest */,
 				E5TH00010 /* MinisTestHost.app */,
 				E5WA00010 /* MinisWatch.app */,
+				E5WW00010 /* WatchStatusWidget.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -2761,10 +2791,12 @@
 				E5WA00030 /* Sources */,
 				E5WA00020 /* Frameworks */,
 				E5WA00040 /* Resources */,
+				E5WW00015 /* Embed Watch App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				E5WW00080 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				E5WA00012 /* MinisWatch */,
@@ -2774,6 +2806,27 @@
 			productName = MinisWatch;
 			productReference = E5WA00010 /* MinisWatch.app */;
 			productType = "com.apple.product-type.application";
+		};
+		E5WW00070 /* WatchStatusWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E5WW000A0 /* Build configuration list for PBXNativeTarget "WatchStatusWidget" */;
+			buildPhases = (
+				E5WW00030 /* Sources */,
+				E5WW00020 /* Frameworks */,
+				E5WW00040 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E5WW00012 /* MinisWatchWidgets */,
+				E5WA00013 /* WatchShared */,
+			);
+			name = WatchStatusWidget;
+			productName = WatchStatusWidget;
+			productReference = E5WW00010 /* WatchStatusWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 		AA8A568A2F6FBB7A00A3E54E /* MinisUITests */ = {
 			isa = PBXNativeTarget;
@@ -2953,6 +3006,12 @@
 					E5H000040 = {
 						CreatedOnToolsVersion = 15.0;
 					};
+					E5WA00070 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					E5WW00070 = {
+						CreatedOnToolsVersion = 16.0;
+					};
 				};
 			};
 			buildConfigurationList = E51000061 /* Build configuration list for PBXProject "Minis" */;
@@ -2999,12 +3058,20 @@
 				BB1000070F700000000000AA /* MinisTests */,
 				E5TH00070 /* MinisTestHost */,
 				E5WA00070 /* MinisWatch */,
+				E5WW00070 /* WatchStatusWidget */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		E5WA00040 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E5WW00040 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -3144,6 +3211,13 @@
 
 /* Begin PBXSourcesBuildPhase section */
 		E5WA00030 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E5WW00030 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -3783,6 +3857,11 @@
 			target = E5TH00070 /* MinisTestHost */;
 			targetProxy = E5TH000B1 /* PBXContainerItemProxy */;
 		};
+		E5WW00080 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E5WW00070 /* WatchStatusWidget */;
+			targetProxy = E5WW00081 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin PBXVariantGroup section */
@@ -3827,6 +3906,7 @@
 		E5WA00080 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = MinisWatch/MinisWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
@@ -3853,6 +3933,7 @@
 		E5WA00090 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = MinisWatch/MinisWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
@@ -4478,6 +4559,74 @@
 			buildConfigurations = (
 				E5WA00080 /* Debug */,
 				E5WA00090 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E5WW00090 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = MinisWatchWidgets/WatchStatusWidget.entitlements;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MinisWatchWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Bot 状态";
+				INFOPLIST_KEY_CFBundleName = "Bot 状态";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.openminis.app.watchkitapp.WatchStatusWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 9.0;
+			};
+			name = Debug;
+		};
+		E5WW00091 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = MinisWatchWidgets/WatchStatusWidget.entitlements;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MinisWatchWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Bot 状态";
+				INFOPLIST_KEY_CFBundleName = "Bot 状态";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.openminis.app.watchkitapp.WatchStatusWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 9.0;
+			};
+			name = Release;
+		};
+		E5WW000A0 /* Build configuration list for PBXNativeTarget "WatchStatusWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E5WW00090 /* Debug */,
+				E5WW00091 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

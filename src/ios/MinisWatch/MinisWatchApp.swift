@@ -1,6 +1,9 @@
 import SwiftUI
 import WatchConnectivity
 import WatchKit
+#if canImport(WidgetKit)
+import WidgetKit
+#endif
 
 @main
 struct MinisWatchApp: App {
@@ -53,6 +56,13 @@ final class WatchModel: NSObject, ObservableObject, WCSessionDelegate {
             self.rows = rows
             self.sentAt = sent
             self.currentId = current
+            let snap = WatchWidgetStore.snapshot(rows: rows, currentId: current)
+            if let defaults = UserDefaults(suiteName: WatchWidgetStore.suite) {
+                WatchWidgetStore.save(snap, defaults: defaults)
+            }
+            #if canImport(WidgetKit)
+            WidgetCenter.shared.reloadAllTimelines()
+            #endif
         }
     }
 
@@ -159,6 +169,7 @@ final class WatchModel: NSObject, ObservableObject, WCSessionDelegate {
 struct WatchHomeView: View {
     @ObservedObject var model: WatchModel
     @Environment(\.scenePhase) private var scenePhase
+    @State private var openedFromComplication = false
 
     var body: some View {
         NavigationStack {
@@ -211,6 +222,14 @@ struct WatchHomeView: View {
                 }
             }
             .navigationTitle(workingTitle)
+            .navigationDestination(isPresented: $openedFromComplication) {
+                if let row = model.rows.first(where: { $0.id == model.currentId }) ?? model.rows.first {
+                    WatchStatusView(row: row, onControl: { model.sendControl($0, row: row) })
+                }
+            }
+            .onOpenURL { url in
+                if url.scheme == "miniswatch" { openedFromComplication = true }
+            }
             .onChange(of: scenePhase) { phase in
                 model.handleScene(now: Self.map(phase))
             }

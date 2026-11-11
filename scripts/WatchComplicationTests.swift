@@ -33,6 +33,20 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         let old = WatchBotRow(["id": "o", "name": "旧"])
         check(old?.stepsLeft == 0 && old?.waitingApprovals == 0 && old?.taskId == nil, "旧数据缺字段也能读")
 
+        let snap = WatchWidgetStore.snapshot(rows: [row], currentId: "b")
+        check(snap.name == "写手" && snap.working == "正在回复" && snap.stepsLeft == 3 && snap.approvals == 1, "从列表生成快照")
+        let empty = WatchWidgetStore.snapshot(rows: [], currentId: nil)
+        check(empty.name == "Bot" && empty.stepsLeft == 0 && empty.approvals == 0, "空列表默认 Bot")
+        let suite = "OpenMinisWatchWidgetTest"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        WatchWidgetStore.save(snap, defaults: defaults)
+        check(WatchWidgetStore.load(defaults: defaults) == snap, "App Group 快照往返")
+        WatchWidgetStore.save(WatchWidgetStore.Snapshot(name: "", working: "", stepsLeft: 0, approvals: 0), defaults: defaults)
+        let cleared = WatchWidgetStore.load(defaults: defaults)
+        check(cleared.name == "Bot" && cleared.working == nil, "空名字和空状态按默认值读")
+        defaults.removePersistentDomain(forName: suite)
+
         print("PASS：表盘小组件文案与手表控制")
     }
 }

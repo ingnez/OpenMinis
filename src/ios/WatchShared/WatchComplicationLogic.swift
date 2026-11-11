@@ -75,3 +75,48 @@ struct WatchControlRequest: Equatable {
                   approvalId: (approval?.isEmpty == false) ? approval : nil)
     }
 }
+
+
+/// 手表 App 把当前 Bot 状态写进 App Group，表盘小组件读取。iPhone 和手表各有一份容器，靠手表 App 来写。
+enum WatchWidgetStore {
+    static let suite = "group.com.openminis.app"
+    static let nameKey = "OpenMinisWatch_widgetName"
+    static let workingKey = "OpenMinisWatch_widgetWorking"
+    static let stepsKey = "OpenMinisWatch_widgetSteps"
+    static let approvalsKey = "OpenMinisWatch_widgetApprovals"
+
+    struct Snapshot: Equatable {
+        var name: String
+        var working: String?
+        var stepsLeft: Int
+        var approvals: Int
+    }
+
+    static func snapshot(rows: [WatchBotRow], currentId: String?) -> Snapshot {
+        let row = rows.first(where: { $0.id == currentId }) ?? rows.first
+        return Snapshot(name: (row?.name.isEmpty == false ? row!.name : "Bot"),
+                        working: row?.working,
+                        stepsLeft: row?.stepsLeft ?? 0,
+                        approvals: row?.waitingApprovals ?? 0)
+    }
+
+    static func save(_ snap: Snapshot, defaults: UserDefaults) {
+        defaults.set(snap.name, forKey: nameKey)
+        if let working = snap.working, !working.isEmpty {
+            defaults.set(working, forKey: workingKey)
+        } else {
+            defaults.removeObject(forKey: workingKey)
+        }
+        defaults.set(snap.stepsLeft, forKey: stepsKey)
+        defaults.set(snap.approvals, forKey: approvalsKey)
+    }
+
+    static func load(defaults: UserDefaults) -> Snapshot {
+        let name = defaults.string(forKey: nameKey) ?? "Bot"
+        let working = defaults.string(forKey: workingKey)
+        return Snapshot(name: name.isEmpty ? "Bot" : name,
+                        working: (working?.isEmpty == false) ? working : nil,
+                        stepsLeft: defaults.integer(forKey: stepsKey),
+                        approvals: defaults.integer(forKey: approvalsKey))
+    }
+}
