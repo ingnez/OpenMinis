@@ -27,7 +27,10 @@ def main():
     for dirpath, dirnames, filenames in os.walk(ROOT):
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
         parts = os.path.relpath(dirpath, ROOT).split(os.sep)
-        if any(p in synced for p in parts):
+        # 同步文件夹只按名字认，会把同名的普通分组（比如 Agent/Markdown 和 Views/Chat/Markdown）也当成同步的；
+        # 目录里已有文件是逐个引用的，就说明它是普通分组，新文件也得逐个加
+        explicit = any(f.endswith(".swift") and f in referenced for f in filenames)
+        if any(p in synced for p in parts) and not explicit:
             continue
         for f in filenames:
             rel = os.path.relpath(os.path.join(dirpath, f), ROOT)

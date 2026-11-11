@@ -373,6 +373,7 @@
 		E5M000001 /* cmark-gfm in Frameworks */ = {isa = PBXBuildFile; productRef = E5M000021 /* cmark-gfm */; };
 		E5M000002 /* cmark-gfm-extensions in Frameworks */ = {isa = PBXBuildFile; productRef = E5M000022 /* cmark-gfm-extensions */; };
 		E5M000003 /* MinisMarkdownParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5M000013 /* MinisMarkdownParser.swift */; };
+		E5MCJ0003 /* MarkdownCJKEmphasis.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5MCJ0013 /* MarkdownCJKEmphasis.swift */; };
 		E5M000007 /* MarkdownRenderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5M000017 /* MarkdownRenderView.swift */; };
 		E5MDS0003 /* MarkdownStripper.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5MDS0013 /* MarkdownStripper.swift */; };
 		E5MDT0001 /* ModelDisplayTraits.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5MDT0011 /* ModelDisplayTraits.swift */; };
@@ -1206,6 +1207,7 @@
 		E5LOCK103 /* AppLockOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLockOverlay.swift; sourceTree = "<group>"; };
 		E5LRD0002 /* LogRedaction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogRedaction.swift; sourceTree = "<group>"; };
 		E5M000013 /* MinisMarkdownParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MinisMarkdownParser.swift; sourceTree = "<group>"; };
+		E5MCJ0013 /* MarkdownCJKEmphasis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownCJKEmphasis.swift; sourceTree = "<group>"; };
 		E5M000017 /* MarkdownRenderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownRenderView.swift; sourceTree = "<group>"; };
 		E5MDS0013 /* MarkdownStripper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownStripper.swift; sourceTree = "<group>"; };
 		E5MDT0011 /* ModelDisplayTraits.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDisplayTraits.swift; sourceTree = "<group>"; };
@@ -2462,6 +2464,7 @@
 			children = (
 				E5U000011 /* KaTeXRenderer.swift */,
 				E5M000013 /* MinisMarkdownParser.swift */,
+				E5MCJ0013 /* MarkdownCJKEmphasis.swift */,
 				E5X000011 /* SwiftMathRenderer.swift */,
 				E5Y000011 /* MathRenderScheduler.swift */,
 			);
@@ -3558,6 +3561,7 @@
 				E5K000002 /* ChatTurnScreenshot.swift in Sources */,
 				E5M000007 /* MarkdownRenderView.swift in Sources */,
 				E5M000003 /* MinisMarkdownParser.swift in Sources */,
+				E5MCJ0003 /* MarkdownCJKEmphasis.swift in Sources */,
 				E5U000001 /* KaTeXRenderer.swift in Sources */,
 				E5X000001 /* SwiftMathRenderer.swift in Sources */,
 				E5Y000001 /* MathRenderScheduler.swift in Sources */,
