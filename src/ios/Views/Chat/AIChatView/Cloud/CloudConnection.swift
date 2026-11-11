@@ -97,7 +97,10 @@ public final class CloudConnection: ObservableObject {
     private var connectTask: Task<Void, Error>?
     /// 已保存连接信息时可后台自动连接（无需再点「保存并测试连接」）
     public var canAutoConnect: Bool {
-        !host.isEmpty && !(getPassword() ?? "").isEmpty && !(getToken() ?? "").isEmpty
+        #if DEBUG
+        if CloudE2E.token != nil { return true }
+        #endif
+        return !host.isEmpty && !(getPassword() ?? "").isEmpty && !(getToken() ?? "").isEmpty
     }
     /// 最近一次 API 成功应答的时间：超过 20 秒没有成功请求时，先用 2 秒的 /health 探测隧道是否还活着
     public private(set) var lastOK = Date.distantPast
@@ -195,7 +198,12 @@ public final class CloudConnection: ObservableObject {
         try saveSecret(password, key: "password"); try saveSecret(token, key: "token")
     }
     public func getPassword() -> String? { secret("password") }
-    public func getToken() -> String? { secret("token") }
+    public func getToken() -> String? {
+        #if DEBUG
+        if let t = CloudE2E.token { return t }
+        #endif
+        return secret("token")
+    }
 
     private func shell(_ command: String, input: Data? = nil, timeout: TimeInterval = 45) async throws -> ISHShellExecutionResult {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ISHShellExecutionResult, Error>) in
@@ -284,6 +292,14 @@ public final class CloudConnection: ObservableObject {
     }
     private func connectNow() async throws {
         disconnect()
+        #if DEBUG
+        if CloudE2E.token != nil {
+            // 模拟器端到端测试：直连同一台 Mac 上的本地云端 Agent，不走 SSH
+            apiPort = CloudE2E.port; desktopPort = CloudE2E.port + 1
+            isConnected = true; status = .connected; lastOK = Date()
+            return
+        }
+        #endif
         let expected = generation
         status = .connecting
         do {

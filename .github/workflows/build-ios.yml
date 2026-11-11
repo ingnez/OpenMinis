@@ -797,7 +797,7 @@ jobs:
 
   ui-tests:
     if: ${{ inputs.ui_tests && !inputs.quick }}
-    runs-on: macos-15
+    runs-on: ${{ inputs.mac_runner || 'macos-26' }}
     timeout-minutes: 300
 
     steps:
@@ -1042,6 +1042,13 @@ jobs:
       - name: Build rclone
         run: ./deps/build_rclone_ios.sh
 
+      - name: 启动本地云端 Agent + 假模型（给端到端流程用）
+        run: |
+          python3 scripts/e2e_cloud_stack.py "$RUNNER_TEMP/openminis-e2e" > e2e-cloud-stack.log 2>&1 &
+          for i in $(seq 1 60); do grep -q "E2E 云端就绪" e2e-cloud-stack.log && break; sleep 1; done
+          cat e2e-cloud-stack.log
+          grep -q "E2E 云端就绪" e2e-cloud-stack.log
+
       - name: XCUITest 端到端冒烟（模拟器）
         run: |
           set -o pipefail
@@ -1059,8 +1066,18 @@ jobs:
             -disableAutomaticPackageResolution \
             -only-testing:MinisUITests/MinisSmokeUITests \
             -only-testing:MinisUITests/ComposerVoiceButtonUITests \
+            -only-testing:MinisUITests/E2EFlowsUITests \
             -resultBundlePath ui-tests.xcresult \
             CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= | tee ui-tests.log
+
+      - name: 端到端流程结果与截图
+        if: always()
+        run: |
+          python3 scripts/e2e_summary.py ui-tests.log > e2e-summary.md || true
+          cat e2e-summary.md
+          mkdir -p e2e-shots
+          xcrun xcresulttool export attachments --path ui-tests.xcresult --output-path e2e-shots 2>&1 | tail -3 || true
+          ls e2e-shots | head -50
 
       - name: Upload UI test results
         if: always()
@@ -1070,4 +1087,7 @@ jobs:
           path: |
             ui-tests.log
             ui-tests.xcresult
+            e2e-summary.md
+            e2e-shots
+            e2e-cloud-stack.log
           retention-days: 14

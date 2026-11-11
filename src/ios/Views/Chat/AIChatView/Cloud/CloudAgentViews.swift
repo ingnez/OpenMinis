@@ -817,7 +817,10 @@ struct CloudSessionView: View {
         .modifier(CloudSessionExtras(followUp: $followUpNotice, outboxCount: outboxCount, privacyHits: $privacyHits,
                                      onDiscard: discardOutbox, onRedact: sendRedacted, onSend: sendAnyway,
                                      onAppear: resumeOutbox, onDisappear: pauseOutbox))
-        .onAppear { callDividers = CloudCallDivider.load(sessionId) }
+        .onAppear {
+            callDividers = CloudCallDivider.load(sessionId)
+            injectE2EAttachments()
+        }
         .modifier(CloudDraftKeeper(sessionId: sessionId, text: $inputPrompt))
         // 通话中途断开等：也走去处面板（不再往消息列表底下塞灰字，那里还会压住滚动箭头）
         .onChange(of: call.error) { e in if let e, !call.active { reportVoiceProblem(e) } }
@@ -1199,6 +1202,7 @@ struct CloudSessionView: View {
                 .accessibilityLabel("添加附件")
                 HStack(alignment: .bottom, spacing: 4) {
                     TextField(CloudBotComposerAction.placeholder(botName: theme.name, localHint: false), text: $inputPrompt, axis: .vertical)
+                        .accessibilityIdentifier("botComposerField")
                         .lineLimit(1...6)
                         .padding(.vertical, 10).padding(.leading, 14)
                         .disabled(isSubmitting)
@@ -1250,6 +1254,20 @@ struct CloudSessionView: View {
         case "/停止": cancelActiveTask()
         case "/reset": resetContext()
         default: break
+        }
+    }
+
+    /// 模拟器端到端测试：托盘里放 N 张生成的测试图（Debug + 环境变量才会有）
+    private func injectE2EAttachments() {
+        let n = CloudE2E.fakeAttachments
+        guard n > 0, attachments.isEmpty else { return }
+        let colors: [UIColor] = [.systemRed, .systemBlue, .systemGreen, .systemOrange, .systemPurple, .systemTeal, .systemPink, .systemYellow, .systemIndigo]
+        for i in 0..<n {
+            let img = UIGraphicsImageRenderer(size: CGSize(width: 900, height: 1200)).image { ctx in
+                colors[i % colors.count].setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 900, height: 1200))
+                ("测试图 \(i + 1)" as NSString).draw(at: CGPoint(x: 60, y: 520), withAttributes: [.font: UIFont.boldSystemFont(ofSize: 96), .foregroundColor: UIColor.white])
+            }
+            if let a = CloudAttachmentKit.image(img, name: "照片 \(i + 1).jpg") { attachments.append(a) }
         }
     }
 
