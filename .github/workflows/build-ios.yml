@@ -560,6 +560,12 @@ jobs:
           /tmp/cloud-desktopinputerror-tests | tee cloud-desktopinputerror-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWardVoice.swift scripts/CloudWardVoiceTests.swift -o /tmp/cloud-wardvoice-tests
           /tmp/cloud-wardvoice-tests | tee cloud-wardvoice-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReplyMode.swift scripts/CloudReplyModeTests.swift -o /tmp/cloud-reply-mode-tests
+          /tmp/cloud-reply-mode-tests | tee cloud-reply-mode-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSecretMask.swift scripts/CloudSecretMaskTests.swift -o /tmp/cloud-secret-mask-tests
+          /tmp/cloud-secret-mask-tests | tee cloud-secret-mask-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudApprovalActions.swift scripts/CloudApprovalActionsTests.swift -o /tmp/cloud-approval-actions-tests
+          /tmp/cloud-approval-actions-tests | tee cloud-approval-actions-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSpotlightRules.swift scripts/CloudSpotlightTests.swift -o /tmp/cloud-spotlight-tests
           /tmp/cloud-spotlight-tests | tee cloud-spotlight-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSmartField.swift scripts/CloudSmartFieldTests.swift -o /tmp/cloud-smartfield-tests
@@ -928,6 +934,12 @@ jobs:
           /tmp/cloud-desktopinputerror-tests | tee cloud-desktopinputerror-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWardVoice.swift scripts/CloudWardVoiceTests.swift -o /tmp/cloud-wardvoice-tests
           /tmp/cloud-wardvoice-tests | tee cloud-wardvoice-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReplyMode.swift scripts/CloudReplyModeTests.swift -o /tmp/cloud-reply-mode-tests
+          /tmp/cloud-reply-mode-tests | tee cloud-reply-mode-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSecretMask.swift scripts/CloudSecretMaskTests.swift -o /tmp/cloud-secret-mask-tests
+          /tmp/cloud-secret-mask-tests | tee cloud-secret-mask-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudApprovalActions.swift scripts/CloudApprovalActionsTests.swift -o /tmp/cloud-approval-actions-tests
+          /tmp/cloud-approval-actions-tests | tee cloud-approval-actions-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSpotlightRules.swift scripts/CloudSpotlightTests.swift -o /tmp/cloud-spotlight-tests
           /tmp/cloud-spotlight-tests | tee cloud-spotlight-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSmartField.swift scripts/CloudSmartFieldTests.swift -o /tmp/cloud-smartfield-tests
