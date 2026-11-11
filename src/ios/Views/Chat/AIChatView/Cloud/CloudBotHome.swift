@@ -655,9 +655,9 @@ struct CloudBotHomeScreen: View {
             .background(Color(.systemBackground))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                // 11-11：Grok Bot 风格顶栏。左上角首字母圆头像（带连接状态点），中间平时空着、有 Bot 干活时飘出一行状态
+                // 11-11：左上角齿轮（带连接状态小点），中间平时空着、有 Bot 干活时飘出一行状态
                 ToolbarItem(placement: .topBarLeading) {
-                    CloudUserAvatarButton(onTap: openBotSettings, onAppSettings: onOpenSettings, onSwitch: { if $0 == .local { onSwitchToLocal() } })
+                    CloudSettingsGearButton(onTap: openBotSettings, onAppSettings: onOpenSettings, onSwitch: { if $0 == .local { onSwitchToLocal() } })
                 }
                 ToolbarItem(placement: .principal) {
                     CloudHomeCenterStatus(model: model, open: open)
@@ -883,24 +883,17 @@ struct CloudBotHubView: View {
     var openCloudFirst = false
     var onOpenAppSettings: (() -> Void)? = nil
     @State private var showCloud = false
-    @AppStorage(CloudHomeHeaderRules.userNameKey) private var userName: String = ""
 
     var body: some View {
         List {
             Section {
                 HomeModeRow(current: .bots, dismiss: onDone)
-                HStack {
-                    Label("你的名字", systemImage: "person.crop.circle")
-                    TextField("显示成左上角头像的首字母", text: $userName)
-                        .multilineTextAlignment(.trailing)
-                        .accessibilityIdentifier("userNameField")
-                }
             } footer: {
-                Text("「模式」切换本地 / 云端；名字只存在这台手机上，用来生成左上角头像的首字母。")
+                Text("切换本地 / 云端；两种模式的设置和对话各自独立。")
             }
             Section {
                 NavigationLink(destination: CloudLinkDiagnosticsView(onOpenSettings: { showCloud = true })) {
-                    Label("连接诊断（头像上的状态点）", systemImage: "stethoscope")
+                    Label("连接诊断（齿轮上的状态点）", systemImage: "stethoscope")
                 }
                 NavigationLink(destination: CloudAgentSettingsView()) {
                     Label("云电脑设置", systemImage: "server.rack")

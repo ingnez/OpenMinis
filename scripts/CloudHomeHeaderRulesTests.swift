@@ -6,11 +6,6 @@ struct CloudHomeHeaderRulesTests {
         var failed = 0
         func check(_ name: String, _ ok: Bool) { if ok { print("PASS \(name)") } else { failed += 1; print("FAIL \(name)") } }
         typealias R = CloudHomeHeaderRules
-        check("英文两词取首字母", R.initials("Test User") == "TU")
-        check("小写也大写", R.initials("ada lovelace") == "AL")
-        check("单词取前两个字母", R.initials("tester") == "TE")
-        check("中文取最后一个字", R.initials("测试员") == "员")
-        check("空名字没有首字母", R.initials("  ") == nil)
         check("在线绿点", R.dot(.online(needsAttention: false)) == .green)
         check("服务器要更新黄点", R.dot(.online(needsAttention: true)) == .yellow)
         check("重连黄点", R.dot(.retrying) == .yellow && R.dot(.connecting) == .yellow)

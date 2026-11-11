@@ -1,7 +1,7 @@
 //
 //  CloudHomeHeader.swift
 //  Minis - Bot 首页顶栏（11-11 改成 Grok Bot 风格）：中间不再放「Minis Bot ⌄」切换器，
-//  左上角是用户首字母圆头像（右下角连接状态点），点一下打开 Bot 设置，长按弹出本地 / 云端快速切换；
+//  左上角仍是齿轮（右上角一个连接状态小点），点一下打开 Bot 设置，长按弹出本地 / 云端快速切换；
 //  有 Bot 在后台干活时中间空位飘出一行「SWE 正在构建…」，点一下进对话，干完自动消失；
 //  下拉首页露出「今天」卡片。「模式」选择页本地 / 云端两边的设置共用。
 //
@@ -70,13 +70,13 @@ struct HomeModeRow: View {
     }
 }
 
-/// 左上角的用户圆头像：首字母（没填名字时是人像），右下角是云端连接状态点（替代以前标题旁的绿点）
-struct CloudUserAvatarButton: View {
+/// 左上角齿轮（和本地模式一样的系统工具栏样式，iOS 26 上是玻璃按钮）：点一下打开 Bot 设置（里面有「模式」），
+/// 长按弹出本地 / 云端快速切换；右上角一个小点是云端连接状态（替代以前标题旁的绿点）
+struct CloudSettingsGearButton: View {
     var onTap: () -> Void
     var onAppSettings: () -> Void
     var onSwitch: (HomeMode) -> Void
     @ObservedObject private var link = CloudLinkSupervisor.shared
-    @AppStorage(CloudHomeHeaderRules.userNameKey) private var userName: String = ""
 
     var body: some View {
         Menu {
@@ -87,33 +87,22 @@ struct CloudUserAvatarButton: View {
             Button { onTap() } label: { Label("Bot 设置（模式、云电脑、保管库）", systemImage: "gear") }
             Button { onAppSettings() } label: { Label("App 通用设置", systemImage: "slider.horizontal.3") }
         } label: {
-            avatar.frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+            Image(systemName: "gear")
+                .overlay(alignment: .topTrailing) {
+                    Circle().fill(dotColor).frame(width: 7, height: 7)
+                        .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 1.5))
+                        .offset(x: 4, y: -3)
+                        .animation(.easeInOut(duration: 0.3), value: dot)
+                }
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
         } primaryAction: {
             onTap()
         }
-        .accessibilityIdentifier("userAvatar")
+        .accessibilityIdentifier("settingsGear")
         .accessibilityLabel("设置")
-        .accessibilityValue([CloudHomeHeaderRules.initials(userName), CloudHomeHeaderRules.dotText(dot)].compactMap { $0 }.joined(separator: "，"))
+        .accessibilityValue(CloudHomeHeaderRules.dotText(dot))
         .accessibilityHint("长按切换本地 / 云端模式")
-    }
-
-    private var avatar: some View {
-        ZStack {
-            Circle().fill(LinearGradient(colors: [Color.indigo, Color.blue], startPoint: .topLeading, endPoint: .bottomTrailing))
-            if let text = CloudHomeHeaderRules.initials(userName) {
-                Text(text).font(.system(size: 13, weight: .bold, design: .rounded)).foregroundStyle(.white)
-                    .minimumScaleFactor(0.6).lineLimit(1).padding(3)
-            } else {
-                Image(systemName: "person.fill").font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
-            }
-        }
-        .frame(width: 32, height: 32)
-        .overlay(alignment: .bottomTrailing) {
-            Circle().fill(dotColor).frame(width: 10, height: 10)
-                .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
-                .offset(x: 2, y: 2)
-                .animation(.easeInOut(duration: 0.3), value: dot)
-        }
     }
 
     private var dot: CloudHomeHeaderRules.Dot {

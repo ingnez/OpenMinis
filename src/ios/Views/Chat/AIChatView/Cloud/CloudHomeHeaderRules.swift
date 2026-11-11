@@ -1,6 +1,6 @@
 //
 //  CloudHomeHeaderRules.swift
-//  Minis - Bot 首页顶栏（Grok Bot 风格）的纯逻辑：左上角圆头像的首字母、头像上的连接状态点颜色、
+//  Minis - Bot 首页顶栏的纯逻辑：左上角齿轮上的连接状态点颜色、
 //  中间空位飘出的「XX 正在…」一行、下拉出来的「今天」卡片数字、两种首页模式。只用 Foundation，方便在 Linux 上测。
 //
 
@@ -17,22 +17,7 @@ enum HomeMode: String, CaseIterable, Identifiable {
 }
 
 enum CloudHomeHeaderRules {
-    static let userNameKey = "OpenMinis_userDisplayName"
-
-    /// 头像首字母：英文名取前两个词的首字母（Test User → TU，单词取前两个字母大写），
-    /// 中文名取最后一个字（常见的名字称呼），空的返回 nil（显示人像图标）
-    static func initials(_ name: String) -> String? {
-        let words = name.split(whereSeparator: { $0 == " " || $0 == "·" || $0 == "." || $0 == "-" || $0 == "_" }).map(String.init).filter { !$0.isEmpty }
-        guard let first = words.first else { return nil }
-        let isLatin: (String) -> Bool = { $0.unicodeScalars.allSatisfy { $0.isASCII } }
-        if words.count >= 2, isLatin(words[0]), isLatin(words[1]) {
-            return (String(words[0].prefix(1)) + String(words[1].prefix(1))).uppercased()
-        }
-        if isLatin(first) { return String(first.prefix(2)).uppercased() }
-        return String(first.suffix(1))
-    }
-
-    /// 头像右下角的连接状态点：online 绿、重连 / 连接中 / 服务器要更新 黄、离线或未配置 灰
+    /// 齿轮右上角的连接状态点：online 绿、重连 / 连接中 / 服务器要更新 黄、离线或未配置 灰
     enum Dot: String { case green, yellow, gray }
     enum Link { case online(needsAttention: Bool), connecting, retrying, offline, idle }
     static func dot(_ link: Link) -> Dot {

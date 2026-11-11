@@ -240,18 +240,17 @@ final class E2EFlowsUITests: XCTestCase {
 
     // MARK: - 首页顶栏（11-11 Grok Bot 风格）
 
-    func test13_headerAvatarNoSwitcherTodayCard() throws {
-        let app = launch(userName: "Test User")
-        let avatar = app.buttons["userAvatar"]
-        XCTAssertTrue(avatar.waitForExistence(timeout: 60), "左上角没有用户头像")
+    func test13_headerGearNoSwitcherTodayCard() throws {
+        let app = launch()
+        let gear = app.buttons["settingsGear"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 60), "左上角没有齿轮")
         XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 60), "首页没出现 Bot")
         XCTAssertFalse(app.navigationBars.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Minis Bot")).firstMatch.exists,
                        "顶栏中间还有「Minis Bot ⌄」切换器")
-        XCTAssertTrue(poll(20) { (avatar.value as? String)?.hasPrefix("TU") == true }, "头像没显示首字母 TU（\(avatar.value ?? "")）")
-        XCTAssertTrue(poll(30) { (avatar.value as? String)?.contains("云端在线") == true }, "头像状态点不是在线（\(avatar.value ?? "")）")
+        XCTAssertTrue(poll(30) { (gear.value as? String) == "云端在线" }, "齿轮上的状态点不是在线（\(gear.value ?? "")）")
         XCTAssertTrue(app.buttons["新建"].exists, "右上角「+」不见了")
         XCTAssertFalse(app.descendants(matching: .any)["homeCenterStatus"].exists, "没有 Bot 干活时中间应该是空的")
-        shot(app, "13a-顶栏头像无切换器")
+        shot(app, "13a-顶栏齿轮无切换器")
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
         start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)))
         XCTAssertTrue(app.descendants(matching: .any)["todayCard"].waitForExistence(timeout: 8), "下拉没露出「今天」卡片")
@@ -261,9 +260,9 @@ final class E2EFlowsUITests: XCTestCase {
 
     func test14_settingsModeSwitchRoundTrip() throws {
         let app = launch()
-        let avatar = app.buttons["userAvatar"]
-        XCTAssertTrue(avatar.waitForExistence(timeout: 60))
-        avatar.tap()
+        let gear0 = app.buttons["settingsGear"]
+        XCTAssertTrue(gear0.waitForExistence(timeout: 60))
+        gear0.tap()
         let row = app.descendants(matching: .any)["homeModeRow"]
         XCTAssertTrue(row.waitForExistence(timeout: 10), "Bot 设置里没有「模式」")
         XCTAssertTrue(waitText(app, contains: "云端模式", timeout: 3), "Bot 设置的「模式」不是云端模式")
@@ -276,7 +275,7 @@ final class E2EFlowsUITests: XCTestCase {
         local.tap()
         let localGear = app.buttons["localSettingsButton"]
         XCTAssertTrue(localGear.waitForExistence(timeout: 15), "选本地模式后没切到本地首页")
-        XCTAssertFalse(avatar.exists, "切到本地后还是 Bot 首页")
+        XCTAssertFalse(gear0.exists, "切到本地后还是 Bot 首页")
         shot(app, "14b-切到本地首页")
         localGear.tap()
         XCTAssertTrue(row.waitForExistence(timeout: 10), "本地设置里没有「模式」")
@@ -285,19 +284,19 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(local.isSelected, "本地设置里「本地模式」没打勾")
         shot(app, "14c-本地设置-模式-本地打勾")
         cloud.tap()
-        XCTAssertTrue(avatar.waitForExistence(timeout: 15), "选云端模式后没切回 Bot 首页")
+        XCTAssertTrue(gear0.waitForExistence(timeout: 15), "选云端模式后没切回 Bot 首页")
         XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 60), "切回后 Bot 列表没出现")
         shot(app, "14d-切回Bot首页")
     }
 
-    func test15_avatarLongPressQuickSwitch() throws {
+    func test15_gearLongPressQuickSwitch() throws {
         let app = launch()
-        let avatar = app.buttons["userAvatar"]
-        XCTAssertTrue(avatar.waitForExistence(timeout: 60))
-        avatar.press(forDuration: 1.2)
+        let gear0 = app.buttons["settingsGear"]
+        XCTAssertTrue(gear0.waitForExistence(timeout: 60))
+        gear0.press(forDuration: 1.2)
         let toLocal = app.buttons["本地模式"]
-        XCTAssertTrue(toLocal.waitForExistence(timeout: 8), "长按头像没弹出模式快捷菜单")
-        shot(app, "15a-长按头像菜单")
+        XCTAssertTrue(toLocal.waitForExistence(timeout: 8), "长按齿轮没弹出模式快捷菜单")
+        shot(app, "15a-长按齿轮菜单")
         toLocal.tap()
         let localGear = app.buttons["localSettingsButton"]
         XCTAssertTrue(localGear.waitForExistence(timeout: 15), "快捷菜单选本地后没切过去")
@@ -308,7 +307,7 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 10)); row.tap()
         let cloud = app.buttons["homeMode.bots"]
         XCTAssertTrue(cloud.waitForExistence(timeout: 10)); cloud.tap()
-        XCTAssertTrue(avatar.waitForExistence(timeout: 15), "没切回 Bot 首页")
+        XCTAssertTrue(gear0.waitForExistence(timeout: 15), "没切回 Bot 首页")
     }
 
     func test16_centerStatusWhileBotWorks() throws {
@@ -362,7 +361,7 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 10)); row.tap()
         let cloud = app.buttons["homeMode.bots"]
         XCTAssertTrue(cloud.waitForExistence(timeout: 10)); cloud.tap()
-        XCTAssertTrue(app.buttons["userAvatar"].waitForExistence(timeout: 15), "没切到云端首页")
+        XCTAssertTrue(app.buttons["settingsGear"].waitForExistence(timeout: 15), "没切到云端首页")
         XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 60))
         XCTAssertFalse(anyElement(app, contains: "本地隔离"), "云端首页出现了本地对话的内容")
         XCTAssertFalse(app.descendants(matching: .any)["homeCenterStatus"].exists, "云端首页显示有 Bot 在干活（本地那轮漏进云端）")
@@ -378,7 +377,7 @@ final class E2EFlowsUITests: XCTestCase {
 
     // MARK: - 工具
 
-    private func launch(attach: Int = 0, userName: String = "", homeMode: String = "bots",
+    private func launch(attach: Int = 0, homeMode: String = "bots",
                         extraEnv: [String: String] = [:], extraArgs: [String] = []) -> XCUIApplication {
         // 每个流程从空对话开始（历史太长时控件树取快照会超时）
         if let url = URL(string: "http://127.0.0.1:18799/_e2e/reset") { _ = try? Data(contentsOf: url) }
@@ -387,7 +386,6 @@ final class E2EFlowsUITests: XCTestCase {
         app.launchEnvironment["OPENMINIS_E2E_HOMEMODE"] = homeMode
         for (k, v) in extraEnv { app.launchEnvironment[k] = v }
         app.launchArguments += extraArgs
-        app.launchEnvironment["OPENMINIS_E2E_USERNAME"] = userName
         app.launchArguments += ["-OpenMinisCloud_name", "E2E云电脑", "-OpenMinisCloud_host", "127.0.0.1"]
         // 假 Bot 带自己的模型凭据，App 会按「存了密钥的 Bot 默认上锁」把它锁上，打开要 Face ID（模拟器没录入）。
         // 这里把它标成「已决定过、不上锁」，测的是对话流程；上锁本身另有单测
