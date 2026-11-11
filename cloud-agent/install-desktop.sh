@@ -68,10 +68,13 @@ fi
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$VAR_LIB_DIR/workspace"
 mkdir -p "$VAR_LIB_DIR/data"
+mkdir -p "$VAR_LIB_DIR/data/plugin-files"
 mkdir -p "$PW_BROWSERS"
 mkdir -p "$CONFIG_DIR"
 mkdir -p "$VAR_LIB_DIR/.config" "$VAR_LIB_DIR/.cache"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$VAR_LIB_DIR/.config" "$VAR_LIB_DIR/.cache"
+chown -R "$SERVICE_USER:$SERVICE_USER" "$VAR_LIB_DIR/data/plugin-files"
+if [ -d "$INSTALL_DIR/plugin-files" ]; then cp -an "$INSTALL_DIR/plugin-files/." "$VAR_LIB_DIR/data/plugin-files/" 2>/dev/null || true; chown -R "$SERVICE_USER:$SERVICE_USER" "$VAR_LIB_DIR/data/plugin-files"; fi
 
 echo "=== [Desktop] 3. 配置 Python 虚拟环境与 pinned Playwright Chromium ==="
 if [ ! -d "$VENV_DIR" ]; then
@@ -255,6 +258,7 @@ Environment=OPENMINIS_HOST=127.0.0.1
 Environment=OPENMINIS_PORT=18765
 Environment=OPENMINIS_DB=$VAR_LIB_DIR/data/openminis_agent.db
 Environment=OPENMINIS_WORKSPACE=$VAR_LIB_DIR/workspace
+Environment=OPENMINIS_PLUGIN_DIR=$VAR_LIB_DIR/data/plugin-files
 Environment=OPENMINIS_TOKEN_FILE=$TOKEN_FILE
 Environment=OPENMINIS_MASTER_KEY_FILE=$MASTER_KEY_FILE
 Environment=OPENMINIS_VNC_TOKENS=$VAR_LIB_DIR/vnc-tokens

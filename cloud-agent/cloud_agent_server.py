@@ -638,7 +638,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.45.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.46.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1966,7 +1966,10 @@ SERVER_TOOL_NOTES = (
     "\n[发消息] send_message 可经 Telegram 或推送给用户发消息；每次都会先作为草稿请用户确认，被拒绝时不要重试同一内容。"
 )
 
-PLUGINS = cloud_plugins.Registry(lambda: get_db_connection(), os.path.join(BASE_DIR, "plugin-files"), cloud_skills)
+# 插件工作目录放在数据目录（服务用户可写）；安装目录归 root，2.46.0 之前放那里导致 stdio 插件 [Errno 13]
+PLUGIN_DIR = os.path.abspath(os.environ.get("OPENMINIS_PLUGIN_DIR") or os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "plugin-files"))
+PLUGINS = cloud_plugins.Registry(lambda: get_db_connection(), PLUGIN_DIR, cloud_skills,
+                                 legacy_dir=os.path.join(BASE_DIR, "plugin-files"))
 import atexit
 atexit.register(PLUGINS.close_all)
 
@@ -6197,7 +6200,11 @@ class Handler(BaseHTTPRequestHandler):
             installed = PLUGINS.list()
             ids = {p["plugin_id"] for p in installed}
             cat = [dict(c, installed=c["id"] in ids) for c in cloud_plugins.catalog()]
-            self._send(200, {"installed": installed, "catalog": cat})
+            try:
+                pdir = {"path": PLUGINS.writable_plugin_dir(), "writable": True, "note": PLUGINS.dir_note}
+            except cloud_plugins.PluginError as e:
+                pdir = {"path": PLUGINS.plugin_dir, "writable": False, "note": str(e)}
+            self._send(200, {"installed": installed, "catalog": cat, "plugin_dir": pdir})
             return
 
         if path == "/v1/plugins/deps":

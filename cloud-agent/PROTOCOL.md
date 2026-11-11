@@ -704,3 +704,11 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
   - 中文等非 ASCII 的 `type` 照旧走 xclip + ctrl+v（输入法组字由手机端处理，只发已上屏的文字）。
 - `GET /v1/desktop/thumbnail?width=120..1920`（默认 480）：全尺寸截图用 `width=1920`；缓存按 (屏幕, 宽度) 分开。
 - x11vnc 加 `-wait 5 -defer 5`：`bench_desktop_connect.py` 在回环上实测首帧 27→16 ms（中位数），无客户端时不多耗 CPU。
+
+## 插件工作目录挪到数据目录（2.46.0）
+
+- 以前 stdio 插件（Memory / Time / Fetch / Sequential Thinking / Filesystem 等）的 cwd 和 `{plugin_dir}` 是安装目录下的 `plugin-files`；安装目录归 root，服务以 `openminis` 用户运行，所以第一次连接就报 `[Errno 13] Permission denied: /opt/openminis-cloud-agent/plugin-files`。界面上显示「可用」的插件只是还没连过，连一次同样会坏。
+- 现在默认放在数据库所在目录：`$VAR_LIB_DIR/data/plugin-files`（可用 `OPENMINIS_PLUGIN_DIR` 指定）。install.sh / install-desktop.sh 会创建并交给服务用户，把旧目录内容复制过来（只复制一次，不覆盖新数据）。
+- 首选目录不可写时退到 `~/.openminis/plugin-files`，再退到临时目录；全都不可写时插件状态为 error，`last_error` 是中文说明（让用户重新运行 install.sh 或设置 `OPENMINIS_PLUGIN_DIR`），不再透出 Errno 13。旧版本留下的 Errno 13 错误在列表里不再显示，下次连接重新判断。
+- `GET /v1/plugins` 新增 `plugin_dir: {path, writable, note}`。
+- 其它写路径已核对：数据库、工作区、回放、系统快照都来自环境变量或数据库目录，不在安装目录里。

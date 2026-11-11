@@ -9,8 +9,10 @@
 """
 
 import json
+import os
 import re
 import shutil
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -173,13 +175,69 @@ def phone_manifest(server):
 
 
 class Registry:
-    def __init__(self, get_conn, plugin_dir, skills_module):
+    def __init__(self, get_conn, plugin_dir, skills_module, legacy_dir=None):
         self.get_conn = get_conn
         self.plugin_dir = plugin_dir
+        self.legacy_dir = legacy_dir   # 2.46.0 之前放在安装目录里（root 所有、服务用户不可写）
+        self.dir_note = None           # 退回备用目录时给界面的中文说明
         self.skills = skills_module
         self.lock = threading.Lock()
         self.clients = {}     # pid -> client
         self.tools = {}       # pid -> (timestamp, [tool dicts])
+
+    # ---------- 插件工作目录 ----------
+    def _fallback_dirs(self):
+        home = os.path.expanduser("~")
+        out = []
+        if home and home != "~" and home != "/":
+            out.append(os.path.join(home, ".openminis", "plugin-files"))
+        uid = os.getuid() if hasattr(os, "getuid") else "u"
+        out.append(os.path.join(tempfile.gettempdir(), f"openminis-plugin-files-{uid}"))
+        return out
+
+    def _migrate_legacy(self, target):
+        old = self.legacy_dir
+        if not old or os.path.abspath(old) == os.path.abspath(target) or not os.path.isdir(old):
+            return
+        marker = os.path.join(target, ".migrated-from-install-dir")
+        if os.path.exists(marker):
+            return
+        try:
+            shutil.copytree(old, target, dirs_exist_ok=True)   # 旧目录 root 所有，只能复制不能挪
+        except (OSError, shutil.Error):
+            pass
+        try:
+            open(marker, "w").close()
+        except OSError:
+            pass
+
+    def writable_plugin_dir(self):
+        """返回可写的插件工作目录（stdio 插件的 cwd 与 {plugin_dir}）。首选目录不可写时退到备用目录并记下说明，
+        全都不可写时抛出中文 PluginError，而不是把 [Errno 13] 原样交给界面。"""
+        tried = []
+        for d in [self.plugin_dir] + self._fallback_dirs():
+            if not d:
+                continue
+            try:
+                os.makedirs(d, exist_ok=True)
+                probe = os.path.join(d, ".write-test")
+                with open(probe, "w") as f:
+                    f.write("ok")
+                os.remove(probe)
+            except OSError as e:
+                tried.append(f"{d}（{e.strerror or e}）")
+                continue
+            self.dir_note = None if d == self.plugin_dir else \
+                f"插件目录 {self.plugin_dir} 不可写，已临时改用 {d}；在云端重新运行 install.sh 可修好"
+            self._migrate_legacy(d)
+            return d
+        raise PluginError("插件目录没有写权限：" + "；".join(tried) +
+                          "。请在云端用 sudo 重新运行 install.sh 更新到 2.46.0，或设置环境变量 OPENMINIS_PLUGIN_DIR 指向服务用户可写的目录")
+
+    @staticmethod
+    def _stale_dir_error(err):
+        # 旧版本在安装目录建 plugin-files 留下的 [Errno 13]；目录改到数据目录后不再适用，重连前别吓人
+        return bool(err) and "Errno 13" in err and "plugin-files" in err
 
     # ---------- 存储 ----------
     def _row(self, r, conn):
@@ -188,7 +246,8 @@ class Registry:
         manifest = json.loads(r[5])
         secrets = self._secrets(conn, r[0])
         p = {"plugin_id": r[0], "kind": r[1], "name": r[2], "description": r[3], "source": r[4], "manifest": manifest,
-             "enabled": bool(r[6]), "default_grant": bool(r[7]), "last_error": r[8], "installed_at": r[9], "updated_at": r[10],
+             "enabled": bool(r[6]), "default_grant": bool(r[7]),
+             "last_error": None if self._stale_dir_error(r[8]) else r[8], "installed_at": r[9], "updated_at": r[10],
              "secrets": [{"name": s["name"], "label": s["label"], "set": s["name"] in secrets, "optional": s.get("optional", False)}
                          for s in manifest.get("secrets", [])]}
         tok = self._setting(conn, "oauth:" + r[0])
@@ -427,10 +486,9 @@ class Registry:
                 headers[s["target"][len("header:"):]] = v
         spec = dict(p["manifest"]["mcp"])
         if spec["transport"] == "stdio":
-            import os
-            os.makedirs(self.plugin_dir, exist_ok=True)
-            spec["args"] = [a.replace("{plugin_dir}", self.plugin_dir) for a in spec.get("args", [])]
-        c = cloud_mcp.connect(spec, env=env, headers=headers, cwd=self.plugin_dir if spec["transport"] == "stdio" else None)
+            work = self.writable_plugin_dir()
+            spec["args"] = [a.replace("{plugin_dir}", work) for a in spec.get("args", [])]
+        c = cloud_mcp.connect(spec, env=env, headers=headers, cwd=work if spec["transport"] == "stdio" else None)
         with self.lock:
             old = self.clients.get(p["plugin_id"])
             self.clients[p["plugin_id"]] = c

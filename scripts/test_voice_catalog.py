@@ -48,7 +48,7 @@ api=(root/'src/ios/Providers/OpenAI/OpenAIModelsAPI.swift').read_text()
 assert 'filterOpenAIOnly: !isCustomBase && !includeNonChat' in api
 assert 'if !includeNonChat, !forceRefresh' in api
 assert 'if !includeNonChat { OpenAIModelsCache.save' in api
-view=(root/'src/ios/Views/Chat/AIChatView/Realtime/RealtimeVoiceView.swift').read_text()
+view=(root/'src/ios/Views/Chat/AIChatView/Realtime/RealtimeVoiceSettingsForm.swift').read_text()
 assert 'forceRefresh: true' in view and 'includeNonChat: true' in view
 assert '.task(id: providerID)' in view and '.refreshable' in view
 assert 'chooseModel()' not in view

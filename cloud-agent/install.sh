@@ -68,6 +68,11 @@ echo "=== 3. 部署源码与目录结构 ==="
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$VAR_LIB_DIR/workspace"
 mkdir -p "$VAR_LIB_DIR/data"
+mkdir -p "$VAR_LIB_DIR/data/plugin-files"
+# 2.46.0 之前插件工作目录在安装目录里（root 所有，服务用户写不进去 → [Errno 13]）；把旧内容复制到数据目录
+if [ -d "$INSTALL_DIR/plugin-files" ]; then
+    cp -an "$INSTALL_DIR/plugin-files/." "$VAR_LIB_DIR/data/plugin-files/" 2>/dev/null || true
+fi
 mkdir -p "$CONFIG_DIR"
 
 CURRENT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -155,6 +160,7 @@ Environment=OPENMINIS_HOST=127.0.0.1
 Environment=OPENMINIS_PORT=18765
 Environment=OPENMINIS_DB=$VAR_LIB_DIR/data/openminis_agent.db
 Environment=OPENMINIS_WORKSPACE=$VAR_LIB_DIR/workspace
+Environment=OPENMINIS_PLUGIN_DIR=$VAR_LIB_DIR/data/plugin-files
 Environment=OPENMINIS_TOKEN_FILE=$TOKEN_FILE
 Environment=OPENMINIS_MASTER_KEY_FILE=$MASTER_KEY_FILE
 
