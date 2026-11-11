@@ -406,11 +406,19 @@ struct CloudComputerView: View {
         send(CloudTypeOrder.serverPayload(e), always: done)
     }
 
+    /// 系统「允许粘贴」会卡住调用线程。不要在主线程读，否则界面冻住、XCTest 也点不了「允许粘贴」。
+    private func readPhoneClipboard() async -> String? {
+        await Task.detached { UIPasteboard.general.string }.value
+    }
+
     private func pastePhoneClipboard() {
-        guard let text = UIPasteboard.general.string, !text.isEmpty else { show("剪贴板没有文字"); return }
-        let t = String(text.prefix(10000))
-        if CloudIMECommit.viaServer(t) { clipWatch.expect(t) }
-        send(["action": "type", "text": t], done: "已输入到云电脑")
+        Task { @MainActor in
+            let text = await readPhoneClipboard()
+            guard let text, !text.isEmpty else { show("剪贴板没有文字"); return }
+            let t = String(text.prefix(10000))
+            if CloudIMECommit.viaServer(t) { clipWatch.expect(t) }
+            send(["action": "type", "text": t], done: "已输入到云电脑")
+        }
     }
 
     private func copyToPhone(_ text: String, toast: String) {
@@ -435,11 +443,14 @@ struct CloudComputerView: View {
     }
 
     private func syncClipboardToRemote() {
-        guard let text = UIPasteboard.general.string, !text.isEmpty else { show("剪贴板没有文字"); return }
-        let t = String(text.prefix(10000))
-        clipWatch.noteKnown(t)
-        clipWatch.expect(t)
-        send(["action": "clipboard_set", "text": t], done: "已放进云电脑剪贴板，可在那边 Ctrl+V")
+        Task { @MainActor in
+            let text = await readPhoneClipboard()
+            guard let text, !text.isEmpty else { show("剪贴板没有文字"); return }
+            let t = String(text.prefix(10000))
+            clipWatch.noteKnown(t)
+            clipWatch.expect(t)
+            send(["action": "clipboard_set", "text": t], done: "已放进云电脑剪贴板，可在那边 Ctrl+V")
+        }
     }
 
     private func fetchRemoteClipboard() {

@@ -301,29 +301,42 @@ struct CloudReplyStatusRow: View {
     private var row: some View {
         HStack(spacing: 10) {
             CloudBotAvatarView(spec: theme.spec, size: 24, mood: worker.needsDecision ? .curious : (worker.active ? .focused : .happy))
-                .modifier(CloudReplyBreath(active: worker.active && !reduceMotion))
-            TimelineView(.periodic(from: fetchedAt, by: 1)) { ctx in
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(CloudReplyText.phrase(worker))
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(worker.needsDecision ? Color.orange : Color.primary)
-                        .lineLimit(1)
-                        .id(CloudReplyText.phrase(worker))
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
-                        .modifier(CloudReplyShimmer(active: worker.active && !reduceMotion, tint: theme.accent))
-                    Text(worker.active ? CloudReplyText.meta(elapsed: worker.elapsed, eta: worker.eta,
-                                                             sinceFetch: ctx.date.timeIntervalSince(fetchedAt), count: count)
-                                       : (worker.status == "completed" ? "做完了，结果在上面" : "已结束"))
-                        .font(.caption2).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
-                }
-            }
-            .animation(.easeInOut(duration: 0.25), value: CloudReplyText.phrase(worker))
+                .modifier(CloudReplyBreath(active: worker.active && !reduceMotion && !CloudE2E.pauseIdleAnimations))
+            statusTexts
             Spacer(minLength: 4)
             Image(systemName: "chevron.up").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 12).padding(.vertical, 7)
         .background(Capsule().fill(.regularMaterial))
         .overlay(Capsule().stroke(theme.accent.opacity(0.28), lineWidth: 1))
+    }
+
+    /// E2E 不用每秒刷新的 TimelineView / 循环动画：否则 XCUITest 一直等不到主线程空闲，查询会超时（43013143801）。
+    @ViewBuilder private var statusTexts: some View {
+        if CloudE2E.pauseIdleAnimations {
+            statusTextStack(sinceFetch: 0)
+        } else {
+            TimelineView(.periodic(from: fetchedAt, by: 1)) { ctx in
+                statusTextStack(sinceFetch: ctx.date.timeIntervalSince(fetchedAt))
+            }
+            .animation(.easeInOut(duration: 0.25), value: CloudReplyText.phrase(worker))
+        }
+    }
+
+    private func statusTextStack(sinceFetch: TimeInterval) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(CloudReplyText.phrase(worker))
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(worker.needsDecision ? Color.orange : Color.primary)
+                .lineLimit(1)
+                .id(CloudReplyText.phrase(worker))
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .modifier(CloudReplyShimmer(active: worker.active && !reduceMotion && !CloudE2E.pauseIdleAnimations, tint: theme.accent))
+            Text(worker.active ? CloudReplyText.meta(elapsed: worker.elapsed, eta: worker.eta,
+                                                     sinceFetch: sinceFetch, count: count)
+                               : (worker.status == "completed" ? "做完了，结果在上面" : "已结束"))
+                .font(.caption2).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+        }
     }
 }
 
@@ -367,6 +380,7 @@ private struct CloudReplyShimmer: ViewModifier {
 struct CloudReplyStepsSheet: View {
     let worker: CloudReplyWorker
     var onStop: () -> Void
+    var onInterject: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -376,8 +390,15 @@ struct CloudReplyStepsSheet: View {
                     ToolbarItem(placement: .topBarLeading) { Button("收起") { dismiss() } }
                     if worker.active {
                         ToolbarItem(placement: .topBarTrailing) {
-                            Button(role: .destructive) { onStop(); dismiss() } label: { Text("停止") }
-                                .accessibilityIdentifier("replyStepsStop")
+                            HStack {
+                                Button("补充要求") {
+                                    dismiss()
+                                    DispatchQueue.main.async { onInterject() }
+                                }
+                                .accessibilityIdentifier("replyStepsInterject")
+                                Button(role: .destructive) { onStop(); dismiss() } label: { Text("停止") }
+                                    .accessibilityIdentifier("replyStepsStop")
+                            }
                         }
                     }
                 }
@@ -486,6 +507,7 @@ struct CloudReplyChatMenu: View {
         } label: {
             Label("回复方式：\(plan?.mode.label ?? "—")", systemImage: plan?.isInstant == true ? "bolt.fill" : "list.bullet.rectangle")
         }
+        .accessibilityIdentifier("replyChatMenu")
     }
 
     private func set(_ m: CloudReplyMode?) {
@@ -553,8 +575,11 @@ struct CloudReplyComposerSlot: View {
         #if DEBUG
         if CloudE2E.token != nil, let ms = firstTextMs {
             // 只给模拟器 E2E 读：首字时间（点发送 → 对话里出现 Bot 的第一个字）
-            Text("\(ms)").font(.system(size: 1)).opacity(0.02)
-                .accessibilityIdentifier("replyFirstTextMs").accessibilityLabel("\(ms)")
+            Color.clear.frame(width: 8, height: 8)
+                .accessibilityElement()
+                .accessibilityIdentifier("replyFirstTextMs")
+                .accessibilityLabel("replyFirstTextMs")
+                .accessibilityValue("\(ms)")
         }
         if CloudE2E.token != nil, let cue = status.lastCue {
             Text(cue).font(.system(size: 1)).opacity(0.02)
@@ -584,7 +609,9 @@ struct CloudReplyChatChrome: ViewModifier {
         content
             .environment(\.cloudReplyInstant, instant)
             .animation(.spring(response: 0.4, dampingFraction: 0.85), value: status.current?.id)
-            .sheet(item: $status.expanded) { w in CloudReplyStepsSheet(worker: w) { status.stop(w) } }
+            .sheet(item: $status.expanded) { w in
+                CloudReplyStepsSheet(worker: w, onStop: { status.stop(w) }, onInterject: { status.interjecting = w })
+            }
             .alert("给后台补充要求", isPresented: interjectShown) {
                 TextField("比如：结果用表格列出来", text: $text)
                 Button("发送") { send() }

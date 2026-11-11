@@ -165,4 +165,7 @@ enum CloudE2E {
     static var token: String? { nil }
     static var fakeAttachments: Int { 0 }
     #endif
+
+    /// E2E（有 OPENMINIS_E2E_TOKEN）时停掉循环动画 / TimelineView，否则 XCUITest 等不到主线程空闲。
+    static var pauseIdleAnimations: Bool { token != nil }
 }
