@@ -34,6 +34,10 @@ with tempfile.TemporaryDirectory() as d:
     assert s["input_audio_transcription"]["model"] == "qwen3-asr-flash-realtime"
     assert s["instructions"] == "测试角色"
     assert v["audio_even_bytes"] and v["cancel_received"]
+    assert v["client_events"].count("response.cancel") == 1, ("回声不得取消，有转写才取消一次", v["client_events"])
+    assert s["turn_detection"]["interrupt_response"] is False, s["turn_detection"]
+    assert float(s["turn_detection"]["threshold"]) == 0.7, s["turn_detection"]
+    assert s["modalities"] == ["text", "audio"], s
     assert "conversation.item.truncate" not in v["client_events"], "百炼不发 truncate"
     assert not v["errors"], ("一来一回不能只发 response.create（真百炼会拒）", v["errors"])
     probe = v["items"][0]
@@ -42,4 +46,6 @@ with tempfile.TemporaryDirectory() as d:
     sess_src = (rt / "RealtimeVoiceSession.swift").read_text()
     assert 'isDashScope { emit(["type": "response.create"]) }' not in sess_src, "百炼一来一回不能只发 response.create"
     assert "RealtimeDashScope.serverError(event)" in sess_src, "没有 type 的百炼裸错误要处理"
-    print("PASS：假百炼服务看到正确的地址、鉴权头、session.update、16k 音频和插话取消")
+    assert "RealtimeBargeIn.onSpeechStarted" in sess_src, "speech_started 要走插话门槛，不能一来就取消"
+    assert "insertUserText" in sess_src, "通话中打的字要进实时会话"
+    print("PASS：假百炼服务看到正确的地址、鉴权头、session.update、16k 音频和门控插话取消")

@@ -8,14 +8,22 @@ on:
         type: boolean
         default: false
       ui_tests:
-        description: "只跑 XCUITest、跳过 IPA。完整构建（quick=false 且本项为 false）会同时跑 build 和 ui-tests"
+        description: "只在 iOS 模拟器上跑 XCUITest 端到端冒烟，不出 IPA。模拟器依赖是 arm64，请用 macos-26 / macos-15（不要用 macos-15-intel）"
         type: boolean
         default: false
+      only_testing:
+        description: "只跑这些 XCUITest（传给 xcodebuild -only-testing，逗号或换行分隔，例如 MinisUITests/E2EFlowsUITests/test25_CC_pinchZoomAndClipboard）。留空则跑全部允许的 UI 流程，并接着跑 MinisTests"
+        type: string
+        default: ""
       mac_runner:
-        description: "macOS 机器标签。build 可走 macos-15-intel；ui-tests 的模拟器只有 arm64，选 intel 时仍会落到 macos-26"
+        description: "macOS 机器标签。默认 macos-26（arm64，适合 UI 测试）。GitHub 对托管 Mac 排队约 15 分钟领不到就取消（「job was not acquired」），这段时间不算进 job 的 timeout-minutes；本工作流会先在 Linux 上等到本仓库空出 Mac，领不到再自动改派，并在 macos-26 / macos-15 / xcode-27 之间轮换（都是 arm64）。不要用已退休的 macos-14。UI 测试不要用 macos-15-intel（模拟器没有 x86_64）。构建 IPA 可用 macos-15-intel。"
         type: choice
-        options: [macos-15, macos-15-intel, macos-26, macos-latest]
-        default: macos-15
+        options: [macos-15, macos-15-intel, macos-26, macos-latest, xcode-27]
+        default: macos-26
+      mac_retry:
+        description: "内部：领不到 Mac 后的自动重派次数，请留默认值"
+        type: string
+        default: "0"
 
 permissions:
   contents: read
@@ -28,12 +36,113 @@ jobs:
     steps:
       - run: echo "mode=${{ inputs.quick && 'quick-typecheck' || 'full-build' }} ref=${{ github.ref_name }} sha=${{ github.sha }}"
 
-  # 只放必须用 Xcode / iOS SDK 的检查。macOS 机器排队可能很久（job 的 timeout 从拿到机器才开始算，排队超时是 GitHub 那边取消的），
-  # 所以其余检查都放到下面的 Linux 任务里，几分钟就有结果。
+
+  # GitHub 托管 Mac（尤其是 macos-15 arm64）排队约 15 分钟领不到机器就会取消，
+  # 报「The job was not acquired by Runner of type hosted even after multiple attempts」。
+  # 这是平台侧的领机器时限，不是 job 的 timeout-minutes（timeout 从真正跑起来才计）。
+  # 所有 Mac 任务共用仓库级 concurrency（cancel-in-progress: false）：第二个会 pending，
+  # 不会跟第一个一起挤进 15 分钟领机器窗口。先在 Linux 上等到本仓库没有其他 Mac 任务，
+  # 再去排队；非主线还会给 grokbot-phase2 让路。若仍领不到，见文末自动重排。
+  wait-mac:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: 等到本仓库没有其他 macOS 任务在跑或在领机器
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 <<'PY'
+          import json, os, time, urllib.error, urllib.request
+          repo = os.environ["GITHUB_REPOSITORY"]
+          me = str(os.environ["GITHUB_RUN_ID"])
+          token = os.environ["GH_TOKEN"]
+          branch = os.environ.get("GITHUB_REF_NAME") or ""
+          main_branch = "grokbot-phase2"
+          deadline = time.time() + 170 * 60
+
+          def api(path):
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}{path}",
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                      "User-Agent": "openminis-wait-mac",
+                  },
+              )
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.load(r)
+
+          def list_runs():
+              seen, out = set(), []
+              # 只查 in_progress 会漏掉整次运行还在 queued 的（Mac 任务已排队但 Linux 已结束）。
+              for st in ("in_progress", "queued", "waiting", "pending"):
+                  try:
+                      batch = (api(f"/actions/runs?status={st}&per_page=30").get("workflow_runs") or [])
+                  except urllib.error.HTTPError as e:
+                      if e.code == 422:
+                          continue
+                      raise
+                  for run in batch:
+                      rid = run.get("id")
+                      if rid in seen:
+                          continue
+                      seen.add(rid)
+                      out.append(run)
+              return out
+
+          clear_since = None
+          while time.time() < deadline:
+              try:
+                  busy = []
+                  for run in list_runs():
+                      if str(run.get("id")) == me:
+                          continue
+                      jobs = (api(f"/actions/runs/{run['id']}/jobs?per_page=50").get("jobs") or [])
+                      for j in jobs:
+                          labels = " ".join(j.get("labels") or []).lower()
+                          if "macos" not in labels:
+                              continue
+                          if j.get("status") in ("queued", "in_progress", "waiting", "pending"):
+                              busy.append(f"{run['id']}/{j.get('name')} {j.get('status')} {labels}")
+                      # 非主线给主线让路：主线刚派发时可能还在 wait-mac，Mac 任务尚未出现。
+                      # 主线本身不抢已经在跑或在领机器的其他任务（由 concurrency 排队，不取消）。
+                      if branch != main_branch and run.get("head_branch") == main_branch:
+                          rid = str(run.get("id"))
+                          if run.get("status") in ("in_progress", "queued", "waiting", "pending") and not any(x.startswith(rid + "/") for x in busy):
+                              busy.append(f"{rid} 主线 {run.get('head_branch')} {run.get('status')}（让主线先领 Mac）")
+                  if not busy:
+                      if clear_since is None:
+                          clear_since = time.time()
+                          print("暂无其他 macOS 任务，再确认一次以免刚派发的跑空", flush=True)
+                          time.sleep(20)
+                          continue
+                      print("没有其他 macOS 任务在跑，开始领机器", flush=True)
+                      break
+                  clear_since = None
+                  print("仍在等：", flush=True)
+                  for line in busy:
+                      print("  " + line, flush=True)
+              except urllib.error.HTTPError as e:
+                  print(f"查询失败 HTTP {e.code}，稍后重试", flush=True)
+                  time.sleep(90)
+                  continue
+              time.sleep(60)
+          else:
+              print("等到上限仍有任务，继续尝试领机器", flush=True)
+          PY
+
+  # 只放必须用 Xcode / iOS SDK 的检查。其余检查放到下面的 Linux 任务里，几分钟就有结果。
   quick-typecheck:
     if: ${{ inputs.quick }}
-    runs-on: ${{ inputs.mac_runner || 'macos-15' }}
+    needs: [wait-mac]
+    runs-on: ${{ inputs.mac_runner || 'macos-26' }}
     timeout-minutes: 20
+    concurrency:
+      group: ${{ github.repository }}-macos
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - name: 选择 Xcode 26（macos-15 / latest 镜像上默认可能是 Xcode 16）
@@ -82,7 +191,7 @@ jobs:
 
   # 与平台无关的快速检查：Python 脚本、只依赖 Foundation 的 Swift 规则测试、云端服务全部单元测试。Linux 机器基本不用排队。
   quick-linux:
-    if: ${{ inputs.quick }}
+    if: ${{ inputs.quick || inputs.ui_tests }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -491,8 +600,12 @@ jobs:
             cloud-cc-clipboard.log
   build:
     if: ${{ !inputs.quick && !inputs.ui_tests }}
-    runs-on: ${{ inputs.mac_runner || 'macos-15' }}
+    needs: [wait-mac]
+    runs-on: ${{ inputs.mac_runner || 'macos-26' }}
     timeout-minutes: 350
+    concurrency:
+      group: ${{ github.repository }}-macos
+      cancel-in-progress: false
 
     steps:
       - name: Checkout source
@@ -866,10 +979,14 @@ jobs:
           retention-days: 30
 
   ui-tests:
-    if: ${{ !inputs.quick }}
-    # 模拟器依赖只有 arm64：macos-15-intel / macos-latest 可能是 x86_64，pick_ios_simulator 会直接失败（43021055665）
-    runs-on: ${{ (inputs.mac_runner == 'macos-15' && 'macos-15') || 'macos-26' }}
+    if: ${{ inputs.ui_tests && !inputs.quick }}
+    needs: [wait-mac]
+    # 模拟器依赖只有 arm64：不要用 macos-15-intel（43021055665）
+    runs-on: ${{ inputs.mac_runner || 'macos-26' }}
     timeout-minutes: 300
+    concurrency:
+      group: ${{ github.repository }}-macos
+      cancel-in-progress: false
 
     steps:
       - name: Checkout source
@@ -1141,11 +1258,41 @@ jobs:
           grep -q "E2E 云端就绪" e2e-cloud-stack.log
 
       - name: XCUITest 端到端冒烟（模拟器）
-        # 卡住时尽快失败：整步最多 80 分钟（编译约 20 分钟 + 模拟器启动约 3 分钟 + 17 个流程串行约 30 分钟 + 失败重试），单个测试默认 150 秒、最多 240 秒（xcodebuild 会把超时的测试记成失败并截图）
-        # 不用并行克隆模拟器（克隆冷启动「Timed out while launching application」）；失败的流程自动重试一次，汇总里注明重试次数
+        # 卡住时尽快失败：整套流程最多 80 分钟；传入 only_testing 时同样 80 分钟（其中含云电脑流程，编译约 20 分钟）。
+        # 不用并行克隆模拟器（克隆冷启动「Timed out while launching application」，且假云端栈不能同时给两台模拟器用）；失败的流程自动重试一次，汇总里注明重试次数
         timeout-minutes: 80
+        env:
+          ONLY_TESTING: ${{ inputs.only_testing }}
         run: |
           set -o pipefail
+          DEFAULT_ONLY_TESTING="MinisUITests/MinisSmokeUITests
+          MinisUITests/ComposerVoiceButtonUITests
+          MinisUITests/E2EFlowsUITests
+          MinisUITests/MiscControlsUITests
+          MinisUITests/ReplyModeUITests
+          MinisUITests/FrogP0UITests"
+          ONLY_SRC="${ONLY_TESTING:-}"
+          if [ -z "$(printf '%s' "$ONLY_SRC" | tr -d '[:space:]')" ]; then
+            ONLY_SRC="$DEFAULT_ONLY_TESTING"
+          fi
+          ONLY_SRC="$(printf '%s' "$ONLY_SRC" | tr ',' $'\n')"
+          ONLY_FLAGS=()
+          while IFS= read -r item; do
+            item="${item#"${item%%[![:space:]]*}"}"
+            item="${item%"${item##*[![:space:]]}"}"
+            [ -z "$item" ] && continue
+            case "$item" in
+              *[!A-Za-z0-9_./-]*) echo "only_testing 条目不合法：$item" >&2; exit 1 ;;
+            esac
+            ONLY_FLAGS+=("-only-testing:$item")
+          done <<EOF
+          $ONLY_SRC
+          EOF
+          if [ ${#ONLY_FLAGS[@]} -eq 0 ]; then
+            echo "only_testing 解析后为空" >&2
+            exit 1
+          fi
+          echo "本次 -only-testing：${ONLY_FLAGS[*]}"
           # 用 xcodebuild -showdestinations 选这套 scheme 真正能用的 iPhone 模拟器，
           # 不要只信 simctl：设备可能列得出、也能 boot，但 scheme（Minis 排除了模拟器 x86_64）并不接受。
           DEV=$(python3 scripts/pick_ios_simulator.py \
@@ -1187,12 +1334,7 @@ jobs:
             -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
             -scmProvider system \
             -disableAutomaticPackageResolution \
-            -only-testing:MinisUITests/MinisSmokeUITests \
-            -only-testing:MinisUITests/ComposerVoiceButtonUITests \
-            -only-testing:MinisUITests/E2EFlowsUITests \
-            -only-testing:MinisUITests/MiscControlsUITests \
-            -only-testing:MinisUITests/ReplyModeUITests \
-            -only-testing:MinisUITests/FrogP0UITests \
+            "${ONLY_FLAGS[@]}" \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 150 \
             -maximum-test-execution-time-allowance 240 \
@@ -1230,7 +1372,7 @@ jobs:
 
       - name: iOS 单元测试 MinisTests（模拟器，MinisUnitTests 方案）
         id: unit
-        if: always()
+        if: ${{ always() && inputs.only_testing == '' }}
         continue-on-error: true
         timeout-minutes: 30
         run: |
@@ -1282,3 +1424,136 @@ jobs:
           echo "::error::MinisTests 有失败，见 unit-tests.log 的 Failing tests"
           grep -A40 "Failing tests:" unit-tests.log | head -45 || true
           exit 1
+
+  # 若 Mac 任务因「job was not acquired」被平台取消（排队满约 15 分钟仍没领到机器，
+  # 步骤列表为空），自动再派发一次同样输入的运行，换一段新的 15 分钟窗口。
+  # 不能对「当前这次运行」调用 rerun-failed-jobs：本任务还在跑时 API 会 403
+  # 「This workflow is already running」（43072823187 已证实）。人工取消或已开跑后取消不重排。
+  # if 必须是 always()：ui-tests 被平台取消时，在 if 里再写 needs.*.result == 'cancelled'
+  # 会被 GitHub 直接跳过这个任务（43069823758 / 43069832887 已证实）。不 depends 于
+  # quick-linux。是否真的该重排由下面脚本根据注释与步骤判断。
+  retry-if-mac-not-acquired:
+    needs: [quick-typecheck, build, ui-tests]
+    if: ${{ always() && github.run_attempt < 6 }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: 领不到 Mac 就再派一次
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_REF: ${{ github.ref_name }}
+          INPUT_QUICK: ${{ inputs.quick }}
+          INPUT_UI_TESTS: ${{ inputs.ui_tests }}
+          INPUT_ONLY_TESTING: ${{ inputs.only_testing }}
+          INPUT_MAC_RUNNER: ${{ inputs.mac_runner }}
+          INPUT_MAC_RETRY: ${{ inputs.mac_retry }}
+        run: |
+          python3 <<'PY'
+          import json, os, urllib.error, urllib.request
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run_id = os.environ["GH_RUN_ID"]
+          token = os.environ["GH_TOKEN"]
+
+          def flag(name):
+              return os.environ.get(name, "").strip().lower() in ("true", "1", "yes")
+
+          def api(path, method="GET", payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              headers = {
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "openminis-retry-mac",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              }
+              if data is not None:
+                  headers["Content-Type"] = "application/json"
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}{path}",
+                  data=data,
+                  method=method,
+                  headers=headers,
+              )
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  raw = r.read()
+                  return json.loads(raw) if raw else {}
+
+          jobs = (api(f"/actions/runs/{run_id}/jobs?per_page=50").get("jobs") or [])
+          unacquired = []
+          for j in jobs:
+              labels = " ".join(j.get("labels") or []).lower()
+              if "macos" not in labels:
+                  continue
+              if j.get("conclusion") != "cancelled":
+                  continue
+              started = False
+              for s in j.get("steps") or []:
+                  name = s.get("name") or ""
+                  if name in ("Set up job", "Complete job"):
+                      continue
+                  if s.get("started_at") and s.get("conclusion") != "skipped":
+                      started = True
+              text = ""
+              try:
+                  anns = api(f"/check-runs/{j['id']}/annotations") or []
+                  if isinstance(anns, dict):
+                      anns = anns.get("annotations") or []
+                  text = " ".join((a.get("message") or "") for a in anns)
+              except urllib.error.HTTPError as e:
+                  print(f"读注释失败 HTTP {e.code}，按步骤判断", flush=True)
+              runner = (j.get("runner_name") or "").strip()
+              if "not acquired" in text.lower() or (not started and not runner):
+                  unacquired.append(f"{j.get('name')} labels={labels} msg={text[:120]}")
+          if not unacquired:
+              print("这次取消不是因为领不到机器，不重排", flush=True)
+              raise SystemExit(0)
+          try:
+              retry = int((os.environ.get("INPUT_MAC_RETRY") or "0").strip() or "0")
+          except ValueError:
+              retry = 0
+          if retry >= 5:
+              print("已自动重派 5 次仍领不到 Mac，停止", flush=True)
+              for line in unacquired:
+                  print("  " + line, flush=True)
+              raise SystemExit(1)
+          ref = (os.environ.get("GH_REF") or "").strip()
+          if not ref:
+              print("没有 ref，无法重派", flush=True)
+              raise SystemExit(1)
+          print("领不到 Mac，准备再派一次同样输入的运行（第 %s 次重派，ref=%s）：" % (retry + 1, ref), flush=True)
+          for line in unacquired:
+              print("  " + line, flush=True)
+          # 每次换一个 arm64 池。macos-14 已于 2026-11-02 退役。
+          # macos-26-xlarge / macos-15-xlarge 是付费 larger runner，未确认免费前不用。
+          # UI 测试绝不能换到 *-intel / *-large（模拟器没有 x86_64）。
+          ui_tests = flag("INPUT_UI_TESTS")
+          ui_chain = ["macos-26", "macos-15", "xcode-27"]
+          build_chain = ["macos-26", "macos-15", "macos-15-intel", "xcode-27"]
+          chain = ui_chain if ui_tests else build_chain
+          current = (os.environ.get("INPUT_MAC_RUNNER") or "macos-26").strip()
+          if current in chain:
+              next_runner = chain[(chain.index(current) + 1) % len(chain)]
+          else:
+              next_runner = chain[0]
+          print("机器标签从 %s 换到 %s" % (current, next_runner), flush=True)
+          payload = {
+              "ref": ref,
+              "inputs": {
+                  "quick": "true" if flag("INPUT_QUICK") else "false",
+                  "ui_tests": "true" if ui_tests else "false",
+                  "only_testing": os.environ.get("INPUT_ONLY_TESTING") or "",
+                  "mac_runner": next_runner,
+                  "mac_retry": str(retry + 1),
+              },
+          }
+          try:
+              api("/actions/workflows/build-ios.yml/dispatches", method="POST", payload=payload)
+          except urllib.error.HTTPError as e:
+              body = e.read().decode("utf-8", "replace")
+              print(f"重派失败 HTTP {e.code}: {body}", flush=True)
+              raise SystemExit(1)
+          print("已派发新运行：", payload["inputs"], flush=True)
+          PY

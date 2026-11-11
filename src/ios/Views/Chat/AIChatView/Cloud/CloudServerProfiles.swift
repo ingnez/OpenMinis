@@ -67,3 +67,22 @@ public enum CloudServerList {
         return best.key
     }
 }
+
+/// 添加另一台时的草稿：未通过校验之前不写入列表，也不切换当前正在用的那台。
+public enum CloudServerDraft {
+    public static func nextName(count: Int) -> String { "云电脑 \(max(0, count) + 1)" }
+    public static func blank(count: Int) -> CloudServerProfile {
+        CloudServerProfile(name: nextName(count: count), host: "", sshPort: 22, username: "root")
+    }
+    public static func validate(_ p: CloudServerProfile) -> String? {
+        if p.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "请填写 IP 地址或域名" }
+        if p.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "请填写用户名" }
+        if !(1...65535).contains(p.sshPort) { return "SSH 端口必须在 1–65535 之间" }
+        return nil
+    }
+    /// 校验通过才写入列表；失败时列表不变。调用方不应据此改当前连接。
+    public static func commit(_ draft: CloudServerProfile, into list: [CloudServerProfile]) -> (list: [CloudServerProfile], error: String?) {
+        if let error = validate(draft) { return (list, error) }
+        return (CloudServerList.upsert(draft, into: list), nil)
+    }
+}

@@ -63,6 +63,10 @@ struct CloudBotComposerTests {
         check(!CloudMorphTap.swallow(holdEndedAt: nil, now: t0), "没按住过不吞")
         check(CloudMorphTap.swallow(holdEndedAt: t0, now: t0.addingTimeInterval(0.1)), "松手紧跟的点按吞掉")
         check(!CloudMorphTap.swallow(holdEndedAt: t0, now: t0.addingTimeInterval(2)), "隔久了的点按不吞")
+        check(CloudInCallSend.route(inCall: false, text: "你好", hasAttachments: false) == .textChat, "没在通话走文字聊天")
+        check(CloudInCallSend.route(inCall: true, text: "你好", hasAttachments: false) == .realtimeSpeak, "通话中打字交给实时语音")
+        check(CloudInCallSend.route(inCall: true, text: "  ", hasAttachments: false) == .textChat, "通话中空输入不乱发")
+        check(CloudInCallSend.route(inCall: true, text: "看这张图", hasAttachments: true) == .blockAttachments, "通话中不发附件去文字聊天")
         if failed > 0 { print("\(failed) 项失败"); exit(1) }
         print("Bot 输入框按钮状态机测试全部通过")
     }

@@ -85,6 +85,31 @@ class PluginTests(CloudServerTestCase):
         self.assertNotIn("web-research", names)
         self.request("DELETE", "/v1/plugins/github")
 
+    def test_catalog_marks_installed_and_install_is_idempotent(self):
+        status, res = self.request("GET", "/v1/plugins")
+        self.assertEqual(status, 200)
+        daily = next(c for c in res["catalog"] if c["id"] == "skills-daily")
+        self.assertFalse(daily.get("installed"))
+        status, p = self.request("POST", "/v1/plugins/install", {"catalog_id": "skills-daily"})
+        self.assertEqual(status, 201)
+        self.assertTrue(p.get("created"))
+        self.assertFalse(p.get("already_installed"))
+        self.assertEqual(p.get("message"), "安装成功")
+        status, res = self.request("GET", "/v1/plugins")
+        self.assertEqual(status, 200)
+        daily = next(c for c in res["catalog"] if c["id"] == "skills-daily")
+        self.assertTrue(daily.get("installed"), "安装后目录项应标记为已安装")
+        self.assertEqual([x["plugin_id"] for x in res["installed"]].count("skills-daily"), 1)
+        status, p2 = self.request("POST", "/v1/plugins/install", {"catalog_id": "skills-daily"})
+        self.assertEqual(status, 200)
+        self.assertFalse(p2.get("created"))
+        self.assertTrue(p2.get("already_installed"))
+        self.assertIn("已经安装", p2.get("message") or "")
+        status, res = self.request("GET", "/v1/plugins")
+        self.assertEqual([x["plugin_id"] for x in res["installed"]].count("skills-daily"), 1)
+        self.assertTrue(next(c for c in res["catalog"] if c["id"] == "skills-daily").get("installed"))
+        self.request("DELETE", "/v1/plugins/skills-daily")
+
     def test_02_manifest_requires_ack_and_validation(self):
         status, res = self.request("POST", "/v1/plugins/install", {"manifest": stdio_manifest()})
         self.assertEqual((status, res["error"]), (428, "confirm_command"))
@@ -195,6 +220,23 @@ class PluginTests(CloudServerTestCase):
         self.assertEqual(json.loads(tool_turns(FakeModelHandler.requests[-1])[-1]["content"])["content"], "token=phone-secret")
         for pid in ("phone-my-fake", "phone-web"):
             self.request("DELETE", f"/v1/plugins/{pid}")
+
+
+class E2ECatalogTests(unittest.TestCase):
+    def test_e2e_echo_is_first_in_catalog(self):
+        import cloud_plugin_catalog
+        key = "OPENMINIS_E2E_FAKE_PLUGIN"
+        old = os.environ.get(key)
+        os.environ[key] = FAKE
+        try:
+            ids = [c["id"] for c in cloud_plugin_catalog.entries()]
+            self.assertEqual(ids[0], "e2e-echo", "假插件必须排在目录最前，否则控件树里看不到")
+            self.assertIn("fetch", ids)
+        finally:
+            if old is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old
 
 
 if __name__ == "__main__":

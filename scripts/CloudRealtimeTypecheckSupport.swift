@@ -58,6 +58,7 @@ final class CloudBotCallController: ObservableObject {
     func setTalking(_ on: Bool) {}
     func setPushToTalk(_ on: Bool) {}
     func interrupt() {}
+    func speakUserText(_ text: String) {}
     func hangUp() {}
 }
 struct CloudBotCallSettingsSheet: View {

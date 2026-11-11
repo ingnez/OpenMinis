@@ -107,9 +107,9 @@ def front_script(data):
         else:
             all_user.append(c or "")
     heard = "插话" in text or any("插话" in u for u in all_user)
-    m = re.search(r"(wk_[a-f0-9]{10})「[^」]*」进行中", blob)
+    m = re.search(r"(wk_[a-f0-9]{10})「[^」]*」(进行中|排队中)", blob)
     if not m:
-        m = re.search(r"(wk_[a-f0-9]{10}).{0,80}进行中", blob)
+        m = re.search(r"(wk_[a-f0-9]{10}).{0,80}(进行中|排队中)", blob)
     if heard and m:
         return _stream_then_tool("收到插话，马上转给后台。", "f2", "task_message", {"id": m.group(1), "text": text or " ".join(all_user)})
     if "查一下" in text:
@@ -261,9 +261,15 @@ def start_fake_realtime():
                             send(sock, {"type": "conversation.item.input_audio_transcription.completed", "item_id": "u1", "transcript": "（假）用户说话"})
                             send(sock, {"type": "response.created", "response": {"id": "r1"}})
                             send(sock, {"type": "response.output_audio_transcript.delta", "response_id": "r1", "item_id": "a1", "delta": REALTIME_REPLY})
+                            mid = False
                             for i in range(0, len(tone), 4800):
                                 send(sock, {"type": "response.output_audio.delta", "response_id": "r1", "item_id": "a1",
                                             "content_index": 0, "delta": base64.b64encode(tone[i:i + 4800]).decode()})
+                                # 播放中的短暂回声：不应把回复字幕换成「被打断」、也不该丢掉后面的音频
+                                if not mid:
+                                    mid = True
+                                    send(sock, {"type": "input_audio_buffer.speech_started", "item_id": "echo1"})
+                                    send(sock, {"type": "input_audio_buffer.speech_stopped", "item_id": "echo1"})
                             send(sock, {"type": "response.output_audio_transcript.done", "response_id": "r1", "item_id": "a1", "transcript": REALTIME_REPLY})
                             send(sock, {"type": "response.done", "response": {"id": "r1", "status": "completed"}})
             except (EOFError, ConnectionError, OSError, ValueError):
@@ -330,6 +336,8 @@ def main():
         "OPENMINIS_DB": os.path.join(work, "data", "agent.db"),
         "OPENMINIS_WORKSPACE": os.path.join(work, "workspace"),
         "OPENMINIS_PLUGIN_DIR": os.path.join(work, "data", "plugin-files"),
+        # 插件市场 e2e：目录里多一个不访问网络的假 stdio MCP（E2E 回声）
+        "OPENMINIS_E2E_FAKE_PLUGIN": os.path.join(HERE, "..", "cloud-agent", "test_fake_mcp_server.py"),
     })
     os.makedirs(os.path.join(work, "data"), exist_ok=True)
     os.makedirs(os.path.join(work, "workspace"), exist_ok=True)
@@ -358,6 +366,17 @@ def main():
                     db.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
                 db.commit()
                 db.close()
+                # 卸掉上一个流程留下的 e2e 假插件，保证「插件目录安装」可重复跑
+                try:
+                    import urllib.request
+                    req = urllib.request.Request(
+                        f"http://127.0.0.1:{API_PORT}/v1/plugins/e2e-echo",
+                        method="DELETE",
+                        headers={"Authorization": f"Bearer {TOKEN}"},
+                    )
+                    urllib.request.urlopen(req, timeout=3).read()
+                except Exception:
+                    pass
                 FAKE_DESK.update({"on": False, "clip": "", "typed": [], "keys": [], "clip_sets": []})
                 body = json.dumps({"cleared_sessions": len(sids)}).encode()
                 self.send_response(200)

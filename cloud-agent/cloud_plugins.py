@@ -52,7 +52,7 @@ def ensure_schema(conn):
 
 
 def catalog():
-    return cloud_plugin_catalog.CATALOG
+    return cloud_plugin_catalog.entries()
 
 
 def catalog_entry(pid):

@@ -27,7 +27,7 @@ struct CloudPresenceBadge: View {
                 .overlay(Circle().stroke(Color(.systemBackground), lineWidth: max(2, size * 0.18)))
                 .scaleEffect(presence.pulses && breathe ? 1.15 : 1)
                 .opacity(presence.pulses && breathe ? 0.8 : 1)
-                .animation(presence.pulses ? .easeInOut(duration: 1.1).repeatForever(autoreverses: true) : .default, value: breathe)
+                .animation(presence.pulses && !CloudE2E.pauseIdleAnimations ? .easeInOut(duration: 1.1).repeatForever(autoreverses: true) : .default, value: breathe)
                 .onAppear { breathe = presence.pulses }
                 .onChange(of: presence.pulses) { p in breathe = p }
                 .accessibilityHidden(true)

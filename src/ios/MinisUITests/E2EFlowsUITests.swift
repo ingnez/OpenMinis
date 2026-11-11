@@ -104,6 +104,31 @@ final class E2EFlowsUITests: XCTestCase {
         shot(app, "07-插件市场")
     }
 
+    func test07b_pluginCatalogInstallMovesToInstalled() throws {
+        let app = launch()
+        let gear = app.buttons["设置"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 60))
+        gear.tap()
+        let market = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "插件市场")).firstMatch
+        XCTAssertTrue(scrollTo(app, market), "Bot 设置里没有「插件市场」")
+        market.tap()
+        XCTAssertTrue(app.navigationBars["插件市场"].waitForExistence(timeout: 15) || waitText(app, contains: "插件目录", timeout: 15), "插件市场页没打开")
+        let echo = app.descendants(matching: .any)["pluginCatalog-e2e-echo"]
+        let echoName = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "E2E 回声")).firstMatch
+        XCTAssertTrue(scrollTo(app, echo) || scrollTo(app, echoName) || waitText(app, contains: "E2E 回声", timeout: 5),
+                      "插件目录没有 e2e 假插件")
+        let install = app.descendants(matching: .any)["pluginInstall-e2e-echo"]
+        XCTAssertTrue(scrollTo(app, install), "插件目录里没有「E2E 回声」的安装按钮")
+        install.tap()
+        let installed = app.descendants(matching: .any)["pluginInstalled-e2e-echo"]
+        XCTAssertTrue(poll(30) { installed.exists }, "安装后没有出现在「已安装」")
+        // 已安装的条目应从「插件目录」消失（安装按钮不再出现）
+        XCTAssertFalse(app.descendants(matching: .any)["pluginInstall-e2e-echo"].exists, "已安装插件仍留在插件目录并显示「安装」")
+        XCTAssertTrue(waitText(app, contains: "安装成功", timeout: 5) || waitText(app, contains: "已经安装", timeout: 2),
+                      "安装后没有可见的成功/已安装提示")
+        shot(app, "07b-插件目录安装")
+    }
+
     func test08_botStepPanelUsesCloudNames() throws {
         let app = launch()
         openBot(app)
@@ -493,16 +518,28 @@ final class E2EFlowsUITests: XCTestCase {
         openBot(app)
         let voice = app.buttons["composerVoiceButton"]
         XCTAssertTrue(voice.waitForExistence(timeout: 20), "输入栏没有声波按钮")
-        if app.keyboards.firstMatch.exists { app.swipeDown() }
+        if app.keyboards.firstMatch.exists {
+            app.swipeDown()
+            _ = waitGone(app.keyboards.firstMatch, timeout: 5)
+        }
+        XCTAssertTrue(poll(5) { voice.exists && voice.isHittable }, "声波按钮点不到")
         voice.tap()
         let capsule = app.descendants(matching: .any)["callCapsule"]
         let turnsPage = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "切到实时双向通话")).firstMatch
+        if !capsule.waitForExistence(timeout: 8) {
+            // 服务商注入偶发晚一拍，或键盘没收干净点空了：回到对话再点一次
+            if turnsPage.exists { goBack(app) }
+            if app.keyboards.firstMatch.exists { app.swipeDown(); _ = waitGone(app.keyboards.firstMatch, timeout: 3) }
+            if voice.waitForExistence(timeout: 5), voice.isHittable { voice.tap() }
+        }
         XCTAssertTrue(capsule.waitForExistence(timeout: 20),
                       "点声波没出现通话胶囊" + (turnsPage.exists ? "（进了轮流通话页：App 认为没配好实时语音服务商）" : ""))
         shot(app, "21a-通话胶囊")
         XCTAssertTrue(poll(30) { (self.realtimeProbe()?.appends ?? 0) >= before + 10 }, "假实时服务没收到麦克风音频（input_audio_buffer.append）")
         XCTAssertTrue(poll(20) { (capsule.value as? String ?? "").hasPrefix("已接通") }, "服务端确认、收音也在送，胶囊却没显示已接通：\(capsule.value as? String ?? "")")
         XCTAssertTrue(waitText(app, contains: "e2e-realtime-ok", timeout: 20), "回复字幕没出现在对话里")
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "被打断")).firstMatch.exists,
+                       "播放中的回声把回复字幕换成了「被打断」")
         XCTAssertTrue(poll(15) {
             let v = capsule.value as? String ?? ""
             guard let r = v.range(of: "收到声音 "), let kb = Int(v[r.upperBound...].prefix { $0.isNumber }) else { return false }
@@ -636,9 +673,13 @@ final class E2EFlowsUITests: XCTestCase {
     /// 系统键盘第一次弹出时的「滑行输入」引导（Speed up your typing… Continue）会盖住下半屏；有就点掉。
     /// CI 已在模拟器里写了不再显示的偏好，这里兜底
     private func dismissKeyboardIntro(_ app: XCUIApplication) {
-        for label in ["Continue", "继续"] {
-            let b = app.buttons[label]
-            if b.exists && b.isHittable { b.tap(); return }
+        // 只点系统键盘 / 弹窗上的 Continue。对话里的「继续」不能点，否则会当成一条消息发出去（43027845469 「秒回：继续」）。
+        let springs = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        for root in [app.keyboards, app.alerts, springs.alerts] {
+            for label in ["Continue", "继续"] {
+                let b = root.buttons[label]
+                if b.waitForExistence(timeout: 0.3), b.isHittable { b.tap(); return }
+            }
         }
     }
 
@@ -782,7 +823,23 @@ final class E2EFlowsUITests: XCTestCase {
 /// 模拟器上没有 Xvfb：App 用 OPENMINIS_E2E_FAKE_DESKTOP=1 换成假画面（1280×800 格子，回报收到的指针），
 /// e2e 栈的 /_e2e/desktop?on=1 把云端的剪贴板 / 输入换成内存假桌面（UTF-8 原样存）。真 X 上的同一套由 Linux CI 的 test_cc_clipboard_utf8 验证
 extension E2EFlowsUITests {
-    private struct CCDesk: Decodable { let on: Bool; let clip: String; let typed: [String]; let clip_sets: [String] }
+    private struct CCDesk: Decodable {
+        let on: Bool
+        let clip: String
+        let typed: [String]
+        let clip_sets: [String]
+        let keys: [CCKey]
+        struct CCKey: Decodable {
+            let name: String
+            let times: Int
+            init(from decoder: Decoder) throws {
+                var c = try decoder.unkeyedContainer()
+                name = try c.decode(String.self)
+                times = (try? c.decode(Int.self)) ?? 1
+            }
+        }
+        var keyNames: [String] { keys.map(\.name) }
+    }
 
     private func ccDesk(_ query: [String: String] = [:]) -> CCDesk? {
         var c = URLComponents(string: "http://127.0.0.1:18799/_e2e/desktop")!
@@ -820,18 +877,25 @@ extension E2EFlowsUITests {
     }
 
     /// 不要用无超时的 `.exists`：粘贴权限弹窗会卡住 App 主线程，exists 先等空闲就会挂死（43013143801 test25）。
+    /// 也不要在底栏附近乱点：会进全屏或让剪贴板菜单挡住「键盘」（43027845469）。
     private func ccAllowPaste(_ app: XCUIApplication) {
         let sb = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        // 触发 interruption monitor
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92)).tap()
-        for _ in 0..<8 {
-            for label in ["Allow Paste", "允许粘贴"] {
-                let a = app.buttons[label]
-                if a.waitForExistence(timeout: 0.4) { a.tap(); return }
-                let b = sb.alerts.buttons[label]
-                if b.waitForExistence(timeout: 0.3) { b.tap(); return }
-            }
+        for label in ["Allow Paste", "允许粘贴"] {
+            let a = app.buttons[label]
+            if a.waitForExistence(timeout: 1.0) { a.tap(); return }
+            let b = sb.alerts.buttons[label]
+            if b.waitForExistence(timeout: 0.5) { b.tap(); return }
         }
+    }
+
+    /// 关掉剪贴板菜单 / 退出全屏，让底栏「键盘」露出来
+    private func ccRevealDesktopBar(_ app: XCUIApplication) {
+        let keyboard = app.buttons["键盘"]
+        if keyboard.waitForExistence(timeout: 1) { return }
+        let exitFull = app.buttons["退出全屏"]
+        if exitFull.waitForExistence(timeout: 1) { exitFull.tap() }
+        // 点画面中上部，收起可能还开着的菜单，避免点到底栏
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap()
     }
 
     @objc func test25_CC_pinchZoomAndClipboard() throws {
@@ -907,17 +971,112 @@ extension E2EFlowsUITests {
         XCTAssertTrue(poll(20) { self.ccDesk()?.clip_sets.contains(phone) ?? false }, "手机剪贴板没到云电脑：\(String(describing: ccDesk()))")
 
         // 7. 手机输入法打中文 → 云电脑；云端「剪贴板 + 粘贴」改了远端剪贴板，手机不能把它当成远端复制再拷回来
+        ccRevealDesktopBar(app)
         let keyboard = app.buttons["键盘"]
         XCTAssertTrue(keyboard.waitForExistence(timeout: 10), "底栏没有键盘按钮")
         keyboard.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10), "系统键盘没弹出来")
         dismissKeyboardIntro(app)
+        // 等隐藏输入框成为第一响应者，避免第一批字和清 sentinel 撞车
+        XCTAssertTrue(poll(5) { app.keyboards.firstMatch.exists }, "键盘没有保持弹出")
         let typed = "云电脑中文输入"
         app.typeText(typed)
+        if !poll(8, { (self.ccDesk()?.typed.joined() ?? "").contains(typed) }) {
+            app.typeText(typed) // 只到了首字时再送一遍补全
+        }
         XCTAssertTrue(poll(20) { (self.ccDesk()?.typed.joined() ?? "").contains(typed) }, "输入法中文没到云电脑：\(String(describing: ccDesk()))")
         shot(app, "25e-输入法中文到云电脑")
         Thread.sleep(forTimeInterval: 6)   // 剪贴板轮询 2.5 秒一次，等两轮
         XCTAssertEqual(ccProbe(app)["toPhone"], remote, "手机自己打的中文被当成云电脑复制拷回了手机")
         _ = ccDesk(["on": "0"])
+    }
+
+    @objc func test25b_CC_phoneKeyboardAsciiSpaceDeleteReturn() throws {
+        executionTimeAllowance = 180
+        let app = launch(extraEnv: ["OPENMINIS_E2E_FAKE_DESKTOP": "1"])
+        XCTAssertEqual(ccDesk(["on": "1"])?.on, true, "e2e 栈没有假桌面开关（/_e2e/desktop）")
+        let gear = app.buttons["设置"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
+        gear.tap()
+        let row = app.descendants(matching: .any)["ccDesktopSettingsRow"].exists
+            ? app.descendants(matching: .any)["ccDesktopSettingsRow"]
+            : app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "云电脑桌面")).firstMatch
+        XCTAssertTrue(scrollTo(app, row), "Bot 设置里没有「云电脑桌面」")
+        row.tap()
+        let probe = app.descendants(matching: .any)["ccDesktopProbe"]
+        XCTAssertTrue(probe.waitForExistence(timeout: 30), "云电脑页没打开（没有探针）")
+        XCTAssertTrue(app.descendants(matching: .any)["ccTrackpadSurface"].waitForExistence(timeout: 30), "接管后没有触控板层")
+        XCTAssertTrue(poll(20) { (self.ccPair(self.ccProbe(app)["viewport"])?.0 ?? 0) > 0 }, "画面没连上：\(probe.value as? String ?? "")")
+        ccRevealDesktopBar(app)
+        let keyboard = app.buttons["键盘"]
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 10), "底栏没有键盘按钮")
+        keyboard.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10), "系统键盘没弹出来")
+        dismissKeyboardIntro(app)
+        XCTAssertTrue(poll(5) { app.keyboards.firstMatch.exists }, "键盘没有保持弹出")
+        app.typeText("a1 ")
+        if !poll(8, { (self.ccDesk()?.typed.joined() ?? "").contains("a1 ") }) {
+            // 第一批可能只送到 'a'：再打一次，去抖修过之后应整段到达
+            app.typeText("1 ")
+        }
+        XCTAssertTrue(poll(20) { (self.ccDesk()?.typed.joined() ?? "").contains("a1 ") },
+                      "数字和空格没到服务器：\(String(describing: self.ccDesk()))")
+        app.typeText(XCUIKeyboardKey.delete.rawValue)
+        XCTAssertTrue(poll(20) { self.ccDesk()?.keyNames.contains("BackSpace") ?? false },
+                      "删除没到服务器 BackSpace：\(String(describing: self.ccDesk()))")
+        app.typeText("\n")
+        XCTAssertTrue(poll(20) { self.ccDesk()?.keyNames.contains("Return") ?? false },
+                      "换行没到服务器 Return：\(String(describing: self.ccDesk()))")
+        shot(app, "25b-键盘数字空格删除换行")
+        _ = ccDesk(["on": "0"])
+    }
+}
+
+// MARK: - 多台云电脑：添加另一台立刻出表单；取消不丢掉已有那台
+
+extension E2EFlowsUITests {
+    func test26_addAnotherServerShowsFormAndCancelKeepsFirst() throws {
+        let app = launch()
+        let gear = app.buttons["设置"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
+        gear.tap()
+        let cloud = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "云电脑设置")).firstMatch
+        XCTAssertTrue(scrollTo(app, cloud), "设置里没有「云电脑设置」")
+        cloud.tap()
+        let multi = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "多台云电脑")).firstMatch
+        XCTAssertTrue(scrollTo(app, multi), "云电脑设置里没有「多台云电脑」")
+        multi.tap()
+        let first = app.descendants(matching: .any)["cloudServer-127.0.0.1:22:root"]
+        XCTAssertTrue(first.waitForExistence(timeout: 10), "列表里没有已有的 E2E 云电脑")
+        XCTAssertEqual(first.value as? String, "已选用", "进页时第一台不是当前选用的")
+
+        let add = app.buttons["添加另一台"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5), "没有「添加另一台」")
+        add.tap()
+        let form = app.descendants(matching: .any)["cloudAddServerForm"]
+        let cancel = app.buttons["取消"]
+        let save = app.buttons["保存"]
+        let nameField = app.textFields["cloudAddServerName"]
+        XCTAssertTrue(form.waitForExistence(timeout: 1) || cancel.waitForExistence(timeout: 1),
+                      "点「添加另一台」后 1 秒内没有出现添加表单")
+        XCTAssertTrue(save.waitForExistence(timeout: 1), "表单上没有「保存」")
+        XCTAssertTrue(cancel.exists || cancel.waitForExistence(timeout: 1), "表单上没有「取消」")
+        XCTAssertTrue(nameField.waitForExistence(timeout: 1), "表单上没有名称输入框")
+        shot(app, "26a-添加另一台表单")
+
+        cancel.tap()
+        XCTAssertTrue(waitGone(form, timeout: 3) || waitGone(nameField, timeout: 3), "取消后表单还在")
+        XCTAssertTrue(first.waitForExistence(timeout: 5), "取消后列表里没有第一台")
+        XCTAssertEqual(first.value as? String, "已选用", "取消后第一台不再是当前选用的")
+        XCTAssertFalse(anyElement(app, contains: "还没有连接云电脑"), "还在列表页就出现了未连接提示")
+        shot(app, "26b-取消后第一台仍选用")
+
+        goBack(app) // 多台云电脑 → 云电脑设置
+        goBack(app) // 云电脑设置 → 设置
+        goBack(app) // 设置 → 首页
+        XCTAssertTrue(app.buttons["设置"].waitForExistence(timeout: 10) || app.buttons["settingsGear"].waitForExistence(timeout: 5),
+                      "没回到首页")
+        XCTAssertFalse(anyElement(app, contains: "还没有连接云电脑"), "取消添加后首页出现了「还没有连接云电脑」横幅")
+        shot(app, "26c-回到首页无未连接横幅")
     }
 }

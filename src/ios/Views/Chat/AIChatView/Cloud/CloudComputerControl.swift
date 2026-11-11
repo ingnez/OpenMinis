@@ -64,6 +64,8 @@ final class CloudDesktopController: ObservableObject {
     @Published private(set) var lastRemotePointer: (x: Int, y: Int, mask: Int) = (-1, -1, 0)
     @Published private(set) var lastRemoteClick: (x: Int, y: Int) = (-1, -1)
     private var typeOrder = CloudTypeOrder()
+    /// 输入法默认走服务器，直到确认 VNC sendKey 真的发出去（本页不自动置位）
+    private(set) var vncKeysReady = false
     private var buttons = 0
     private var history: [CloudStreamQuality.Level] = []
     private var latencyTask: Task<Void, Never>?
@@ -231,12 +233,13 @@ final class CloudDesktopController: ObservableObject {
         sendKeys(c.events)
     }
 
-    /// 输入法上屏的文字：ASCII 直接按键（带上粘住的修饰键），中文等交给服务器剪贴板粘贴。
-    /// 服务器还有没送完的字时，后面的字和退格也走服务器（CloudTypeOrder），保证顺序；viaServer 送完必须调 done
+    /// 输入法上屏的文字。VNC 按键未确认可用时（触控板模式下 noVNC 常为 viewOnly，真机 sendKey 会丢掉），
+    /// ASCII / 空格 / 换行 / 退格也走服务器，顺序仍由 CloudTypeOrder 保证；viaServer 送完必须调 done。
+    /// 额外按键行仍走 VNC（om.keys 会临时关掉 viewOnly）。
     func type(_ events: [CloudIMECommit.Event], viaServer: (CloudIMECommit.Event, @escaping () -> Void) -> Void) {
         for e in events {
             if case .text(let t) = e { macro?.add(.typed(count: t.count)) }
-            switch typeOrder.route(e) {
+            switch typeOrder.route(e, vncConfirmed: vncKeysReady) {
             case .server:
                 typeOrder.sent()
                 viaServer(e) { [weak self] in self?.typeOrder.finished() }
@@ -595,16 +598,53 @@ struct CloudIMEField: UIViewRepresentable {
         private var last = CloudIMECommit.sentinel
         init(_ p: CloudIMEField) { parent = p }
 
+        private var flushWork: DispatchWorkItem?
+
         @objc func changed(_ f: UITextField) {
-            let now = f.text ?? ""
-            let events = CloudIMECommit.events(old: last, new: now, composing: f.markedTextRange != nil)
+            // 组字中不发。部分输入法（搜狗九键）会先把 marked 文本当成已上屏再标回组字，
+            // 若立刻发送，云电脑上会留下一串「？」「“：」之类的残留。
+            flushWork?.cancel()
             guard f.markedTextRange == nil else { return }
+            let work = DispatchWorkItem { [weak self] in self?.flush(f) }
+            flushWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+        }
+
+        private func flush(_ f: UITextField, depth: Int = 0) {
+            guard f.markedTextRange == nil else { return }
+            let now = f.text ?? ""
+            let events = CloudIMECommit.events(old: last, new: now, composing: false)
             if !events.isEmpty { parent.onEvents(events) }
+            last = now
+            // 50ms 去抖期间或清空 sentinel 时又打进了新字：再冲一次，别把「a1 」收成只剩「a」
+            let latest = f.text ?? ""
+            if depth < 8, CloudIMECommit.shouldFlushAgain(sent: now, fieldNow: latest) {
+                flush(f, depth: depth + 1)
+                return
+            }
             f.text = CloudIMECommit.sentinel
             last = CloudIMECommit.sentinel
         }
 
+        func textField(_ f: UITextField, shouldChangeCharactersIn range: NSRange, replacementText text: String) -> Bool {
+            if f.markedTextRange != nil { return true }
+            // 空框（只剩 sentinel）按退格：有的输入法不会再触发 editingChanged
+            if text.isEmpty {
+                let current = f.text ?? ""
+                let all = (current as NSString)
+                if current.isEmpty || current == CloudIMECommit.sentinel || range.length >= all.length {
+                    flushWork?.cancel()
+                    parent.onEvents([.backspace(1)])
+                    f.text = CloudIMECommit.sentinel
+                    last = CloudIMECommit.sentinel
+                    return false
+                }
+            }
+            return true
+        }
+
         func textFieldShouldReturn(_ f: UITextField) -> Bool {
+            flushWork?.cancel()
             parent.onReturn()
             return false
         }

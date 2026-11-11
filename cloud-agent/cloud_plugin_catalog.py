@@ -5,6 +5,12 @@ MCP 条目只是安装说明，安装时才在 VPS 上通过 uvx / npx 拉取对
 远程 MCP 端点；需要密钥的条目在填写密钥前处于 needs_auth 状态。
 """
 
+import os
+import shutil
+import subprocess
+import sys
+
+
 CATALOG = [
     {
         "id": "fetch", "kind": "mcp", "name": "网页抓取 Fetch",
@@ -87,3 +93,117 @@ CATALOG = [
         ],
     },
 ]
+
+def entries():
+    """当前插件目录。e2e 可通过 OPENMINIS_E2E_FAKE_PLUGIN 追加一个不访问网络的假 stdio MCP。"""
+    items = list(CATALOG)
+    path = (os.environ.get("OPENMINIS_E2E_FAKE_PLUGIN") or "").strip()
+    if not path:
+        return items
+    script = path if os.path.isfile(path) else os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_fake_mcp_server.py")
+    if not os.path.isfile(script):
+        return items
+    if any(c["id"] == "e2e-echo" for c in items):
+        return items
+    # 插到目录最前面：插件市场「插件目录」在运行依赖下面，假插件若排在最后会滚出控件树，
+    # XCUITest 等「E2E 回声」会误判成目录里没有。
+    items.insert(0, {
+        "id": "e2e-echo", "kind": "mcp", "name": "E2E 回声",
+        "description": "端到端测试用假 stdio MCP，不访问网络。",
+        "mcp": {"transport": "stdio", "command": sys.executable, "args": [script]},
+    })
+    return items
+
+
+def uvx_catalog_packages():
+    """目录里通过 uvx 启动的 Python 包名（如 mcp-server-time）。"""
+    pkgs = []
+    for c in CATALOG:
+        mcp = c.get("mcp") or {}
+        if mcp.get("transport", "stdio") != "stdio" or mcp.get("command") != "uvx":
+            continue
+        args = mcp.get("args") or []
+        if args and isinstance(args[0], str) and args[0] not in pkgs:
+            pkgs.append(args[0])
+    return pkgs
+
+
+def _find_uvx():
+    for candidate in (
+        os.path.expanduser("~/.local/bin/uvx"),
+        shutil.which("uvx"),
+        os.path.expanduser("~/.local/bin/uv"),
+        shutil.which("uv"),
+    ):
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+# 与 cloud_deps.PYPI_INDEXES 保持一致：官方失败后再试国内镜像
+_WARM_INDEXES = [None, "https://mirrors.aliyun.com/pypi/simple", "https://pypi.tuna.tsinghua.edu.cn/simple"]
+
+
+def _ensure_uvx():
+    found = _find_uvx()
+    if found:
+        return found
+    try:
+        import cloud_deps
+        cloud_deps.ensure_path()
+        found = _find_uvx()
+        if found:
+            return found
+        log = []
+        cloud_deps.install_uv(log.append)
+        cloud_deps.ensure_path()
+        return _find_uvx()
+    except Exception:
+        return None
+
+
+def _uvx_help_cmd(uvx, package):
+    name = os.path.basename(uvx)
+    if name == "uv":
+        return [uvx, "tool", "run", "--from", package, package, "--help"]
+    return [uvx, "--from", package, package, "--help"]
+
+
+def warm_uvx_plugins(timeout_per=90):
+    """预装/缓存目录里的 uvx Python 插件，避免用户第一次打开时 initialize 超时。"""
+    uvx = _ensure_uvx()
+    if not uvx:
+        return {"ok": False, "reason": "uvx 未安装，跳过预热（可在插件市场 › 运行依赖里安装 uv）", "results": []}
+    results = []
+    for pkg in uvx_catalog_packages():
+        ok, last, used = False, "", "default"
+        for index in _WARM_INDEXES:
+            env = os.environ.copy()
+            if index:
+                env["UV_DEFAULT_INDEX"] = index
+                env["UV_INDEX_URL"] = index
+                used = index
+            try:
+                r = subprocess.run(_uvx_help_cmd(uvx, pkg), env=env, timeout=timeout_per,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                last = (r.stdout or "")[-800]
+                if r.returncode == 0:
+                    ok = True
+                    break
+            except Exception as e:
+                last = str(e)
+        results.append({"package": pkg, "ok": ok, "index": used if ok else None, "error": None if ok else last})
+    return {"ok": all(r["ok"] for r in results) if results else True, "results": results}
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] in ("--warm", "warm"):
+        report = warm_uvx_plugins()
+        for r in report.get("results") or []:
+            if r["ok"]:
+                print(f"[+] 已预热 {r['package']}（{'默认源' if r['index'] in (None, 'default') else r['index']}）")
+            else:
+                print(f"[-] 预热 {r['package']} 失败：{(r.get('error') or '')[-200:]}")
+        if report.get("reason"):
+            print("[-] " + report["reason"])
+        sys.exit(0 if report.get("ok") else 1)

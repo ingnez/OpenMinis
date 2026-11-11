@@ -3870,6 +3870,14 @@ def _bot_fast(session_id):
     b = session_bot(session_id)
     return bool(b and b.get("fast_mode"))
 
+def _front_worker_note(session_id):
+    """当前对话里后台任务的一行摘要。每轮现查：同一条前台任务里刚 spawn 的 worker、用户插话注入后，都要能看见。"""
+    conn = get_db_connection()
+    try:
+        return cloud_workers.summary_note(cloud_workers.list_for(conn, front_session=session_id, limit=10))
+    finally:
+        conn.close()
+
 def _append_note(msgs, note):
     """把本轮才有的提示接在最后一条用户消息后面（不改动稳定的系统提示）。"""
     out = list(msgs)
@@ -4859,15 +4867,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             dynamic_note = (dynamic_note or "") + _exam
     except Exception as e:
         print(f"exam note failed: {type(e).__name__}", flush=True)
-    if front_session:
-        # 前台只看每个后台任务的一行摘要，不看完整过程（省 token）
-        _wc = get_db_connection()
-        try:
-            _wnote = cloud_workers.summary_note(cloud_workers.list_for(_wc, front_session=session_id, limit=10))
-        finally:
-            _wc.close()
-        if _wnote:
-            dynamic_note = (dynamic_note or "") + _wnote
+    # 后台任务摘要不在这里一次性拼进 dynamic_note：同一条前台任务里先 spawn 再被插话时，
+    # 旧的 dynamic_note 还是空的，前台模型看不到进行中的 worker（43027845469 插话变成「秒回：插话」）。
     if on_duty():
         # 放在本轮末尾而不是系统提示里：系统提示不变，前缀缓存照样命中
         dynamic_note = (dynamic_note or "") + DUTY_NOTE
@@ -5106,6 +5107,11 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 if trim_note and not perf["trimmed"]:
                     perf["trimmed"] = True
                     log_event(task_id, "status", {"message": "对话较长，已自动精简较早的内容"})
+                if front_session:
+                    # 每轮现查：刚派的后台任务、take_injected 插话，都能看到 worker 列表
+                    _wnote = _front_worker_note(session_id)
+                    if _wnote:
+                        send_msgs = _append_note(send_msgs, _wnote)
                 if dynamic_note:
                     send_msgs = _append_note(send_msgs, dynamic_note)
                 if instant:
@@ -8491,6 +8497,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send(202, {"message_id": mid})
             return
 
+        m_retry = re.match(r"^/v1/plugins/([a-z0-9][a-z0-9_-]{0,31})/retry$", path)
+        if m_retry:
+            pid = m_retry.group(1)
+            p = PLUGINS.get(pid)
+            if not p:
+                self._send(404, {"error": "Plugin not found"})
+                return
+            try:
+                if p["kind"] == "mcp":
+                    tools = PLUGINS.list_tools(pid, refresh=True)
+                    self._send(200, {"plugin": PLUGINS.get(pid), "tools": tools, "message": "已重新连接"})
+                else:
+                    self._send(200, {"plugin": p, "message": "技能包无需重新连接"})
+            except cloud_mcp.MCPAuthRequired as e:
+                self._send(409, {"error": "needs_auth", "message": str(e), "plugin": PLUGINS.get(pid)})
+            except (cloud_mcp.MCPError, cloud_plugins.PluginError) as e:
+                self._send(400, {"error": str(e), "plugin": PLUGINS.get(pid)})
+            return
+
         m_oauth = re.match(r"^/v1/plugins/([a-z0-9][a-z0-9_-]{0,31})/oauth/(start|finish|disconnect)$", path)
         if m_oauth:
             pid, step = m_oauth.group(1), m_oauth.group(2)
@@ -8530,7 +8555,11 @@ class Handler(BaseHTTPRequestHandler):
             except cloud_plugins.PluginError as e:
                 self._send(400, {"error": str(e)})
                 return
-            self._send(201 if created else 200, p)
+            body = dict(p)
+            body["created"] = created
+            body["already_installed"] = not created
+            body["message"] = "安装成功" if created else "这个插件已经安装过了"
+            self._send(201 if created else 200, body)
             return
 
         m_up = re.match(r"^/v1/sessions/([A-Za-z0-9_-]{1,64})/upload$", path)
