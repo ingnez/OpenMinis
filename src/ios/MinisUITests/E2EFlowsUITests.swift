@@ -48,8 +48,11 @@ final class E2EFlowsUITests: XCTestCase {
         let app = launch()
         openBot(app)
         send(app, "请加粗回复")
-        XCTAssertTrue(waitText(app, contains: "加粗的中文", timeout: 60), "引用里的中文加粗没显示出来")
-        XCTAssertFalse(anyElement(app, contains: "**加粗"), "Markdown 星号原样露出来了")
+        // 假模型回「> 这是**结论：**引用里的中文加粗，还有**「重点」**…」：结尾星号前是中文标点、开头星号后是中文引号，
+        // cmark 原本都判不成加粗，星号原样露出来
+        XCTAssertTrue(waitText(app, contains: "引用里的中文加粗", timeout: 60), "引用回复没显示出来")
+        XCTAssertFalse(anyElement(app, contains: "**"), "Markdown 星号原样露出来了")
+        XCTAssertFalse(anyElement(app, contains: "\u{200B}"), "零宽空格留在了正文里")
         shot(app, "04-引用里中文加粗")
     }
 

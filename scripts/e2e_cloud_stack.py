@@ -44,7 +44,7 @@ def script(data):
     if "跑个命令" in text and not tool_turns(data):
         return tool_call("c1", "shell_execute", {"command": "echo e2e-shell-ok; sleep 2"})
     if "加粗" in text:
-        return {"role": "assistant", "content": "> 这是**加粗的中文**引用，里面有 **重点**。\n\n正文第二段。"}
+        return {"role": "assistant", "content": "> 这是**结论：**引用里的中文加粗，还有**「重点」**和**加粗的中文**。\n\n正文第二段。"}
     n = image_count(data)
     if n:
         return {"role": "assistant", "content": f"收到 {n} 张图片"}

@@ -111,7 +111,7 @@ struct MarkdownContent: Hashable {
 
     init(_ markdown: String) {
         let (cleaned, mathSpans) = MarkdownMathExtractor.extract(from: markdown)
-        let parsed = [BlockNode](markdown: cleaned)
+        let parsed = [BlockNode](markdown: MarkdownCJKEmphasis.prepare(cleaned))
         if mathSpans.isEmpty {
             self.blocks = parsed
         } else {
@@ -772,7 +772,7 @@ extension RawTableCell {
 extension InlineNode {
     fileprivate init?(unsafeNode: UnsafeNode) {
         switch unsafeNode.nodeType {
-        case .text: self = .text(unsafeNode.literal ?? "")
+        case .text: self = .text(MarkdownCJKEmphasis.clean(unsafeNode.literal ?? ""))
         case .softBreak: self = .softBreak
         case .lineBreak: self = .lineBreak
         case .code: self = .code(unsafeNode.literal ?? "")
