@@ -640,6 +640,10 @@ struct CloudBotLibraryView: View {
                             Image(uiImage: image).resizable().scaledToFit()
                                 .accessibilityLabel("资料库图片").accessibilityIdentifier("libraryPreviewImage")
                         }
+                    } else if let err = p.error {
+                        Label(err, systemImage: "exclamationmark.triangle")
+                            .font(.footnote).foregroundStyle(.red).padding()
+                            .accessibilityIdentifier("libraryPreviewError")
                     } else {
                         ProgressView()
                     }
@@ -760,7 +764,7 @@ struct CloudBotLibraryView: View {
                 var data: Data?
                 var name = title
                 if let path = item["attachment_url"] as? String {
-                    data = try await CloudConnection.shared.downloadAttachment(path: path)
+                    data = try await CloudBotService.connected().downloadAttachment(path: path)
                 } else if let mid = item["message_id"] as? Int, let part = item["part"] as? Int {
                     let owner = item["shared_from"] as? String ?? bot.id
                     let resp = try await CloudBotService.connected().request(method: "GET", path: "/v1/bots/\(owner)/library/media/\(mid)/\(part)", body: nil)
@@ -798,12 +802,29 @@ struct CloudBotLibraryView: View {
     }
 
     private func open(_ item: [String: Any]) {
+        // 手机上传的图片也在本页的看图面板里打开（以前走快速查看：下载失败时只在列表最底下出一行红字，
+        // 看起来就是「点了没反应」——42963481185 test18）
+        if (item["kind"] as? String) == "media", let path = item["attachment_url"] as? String {
+            let placeholder = CloudLibraryPreview(title: item["title"] as? String ?? "图片")
+            preview = placeholder
+            Task {
+                var loaded = placeholder
+                do {
+                    let data = try await CloudBotService.connected().downloadAttachment(path: path)
+                    if let img = UIImage(data: data) { loaded.image = img } else { loaded.error = "这个文件不是能显示的图片" }
+                } catch {
+                    loaded.error = error.localizedDescription
+                }
+                preview = loaded
+            }
+            return
+        }
         if let path = item["attachment_url"] as? String {
             // 手机上传的附件：下载到临时目录后用快速查看打开（可分享、存到文件）
             let title = item["title"] as? String ?? "附件"
             Task {
                 do {
-                    let data = try await CloudConnection.shared.downloadAttachment(path: path)
+                    let data = try await CloudBotService.connected().downloadAttachment(path: path)
                     let url = FileManager.default.temporaryDirectory.appendingPathComponent(title.replacingOccurrences(of: "/", with: "-"))
                     try data.write(to: url, options: .atomic)
                     quickLook = url
@@ -828,6 +849,10 @@ struct CloudBotLibraryView: View {
                     var loaded = placeholder
                     loaded.image = UIImage(data: data)
                     preview = loaded
+                } else {
+                    var failed = placeholder
+                    failed.error = "图片没取到，稍后再试"
+                    preview = failed
                 }
             }
         case "file":
@@ -880,6 +905,7 @@ struct CloudLibraryPreview: Identifiable {
     let id = UUID()
     var title: String
     var image: UIImage?
+    var error: String?
 }
 
 // MARK: - 「电脑」接管页
