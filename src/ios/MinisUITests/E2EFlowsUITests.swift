@@ -375,6 +375,47 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertFalse((after?.cloud_texts ?? []).contains { $0.contains("本地隔离") }, "云端模型收到了本地那轮的请求（双份消耗）")
     }
 
+    // MARK: - 待办 P0（资料库媒体页、步骤面板读云端）
+
+    func test18_libraryMediaShowsSentImage() throws {
+        executionTimeAllowance = 240
+        let app = launch(attach: 1)
+        openBot(app)
+        send(app, "存一张图")
+        XCTAssertTrue(waitText(app, contains: "收到 1 张图片", timeout: 90), "图片没发出去")
+        app.buttons["Bot 资料"].tap()
+        let lib = app.buttons["资料库"].exists ? app.buttons["资料库"] : app.staticTexts["资料库"]
+        XCTAssertTrue(scrollTo(app, lib), "Bot 资料页没有「资料库」")
+        lib.tap()
+        let media = app.buttons["libraryFilter.media"]
+        XCTAssertTrue(media.waitForExistence(timeout: 15), "资料库没有「媒体」筛选")
+        media.tap()
+        let item = app.descendants(matching: .any).matching(identifier: "libraryItem.media").firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 20), "媒体里没有刚发的图片")
+        shot(app, "18a-资料库媒体")
+        item.tap()
+        let opened = poll(20) {
+            app.images["libraryPreviewImage"].exists || app.descendants(matching: .any)["libraryPreviewImage"].exists
+                || app.navigationBars.buttons["Done"].exists || app.navigationBars.buttons["完成"].exists
+        }
+        shot(app, "18b-打开媒体图片")
+        XCTAssertTrue(opened, "点媒体里的图片没打开")
+    }
+
+    func test19_stepPanelShowsCloudComputer() throws {
+        let app = launch()
+        openBot(app)
+        send(app, "跑个命令")
+        XCTAssertTrue(poll(60) { (cloudProbe()?.requests ?? []).filter { $0.text.contains("跑个命令") }.count >= 2 }, "云端没执行步骤")
+        let bar = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "e2e-shell-ok")).firstMatch
+        XCTAssertTrue(bar.waitForExistence(timeout: 20), "没有步骤条")
+        bar.tap()
+        XCTAssertTrue(app.staticTexts["E2E云电脑"].waitForExistence(timeout: 10), "步骤面板标题不是云电脑名字")
+        XCTAssertFalse(app.staticTexts["Minis Computer"].exists, "步骤面板标题还是本机「Minis Computer」")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Minis is using")).firstMatch.exists)
+        shot(app, "19-步骤面板云电脑")
+    }
+
     // MARK: - 工具
 
     private func launch(attach: Int = 0, homeMode: String = "bots",

@@ -591,6 +591,8 @@ struct CloudBotLibraryView: View {
                 HStack(spacing: 8) {
                     ForEach(Self.filters, id: \.0) { f in
                         Button(f.1) { filter = f.0 }
+                            .accessibilityIdentifier("libraryFilter.\(f.0)")
+                            .accessibilityAddTraits(filter == f.0 ? .isSelected : [])
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(filter == f.0 ? Color(.systemBackground) : Color.primary)
                             .padding(.horizontal, 14).padding(.vertical, 7)
@@ -634,7 +636,10 @@ struct CloudBotLibraryView: View {
             NavigationStack {
                 Group {
                     if let image = p.image {
-                        ScrollView([.horizontal, .vertical]) { Image(uiImage: image).resizable().scaledToFit() }
+                        ScrollView([.horizontal, .vertical]) {
+                            Image(uiImage: image).resizable().scaledToFit()
+                                .accessibilityLabel("资料库图片").accessibilityIdentifier("libraryPreviewImage")
+                        }
                     } else {
                         ProgressView()
                     }
@@ -704,6 +709,7 @@ struct CloudBotLibraryView: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("libraryItem.\(kind)")
         .contextMenu {
             if kind == "link", let s = item["url"] as? String, let url = URL(string: s) {
                 ShareLink(item: url) { Label("分享", systemImage: "square.and.arrow.up") }
