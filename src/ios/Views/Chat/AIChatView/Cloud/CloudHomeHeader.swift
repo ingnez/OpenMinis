@@ -144,6 +144,9 @@ struct CloudHomeCenterStatus: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        // 42956011241：首页打开时没人干活，这一格量出来是 0 宽，之后 Bot 开工也不会重新撑开（iOS 26 工具栏只量一次）。
+        // 固定一个看不见的框，空着时不挡点按
+        .frame(width: 230, height: 30)
         .animation(.easeInOut(duration: 0.3), value: working.map(\.id))
     }
 }
