@@ -121,6 +121,8 @@ extension AIChatView {
 
                 inputFieldOrWaveform
 
+                // 听写卡片自带停止和发送，听写时底下这一排先收起来
+                if !voiceInputActive {
                 inputBottomRow
                     // [T-ios-de-voice-toolbar] Measure the row so the
                     // read-aloud toggle can decide whether its label fits.
@@ -139,6 +141,7 @@ extension AIChatView {
                     // constant subtracted back out of it.
                     .padding(.horizontal, 12)
                     .padding(.bottom, 10)
+                }
             })
             .contentShape(RoundedRectangle(cornerRadius: 20))
             .onTapGesture { inputFocused = true }

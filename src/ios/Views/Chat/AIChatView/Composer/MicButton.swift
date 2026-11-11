@@ -77,6 +77,7 @@ struct MicButton: View {
             .accessibilityLabel(isVoiceActive
                 ? Text("Switch to text input", comment: "Mic button exits voice mode")
                 : Text("Voice input", comment: "Mic button opens voice panel"))
+            .accessibilityIdentifier("localMicButton")
     }
 
     /// Whether a point (in the button's local space) is within the visible circle.

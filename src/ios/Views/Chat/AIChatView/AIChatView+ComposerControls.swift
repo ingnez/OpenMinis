@@ -367,20 +367,26 @@ extension AIChatView {
                 // [voice-correction §6] Recent conversation turns, straight from the
                 // already-loaded in-memory list (§12.1 forbids a DB query on this path),
                 // budgeted by CorrectionContextBuilder.
-                InlineVoiceInputView(
+                // 照 Grok：听写时输入栏展开成卡片（实时文字 + 停止 + 滚动波形 + 发送），和 Bot 模式同一个样子
+                LocalDictationCard(
                     viewModel: voiceVM,
                     inputText: inputTextBinding,
-                    onPasteImage: { image in vm.addImageAttachment(image) },
-                    onPasteFile: { url in vm.addFileAttachment(from: url) },
-                    onPasteLongText: { text in vm.stashPastedText(text) },
-                    conversationContext: {
-                        voiceCorrectionContext(from: vm.messages,
-                                               viewport: vm.captureViewportSnapshot?())
+                    accent: Color.accentColor,
+                    onStop: {
+                        voiceVM.reset(clearTranscript: false)
+                        withAnimation(.easeInOut(duration: 0.2)) { voiceInputActive = false }
                     },
-                    // [T-ios-context-usage-hint] Same request the text composer
-                    // gets; the voice panel renders it in its status line.
-                    contextUsageHint: vm.contextUsageHint
+                    onSend: {
+                        if vm.isProcessing { performEnqueue() } else { performSend() }
+                        // 还在等最后一段识别时先别关（发送会在识别完后自己补上）
+                        if !isWaitingToSendVoice {
+                            withAnimation(.easeInOut(duration: 0.2)) { voiceInputActive = false }
+                        }
+                    }
                 )
+                .padding(.horizontal, 12)
+                .padding(.top, topPadding)
+                .padding(.bottom, 10)
             )
         }
         if speechManager.state == .recording {
