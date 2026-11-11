@@ -202,10 +202,11 @@ struct LocalReplyChatMenu: View {
     }
 }
 
-/// 点开状态行：看这个后台子任务的过程，顶上可以停止
+/// 点开状态行：看这个后台子任务的过程，顶上可以停止 / 补充要求
 struct LocalReplyStepsSheet: View {
     let worker: CloudReplyWorker
     var onStop: () -> Void
+    var onInterject: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -213,13 +214,7 @@ struct LocalReplyStepsSheet: View {
             if let cid = LocalReplyHub.childSessionId(for: worker.id) {
                 HelperTranscriptPage(target: HelperSheetTarget(id: cid, title: worker.title))
                     .helperTranscriptSheetStyle()
-                    .overlay(alignment: .topTrailing) {
-                        if worker.active {
-                            Button("停止") { onStop(); dismiss() }
-                                .accessibilityIdentifier("replyStepsStop")
-                                .padding()
-                        }
-                    }
+                    .overlay(alignment: .top) { toolbar }
             } else {
                 NavigationStack {
                     Text("这个后台任务还没有过程可以看")
@@ -229,6 +224,23 @@ struct LocalReplyStepsSheet: View {
             }
         }
         .accessibilityIdentifier("replyStepsSheet")
+    }
+
+    private var toolbar: some View {
+        HStack {
+            Button("收起") { dismiss() }
+            Spacer()
+            if worker.active {
+                Button("补充要求") {
+                    dismiss()
+                    DispatchQueue.main.async { onInterject() }
+                }
+                .accessibilityIdentifier("replyStepsInterject")
+                Button("停止", role: .destructive) { onStop(); dismiss() }
+                    .accessibilityIdentifier("replyStepsStop")
+            }
+        }
+        .padding()
     }
 }
 
@@ -257,7 +269,7 @@ struct LocalReplyChatChrome: ViewModifier {
         content
             .environment(\.cloudReplyInstant, instant)
             .animation(.spring(response: 0.4, dampingFraction: 0.85), value: status.current?.id)
-            .sheet(item: $status.expanded) { w in LocalReplyStepsSheet(worker: w) { status.stop(w) } }
+            .sheet(item: $status.expanded) { w in LocalReplyStepsSheet(worker: w, onStop: { status.stop(w) }, onInterject: { status.interjecting = w }) }
             .alert("给后台补充要求", isPresented: interjectShown) {
                 TextField("比如：结果用表格列出来", text: $text)
                 Button("发送") { send() }

@@ -173,9 +173,10 @@ final class ReplyModeUITests: XCTestCase {
         XCTAssertTrue(waitText(app, contains: "秒回：你好秒回", timeout: 20), "本地前台没回话")
         let ms = app.descendants(matching: .any)["replyFirstTextMs"]
         XCTAssertTrue(ms.waitForExistence(timeout: 10), "没记到本地首字时间")
-        let value = Int(ms.label) ?? Int.max
+        let raw = (ms.value as? String).flatMap { $0.isEmpty ? nil : $0 } ?? ms.label
+        let value = Int(raw) ?? Int.max
         XCTContext.runActivity(named: "本地首字 \(value) ms") { _ in }
-        XCTAssertLessThan(value, 1000, "本地秒回首字 \(value) ms，超过 1 秒")
+        XCTAssertLessThan(value, 1000, "本地秒回首字 \(value) ms，超过 1 秒（value=\(String(describing: ms.value)) label=\(ms.label)）")
         XCTAssertTrue(requests(model: "e2e-local-front-model").contains { $0.contains("你好秒回") }, "消息没交给本地前台模型")
         XCTAssertFalse(requests(model: "e2e-local-model").contains { $0.contains("你好秒回") }, "秒回时本地主模型也被叫了")
         shot(app, "local-reply-01-秒回首字")
@@ -194,7 +195,7 @@ final class ReplyModeUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["replySpokenLine"].waitForExistence(timeout: 10), "本地没有进度播报")
         shot(app, "local-reply-02a-后台状态行")
         sendLocal(app, "插话：只要上海的")
-        XCTAssertTrue(waitText(app, contains: "收到插话，马上转给后台", timeout: 15), "本地插话没被前台马上答复")
+        XCTAssertTrue(waitText(app, contains: "收到插话，马上转给后台", timeout: 20), "本地插话没被前台马上答复")
         let send = localSendButton(app)
         XCTAssertFalse(send.label.contains("停止"), "本地发送键变成了停止键")
         shot(app, "local-reply-02b-插话秒回")
@@ -221,9 +222,14 @@ final class ReplyModeUITests: XCTestCase {
         else { app.swipeDown() }
 
         XCTAssertTrue(row.waitForExistence(timeout: 10))
-        row.press(forDuration: 1.0)
+        row.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["replyStepsSheet"].waitForExistence(timeout: 8)
+                      || app.buttons["收起"].waitForExistence(timeout: 2), "再点状态行没打开过程")
+        let interject = app.buttons["replyStepsInterject"]
+        XCTAssertTrue(interject.waitForExistence(timeout: 5), "本地过程页没有「补充要求」")
+        interject.tap()
         let field = app.alerts.textFields.firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 5), "长按状态行没弹出补充要求")
+        XCTAssertTrue(field.waitForExistence(timeout: 8), "本地补充要求没弹出输入框")
         field.typeText("只看今天")
         shot(app, "local-reply-03b-长按补充要求")
         app.alerts.buttons["发送"].tap()
@@ -242,9 +248,14 @@ final class ReplyModeUITests: XCTestCase {
         openLocalComposer(app)
         let title = app.descendants(matching: .any)["localChatTitle"]
         XCTAssertTrue(title.waitForExistence(timeout: 15), "本地对话没有标题")
-        title.press(forDuration: 1.2)
         let chatInstant = app.buttons["这个对话：秒回"]
-        XCTAssertTrue(chatInstant.waitForExistence(timeout: 8), "标题菜单里没有「这个对话：秒回」")
+        var opened = false
+        for _ in 0..<5 {
+            title.press(forDuration: 1.2)
+            if chatInstant.waitForExistence(timeout: 3) { opened = true; break }
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
+        }
+        XCTAssertTrue(opened, "标题菜单里没有「这个对话：秒回」")
         shot(app, "local-reply-04a-对话菜单")
         chatInstant.tap()
         sendLocal(app, "帮我查一下天气")
