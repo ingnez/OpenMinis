@@ -286,7 +286,7 @@ struct CloudBotLivelyAvatar: View {
     @State private var eyeOpen: CGFloat = 1
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { ctx in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || CloudE2E.pauseIdleAnimations)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             let bob = reduceMotion ? 0 : sin(t * 3.2)
             CloudBotAvatarView(spec: spec, size: size, gaze: gaze, eyeOpen: eyeOpen)

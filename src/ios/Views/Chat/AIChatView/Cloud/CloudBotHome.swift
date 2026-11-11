@@ -1082,7 +1082,7 @@ struct CloudBotChatView: View {
                         if let sid = sessionId {
                             Button { speakLatest(sid) } label: { Label("朗读最新回复", systemImage: "speaker.wave.2") }
                             Button { showComputer = true } label: { Label("电脑", systemImage: "display") }
-                            if incognito == nil, replyPlan != nil {
+                            if incognito == nil {
                                 CloudReplyChatMenu(sessionId: sid, plan: $replyPlan)
                             }
                         }

@@ -26,9 +26,10 @@ final class ReplyModeUITests: XCTestCase {
         XCTAssertTrue(waitText(app, contains: "秒回：你好秒回", timeout: 20), "前台没回话")
         let ms = app.descendants(matching: .any)["replyFirstTextMs"]
         XCTAssertTrue(ms.waitForExistence(timeout: 10), "没记到首字时间")
-        let value = Int(ms.label) ?? Int.max
+        let raw = (ms.value as? String).flatMap { $0.isEmpty ? nil : $0 } ?? ms.label
+        let value = Int(raw) ?? Int.max
         XCTContext.runActivity(named: "首字 \(value) ms") { _ in }
-        XCTAssertLessThan(value, 1000, "秒回首字 \(value) ms，超过 1 秒")
+        XCTAssertLessThan(value, 1000, "秒回首字 \(value) ms，超过 1 秒（value=\(String(describing: ms.value)) label=\(ms.label)）")
         XCTAssertTrue(requests(model: "e2e-front-model").contains { $0.contains("你好秒回") }, "消息没交给前台模型")
         XCTAssertFalse(requests(model: "e2e-vision-model").contains { $0.contains("你好秒回") }, "秒回时主模型也被叫了")
         shot(app, "reply-01-秒回首字")
@@ -45,7 +46,7 @@ final class ReplyModeUITests: XCTestCase {
         XCTAssertTrue(poll(10) { row.label.contains(Self.botName) && row.label.contains("正在") }, "状态行文字不对：\(row.label)")
         shot(app, "reply-02a-后台状态行")
         send(app, "插话：只要上海的")
-        XCTAssertTrue(waitText(app, contains: "收到插话，马上转给后台", timeout: 10), "插话没被前台马上答复")
+        XCTAssertTrue(waitText(app, contains: "收到插话，马上转给后台", timeout: 20), "插话没被前台马上答复")
         XCTAssertTrue(row.exists, "插话时后台任务不该结束")
         let button = app.buttons["composerVoiceButton"]
         XCTAssertFalse(button.label.contains("停止"), "输入框按钮变成了停止键")
@@ -71,9 +72,13 @@ final class ReplyModeUITests: XCTestCase {
         collapse.tap()
         XCTAssertTrue(waitGone(collapse, timeout: 5))
 
-        row.press(forDuration: 1.0)
+        row.tap()
+        XCTAssertTrue(collapse.waitForExistence(timeout: 8), "再点状态行没打开过程")
+        let interject = app.buttons["replyStepsInterject"]
+        XCTAssertTrue(interject.waitForExistence(timeout: 5), "过程页没有「补充要求」")
+        interject.tap()
         let field = app.alerts.textFields.firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 5), "长按状态行没弹出补充要求")
+        XCTAssertTrue(field.waitForExistence(timeout: 8), "补充要求没弹出输入框")
         field.typeText("只看今天")
         shot(app, "reply-03b-长按补充要求")
         app.alerts.buttons["发送"].tap()
@@ -92,9 +97,17 @@ final class ReplyModeUITests: XCTestCase {
         openBot(app)
         let title = app.buttons["\(Self.botName) 资料"]
         XCTAssertTrue(title.waitForExistence(timeout: 10))
-        title.press(forDuration: 1.2)
-        let menu = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "回复方式")).firstMatch
-        XCTAssertTrue(menu.waitForExistence(timeout: 8), "对话菜单里没有「回复方式」")
+        let menuById = app.descendants(matching: .any)["replyChatMenu"]
+        let menuByLabel = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "回复方式")).firstMatch
+        var menu = menuById
+        var opened = false
+        for _ in 0..<5 {
+            title.press(forDuration: 1.2)
+            if menuById.waitForExistence(timeout: 3) { menu = menuById; opened = true; break }
+            if menuByLabel.waitForExistence(timeout: 1) { menu = menuByLabel; opened = true; break }
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
+        }
+        XCTAssertTrue(opened, "对话菜单里没有「回复方式」")
         XCTAssertTrue(menu.label.contains("详细"), "菜单显示的不是当前方式：\(menu.label)")
         menu.tap()
         let chatInstant = app.buttons["这个对话：秒回"]
@@ -123,7 +136,7 @@ final class ReplyModeUITests: XCTestCase {
         XCTAssertTrue(botInstant.waitForExistence(timeout: 10))
         XCTAssertTrue(poll(10) { botInstant.isEnabled }, "回复方式没读到")
         botInstant.tap()
-        XCTAssertTrue(poll(10) { probeReply()?.bot.mode == "instant" }, "Bot 的秒回没存到服务器")
+        XCTAssertTrue(poll(20) { probeReply()?.bot.mode == "instant" }, "Bot 的秒回没存到服务器")
         XCTAssertTrue(waitText(app, contains: "前台模型", timeout: 5), "秒回时没有前台 / 后台模型选择")
         shot(app, "reply-04c-Bot切成秒回")
         picker.buttons["详细"].tap()

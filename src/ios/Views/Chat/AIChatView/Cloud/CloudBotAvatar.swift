@@ -457,7 +457,7 @@ struct CloudBotAliveAvatar: View {
     @State private var shy = false
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { ctx in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || CloudE2E.pauseIdleAnimations)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             let breath = reduceMotion ? 0 : sin(t * 1.6)
             let tilt = CloudBotMood.tilt(gaze: (Double(gaze.width), Double(gaze.height)), shy: shy)
