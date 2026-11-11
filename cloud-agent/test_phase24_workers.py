@@ -173,7 +173,10 @@ class WorkerTests(CloudServerTestCase):
         # App 里的停止按钮：对已结束的任务也安全
         self.assertEqual(self.request("POST", f"/v1/workers/{wid}/stop", {})[1]["worker"]["status"], "cancelled")
 
-    def test_04_restart_marks_interrupted_honestly_and_resume(self):
+    def test_04_restart_pauses_and_asks_to_resume(self):
+        self.request("PUT", "/v1/credentials/wk4", {"api_key": "sk-inline-test-key-000000000000", "base_url": self.model_base})
+        self.request("PUT", "/v1/bots/boss", {"name": "总管", "instructions": "你是总管", "is_primary": True,
+                                              "model": "m-w4", "credential": "wk4"})
         sid = self.request("POST", "/v1/sessions", {"title": "t", "persona_id": "boss"})[1]["session_id"]
         conn = self.srv.get_db_connection()
         try:
@@ -182,28 +185,28 @@ class WorkerTests(CloudServerTestCase):
                          (w["worker_session"], time.time()))
             conn.commit()
             cloud_workers.set_status(conn, w["worker_id"], "running", task_id="task_fakerestart", started_at=time.time())
+            cloud_workers.set_runtime(conn, w["worker_id"], "m-w4", {"credential": "wk4", "protocol": "chat"})
         finally:
             conn.close()
-        self.srv.init_db()       # 模拟重启
-        self.srv.init_db()       # 再重启一次也不会重复发
+        self.srv.init_db()       # 模拟重启：应暂停并问要不要继续
+        self.srv.init_db()       # 再重启一次也不会重复发选项卡
         got = self.request("GET", f"/v1/workers/{w['worker_id']}")[1]["worker"]
-        self.assertEqual(got["status"], "interrupted")
-        res = self._results(sid)
-        self.assertEqual(len(res), 1)
-        self.assertIn("中断", res[0]["content"])
+        self.assertEqual(got["status"], "paused")
+        self.assertTrue(got.get("can_resume"))
+        msgs = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
+        cards = [m for m in msgs if m["role"] == "assistant" and "要继续吗" in (m.get("content") or "")]
+        self.assertEqual(len(cards), 1)
+        self.assertNotIn("中断", cards[0]["content"])
 
         def worker(d):
             return {"role": "assistant", "content": "报告整理好了"}
-
-        def extra(d):
-            if "继续" in last_user(d) and not fresh_tools(d):
-                return tool_call("c1", "task_resume", {"id": w["worker_id"]})
-            return None
-        FakeModelHandler.scripts["m-w4"] = self._front_script(worker, extra=extra)
-        self._say(sid, "继续", "m-w4")
+        FakeModelHandler.scripts["m-w4"] = self._front_script(worker)
+        status, body = self.submit(sid, "继续", "m-w4", choice_answer={"message_id": cards[0]["id"], "selected": ["1"]})
+        self.assertIn(status, (200, 202), body)
         done = self._wait_worker(w["worker_id"], {"completed"})
         self.assertEqual(done["result"], "报告整理好了")
-        self.assertEqual(len(self._wait_results(sid, 2)), 2)
+        res = self._wait_results(sid, 1)
+        self.assertTrue(any("报告整理好了" in (m.get("content") or "") for m in res))
 
     def test_05_soft_cap_queues(self):
         old = cloud_workers.SOFT_CAP

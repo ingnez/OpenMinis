@@ -2,7 +2,7 @@ import AudioToolbox
 import SwiftUI
 import UIKit
 
-/// 回复方式的接口（服务器 2.50.0+）
+/// 回复方式的接口（服务器 2.51.0+）
 @MainActor
 enum CloudReplyService {
     /// 对话菜单改了这个对话的回复方式：对话页重新读一次（userInfo["session_id"]）
@@ -41,6 +41,20 @@ enum CloudReplyService {
 
     static func stop(_ wid: String) async throws {
         _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/workers/\(wid)/stop", body: [:])
+    }
+
+    static func pause(_ wid: String) async throws {
+        _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/workers/\(wid)/pause", body: [:])
+    }
+
+    static func resume(_ wid: String, note: String = "") async throws {
+        var body: [String: Any] = [:]
+        if !note.isEmpty { body["note"] = note }
+        _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/workers/\(wid)/resume", body: body)
+    }
+
+    static func retry(_ wid: String) async throws {
+        _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/workers/\(wid)/retry", body: [:])
     }
 
     static func message(_ wid: String, _ text: String) async throws {
@@ -128,6 +142,42 @@ final class CloudReplyStatusModel: ObservableObject {
                 notice = "已停止「\(w.title)」"
             } catch {
                 notice = "没能停止：\(error.localizedDescription.prefix(80))"
+            }
+            await refresh()
+        }
+    }
+
+    func pause(_ w: CloudReplyWorker) {
+        Task {
+            do {
+                try await CloudReplyService.pause(w.id)
+                notice = "已暂停「\(w.title)」，进度已保存"
+            } catch {
+                notice = "没能暂停：\(error.localizedDescription.prefix(80))"
+            }
+            await refresh()
+        }
+    }
+
+    func resume(_ w: CloudReplyWorker) {
+        Task {
+            do {
+                try await CloudReplyService.resume(w.id)
+                notice = "继续「\(w.title)」"
+            } catch {
+                notice = "没能继续：\(error.localizedDescription.prefix(80))"
+            }
+            await refresh()
+        }
+    }
+
+    func retry(_ w: CloudReplyWorker) {
+        Task {
+            do {
+                try await CloudReplyService.retry(w.id)
+                notice = "重试「\(w.title)」"
+            } catch {
+                notice = "没能重试：\(error.localizedDescription.prefix(80))"
             }
             await refresh()
         }
@@ -506,9 +556,10 @@ struct CloudReplyComposerSlot: View {
     var body: some View {
         if instant, let w = status.current {
             // 秒回：后台在做什么（一句话 + 用时），点开看过程、左滑停止、长按补充要求
-            CloudReplyStatusRow(worker: w, count: status.activeCount, fetchedAt: status.fetchedAt, theme: theme,
-                                onExpand: { status.expanded = w }, onStop: { status.stop(w) },
-                                onInterject: { status.interjecting = w })
+            CloudReplyTaskTray(worker: w, count: status.activeCount, fetchedAt: status.fetchedAt, theme: theme,
+                               onExpand: { status.expanded = w }, onStop: { status.stop(w) },
+                               onPause: { status.pause(w) }, onResume: { status.resume(w) },
+                               onRetry: { status.retry(w) }, onInterject: { status.interjecting = w })
                 .padding(.horizontal, 12)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
         }

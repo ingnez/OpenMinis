@@ -1,6 +1,6 @@
 import Foundation
 
-/// 回复方式（服务器 2.50.0+）：「秒回」前台快模型马上回话、后台 worker 干活；「详细」原来的实时步骤。
+/// 回复方式（服务器 2.51.0+）：「秒回」前台快模型马上回话、后台 worker 干活；「详细」原来的实时步骤。
 /// 只放纯逻辑（Foundation），界面在 CloudReplyViews.swift；Linux 上 scripts/CloudReplyModeTests.swift 跑。
 enum CloudReplyMode: String, CaseIterable, Identifiable {
     case instant
@@ -91,9 +91,13 @@ struct CloudReplyWorker: Equatable, Identifiable {
     var needsDecision: Bool
     var result: String
     var createdAt: Double
+    var canPause: Bool
+    var canResume: Bool
+    var canRetry: Bool
 
     init(id: String, title: String = "后台任务", status: String = "running", phrase: String = "", elapsed: Double = 0,
-         eta: Int? = nil, steps: Int = 0, needsDecision: Bool = false, result: String = "", createdAt: Double = 0) {
+         eta: Int? = nil, steps: Int = 0, needsDecision: Bool = false, result: String = "", createdAt: Double = 0,
+         canPause: Bool? = nil, canResume: Bool? = nil, canRetry: Bool = false) {
         self.id = id
         self.title = title
         self.status = status
@@ -104,6 +108,9 @@ struct CloudReplyWorker: Equatable, Identifiable {
         self.needsDecision = needsDecision
         self.result = result
         self.createdAt = createdAt
+        self.canPause = canPause ?? (status == "queued" || status == "running")
+        self.canResume = canResume ?? (status == "paused")
+        self.canRetry = canRetry
     }
 
     init?(json d: [String: Any]) {
@@ -120,9 +127,13 @@ struct CloudReplyWorker: Equatable, Identifiable {
         needsDecision = d["needs_decision"] as? Bool ?? false
         result = d["result"] as? String ?? ""
         createdAt = (d["created_at"] as? NSNumber)?.doubleValue ?? 0
+        canPause = d["can_pause"] as? Bool ?? (status == "queued" || status == "running")
+        canResume = d["can_resume"] as? Bool ?? (status == "paused")
+        canRetry = d["can_retry"] as? Bool ?? ["failed", "cancelled", "interrupted", "limit_reached"].contains(status)
     }
 
     var active: Bool { status == "queued" || status == "running" }
+    var inTray: Bool { active || status == "paused" || needsDecision }
 }
 
 enum CloudReplyText {
@@ -158,6 +169,7 @@ enum CloudReplyText {
     static func phrase(_ w: CloudReplyWorker) -> String {
         if w.needsDecision { return "等你决定" }
         if w.status == "queued" { return "排队等待开始" }
+        if w.status == "paused" { return w.phrase.isEmpty ? "已暂停，进度已保存" : w.phrase }
         return w.phrase.isEmpty ? startPhrase : w.phrase
     }
 
@@ -174,6 +186,7 @@ enum CloudReplyText {
         case "completed": return "后台的事做完了，结果发在对话里。"
         case "failed", "interrupted", "limit_reached": return "后台的事没做完，详情在对话里。"
         case "cancelled": return "后台任务已经停了。"
+        case "paused": return "后台任务已暂停，进度已保存。"
         default: return "后台正在\(phrase(w))。"
         }
     }
@@ -215,6 +228,8 @@ enum CloudReplyRow {
     static func current(_ workers: [CloudReplyWorker], finishedAt: [String: Date] = [:], now: Date = Date()) -> CloudReplyWorker? {
         let active = workers.filter(\.active).sorted { $0.createdAt > $1.createdAt }
         if let a = active.first { return a }
+        let paused = workers.filter { $0.status == "paused" }.sorted { $0.createdAt > $1.createdAt }
+        if let p = paused.first { return p }
         return workers.filter { w in finishedAt[w.id].map { now.timeIntervalSince($0) < lingerSeconds } ?? false }
             .sorted { $0.createdAt > $1.createdAt }.first
     }

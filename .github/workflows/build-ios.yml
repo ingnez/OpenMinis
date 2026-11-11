@@ -286,6 +286,16 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReplyMode.swift scripts/CloudReplyModeTests.swift -o /tmp/cloud-reply-mode-tests
           /tmp/cloud-reply-mode-tests
+      - name: 误贴假密钥遮罩测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSecretMask.swift scripts/CloudSecretMaskTests.swift -o /tmp/cloud-secret-mask-tests
+          /tmp/cloud-secret-mask-tests
+      - name: 审批卡一次/本任务选项测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudApprovalActions.swift scripts/CloudApprovalActionsTests.swift -o /tmp/cloud-approval-actions-tests
+          /tmp/cloud-approval-actions-tests
       - name: Spotlight 搜 Bot 规则测试
         run: |
           set -o pipefail
@@ -1156,6 +1166,7 @@ jobs:
             -only-testing:MinisUITests/E2EFlowsUITests \
             -only-testing:MinisUITests/MiscControlsUITests \
             -only-testing:MinisUITests/ReplyModeUITests \
+            -only-testing:MinisUITests/FrogP0UITests \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 150 \
             -maximum-test-execution-time-allowance 240 \

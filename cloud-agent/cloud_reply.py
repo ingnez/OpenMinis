@@ -189,7 +189,7 @@ def status_phrase(status, steps):
         return QUEUED_PHRASE
     if status not in ("running",):
         return {"completed": "已完成", "failed": "没做完", "cancelled": "已停止", "interrupted": "中断了",
-                "limit_reached": "步数到上限了"}.get(status, "已结束")
+                "limit_reached": "步数到上限了", "paused": "已暂停，进度已保存"}.get(status, "已结束")
     if not steps:
         return START_PHRASE
     tool, args, done = steps[-1]

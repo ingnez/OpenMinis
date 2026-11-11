@@ -126,7 +126,8 @@ def _serve(handler):
 class CloudServerTestCase(unittest.TestCase):
     token = "phase1-test-token"
     extra_env = {}
-    approval_mode = None   # "ask" = 这一组测试要看审批卡（服务端默认「一律批准」）
+    approval_mode = "auto"  # 测试夹具默认一律批准，避免未声明的脚本被新产品默认的「先问我」卡住；要看审批卡的测试组改成 "ask"
+    apply_approval_fixture = True  # False = 不改产品默认，用来测新 Bot / 新服务器默认是「先问我」
     reply_default = "verbose"   # 老测试测的是「详细」那条路；回复方式自己的测试设成 None，按真实默认（秒回）跑
 
     @classmethod
@@ -166,8 +167,9 @@ class CloudServerTestCase(unittest.TestCase):
         cls.notify_server, nport = _serve(NotifySinkHandler)
         cls.notify_base = f"http://127.0.0.1:{nport}"
         cls.api_server, cls.api_port = _serve(srv.CloudAgentHandler)
-        if cls.approval_mode:
-            srv.update_resource_settings({"bot_defaults": {"approval_mode": cls.approval_mode}})
+        # 测试夹具显式写上 approval_mode（默认 auto）。不写的话会落到产品默认 ask。
+        if cls.apply_approval_fixture:
+            srv.update_resource_settings({"bot_defaults": {"approval_mode": cls.approval_mode or "auto"}})
 
     @classmethod
     def tearDownClass(cls):

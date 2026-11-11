@@ -1806,7 +1806,12 @@ struct CloudSessionView: View {
     }
 
     private func sendTask() {
-        let content = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        var content = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let masked = CloudSecretMask.maskPasted(content)
+        if masked != content {
+            inputPrompt = masked
+            content = masked
+        }
         guard !content.isEmpty || !attachments.isEmpty, !isSubmitting else { return }
         if content == "/reset" && attachments.isEmpty {
             inputPrompt = ""

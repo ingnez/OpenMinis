@@ -226,7 +226,7 @@ public final class CloudChatBridge: ObservableObject {
         let nonce = getOrMakeClientNonce(for: localSessionId)
 
         var messagePayload: [String: Any] = [
-            "content": promptContent,
+            "content": CloudSecretMask.maskPasted(promptContent),
             "model": model,
             "client_nonce": nonce,
             "provider": [
