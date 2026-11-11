@@ -49,6 +49,13 @@ enum CloudE2E {
     /// 听写 E2E：假音量 + 一句逐字出来的假文字（不碰麦克风和语音识别权限）
     static var fakeDictation: Bool { token != nil && ProcessInfo.processInfo.environment["OPENMINIS_E2E_FAKE_DICTATION"] == "1" }
 
+    /// 点声波时再注入一次：启动时注入的服务商会被服务商库的异步首次加载（数据库 dump 覆盖内存配置）冲掉，
+    /// 42976420696 test21 两次都因此走了轮流通话页。到点按钮时首次加载早已结束，这次注入会留下
+    @MainActor
+    static func reapplyRealtimeProvider() {
+        if let rt = realtimeURL { injectRealtimeProvider(url: rt) }
+    }
+
     /// 假实时服务商（全是假数据）：选进全局「实时语音」设置
     @MainActor
     static func injectRealtimeProvider(url: String) {
@@ -93,6 +100,7 @@ enum CloudE2E {
     static var realtimeURL: String? { nil }
     static var fakeMic: Bool { false }
     static var fakeDictation: Bool { false }
+    static func reapplyRealtimeProvider() {}
     static let realtimeLabel = ""
     static var token: String? { nil }
     static var fakeAttachments: Int { 0 }

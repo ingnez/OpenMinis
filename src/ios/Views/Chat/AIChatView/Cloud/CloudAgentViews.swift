@@ -1388,6 +1388,7 @@ struct CloudSessionView: View {
     private func openVoiceCall() {
         // 点了就先给手感，接不通也一定说原因（真机：键盘开着点声波「没反应」——接通失败只写在消息列表底下看不见的小字里）
         CloudHaptics.tap()
+        CloudE2E.reapplyRealtimeProvider()
         // 配好了实时语音：顶部浮动胶囊通话，对话留在下面；没配好：轮流通话全屏页
         guard let theme, CloudBotRealtimeAvailability.isConfigured(botId: theme.botId) else { openTurnsVoice(); return }
         // 选过「以后这个模型都直接用普通语音」
