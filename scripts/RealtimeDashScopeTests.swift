@@ -38,7 +38,12 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
         let s35 = (D.session(model: "qwen3.5-omni-flash-realtime", voice: "Tina", instructions: "x", tools: RealtimeVoiceProtocol.cloudTools)["session"] as? [String: Any]) ?? [:]
         let input = ((s35["audio"] as? [String: Any])?["input"] as? [String: Any])?["format"] as? [String: Any]
         check(input?["sample_rate"] as? Int == 16_000 && input?["type"] as? String == "pcm", "3.5 输入 16k pcm")
-        check((s35["turn_detection"] as? [String: Any])?["type"] as? String == "server_vad", "服务端 VAD")
+        let td = (s35["turn_detection"] as? [String: Any]) ?? [:]
+        check(td["type"] as? String == "server_vad", "服务端 VAD")
+        let threshold = td["threshold"] as? Double ?? (td["threshold"] as? Int).map(Double.init)
+        check(threshold == 0.7, "VAD 阈值抬高，减轻回声误触发")
+        check(td["interrupt_response"] as? Bool == false, "服务端不自动打断，由客户端门控")
+        check((s35["modalities"] as? [String]) == ["text", "audio"], "会话要同时出文字和声音")
         check(s35["tools"] != nil, "3.5 带工具")
         let s3 = (D.session(model: "qwen3-omni-flash-realtime", voice: "Cherry", instructions: "x", tools: RealtimeVoiceProtocol.cloudTools)["session"] as? [String: Any]) ?? [:]
         check(s3["input_audio_format"] as? String == "pcm16" && s3["tools"] == nil && s3["audio"] == nil, "旧型号用历史字段、不发工具")
@@ -88,6 +93,9 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
         var probeReply = ""
         var probeDone = false
         var deniedParsed = false
+        var waitingBargeIn = false
+        var cancelCount = 0
+        var audioDeltas = 0
         loop: while true {
             let ev = try await next()
             let t = ev["type"] as? String ?? ""
@@ -101,14 +109,38 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
             case "response.created": responding = true
             case "response.audio_transcript.delta":
                 if ev["response_id"] as? String == "resp_2" { probeReply += ev["delta"] as? String ?? "" } else { heard += ev["delta"] as? String ?? "" }
+            case "response.audio.delta", "response.output_audio.delta":
+                if ev["response_id"] as? String != "resp_2" { audioDeltas += 1 }
             case "input_audio_buffer.speech_started":
-                // 和 RealtimeVoiceSession 一样：百炼由客户端发 response.cancel
-                if responding { try await send(["type": "response.cancel"]) }
+                // 与 RealtimeVoiceSession 相同：播放中的裸 speech_started 先等，不立刻取消
+                switch RealtimeBargeIn.onSpeechStarted(botPlaying: responding, muted: false) {
+                case .wait: waitingBargeIn = true
+                case .cancel:
+                    if responding { cancelCount += 1; try await send(["type": "response.cancel"]) }
+                case .ignore: break
+                }
+            case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
+                if waitingBargeIn {
+                    switch RealtimeBargeIn.onSpeechStopped(elapsedMs: 0, hasUserTranscript: RealtimeBargeIn.transcriptConfirmsBargeIn(userText)) {
+                    case .cancel:
+                        waitingBargeIn = false
+                        if responding { cancelCount += 1; try await send(["type": "response.cancel"]) }
+                    case .ignore:
+                        waitingBargeIn = false
+                    case .wait:
+                        break
+                    }
+                }
             case "response.done":
                 responding = false
                 let r = ev["response"] as? [String: Any] ?? [:]
                 if r["id"] as? String == "resp_2" { probeDone = r["status"] as? String == "completed" }
-            case "conversation.item.input_audio_transcription.completed": userText = ev["transcript"] as? String ?? ""
+            case "conversation.item.input_audio_transcription.completed":
+                userText = ev["transcript"] as? String ?? ""
+                if waitingBargeIn, RealtimeBargeIn.transcriptConfirmsBargeIn(userText) {
+                    waitingBargeIn = false
+                    if responding { cancelCount += 1; try await send(["type": "response.cancel"]) }
+                }
             case "error":
                 let e = ev["error"] as? [String: Any] ?? [:]
                 check(D.isBenignError(code: e["code"] as? String ?? "", message: e["message"] as? String ?? ""), "假服务的取消竞态应被忽略")
@@ -125,8 +157,10 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
         }
         ws.cancel(with: .normalClosure, reason: nil)
         check(heard == "你好" && userText == "等一下" && benignSkipped && !responding, "事件顺序：\(seen)")
+        check(cancelCount == 1, "回声不取消，有转写的插话才取消一次：\(cancelCount) \(seen)")
+        check(audioDeltas > 0, "用户提问后要有回复音频：\(audioDeltas)")
         check(probeReply == "好" && probeDone, "一来一回：插用户文字后假服务回复「好」：\(seen)")
         check(deniedParsed, "裸 AccessDenied 错误被识别：\(seen)")
-        print("PASS：百炼协议识别、地址、音色映射、会话配置、历史合并，假服务往返（握手→配置→16k 音频→回复→插话取消→转写→一来一回→裸错误）")
+        print("PASS：百炼协议识别、地址、音色映射、会话配置、历史合并，假服务往返（握手→配置→16k 音频→回复→回声不取消→转写确认才打断→一来一回→裸错误）")
     }
 }

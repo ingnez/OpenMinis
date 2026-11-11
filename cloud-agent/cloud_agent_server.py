@@ -640,7 +640,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.50.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.51.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -8224,6 +8224,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send(202, {"message_id": mid})
             return
 
+        m_retry = re.match(r"^/v1/plugins/([a-z0-9][a-z0-9_-]{0,31})/retry$", path)
+        if m_retry:
+            pid = m_retry.group(1)
+            p = PLUGINS.get(pid)
+            if not p:
+                self._send(404, {"error": "Plugin not found"})
+                return
+            try:
+                if p["kind"] == "mcp":
+                    tools = PLUGINS.list_tools(pid, refresh=True)
+                    self._send(200, {"plugin": PLUGINS.get(pid), "tools": tools, "message": "已重新连接"})
+                else:
+                    self._send(200, {"plugin": p, "message": "技能包无需重新连接"})
+            except cloud_mcp.MCPAuthRequired as e:
+                self._send(409, {"error": "needs_auth", "message": str(e), "plugin": PLUGINS.get(pid)})
+            except (cloud_mcp.MCPError, cloud_plugins.PluginError) as e:
+                self._send(400, {"error": str(e), "plugin": PLUGINS.get(pid)})
+            return
+
         m_oauth = re.match(r"^/v1/plugins/([a-z0-9][a-z0-9_-]{0,31})/oauth/(start|finish|disconnect)$", path)
         if m_oauth:
             pid, step = m_oauth.group(1), m_oauth.group(2)
@@ -8263,7 +8282,11 @@ class Handler(BaseHTTPRequestHandler):
             except cloud_plugins.PluginError as e:
                 self._send(400, {"error": str(e)})
                 return
-            self._send(201 if created else 200, p)
+            body = dict(p)
+            body["created"] = created
+            body["already_installed"] = not created
+            body["message"] = "安装成功" if created else "这个插件已经安装过了"
+            self._send(201 if created else 200, body)
             return
 
         m_up = re.match(r"^/v1/sessions/([A-Za-z0-9_-]{1,64})/upload$", path)

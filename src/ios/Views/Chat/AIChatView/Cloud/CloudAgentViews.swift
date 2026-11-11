@@ -1264,6 +1264,7 @@ struct CloudSessionView: View {
                                      tint: theme.accent, inCall: call.active,
                                      onTap: {
                                          if dictation.isRecording { dictation.stop() }
+                                         if call.active, hasDraft { sendTask(); return }
                                          if !hasDraft { openVoiceCall() } else { sendTask() }
                                      },
                                      onPushToTalk: { on in pushToTalk(on, theme: theme) })
@@ -1792,6 +1793,17 @@ struct CloudSessionView: View {
     private func sendTask() {
         let content = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty || !attachments.isEmpty else { return }
+        switch CloudInCallSend.route(inCall: call.active, text: content, hasAttachments: !attachments.isEmpty) {
+        case .realtimeSpeak:
+            inputPrompt = ""
+            call.speakUserText(content)
+            return
+        case .blockAttachments:
+            errorMessage = "正在实时通话，请先挂断再发图片或文件。"
+            return
+        case .textChat:
+            break
+        }
         if content == "/reset" && attachments.isEmpty {
             inputPrompt = ""
             resetContext()

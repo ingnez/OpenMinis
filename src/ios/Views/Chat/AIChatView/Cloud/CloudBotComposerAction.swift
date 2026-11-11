@@ -138,3 +138,15 @@ enum CloudMorphTap {
         return dt >= 0 && dt < window
     }
 }
+
+/// 通话中从输入框发出的内容：交给实时会话用语音回答，不要另开一条云端文字回复。
+enum CloudInCallSend {
+    enum Route: Equatable { case realtimeSpeak, textChat, blockAttachments }
+
+    static func route(inCall: Bool, text: String, hasAttachments: Bool) -> Route {
+        if !inCall { return .textChat }
+        if hasAttachments { return .blockAttachments }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .textChat }
+        return .realtimeSpeak
+    }
+}

@@ -30,17 +30,17 @@ HAVE = HAVE_TK and all(shutil.which(t) for t in ("Xvfb", "xclip", "xdotool"))
 SINK = r'''
 import os, sys, tkinter as tk
 out, cmd = sys.argv[1], sys.argv[2]
-r = tk.Tk(); r.title("om-cc-sink"); r.geometry("700x80+0+0")
-e = tk.Entry(r, width=70); e.pack()
+r = tk.Tk(); r.title("om-cc-sink"); r.geometry("700x160+0+0")
+e = tk.Text(r, width=70, height=4); e.pack()
 def tick():
     try: e.focus_force()
     except Exception: pass
-    with open(out + ".tmp", "w", encoding="utf-8") as f: f.write(e.get())
+    with open(out + ".tmp", "w", encoding="utf-8") as f: f.write(e.get("1.0", "end-1c"))
     os.replace(out + ".tmp", out)
     if os.path.exists(cmd):
         with open(cmd, encoding="utf-8") as f: t = f.read()
         os.remove(cmd)
-        if t == "\x00clear": e.delete(0, "end")
+        if t == "\x00clear": e.delete("1.0", "end")
         else: r.clipboard_clear(); r.clipboard_append(t)
     r.after(80, tick)
 r.after(200, tick); r.mainloop()
@@ -191,6 +191,17 @@ class ClipboardUtf8RealApp(unittest.TestCase):
         self.assertTrue(self._wait("中ab文c"), f"程序收到的是 {self._entry()!r}")
         self.assertEqual(self._act({"action": "key", "key": "BackSpace", "repeat": 2}).get("repeat"), 2)
         self.assertTrue(self._wait("中ab"), f"退格 2 次后程序里是 {self._entry()!r}")
+
+    def test_04b_ascii_space_backspace_return_and_mixed_punctuation(self):
+        """手机键盘 ASCII / 空格 / 退格 / 换行，以及混合「中a1？」都应原样出现在输入框"""
+        self.assertEqual(self._act({"action": "type", "text": "abc 123"}).get("status"), "ok")
+        self.assertTrue(self._wait("abc 123"), f"程序收到的是 {self._entry()!r}")
+        self.assertEqual(self._act({"action": "key", "key": "BackSpace"}).get("status"), "ok")
+        self.assertTrue(self._wait("abc 12"), f"退格后程序里是 {self._entry()!r}")
+        self.assertEqual(self._act({"action": "key", "key": "Return"}).get("status"), "ok")
+        self.assertTrue(self._wait("abc 12\n"), f"换行后程序里是 {self._entry()!r}")
+        self.assertEqual(self._act({"action": "type", "text": "中a1？"}).get("status"), "ok")
+        self.assertTrue(self._wait("abc 12\n中a1？"), f"混合标点后程序里是 {self._entry()!r}")
 
     def test_05_phone_clipboard_then_remote_ctrl_v(self):
         text = "手机剪贴板→云电脑：粘贴中文✓"

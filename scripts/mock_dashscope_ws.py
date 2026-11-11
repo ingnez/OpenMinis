@@ -95,10 +95,14 @@ def serve(conn, verdict_path):
                 send_text(conn, {"type": "response.audio.delta", "response_id": "resp_1", "item_id": "item_a1",
                                  "content_index": 0, "delta": base64.b64encode(b"\0\0" * 240).decode()})
             if appends == 3:
-                send_text(conn, {"type": "input_audio_buffer.speech_started", "audio_start_ms": 0, "item_id": "item_u2"})
-                # 真百炼在转写完成前会发 delta（字段是 text / stash，不是 delta），客户端应忽略
+                # 回声：短暂 speech_started + speech_stopped，没有转写。客户端不应发 response.cancel
+                send_text(conn, {"type": "input_audio_buffer.speech_started", "audio_start_ms": 0, "item_id": "item_echo"})
+                send_text(conn, {"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 80, "item_id": "item_echo"})
+                # 真插话：随后的非空转写才允许取消
+                send_text(conn, {"type": "input_audio_buffer.speech_started", "audio_start_ms": 80, "item_id": "item_u2"})
                 send_text(conn, {"type": "conversation.item.input_audio_transcription.delta", "item_id": "item_u2",
                                  "content_index": 0, "text": "", "stash": "等", "language": "zh"})
+                send_text(conn, {"type": "conversation.item.input_audio_transcription.completed", "item_id": "item_u2", "transcript": "等一下"})
         elif t == "conversation.item.create":
             item = ev.get("item", {})
             v.setdefault("items", []).append(item)
@@ -123,7 +127,6 @@ def serve(conn, verdict_path):
         elif t == "response.cancel":
             cancelled = True
             send_text(conn, {"type": "response.done", "response": {"id": "resp_1", "status": "cancelled"}})
-            send_text(conn, {"type": "conversation.item.input_audio_transcription.completed", "item_id": "item_u2", "transcript": "等一下"})
             send_text(conn, {"type": "error", "error": {"code": "invalid_request_error", "message": "Cancellation failed: no active response found"}})
     v["cancel_received"] = cancelled
     with open(verdict_path, "w") as f:

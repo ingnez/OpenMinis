@@ -70,7 +70,9 @@ final class RealtimeVoiceAudio {
             let engine = AVAudioEngine()
             self.engine = engine
             // VoiceProcessingIO 在同一个引擎内处理收音和播放，提供回声消除。
-            try engine.inputNode.setVoiceProcessingEnabled(true)
+            // 会话已是 playAndRecord + voiceChat + defaultToSpeaker，AEC 才有效。
+            do { try engine.inputNode.setVoiceProcessingEnabled(true) }
+            catch { /* 模拟器或设备不支持时仍继续开麦，避免整通电话起不来 */ }
             let inputFormat = engine.inputNode.outputFormat(forBus: 0)
             guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
                   let encoder = RealtimePCMEncoder(source: inputFormat, rate: inputSampleRate) else {

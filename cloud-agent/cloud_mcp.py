@@ -10,6 +10,7 @@ import os
 import queue
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -30,17 +31,42 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise urllib.error.HTTPError(req.full_url, code, "Redirection prohibited", headers, fp)
 
 
+STDERR_TAIL_CHARS = 4000
+# 首次 initialize：uvx/npx 可能要从 PyPI/npm 拉包，60 秒经常不够
+STDIO_INIT_TIMEOUT = 180
+
+
 class StdioClient:
     def __init__(self, command, args=None, env=None, cwd=None, timeout=60):
         self.timeout = timeout
         full_env = dict(os.environ)
         full_env.update(env or {})
+        self._stderr_chunks = []
+        self._stderr_lock = threading.Lock()
         self.proc = subprocess.Popen([command] + list(args or []), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, env=full_env, cwd=cwd, text=True, bufsize=1)
+                                     stderr=subprocess.PIPE, env=full_env, cwd=cwd, text=True, bufsize=1)
         self._lines = queue.Queue()
         self._next = 0
         self._lock = threading.Lock()
         threading.Thread(target=self._reader, daemon=True).start()
+        threading.Thread(target=self._stderr_reader, daemon=True).start()
+
+    def _stderr_reader(self):
+        # 必须按行读：read(n) 会等到满 n 个字符或 EOF，短日志在超时前一直进不了缓冲区
+        try:
+            for line in iter(self.proc.stderr.readline, ""):
+                with self._stderr_lock:
+                    self._stderr_chunks.append(line)
+                    joined = "".join(self._stderr_chunks)
+                    if len(joined) > STDERR_TAIL_CHARS * 2:
+                        self._stderr_chunks = [joined[-STDERR_TAIL_CHARS:]]
+        except Exception:
+            pass
+
+    def stderr_tail(self):
+        with self._stderr_lock:
+            text = "".join(self._stderr_chunks)
+        return text[-STDERR_TAIL_CHARS:].strip()
 
     def _reader(self):
         for line in self.proc.stdout:
@@ -165,19 +191,63 @@ class HttpClient:
         pass
 
 
-def connect(spec, env=None, headers=None, cwd=None, timeout=60):
-    """按 spec（{"transport":"stdio","command","args"} 或 {"transport":"http","url"}）建立连接并完成握手。"""
-    if spec.get("transport") == "http":
-        client = HttpClient(spec["url"], headers=headers, timeout=timeout)
+def _annotate_mcp_error(err, client):
+    """把 stdio 进程 stderr 尾部附进错误，方便定位 uvx/npx 拉包失败。"""
+    if hasattr(client, "stderr_tail") and not client.stderr_tail():
+        time.sleep(0.05)
+    tail = client.stderr_tail() if hasattr(client, "stderr_tail") else ""
+    if not tail:
+        return err if isinstance(err, MCPError) else MCPError(str(err))
+    msg = str(err)
+    if "stderr：" in msg or tail[:200] in msg:
+        return err if isinstance(err, MCPError) else MCPError(msg)
+    annotated = f"{msg}（stderr：{tail[-800:]}）"
+    if isinstance(err, MCPAuthRequired):
+        return err
+    return MCPError(annotated)
+
+
+def connect(spec, env=None, headers=None, cwd=None, timeout=None):
+    """按 spec（{"transport":"stdio","command","args"} 或 {"transport":"http","url"}）建立连接并完成握手。
+
+    stdio 首次 initialize 默认等 180 秒（uvx 冷启动拉包），失败再自动重试一次；
+    显式传入 timeout 时以传入值为准（单元测试可缩短）。HTTP 默认仍是 60 秒。
+    """
+    http = spec.get("transport") == "http"
+    if timeout is None:
+        init_timeout = 60 if http else STDIO_INIT_TIMEOUT
     else:
-        client = StdioClient(spec["command"], spec.get("args"), env=env, cwd=cwd, timeout=timeout)
+        init_timeout = timeout
+    later_timeout = timeout if timeout is not None else 60
+
+    def _handshake():
+        if http:
+            client = HttpClient(spec["url"], headers=headers, timeout=later_timeout)
+        else:
+            client = StdioClient(spec["command"], spec.get("args"), env=env, cwd=cwd, timeout=later_timeout)
+        try:
+            client.request("initialize", {"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": CLIENT_INFO},
+                           timeout=init_timeout)
+            client.notify("notifications/initialized")
+            client.timeout = later_timeout
+            return client
+        except MCPAuthRequired:
+            client.close()
+            raise
+        except Exception as e:
+            wrapped = _annotate_mcp_error(e, client)
+            client.close()
+            raise wrapped
+
     try:
-        client.request("initialize", {"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": CLIENT_INFO})
-        client.notify("notifications/initialized")
-    except Exception:
-        client.close()
+        return _handshake()
+    except MCPAuthRequired:
         raise
-    return client
+    except MCPError:
+        if http:
+            raise
+        # 第一次 uvx 可能在下载中途失败；新进程常能命中缓存
+        return _handshake()
 
 
 def list_tools(client):

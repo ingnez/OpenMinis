@@ -56,6 +56,28 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
               && RealtimeCallHealth.isServerHeard("conversation.item.input_audio_transcription.delta")
               && RealtimeCallHealth.isServerHeard("response.created")
               && !RealtimeCallHealth.isServerHeard("session.updated"), "哪些事件算服务端听到了")
-        print("PASS：实时通话健康检查（上行没人理、哑麦、下行播不出来、按住说话）")
+
+        // 插话门槛：播放中的一次 speech_started（无转写）不能立刻取消
+        check(RealtimeBargeIn.onSpeechStarted(botPlaying: true, muted: false) == .wait, "播放中先等")
+        check(RealtimeBargeIn.onSpeechStarted(botPlaying: true, muted: true) == .ignore, "静音不插话")
+        check(RealtimeBargeIn.onSpeechStarted(botPlaying: false, muted: false) == .ignore, "没在播不必取消")
+        check(RealtimeBargeIn.confirmMs > 0.8, "等待必须长过 VAD 静音窗口，否则回声会在 speech_stopped 前被当成插话")
+        check(RealtimeBargeIn.onSpeechStopped(elapsedMs: 120, hasUserTranscript: false) == .wait, "短促回声先等转写或到期")
+        check(RealtimeBargeIn.onSpeechStopped(elapsedMs: 900, hasUserTranscript: false) == .wait, "没转写时不靠时长取消")
+        check(RealtimeBargeIn.onSpeechStopped(elapsedMs: 80, hasUserTranscript: true) == .cancel, "有转写就取消")
+        check(RealtimeBargeIn.onConfirmDeadline(stillWaiting: true, hasUserTranscript: false, speechStillActive: true) == .cancel, "到期仍在说就取消")
+        check(RealtimeBargeIn.onConfirmDeadline(stillWaiting: true, hasUserTranscript: false, speechStillActive: false) == .ignore, "到期已停且无转写则放过")
+        check(RealtimeBargeIn.transcriptConfirmsBargeIn("你好") && !RealtimeBargeIn.transcriptConfirmsBargeIn("  "), "非空转写才算插话")
+
+        let kept = RealtimeInterruptText.apply(existing: "在的，我听着呢。", userSpoke: false)
+        check(kept.text == "在的，我听着呢。" && kept.interrupted == false, "用户没说话时保留原字幕、不当成被打断")
+        let marked = RealtimeInterruptText.apply(existing: "在的，我听着呢。", userSpoke: true)
+        check(marked.text == "在的，我听着呢。（已打断）" && marked.interrupted, "真插话保留字幕并轻标")
+        let empty = RealtimeInterruptText.apply(existing: "", userSpoke: true)
+        check(empty.text == RealtimeInterruptText.subtleMark && empty.interrupted, "没字幕时只标已打断，不用旧占位句")
+        let legacy = RealtimeInterruptText.apply(existing: RealtimeInterruptText.legacyPlaceholder, userSpoke: true)
+        check(legacy.text == RealtimeInterruptText.subtleMark, "旧占位句换成轻标")
+
+        print("PASS：实时通话健康检查（上行没人理、哑麦、下行播不出来、按住说话、插话门槛）")
     }
 }

@@ -221,6 +221,13 @@ done
 
 if [ "$HEALTH_CHECK_OK" = "OK" ]; then
   echo "[+] 健康检查成功 (HTTP 200 OK, JSON status == ok)"
+  echo "=== 7b. 预热内置 Python MCP 插件（uvx 拉包，避免首次打开「时间与时区」超时）==="
+  if timeout 300 sudo -u "$SERVICE_USER" -H env HOME="$VAR_LIB_DIR" PATH="$VAR_LIB_DIR/.local/bin:$PATH" \
+      python3 "$INSTALL_DIR/cloud_plugin_catalog.py" --warm; then
+    echo "[+] 内置 uvx 插件已预热"
+  else
+    echo "[-] 警告: 插件预热未完成（可能还没安装 uv，或 PyPI 较慢）。首次打开「时间与时区」可能仍需等待；可在插件市场安装 uv 后，再执行一次本安装脚本。"
+  fi
 else
   echo "[-] 错误: ${HEALTH_WAIT_SECONDS} 秒内服务未通过健康检查：${LAST_HEALTH_ERROR}"
   systemctl status openminis-cloud-agent --no-pager -l 2>&1 | tail -n 15 || true

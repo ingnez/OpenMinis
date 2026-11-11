@@ -45,7 +45,7 @@ struct CloudComputerView: View {
             screen
             statusOverlay
             CloudIMEField(focused: $keyboardFocused, onEvents: { ctl.type($0, viaServer: typeViaServer) },
-                          onReturn: { ctl.key(.enter) })
+                          onReturn: { ctl.type([.text("\n")], viaServer: typeViaServer) })
                 .frame(width: 1, height: 1)
         }
         .safeAreaInset(edge: .top) { if !immersive { topBar } }
@@ -402,8 +402,20 @@ struct CloudComputerView: View {
     /// 走服务器的输入（中文等，或排在中文后面的字 / 退格）。中文在服务器上是「放进剪贴板 + Ctrl+V」，
     /// 先记成手机自己送的，剪贴板轮询读到它不会当成「云电脑里复制了」再拷回手机
     private func typeViaServer(_ e: CloudIMECommit.Event, done: @escaping () -> Void) {
-        if case .text(let t) = e, CloudIMECommit.viaServer(t) { clipWatch.expect(String(t.prefix(10000))) }
-        send(CloudTypeOrder.serverPayload(e), always: done)
+        let payloads = CloudTypeOrder.serverPayloads(e)
+        if payloads.isEmpty { done(); return }
+        if case .text(let t) = e {
+            for p in payloads {
+                if p["action"] as? String == "type", let s = p["text"] as? String, CloudIMECommit.viaServer(s) {
+                    clipWatch.expect(String(s.prefix(10000)))
+                }
+            }
+            // 整段里只要有非 ASCII（「中a1？」），也记进期望，避免剪贴板粘贴被当成远端复制
+            if CloudIMECommit.viaServer(t) { clipWatch.expect(String(t.prefix(10000))) }
+        }
+        for (i, p) in payloads.enumerated() {
+            send(p, always: i == payloads.count - 1 ? done : nil)
+        }
     }
 
     /// 系统「允许粘贴」会卡住调用线程。不要在主线程读，否则界面冻住、XCTest 也点不了「允许粘贴」。
