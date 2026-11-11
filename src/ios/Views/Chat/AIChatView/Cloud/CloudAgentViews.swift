@@ -659,6 +659,8 @@ struct CloudSessionView: View {
     @State private var showCaseNote = false
     @State private var showTemplates = false
     @State private var showShiftCard = false
+    @State private var showRelay = false
+    @State private var showReplayList = false
     @State private var showFiles = false
     @State private var showVoiceCall = false
     /// 顶部浮动胶囊的实时通话（Bot 模式）
@@ -844,6 +846,11 @@ struct CloudSessionView: View {
         .sheet(isPresented: $showCaseNote) { CloudCaseNoteSheet { inputPrompt = $0 } }
         .sheet(isPresented: $showTemplates) { CloudPromptTemplateSheet(text: $inputPrompt, onDismiss: { showTemplates = false }) }
         .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
+        .sheet(isPresented: $showReplayList) { NavigationStack { CloudReplayListView() } }
+        .sheet(isPresented: $showRelay) {
+            CloudBotRelaySheet(fromBot: theme.botId, fromSession: sessionId,
+                               result: lastAssistantText(), context: "", excludeId: theme.botId)
+        }
         .sheet(isPresented: $showFiles) { CloudFilePicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showVoiceCall) {
             if let theme {
@@ -1271,6 +1278,14 @@ struct CloudSessionView: View {
         .accessibilityLabel(label)
     }
 
+    private func lastAssistantText() -> String {
+        for turn in turns.reversed() where turn.message.role == .assistant {
+            let trimmed = turn.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return CloudBotRelay.clip(trimmed, 2000) }
+        }
+        return inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func runSlash(_ id: String, theme: CloudBotChatTheme) {
         CloudHaptics.selection()
         inputPrompt = ""
@@ -1539,6 +1554,9 @@ struct CloudSessionView: View {
                             }
                             if idx == turns.count - 1, msg.role == .assistant, activeTaskStatus != "running" {
                                 CloudSmartReplyBar(text: msg.content, accent: theme.accent, onPick: quickSend)
+                                CloudTaskActionBar(taskId: loadedTaskId, hasReplay: loadedTaskId != nil,
+                                                   result: msg.content, fromBot: theme.botId, fromSession: sessionId,
+                                                   accent: theme.accent, showReplay: $showReplayList, showRelay: $showRelay)
                             }
                             ForEach(threadRows.filter { threadAnchor($0) == idx }) { CloudBotThreadCollapsedRow(item: $0) }
                             ForEach(callDividers.filter { CloudCallDivider.anchor($0, timestamps: stamps) == idx }) { CloudCallDividerRow(seconds: $0.seconds) }

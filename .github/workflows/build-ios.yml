@@ -370,6 +370,17 @@ jobs:
           /tmp/cloud-pocket-mode-tests
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPromptTemplates.swift scripts/CloudPromptTemplatesTests.swift -o /tmp/cloud-prompt-templates-tests
           /tmp/cloud-prompt-templates-tests
+      - name: 省流、静默时段、多 Bot 接力与夜间护眼单测
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDataSaver.swift scripts/CloudDataSaverTests.swift -o /tmp/cloud-datasaver-tests
+          /tmp/cloud-datasaver-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudQuietHours.swift scripts/CloudQuietHoursTests.swift -o /tmp/cloud-quiet-hours-tests
+          /tmp/cloud-quiet-hours-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotRelay.swift scripts/CloudBotRelayTests.swift -o /tmp/cloud-bot-relay-tests
+          /tmp/cloud-bot-relay-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNightMode.swift scripts/CloudNightModeTests.swift -o /tmp/cloud_nightmode_tests
+          /tmp/cloud_nightmode_tests
       - name: 病区隐私自查单测
         run: |
           set -o pipefail
@@ -758,6 +769,12 @@ jobs:
           /tmp/cloud-pocket-mode-tests | tee cloud-pocket-mode-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPromptTemplates.swift scripts/CloudPromptTemplatesTests.swift -o /tmp/cloud-prompt-templates-tests
           /tmp/cloud-prompt-templates-tests | tee cloud-prompt-templates-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDataSaver.swift scripts/CloudDataSaverTests.swift -o /tmp/cloud-datasaver-tests
+          /tmp/cloud-datasaver-tests | tee cloud-datasaver-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudQuietHours.swift scripts/CloudQuietHoursTests.swift -o /tmp/cloud-quiet-hours-tests
+          /tmp/cloud-quiet-hours-tests | tee cloud-quiet-hours-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotRelay.swift scripts/CloudBotRelayTests.swift -o /tmp/cloud-bot-relay-tests
+          /tmp/cloud-bot-relay-tests | tee cloud-bot-relay-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudLiveStats.swift scripts/CloudLiveStatsTests.swift -o /tmp/cloud-livestats-tests
           /tmp/cloud-livestats-tests | tee cloud-livestats-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPhotoRouter.swift scripts/CloudPhotoRouterTests.swift -o /tmp/cloud-photo-router-tests
@@ -1145,6 +1162,12 @@ jobs:
           /tmp/cloud-pocket-mode-tests | tee cloud-pocket-mode-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPromptTemplates.swift scripts/CloudPromptTemplatesTests.swift -o /tmp/cloud-prompt-templates-tests
           /tmp/cloud-prompt-templates-tests | tee cloud-prompt-templates-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDataSaver.swift scripts/CloudDataSaverTests.swift -o /tmp/cloud-datasaver-tests
+          /tmp/cloud-datasaver-tests | tee cloud-datasaver-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudQuietHours.swift scripts/CloudQuietHoursTests.swift -o /tmp/cloud-quiet-hours-tests
+          /tmp/cloud-quiet-hours-tests | tee cloud-quiet-hours-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotRelay.swift scripts/CloudBotRelayTests.swift -o /tmp/cloud-bot-relay-tests
+          /tmp/cloud-bot-relay-tests | tee cloud-bot-relay-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudLiveStats.swift scripts/CloudLiveStatsTests.swift -o /tmp/cloud-livestats-tests
           /tmp/cloud-livestats-tests | tee cloud-livestats-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPhotoRouter.swift scripts/CloudPhotoRouterTests.swift -o /tmp/cloud-photo-router-tests
@@ -1298,7 +1321,8 @@ jobs:
           MinisUITests/MiscControlsUITests
           MinisUITests/ReplyModeUITests
           MinisUITests/FrogP0UITests
-          MinisUITests/Frog1850UITests"
+          MinisUITests/Frog1850UITests
+          MinisUITests/Frog1850Chunk2UITests"
           ONLY_SRC="${ONLY_TESTING:-}"
           if [ -z "$(printf '%s' "$ONLY_SRC" | tr -d '[:space:]')" ]; then
             ONLY_SRC="$DEFAULT_ONLY_TESTING"

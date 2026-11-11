@@ -96,6 +96,8 @@ import cloud_secret_refs
 import cloud_reply
 import cloud_runmodel
 import cloud_shift_card
+import cloud_quiet_hours
+import cloud_bot_relay
 import cloud_workbench
 import cloud_desktop_files
 import cloud_snapshots
@@ -345,6 +347,7 @@ def init_db():
     cloud_vision.ensure_schema(conn)
     cloud_botthreads.ensure_schema(conn)
     cloud_duty.ensure_schema(conn)
+    cloud_quiet_hours.ensure_schema(conn)
     cloud_exams.ensure_schema(conn)
     cloud_events.ensure_schema(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS feed_feedback (run_id TEXT PRIMARY KEY, liked INTEGER NOT NULL DEFAULT 0, "
@@ -773,6 +776,8 @@ def user_notify(cfg, event, title, body, session_id=None, bot_id=None):
             title, body = "OpenMinis", "有一条新消息（已上锁的 Bot）"
     except Exception as e:
         print(f"notify privacy check failed: {type(e).__name__}", flush=True)
+    if _quiet_maybe_hold(event, title, body, bot_id=bot_id, session_id=session_id):
+        return False
     _duty_record("notify", title, body, bot_id=bot_id, session_id=session_id)
     # 先决定走哪条路：App 进程还活着 → 只进 App 通知流（App 用系统本地通知显示）；
     # App 不在了 → 按设置走 Bark / ntfy / Telegram，并在通知流里标记已推送，App 回来后不再弹一次
@@ -2304,6 +2309,104 @@ def shift_card_ack():
         pin["show_on_open"] = False
         _settings_put("shift_card_pin", pin)
     return {"show_on_open": False}
+
+
+def quiet_cfg():
+    raw = _settings_get("quiet_hours")
+    try:
+        return cloud_quiet_hours.validate({}, raw if isinstance(raw, dict) else None)
+    except cloud_quiet_hours.QuietError:
+        return dict(cloud_quiet_hours.DEFAULT)
+
+
+def _quiet_maybe_hold(event, title, body, bot_id=None, session_id=None, now=None):
+    """静默时段内把完成类通知攒起来，到期再汇总。失败不影响通知本身。"""
+    try:
+        cfg = quiet_cfg()
+        if not cloud_quiet_hours.should_hold(cfg, event, now):
+            return False
+        conn = get_db_connection()
+        try:
+            cloud_quiet_hours.record(conn, event or "notify", title, body, bot_id=bot_id, session_id=session_id, now=now)
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception as e:
+        print(f"quiet hold failed: {type(e).__name__}", flush=True)
+        return False
+
+
+_quiet_lock = threading.Lock()
+
+
+def quiet_hours_check(now=None):
+    """调度器每轮调用：上班窗结束时把攒下的完成通知汇总推送。"""
+    now = time.time() if now is None else now
+    with _quiet_lock:
+        cfg = quiet_cfg()
+        state = _settings_get("quiet_state") or {}
+        new, window = cloud_quiet_hours.transition(state, cfg, now)
+        if new != state:
+            _settings_put("quiet_state", new)
+        if not window:
+            return None
+        conn = get_db_connection()
+        try:
+            digest = cloud_quiet_hours.finish(conn, window[0], window[1], now=now, cfg=cfg)
+            conn.commit()
+        finally:
+            conn.close()
+    if digest["count"]:
+        user_notify(current_notify_config(), "quiet_digest", "下班了：静默时段攒下的通知", digest["text"])
+    return digest
+
+
+def start_bot_relay(req):
+    """把一个 Bot 的结果交给另一个 Bot 继续做。"""
+    cleaned = cloud_bot_relay.clean(req)
+    target_id = cleaned["to_bot"]
+    bot = get_persona(target_id)
+    if not bot:
+        raise cloud_bot_relay.RelayError(f"没有这个 Bot：{target_id}")
+    from_bot = cleaned.get("from_bot")
+    from_name = None
+    if from_bot:
+        src = get_persona(from_bot)
+        from_name = (src or {}).get("name") or from_bot
+    if bot.get("model") and bot.get("credential"):
+        run_model = bot["model"]
+        provider, _st, err = resolve_provider({"protocol": "chat", "credential": bot["credential"]})
+    else:
+        run_model = req.get("model") if isinstance(req.get("model"), str) and req.get("model") else None
+        provider, _st, err = resolve_provider(req.get("provider") or {})
+    if err or not provider or not run_model:
+        raise cloud_bot_relay.RelayError(f"{bot.get('name') or target_id} 没有可用的模型：{err or '请在 Bot 设置里选模型'}")
+    title = "接力：" + (cleaned["fields"].get("goal") or cleaned["fields"].get("result") or "")[:40]
+    sid = _handoff_session(target_id, title)
+    content = cloud_bot_relay.compose(cleaned["fields"], from_name, redact=cloud_vault.redact)
+    now = time.time()
+    tid = "task_" + uuid.uuid4().hex[:12]
+    nonce = cleaned.get("client_nonce")
+    conn = get_db_connection()
+    try:
+        if nonce:
+            row = conn.execute("SELECT task_id, session_id FROM tasks WHERE client_nonce = ?", (nonce,)).fetchone()
+            if row:
+                return {"session_id": row[1], "task_id": row[0], "bot_id": target_id,
+                        "bot_name": bot.get("name") or target_id, "deduped": True}
+        conn.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, ?, 'running', ?, ?)",
+                     (tid, sid, nonce, run_model, now))
+        conn.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'user', ?, ?, ?)",
+                     (sid, content, now, json.dumps({"relay": {"from_bot": from_bot, "to_bot": target_id}}, ensure_ascii=False)))
+        conn.commit()
+    finally:
+        conn.close()
+    with active_tasks_lock:
+        active_tasks[tid] = {"process": None, "cancelled": False, "pid": None}
+    log_event(tid, "status", {"message": f"已接手 {from_name or '上一个 Bot'} 的工作"})
+    threading.Thread(target=run_agent_task, args=(tid, sid, content, run_model, provider, ""), daemon=True, name="bot-relay").start()
+    return {"session_id": sid, "task_id": tid, "bot_id": target_id, "bot_name": bot.get("name") or target_id, "deduped": False}
 
 
 def server_tool_notes(session_id):
@@ -6018,6 +6121,11 @@ def _scheduler_main():
             sys.stderr.write(f"[duty] check error: {sanitize_err(e)}\n")
             note_server_error("duty", e)
         try:
+            quiet_hours_check()
+        except Exception as e:
+            sys.stderr.write(f"[quiet] check error: {sanitize_err(e)}\n")
+            note_server_error("quiet_hours", e)
+        try:
             events_check()
         except Exception as e:
             sys.stderr.write(f"[events] check error: {sanitize_err(e)}\n")
@@ -6731,6 +6839,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "hours 必须是整数"})
                 return
             self._send(200, shift_card_build(hours))
+            return
+
+        if path == "/v1/quiet-hours":
+            cfg = quiet_cfg()
+            self._send(200, {"quiet_hours": cfg, "active": cloud_quiet_hours.is_active(cfg)})
+            return
+        if path == "/v1/quiet-hours/digest":
+            conn = get_db_connection()
+            try:
+                self._send(200, {"digest": cloud_quiet_hours.latest(conn),
+                                 "active": cloud_quiet_hours.is_active(quiet_cfg())})
+            finally:
+                conn.close()
             return
 
         if path == "/v1/notifications":
@@ -7852,6 +7973,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"timezone": tz})
             return
 
+        if path == "/v1/quiet-hours":
+            try:
+                cfg = cloud_quiet_hours.validate(req_json or {}, quiet_cfg())
+            except cloud_quiet_hours.QuietError as e:
+                self._send(400, {"error": str(e)})
+                return
+            _settings_put("quiet_hours", cfg)
+            try:
+                quiet_hours_check()
+            except Exception as e:
+                print(f"quiet check failed: {type(e).__name__}", flush=True)
+            self._send(200, {"quiet_hours": cfg, "active": cloud_quiet_hours.is_active(cfg)})
+            return
+
         if path.startswith("/v1/bots/") and path.endswith("/telegram"):
             bid = path[len("/v1/bots/"):-len("/telegram")]
             if not get_persona(bid):
@@ -8313,6 +8448,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, start_handoff(req_json))
             except cloud_handoff.HandoffError as e:
                 self._send(400, {"error": str(e)})
+            return
+        if path == "/v1/relay":
+            try:
+                self._send(200, start_bot_relay(req_json or {}))
+            except cloud_bot_relay.RelayError as e:
+                self._send(400, {"error": str(e)})
+                return
             return
         m_react = re.match(r"^/v1/sessions/(sess_[a-f0-9]{12})/messages/(\d{1,12})/reaction$", path)
         if m_react:
@@ -9197,6 +9339,35 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/v1/shift-card/ack":
             self._send(200, shift_card_ack())
+            return
+        if path == "/v1/quiet-hours":
+            try:
+                cfg = cloud_quiet_hours.validate(req_json or {}, quiet_cfg())
+            except cloud_quiet_hours.QuietError as e:
+                self._send(400, {"error": str(e)})
+                return
+            _settings_put("quiet_hours", cfg)
+            try:
+                quiet_hours_check()
+            except Exception as e:
+                print(f"quiet check failed: {type(e).__name__}", flush=True)
+            self._send(200, {"quiet_hours": cfg, "active": cloud_quiet_hours.is_active(cfg)})
+            return
+        if path == "/v1/quiet-hours/flush":
+            # 测试或手动：立刻把当前攒下的通知汇总（即使窗还没结束）
+            cfg = quiet_cfg()
+            now = time.time()
+            started, ended = cloud_quiet_hours.window_bounds(cfg, now)
+            conn = get_db_connection()
+            try:
+                digest = cloud_quiet_hours.finish(conn, started, ended, now=now, cfg=cfg)
+                conn.commit()
+            finally:
+                conn.close()
+            _settings_put("quiet_state", {"active": False, "started": started, "until": ended})
+            if digest["count"]:
+                user_notify(current_notify_config(), "quiet_digest", "下班了：静默时段攒下的通知", digest["text"])
+            self._send(200, {"digest": digest})
             return
 
         if path == "/v1/routines":

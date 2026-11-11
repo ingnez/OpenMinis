@@ -974,6 +974,12 @@ struct CloudBotHubView: View {
                     .accessibilityIdentifier("replayListRow")
                 NavigationLink(destination: CloudPocketModePage()) { Label("口袋模式", systemImage: "headphones") }
                     .accessibilityIdentifier("pocketModeRow")
+                NavigationLink(destination: CloudLazyDestination { CloudNightModePage() }) { Label("夜间护眼", systemImage: "moon.stars") }
+                    .accessibilityIdentifier("nightEyeCareRow")
+                NavigationLink(destination: CloudLazyDestination { CloudDataSaverPage() }) { Label("省流模式", systemImage: "antenna.radiowaves.left.and.right") }
+                    .accessibilityIdentifier("dataSaverRow")
+                NavigationLink(destination: CloudLazyDestination { CloudQuietHoursView() }) { Label("静默时段", systemImage: "moon.zzz") }
+                    .accessibilityIdentifier("quietHoursRow")
                 NavigationLink(destination: CloudLiveStatsView()) { Label("实时资源（CPU / 内存 / 网速）", systemImage: "gauge.with.dots.needle.33percent") }
                 NavigationLink(destination: CloudSystemSnapshotsView()) { Label("系统快照（装软件前自动拍）", systemImage: "camera.metering.matrix") }
             }
