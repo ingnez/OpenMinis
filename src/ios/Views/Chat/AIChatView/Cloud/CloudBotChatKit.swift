@@ -576,6 +576,12 @@ struct CloudFilePicker: UIViewControllerRepresentable {
 
 // MARK: - 听写
 
+/// 音频线程上的计数（只在 tap 回调里用）
+final class DictationTick: @unchecked Sendable {
+    private var n = 0
+    func next() -> Int { n += 1; return n }
+}
+
 @MainActor
 final class CloudDictation: ObservableObject {
     @Published var isRecording = false
@@ -583,6 +589,10 @@ final class CloudDictation: ObservableObject {
     @Published var errorText: String?
     /// 最近一次识别到新文字的时间（语音对话用来判断说完了）
     @Published var lastHeard = Date()
+    /// 听写卡片上的滚动波形（新的在后面）
+    @Published private(set) var levels: [Float] = []
+    private var levelBuffer = DictationLevels()
+    private var fakeTask: Task<Void, Never>?
 
     private let engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
@@ -592,6 +602,8 @@ final class CloudDictation: ObservableObject {
         guard !isRecording else { return }
         // 实时通话占着麦克风：听写会改音频会话类别，把通话掐断
         guard !AudioSessionCoordinator.shared.isRealtimeActive else { errorText = "正在实时通话，挂断后再听写"; return }
+        levelBuffer.reset(); levels = []
+        if CloudE2E.fakeDictation { startFake(); return }
         errorText = nil
         transcript = ""
         SFSpeechRecognizer.requestAuthorization { status in
@@ -630,7 +642,14 @@ final class CloudDictation: ObservableObject {
             // 必须在读输入格式、装 tap 之前切换；失败就当没开（照常录原声）
             if input.isVoiceProcessingEnabled != denoise { try? input.setVoiceProcessingEnabled(denoise) }
             input.removeTap(onBus: 0)
-            input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in req.append(buffer) }
+            let tick = DictationTick()
+            input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { [weak self] buffer, _ in
+                req.append(buffer)
+                // 每两块算一次音量给波形（约 20 次每秒），只在主线程改界面状态
+                guard tick.next() % 2 == 0, let ch = buffer.floatChannelData?[0] else { return }
+                let level = DictationLevels.level(ch, count: Int(buffer.frameLength))
+                Task { @MainActor [weak self] in self?.pushLevel(level) }
+            }
             engine.prepare()
             try engine.start()
             isRecording = true
@@ -650,7 +669,34 @@ final class CloudDictation: ObservableObject {
         }
     }
 
+    private func pushLevel(_ v: Float) {
+        guard isRecording else { return }
+        levelBuffer.push(v); levels = levelBuffer.values
+    }
+
+    /// 模拟器 E2E：没有麦克风和语音识别，用假音量和一句逐字出来的假文字（全是假数据）
+    private func startFake() {
+        isRecording = true
+        lastHeard = Date()
+        let words = ["e2e", "听写", "的", "文字"]
+        fakeTask = Task { @MainActor [weak self] in
+            var k = 0
+            while !Task.isCancelled {
+                guard let self, self.isRecording else { return }
+                self.pushLevel(Float(0.35 + 0.3 * sin(Double(k) / 3)))
+                if k % 8 == 7, k / 8 < words.count {
+                    self.transcript = words.prefix(k / 8 + 1).joined(separator: " ")
+                    self.lastHeard = Date()
+                }
+                k += 1
+                try? await Task.sleep(nanoseconds: 60_000_000)
+            }
+        }
+    }
+
     func stop() {
+        fakeTask?.cancel(); fakeTask = nil
+        if CloudE2E.fakeDictation { isRecording = false; return }
         if engine.isRunning { engine.stop() }
         engine.inputNode.removeTap(onBus: 0)
         request?.endAudio()

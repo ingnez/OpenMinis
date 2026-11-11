@@ -1179,53 +1179,65 @@ struct CloudSessionView: View {
                 CloudQuickCards(text: $inputPrompt)
             }
             .padding(.horizontal, 14)
-            HStack(alignment: .bottom, spacing: 8) {
-                Menu {
-                    Button { showPhotos = true } label: { Label("照片或视频", systemImage: "photo.on.rectangle") }
-                    Button { showCamera = true } label: { Label("拍照", systemImage: "camera") }
-                    if VNDocumentCameraViewController.isSupported {
-                        Button { showScanner = true } label: { Label("扫描文档", systemImage: "doc.viewfinder") }
+            if dictation.isRecording {
+                // 听写中：输入栏展开成卡片（实时文字 + 停止 + 滚动波形 + 发送），照 Grok
+                DictationCard(transcript: inputPrompt, partial: true, levels: dictation.levels, accent: theme.accent,
+                              onStop: { dictation.stop() },
+                              onSend: {
+                                  dictation.stop()
+                                  if working { steerOrQueue() } else { sendTask() }
+                              })
+                    .padding(.horizontal, 12)
+            } else {
+                HStack(alignment: .bottom, spacing: 8) {
+                    Menu {
+                        Button { showPhotos = true } label: { Label("照片或视频", systemImage: "photo.on.rectangle") }
+                        Button { showCamera = true } label: { Label("拍照", systemImage: "camera") }
+                        if VNDocumentCameraViewController.isSupported {
+                            Button { showScanner = true } label: { Label("扫描文档", systemImage: "doc.viewfinder") }
+                        }
+                        Button { showFiles = true } label: { Label("选择文件", systemImage: "folder") }
+                        Button { showCaseNote = true } label: { Label("口述病例（脱敏后复盘）", systemImage: "stethoscope") }
+                        Button { showPins = true } label: { Label("要点板", systemImage: "pin") }
+                        Button { showRealtimeSettings = true } label: { Label("实时语音设置", systemImage: "waveform") }
+                        Button { if !inputPrompt.hasPrefix("/") { inputPrompt = "/" } } label: { Label("斜杠命令", systemImage: "slash.circle") }
+                        Picker("Bot 干活时发消息", selection: $steerInterrupt) {
+                            Label("插话：直接告诉它", systemImage: "arrow.turn.up.right").tag(true)
+                            Label("排队：这一轮做完再发", systemImage: "text.badge.plus").tag(false)
+                        }
+                    } label: {
+                        Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).foregroundStyle(.primary)
+                            .frame(width: 40, height: 40).background(Circle().fill(Color(.systemGray6)))
                     }
-                    Button { showFiles = true } label: { Label("选择文件", systemImage: "folder") }
-                    Button { showCaseNote = true } label: { Label("口述病例（脱敏后复盘）", systemImage: "stethoscope") }
-                    Button { showPins = true } label: { Label("要点板", systemImage: "pin") }
-                    Button { showRealtimeSettings = true } label: { Label("实时语音设置", systemImage: "waveform") }
-                    Button { if !inputPrompt.hasPrefix("/") { inputPrompt = "/" } } label: { Label("斜杠命令", systemImage: "slash.circle") }
-                    Picker("Bot 干活时发消息", selection: $steerInterrupt) {
-                        Label("插话：直接告诉它", systemImage: "arrow.turn.up.right").tag(true)
-                        Label("排队：这一轮做完再发", systemImage: "text.badge.plus").tag(false)
+                    .accessibilityLabel("添加附件")
+                    HStack(alignment: .bottom, spacing: 4) {
+                        TextField(CloudBotComposerAction.placeholder(botName: theme.name, localHint: false), text: $inputPrompt, axis: .vertical)
+                            .accessibilityIdentifier("botComposerField")
+                            .lineLimit(1...6)
+                            .padding(.vertical, 10).padding(.leading, 14)
+                            .disabled(isSubmitting)
+                        Button { toggleDictation() } label: {
+                            Image(systemName: dictation.isRecording ? "stop.circle.fill" : "mic").font(.system(size: 17))
+                                .foregroundStyle(dictation.isRecording ? Color.red : Color.secondary)
+                                .frame(width: 34, height: 40)
+                        }
+                        .accessibilityLabel(dictation.isRecording ? "停止听写" : "听写")
+                        .accessibilityIdentifier("botDictationButton")
                     }
-                } label: {
-                    Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).foregroundStyle(.primary)
-                        .frame(width: 40, height: 40).background(Circle().fill(Color(.systemGray6)))
+                    .background(Capsule().fill(Color(.systemGray6)))
+                    // 最右边一个会变形的圆按钮：没字 = 声波（实时语音，长按按住说话），有字 = 发送；干活时有字 = 插话 / 排队。底色是头像色
+                    CloudMorphButton(action: CloudBotComposerAction.of(hasDraft: hasDraft, working: working,
+                                                                       submitting: isSubmitting || isInjecting, steerInterrupt: steerInterrupt),
+                                     tint: theme.accent, inCall: call.active,
+                                     onTap: {
+                                         if dictation.isRecording { dictation.stop() }
+                                         if !hasDraft { openVoiceCall() } else if working { steerOrQueue() } else { sendTask() }
+                                     },
+                                     onPushToTalk: { on in pushToTalk(on, theme: theme) })
+                        .accessibilityIdentifier("composerVoiceButton")
                 }
-                .accessibilityLabel("添加附件")
-                HStack(alignment: .bottom, spacing: 4) {
-                    TextField(CloudBotComposerAction.placeholder(botName: theme.name, localHint: false), text: $inputPrompt, axis: .vertical)
-                        .accessibilityIdentifier("botComposerField")
-                        .lineLimit(1...6)
-                        .padding(.vertical, 10).padding(.leading, 14)
-                        .disabled(isSubmitting)
-                    Button { toggleDictation() } label: {
-                        Image(systemName: dictation.isRecording ? "stop.circle.fill" : "mic").font(.system(size: 17))
-                            .foregroundStyle(dictation.isRecording ? Color.red : Color.secondary)
-                            .frame(width: 34, height: 40)
-                    }
-                    .accessibilityLabel(dictation.isRecording ? "停止听写" : "听写")
-                }
-                .background(Capsule().fill(Color(.systemGray6)))
-                // 最右边一个会变形的圆按钮：没字 = 声波（实时语音，长按按住说话），有字 = 发送；干活时有字 = 插话 / 排队。底色是头像色
-                CloudMorphButton(action: CloudBotComposerAction.of(hasDraft: hasDraft, working: working,
-                                                                   submitting: isSubmitting || isInjecting, steerInterrupt: steerInterrupt),
-                                 tint: theme.accent, inCall: call.active,
-                                 onTap: {
-                                     if dictation.isRecording { dictation.stop() }
-                                     if !hasDraft { openVoiceCall() } else if working { steerOrQueue() } else { sendTask() }
-                                 },
-                                 onPushToTalk: { on in pushToTalk(on, theme: theme) })
-                    .accessibilityIdentifier("composerVoiceButton")
+                .padding(.horizontal, 12)
             }
-            .padding(.horizontal, 12)
         }
         .padding(.vertical, 8)
         .background(theme.backdrop.fill(accent: theme.accent))
