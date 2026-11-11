@@ -218,7 +218,9 @@ struct CloudGroupCreateSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(saving ? "创建中…" : "创建") { create() }.disabled(selected.isEmpty || saving)
+                    Button(saving ? "创建中…" : "创建") { create() }
+                        .disabled(selected.isEmpty || saving)
+                        .accessibilityIdentifier("createGroupConfirm")
                 }
             }
         }
@@ -270,6 +272,7 @@ struct CloudGroupMemberPicker: View {
                 }
             }
             .accessibilityAddTraits(selected.contains(bot.id) ? .isSelected : [])
+            .accessibilityIdentifier("groupMember-\(bot.id)")
         }
     }
 }
@@ -609,12 +612,19 @@ struct CloudGroupChatView: View {
                             } label: {
                                 HStack(spacing: 4) {
                                     CloudBotAvatarView(spec: CloudBotAvatarSpec.of(b), size: 18)
-                                    Text(b.name).font(.subheadline)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(b.name).font(.subheadline)
+                                        if !b.summary.isEmpty {
+                                            Text(b.summary).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                        }
+                                    }
                                 }
                                 .padding(.horizontal, 10).padding(.vertical, 6)
                                 .background(Capsule().fill(Color.accentColor.opacity(0.12)))
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("groupMention-\(b.id)")
+                            .accessibilityLabel(b.summary.isEmpty ? b.name : "\(b.name)，擅长 \(b.summary)")
                         }
                     }
                     .padding(.horizontal, 14)
@@ -650,6 +660,7 @@ struct CloudGroupChatView: View {
                 .accessibilityLabel(voice.isRecording ? "说完了，发送" : "语音消息")
                 CloudGroupDebateMenu { input = $0; focused = true }
                 TextField("发消息，@ 某个 Bot 让它回答或去做事", text: $input, axis: .vertical)
+                    .accessibilityIdentifier("groupComposerField")
                     .lineLimit(1...6)
                     .focused($focused)
                     .padding(.horizontal, 14).padding(.vertical, 10)
@@ -666,6 +677,7 @@ struct CloudGroupChatView: View {
                 }
                 .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty || model.sending)
                 .accessibilityLabel("发送")
+                .accessibilityIdentifier("groupSendButton")
             }
             .padding(.horizontal, 12).padding(.bottom, 8)
         }

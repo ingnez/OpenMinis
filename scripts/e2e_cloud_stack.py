@@ -18,6 +18,8 @@ TOKEN = "e2e-fake-token-0000000000000000"
 MODEL = "e2e-vision-model"
 BOT_ID = "e2ebot"
 BOT_NAME = "E2E小助手"
+MAKER_ID = "e2emaker"
+MAKER_NAME = "E2E工匠"
 # 本地模式的假服务商（App 用 OPENMINIS_E2E_LOCAL_PROVIDER 指过来）：单独端口、单独模型名，和云端那边的请求分开数
 LOCAL_MODEL = "e2e-local-model"
 LOCAL_MODEL_PORT = 18797
@@ -52,6 +54,10 @@ def script(data):
         return tool_call("c2", "shell_execute", {"command": "sleep 40; echo e2e-slow-done"})
     if "跑个命令" in text and not tool_turns(data):
         return tool_call("c1", "shell_execute", {"command": "echo e2e-shell-ok; sleep 2"})
+    if "大家好" in text or "群里" in text:
+        return {"role": "assistant", "content": "群里收到：大家好"}
+    if "@E2E工匠" in text or "@工匠" in text or "做海报" in text:
+        return {"role": "assistant", "content": "工匠在群里：海报可以做"}
     if "加粗" in text:
         return {"role": "assistant", "content": "> 这是**结论：**引用里的中文加粗，还有**「重点」**和**加粗的中文**。\n\n正文第二段。"}
     n = image_count(data)
@@ -444,6 +450,7 @@ def main():
 
     call("PUT", "/v1/credentials/e2e", {"api_key": "sk-e2e-fake-000000000000", "base_url": model_base})
     call("PUT", f"/v1/bots/{BOT_ID}", {"name": BOT_NAME, "instructions": "端到端测试 Bot", "model": MODEL, "credential": "e2e"})
+    call("PUT", f"/v1/bots/{MAKER_ID}", {"name": MAKER_NAME, "instructions": "端到端测试工匠 Bot，擅长做海报", "model": MODEL, "credential": "e2e"})
     set_reply("verbose")
     print(f"E2E 云端就绪：API 127.0.0.1:{api.server_address[1]}，假模型 {model_base}，本地假模型 127.0.0.1:{LOCAL_MODEL_PORT}/v1，探针 127.0.0.1:18799", flush=True)
     while True:
