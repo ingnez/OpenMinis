@@ -18,6 +18,8 @@ TOKEN = "e2e-fake-token-0000000000000000"
 MODEL = "e2e-vision-model"
 BOT_ID = "e2ebot"
 BOT_NAME = "E2E小助手"
+MAKER_ID = "e2emaker"
+MAKER_NAME = "E2E工匠"
 # 本地模式的假服务商（App 用 OPENMINIS_E2E_LOCAL_PROVIDER 指过来）：单独端口、单独模型名，和云端那边的请求分开数
 LOCAL_MODEL = "e2e-local-model"
 LOCAL_MODEL_PORT = 18797
@@ -52,6 +54,17 @@ def script(data):
         return tool_call("c2", "shell_execute", {"command": "sleep 40; echo e2e-slow-done"})
     if "跑个命令" in text and not tool_turns(data):
         return tool_call("c1", "shell_execute", {"command": "echo e2e-shell-ok; sleep 2"})
+    if ("交给工匠" in text or "发给工匠" in text or "交给 E2E工匠" in text) and not tool_turns(data):
+        return tool_call("x1", "delegate_task", {
+            "bot_id": "e2emaker",
+            "task": "做一张海报，完成后写说明和链接 https://example.com/poster",
+            "wait": True,
+        })
+    if "交给工匠" in text or "发给工匠" in text or "交给 E2E工匠" in text:
+        return {"role": "assistant", "content": "已经交给工匠了"}
+    if "做一张海报" in text:
+        long = "海报做好了。说明见 https://example.com/poster\n\n" + ("这是一段很长的说明，方便在会话页里展开查看。" * 12)
+        return {"role": "assistant", "content": long}
     if "加粗" in text:
         return {"role": "assistant", "content": "> 这是**结论：**引用里的中文加粗，还有**「重点」**和**加粗的中文**。\n\n正文第二段。"}
     n = image_count(data)
@@ -444,6 +457,7 @@ def main():
 
     call("PUT", "/v1/credentials/e2e", {"api_key": "sk-e2e-fake-000000000000", "base_url": model_base})
     call("PUT", f"/v1/bots/{BOT_ID}", {"name": BOT_NAME, "instructions": "端到端测试 Bot", "model": MODEL, "credential": "e2e"})
+    call("PUT", f"/v1/bots/{MAKER_ID}", {"name": MAKER_NAME, "instructions": "端到端测试工匠 Bot，负责做海报", "model": MODEL, "credential": "e2e"})
     set_reply("verbose")
     print(f"E2E 云端就绪：API 127.0.0.1:{api.server_address[1]}，假模型 {model_base}，本地假模型 127.0.0.1:{LOCAL_MODEL_PORT}/v1，探针 127.0.0.1:18799", flush=True)
     while True:

@@ -15,6 +15,7 @@ struct CloudProseAssistant: View {
     let accent: Color
     var steps: [CloudStep] = []
     var showHeader = true
+    @Environment(\.cloudChatBotId) private var chatBotId
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -28,7 +29,7 @@ struct CloudProseAssistant: View {
                 CloudStepsProse(steps: steps)
             }
             if let mark = CloudDelegationMark.parse(content) {
-                CloudDelegationCard(mark: mark, accent: accent)
+                CloudDelegationCompactLine(mark: mark, selfId: chatBotId)
             } else {
                 let shown = CloudMessageText.display(content)
                 if shown.images > 0 {

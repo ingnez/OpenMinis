@@ -6797,7 +6797,7 @@ class Handler(BaseHTTPRequestHandler):
             names = _thread_names()
             for r in rows:
                 r["peer_name"] = names.get(r["peer"], r["peer"])
-                r["label"] = cloud_botthreads.collapsed_label(r["count"], r["peer_name"])
+                r["label"] = cloud_botthreads.collapsed_label(r["count"], r["peer_name"], r.get("outgoing"))
             self._send(200, {"threads": rows})
             return
 

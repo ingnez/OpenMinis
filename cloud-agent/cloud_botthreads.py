@@ -134,14 +134,25 @@ def thread(conn, a, b, after=0, limit=300):
 
 
 def session_summary(conn, session_id, task_ids=None):
-    """用户自己的对话里那条折叠行「N 条消息，与 X」：按对方 Bot 汇总这次对话发起的 Bot 间消息。"""
-    rows = conn.execute("SELECT d.delegation_id, d.from_bot, d.to_bot FROM bot_delegations d WHERE d.from_session = ?", (session_id,)).fetchall()
+    """用户对话里的折叠行：这次对话发起的、以及这个对话作为接收方的 Bot 间消息，按对方 Bot 汇总。"""
+    rows = conn.execute(
+        "SELECT d.delegation_id, d.from_bot, d.to_bot, d.from_session, d.to_session "
+        "FROM bot_delegations d WHERE d.from_session = ? OR d.to_session = ?",
+        (session_id, session_id)).fetchall()
     peers = {}
-    for did, fb, tb in rows:
-        p = peers.setdefault(norm(tb), {"peer": norm(tb), "me": norm(fb), "count": 0, "delegations": [], "last_at": 0, "first_at": None})
+    for did, fb, tb, fs, tsess in rows:
+        incoming = (tsess == session_id) and (fs != session_id)
+        me = norm(tb) if incoming else norm(fb)
+        peer = norm(fb) if incoming else norm(tb)
+        p = peers.setdefault(peer, {"peer": peer, "me": me, "count": 0, "delegations": [],
+                                    "last_at": 0, "first_at": None, "outgoing": not incoming})
         n, first, last = conn.execute("SELECT COUNT(*), MIN(ts), MAX(ts) FROM bot_thread_messages WHERE delegation_id = ?", (did,)).fetchone()
         p["count"] += n or 0
-        p["last_at"] = max(p["last_at"], last or 0)
+        if last and last >= p["last_at"]:
+            p["last_at"] = last
+            last_row = conn.execute("SELECT sender FROM bot_thread_messages WHERE delegation_id = ? ORDER BY id DESC LIMIT 1", (did,)).fetchone()
+            if last_row:
+                p["outgoing"] = last_row[0] == p["me"]
         if first is not None:
             p["first_at"] = first if p["first_at"] is None else min(p["first_at"], first)
         p["delegations"].append(did)
@@ -153,5 +164,10 @@ def search(conn, like, limit=40):
     return [_row(r) for r in rows]
 
 
-def collapsed_label(count, peer_name):
-    return f"{count} 条消息，与 {peer_name}"
+def collapsed_label(count, peer_name, outgoing=None):
+    """一条时：发消息给 / 收到；连续多条折成「与 某Bot 往来 N 条」。"""
+    if count <= 1:
+        if outgoing is False:
+            return f"收到 ◯{peer_name} 的消息"
+        return f"发消息给 ◯{peer_name}"
+    return f"与 {peer_name} 往来 {count} 条"

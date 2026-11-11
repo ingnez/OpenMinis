@@ -12,10 +12,13 @@ struct CloudBotThreadsTests {
         check(R.route("maker", "boss") == "thread:boss|maker", "路由排好序")
         check(R.parseRoute("thread:boss|maker").map { [$0.0, $0.1] } == ["boss", "maker"], "解析路由")
         check(R.parseRoute("thread:../x|y") == nil, "非法 id 不接受")
-        check(R.collapsedLabel(count: 2, peerName: "制造厂") == "2 条消息，与 制造厂", "折叠行文字")
+        check(R.collapsedLabel(count: 2, peerName: "制造厂") == "与 制造厂 往来 2 条", "多条折成往来")
+        check(R.collapsedLabel(count: 1, peerName: "制造厂", outgoing: true) == "发消息给 ◯制造厂", "发出一行")
+        check(R.collapsedLabel(count: 1, peerName: "制造厂", outgoing: false) == "收到 ◯制造厂 的消息", "收到一行")
+        check(R.isLongMessage(String(repeating: "字", count: 300)) && !R.isLongMessage("短"), "长消息可展开")
 
         let c = CloudBotThreadCollapsed(["peer": "maker", "me": "boss", "peer_name": "制造厂", "count": 2, "first_at": 100.0, "last_at": 120.0])
-        check(c?.label == "2 条消息，与 制造厂" && c?.route == "thread:boss|maker", "折叠行解析")
+        check(c?.label == "与 制造厂 往来 2 条" && c?.route == "thread:boss|maker", "折叠行解析")
         check(CloudBotThreadCollapsed(["peer": "maker", "count": 0]) == nil, "0 条不显示")
 
         let now = Date(timeIntervalSince1970: 1_000_000)

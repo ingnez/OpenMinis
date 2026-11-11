@@ -169,7 +169,7 @@ struct CloudDelegationCard: View {
                 if let other, !selfId.isEmpty {
                     // 两个 Bot 之间来回的消息（只读线程）
                     NavigationLink {
-                        CloudBotThreadView(a: selfId, b: other.id)
+                        CloudBotThreadView(a: selfId, b: other.id, viewer: selfId)
                     } label: {
                         Label("对话", systemImage: "bubble.left.and.bubble.right").font(.caption.weight(.medium))
                     }
@@ -204,6 +204,42 @@ struct CloudDelegationCard: View {
         case "进行中": return .blue
         default: return .orange
         }
+    }
+}
+
+
+/// 主聊天里的居中一行：发消息给 / 收到某 Bot，点开进入只读线程。不占气泡、不展开正文。
+struct CloudDelegationCompactLine: View {
+    let mark: CloudDelegationMark
+    var selfId: String? = nil
+    @ObservedObject private var home = CloudBotHomeModel.shared
+
+    var body: some View {
+        let other = home.bots.first(where: { $0.name == mark.botName })
+        let line = mark.kind == .incoming ? "收到 ◯\(mark.botName) 的消息" : "发消息给 ◯\(mark.botName)"
+        Group {
+            if let other, let selfId, !selfId.isEmpty {
+                NavigationLink {
+                    CloudBotThreadView(a: selfId, b: other.id, viewer: selfId)
+                } label: { row(line, botId: other.id) }
+                .buttonStyle(.plain)
+            } else {
+                row(line, botId: other?.id)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel(line + "，点开查看")
+        .accessibilityIdentifier("botThreadCompactLine")
+    }
+
+    private func row(_ line: String, botId: String?) -> some View {
+        HStack(spacing: 6) {
+            if let botId { CloudThreadAvatar(botId: botId, size: 16) }
+            Text(line).font(.footnote).foregroundStyle(.secondary)
+            Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 5)
+        .background(Capsule().fill(Color(.secondarySystemBackground)))
     }
 }
 
