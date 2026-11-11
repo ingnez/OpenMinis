@@ -1107,7 +1107,7 @@ struct CloudSessionView: View {
             // 与本地模式同一个步骤条（预览卡 + 状态胶囊 + N/M 翻页），数据来自 Bot 的实时工具事件
             CloudStepBar(message: liveMessage, liveToolId: liveTool?.id, liveOutput: liveTool?.output ?? "", working: working)
                 // 步骤面板复用本地组件：标题写 Bot / 云电脑名字，CPU / 内存读云端，不读这台 iPhone
-                .environment(\.cloudComputer, CloudComputerContext.current(actor: theme?.name))
+                .environment(\.cloudComputer, CloudComputerContext.current(actor: theme.name))
                 .padding(.horizontal, 12)
             if let r = replyTarget {
                 CloudReplyBanner(excerpt: r.excerpt) { replyTarget = nil }
