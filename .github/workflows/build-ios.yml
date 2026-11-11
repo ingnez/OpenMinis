@@ -778,6 +778,9 @@ jobs:
           /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$APP/Info.plist"
 
+      - name: Check IPA allows 120Hz (ProMotion)
+        run: python3 scripts/check_ipa_promotion.py Minis-unsigned.ipa
+
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:

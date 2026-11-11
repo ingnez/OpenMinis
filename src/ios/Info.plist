@@ -8,6 +8,8 @@
 		<string>com.openminis.app.continued.*</string>
 		<string>com.openminis.app.cloud-refresh</string>
 	</array>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
