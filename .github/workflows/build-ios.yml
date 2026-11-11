@@ -381,6 +381,19 @@ jobs:
           /tmp/cloud-bot-relay-tests
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNightMode.swift scripts/CloudNightModeTests.swift -o /tmp/cloud_nightmode_tests
           /tmp/cloud_nightmode_tests
+      - name: 口令、查房待办、本班次审批与表盘小组件单测
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDataSaver.swift scripts/CloudDataSaverTests.swift -o /tmp/cloud-datasaver-tests
+          /tmp/cloud-datasaver-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudLockPassphrase.swift scripts/CloudLockPassphraseTests.swift -o /tmp/cloud-lock-passphrase-tests
+          /tmp/cloud-lock-passphrase-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWardTodo.swift scripts/CloudWardTodoTests.swift -o /tmp/cloud-ward-todo-tests
+          /tmp/cloud-ward-todo-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudApprovalActions.swift scripts/CloudApprovalActionsTests.swift -o /tmp/cloud-approval-actions-tests
+          /tmp/cloud-approval-actions-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift src/ios/WatchShared/WatchComplicationLogic.swift scripts/WatchComplicationTests.swift -o /tmp/watch-complication-tests
+          /tmp/watch-complication-tests
       - name: 病区隐私自查单测
         run: |
           set -o pipefail
@@ -1322,7 +1335,8 @@ jobs:
           MinisUITests/ReplyModeUITests
           MinisUITests/FrogP0UITests
           MinisUITests/Frog1850UITests
-          MinisUITests/Frog1850Chunk2UITests"
+          MinisUITests/Frog1850Chunk2UITests
+          MinisUITests/Frog1850Chunk3UITests"
           ONLY_SRC="${ONLY_TESTING:-}"
           if [ -z "$(printf '%s' "$ONLY_SRC" | tr -d '[:space:]')" ]; then
             ONLY_SRC="$DEFAULT_ONLY_TESTING"

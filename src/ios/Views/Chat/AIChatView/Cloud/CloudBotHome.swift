@@ -594,6 +594,11 @@ struct CloudBotHomeScreen: View {
                         CloudHomeScrollProbe()
                         if showToday && search.isEmpty {
                             CloudTodayCard(model: model).transition(.move(edge: .top).combined(with: .opacity))
+                            if CloudWardTodo.e2eForced {
+                                NavigationLink(destination: CloudLazyDestination { CloudWardTodoPage() }) {
+                                    CloudWardTodoHomeBox(items: CloudWardTodo.e2eItems())
+                                }
+                            }
                         }
                         CloudLinkBanner(onOpenSettings: openCloudSettings)
                             .padding(.horizontal, 16).padding(.bottom, 8)
@@ -980,6 +985,12 @@ struct CloudBotHubView: View {
                     .accessibilityIdentifier("dataSaverRow")
                 NavigationLink(destination: CloudLazyDestination { CloudQuietHoursView() }) { Label("静默时段", systemImage: "moon.zzz") }
                     .accessibilityIdentifier("quietHoursRow")
+                NavigationLink(destination: CloudLazyDestination { CloudWatchComplicationPage() }) { Label("手表表盘小组件", systemImage: "applewatch") }
+                    .accessibilityIdentifier("watchComplicationRow")
+                NavigationLink(destination: CloudLazyDestination { CloudLockApprovalPage() }) { Label("锁屏审批与口令", systemImage: "lock.iphone") }
+                    .accessibilityIdentifier("lockApprovalRow")
+                NavigationLink(destination: CloudLazyDestination { CloudWardTodoPage() }) { Label("查房待办箱", systemImage: "checklist") }
+                    .accessibilityIdentifier("wardTodoRow")
                 NavigationLink(destination: CloudLiveStatsView()) { Label("实时资源（CPU / 内存 / 网速）", systemImage: "gauge.with.dots.needle.33percent") }
                 NavigationLink(destination: CloudSystemSnapshotsView()) { Label("系统快照（装软件前自动拍）", systemImage: "camera.metering.matrix") }
             }

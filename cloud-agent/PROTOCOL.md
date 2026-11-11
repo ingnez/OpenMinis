@@ -760,3 +760,12 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 多 Bot 接力：对话里「交给其他 Bot」或任务结束后的动作条，`POST /v1/relay` 在对方会话里开新任务（`client_nonce` 去重）。
 - 夜间护眼：在已有夜班暗色暖光、大字、不震动、通知静音之上，增加「每天按时间表」和可调起止小时。
 - 例行任务在静默窗内仍可能继续跑，只是完成通知会攒到下班汇总；不会拦你自己发的消息。
+
+
+## 省流 Wi-Fi 重传，以及锁屏审批、本班次授权、查房待办箱、表盘小组件
+
+- 推迟的大文件会写到本机 Caches（只按安全文件名），连上 Wi-Fi 或关掉省流后自动 `POST /v1/sessions/<id>/upload`。旧队列没有缓存文件的条目无法重传。
+- 审批卡增加「本班次都批准」（`approve_shift`）：优先在 `duty_until` 到期，否则 12 小时；同一 Bot、同一工具和参数哈希可跨任务复用。交班卡会列出未过期的班次授权。
+- 锁屏 / 灵动岛审批：本机保存待审批快照；设置页有预览和语音口令（只存摘要）。真机实时活动尚未改现有 `AgentWidgetExtension`，以免主 IPA 编不过。
+- 查房待办箱：`GET/POST /v1/ward-todos`、`POST .../done`、`DELETE /v1/ward-todos/<id>`。不要写入姓名或住院号。
+- 手表表盘小组件源码在 `src/ios/MinisWatchWidgets/`，scheme 为 `MinisWatchWidgets`。没有挂进 Minis / MinisWatch，主 IPA 流水线不变。验收走 App 预览页和 Linux 单测。

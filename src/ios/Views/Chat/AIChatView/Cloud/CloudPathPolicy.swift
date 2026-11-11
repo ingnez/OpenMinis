@@ -23,6 +23,7 @@ enum CloudPathPolicy {
         case "/v1/desktop/health", "/v1/desktop/thumbnail": return q(#"^bot_id=[a-z0-9_-]{1,32}$"#)
         case "/v1/usage": return q(#"^days=[0-9]{1,2}$"#)
         case "/v1/shift-card": return q(#"^hours=[0-9]{1,2}$"#) || q(#"^pending=1$"#)
+        case "/v1/ward-todos": return q(#"^done=[01]$"#)
         case "/v1/bot-threads": return q(#"^bot_id=[a-z0-9_-]{1,32}$"#)
         case "/v1/delegations": return q(#"^session_id=[A-Za-z0-9_-]{1,64}$"#)
         case "/v1/backup": return q(#"^messages=[01]$"#)

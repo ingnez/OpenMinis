@@ -98,6 +98,7 @@ import cloud_runmodel
 import cloud_shift_card
 import cloud_quiet_hours
 import cloud_bot_relay
+import cloud_ward_todos
 import cloud_workbench
 import cloud_desktop_files
 import cloud_snapshots
@@ -348,6 +349,7 @@ def init_db():
     cloud_botthreads.ensure_schema(conn)
     cloud_duty.ensure_schema(conn)
     cloud_quiet_hours.ensure_schema(conn)
+    cloud_ward_todos.ensure_schema(conn)
     cloud_exams.ensure_schema(conn)
     cloud_events.ensure_schema(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS feed_feedback (run_id TEXT PRIMARY KEY, liked INTEGER NOT NULL DEFAULT 0, "
@@ -1095,9 +1097,14 @@ def request_approval(task_id, session_id, tool_call_id, tool_name, args, rule, t
                   (decision, waiter.get("note"), time.time(), scope, approval_id))
         if decision != "cancelled":
             c.execute("UPDATE tasks SET status = 'running' WHERE task_id = ? AND status = 'waiting_user'", (task_id,))
-        # 「批准一次」只放行当前这次挂起的调用，不留可复用记录；「本任务内都批准」才写入后续可消耗的记录。
-        if decision == "approved" and scope == cloud_approval_grant.SCOPE_TASK:
-            cloud_approval_grant.record(conn, task_id, tool_name, args, scope)
+        # 「批准一次」只放行当前这次挂起的调用，不留可复用记录；本任务 / 本班次才写入后续可消耗的记录。
+        if decision == "approved" and scope in (cloud_approval_grant.SCOPE_TASK, cloud_approval_grant.SCOPE_SHIFT):
+            bot = session_bot(session_id) or {}
+            bot_id = bot.get("bot_id") or bot.get("id") or bot.get("persona_id")
+            expires = None
+            if scope == cloud_approval_grant.SCOPE_SHIFT:
+                expires = cloud_approval_grant.shift_expires(time.time(), (resource_settings() or {}).get("duty_until"))
+            cloud_approval_grant.record(conn, task_id, tool_name, args, scope, bot_id=bot_id, expires_at=expires)
         conn.commit()
     finally:
         conn.close()
@@ -5380,7 +5387,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     elif hit:
                         gconn = get_db_connection()
                         try:
-                            grant = cloud_approval_grant.consume(gconn, task_id, fn_name, fn_args)
+                            bot = session_bot(session_id) or {}
+                            grant = cloud_approval_grant.consume(
+                                gconn, task_id, fn_name, fn_args,
+                                bot_id=bot.get("bot_id") or bot.get("id") or bot.get("persona_id"))
                         finally:
                             gconn.close()
                         if grant:
@@ -6854,6 +6864,16 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
             return
 
+        if path == "/v1/ward-todos":
+            conn = get_db_connection()
+            try:
+                include_done = (query_params.get("done") or ["1"])[0] not in ("0", "false", "no")
+                items = cloud_ward_todos.list_items(conn, include_done=include_done)
+                self._send(200, {"todos": items, "totals": cloud_ward_todos.totals(items)})
+            finally:
+                conn.close()
+            return
+
         if path == "/v1/notifications":
             # App 在线时长轮询：取走新的通知，用系统本地通知显示（同时算作 App 在线，服务器就不再发 Bark）
             try:
@@ -8226,6 +8246,19 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
             self._send(200 if ok else 404, {"deleted": ok})
             return
+        m_ward = re.match(r"^/v1/ward-todos/(todo_[a-f0-9]{12})$", path)
+        if m_ward:
+            conn = get_db_connection()
+            try:
+                cloud_ward_todos.delete(conn, m_ward.group(1))
+                conn.commit()
+            except cloud_ward_todos.WardTodoError as e:
+                self._send(404, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            self._send(200, {"deleted": m_ward.group(1)})
+            return
         m_px = re.match(r"^/v1/proxy/(nodes|subscriptions)/([0-9a-f]{6,64})$", path)
         if m_px:
             if m_px.group(1) == "nodes":
@@ -9369,6 +9402,34 @@ class Handler(BaseHTTPRequestHandler):
                 user_notify(current_notify_config(), "quiet_digest", "下班了：静默时段攒下的通知", digest["text"])
             self._send(200, {"digest": digest})
             return
+        if path == "/v1/ward-todos":
+            conn = get_db_connection()
+            try:
+                item = cloud_ward_todos.add(conn, (req_json or {}).get("title"),
+                                            detail=(req_json or {}).get("detail") or "",
+                                            bed=(req_json or {}).get("bed") or "")
+                conn.commit()
+            except cloud_ward_todos.WardTodoError as e:
+                self._send(400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            self._send(201, {"todo": item})
+            return
+        m_ward_done = re.match(r"^/v1/ward-todos/(todo_[a-f0-9]{12})/done$", path)
+        if m_ward_done:
+            conn = get_db_connection()
+            try:
+                done = (req_json or {}).get("done", True)
+                item = cloud_ward_todos.set_done(conn, m_ward_done.group(1), bool(done))
+                conn.commit()
+            except cloud_ward_todos.WardTodoError as e:
+                self._send(404, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            self._send(200, {"todo": item})
+            return
 
         if path == "/v1/routines":
             try:
@@ -9398,7 +9459,7 @@ class Handler(BaseHTTPRequestHandler):
             tid, aid = parts[3], parts[5]
             status, scope = cloud_approval_grant.parse_decision(req_json.get("decision"))
             if not status:
-                self._send(400, {"error": "decision must be 'approve'、'approve_once'、'approve_task' 或 'deny'"})
+                self._send(400, {"error": "decision must be 'approve'、'approve_once'、'approve_task'、'approve_shift' 或 'deny'"})
                 return
             note = req_json.get("note")
             if note is not None and (not isinstance(note, str) or len(note) > 1000):

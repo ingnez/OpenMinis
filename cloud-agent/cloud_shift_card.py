@@ -63,7 +63,7 @@ def collect_approvals(conn, now=None):
     if _table_exists(conn, "approval_grants"):
         rows = conn.execute(
             "SELECT grant_id, task_id, tool, scope, used, created_at, expires_at FROM approval_grants "
-            "WHERE expires_at > ? AND (scope = 'task' OR (scope = 'once' AND used = 0)) "
+            "WHERE expires_at > ? AND (scope = 'task' OR scope = 'shift' OR (scope = 'once' AND used = 0)) "
             "ORDER BY created_at DESC LIMIT 40",
             (now,),
         ).fetchall()
