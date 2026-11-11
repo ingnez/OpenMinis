@@ -256,16 +256,49 @@ class ReplyModeTests(CloudServerTestCase):
         self.assertIn("spawn_task", dumped)
         self.assertNotIn("front-should-not-run", dumped.replace('"command": "echo front-should-not-run"', ""))
 
+    def test_05b_instant_front_misused_tool_auto_spawns_worker(self):
+        """快模型常直接调干活的工具：前台不执行，自动 spawn_task，后台拿到用户原要求并跑工具。"""
+        self._install()
+        def front(d):
+            if fresh_tools(d):
+                return {"role": "assistant", "content": "好，后台去做。"}
+            return tool_call("x1", "shell_execute", {"command": "echo front-should-not-run"}, content="我来跑")
+        FakeModelHandler.scripts.update({FRONT: front})
+        # 另开一个 Bot，避免这个很快完成的后台任务污染 test_06 给 rb 准备的用时中位数
+        self.request("PUT", "/v1/bots/rb2", {"name": "交接测试", "instructions": "测试 Bot"})
+        self.request("PUT", "/v1/bots/rb2/reply", {"front_model": FRONT, "back_model": BACK})
+        sid = self._session("rb2")
+        tid, task = self._say(sid, "帮我处理一下自动交接")
+        self.assertEqual(task["status"], "completed")
+        ev = self.request("GET", f"/v1/tasks/{tid}/events?after=0")[1]["events"]
+        res = [e for e in ev if e["type"] == "tool_result"]
+        self.assertTrue(res)
+        payload = res[0]["payload"]
+        dumped = json.dumps(payload, ensure_ascii=False)
+        self.assertIn("spawn_task", dumped)
+        handed = payload.get("result") if isinstance(payload.get("result"), dict) else payload
+        self.assertTrue((handed or {}).get("id"), payload)
+        w = self._wait(lambda: (self._workers(sid) or [None])[0], what="自动派后台")
+        self.assertIn("帮我处理一下自动交接", w.get("goal") or "")
+        done = self._wait(lambda: (lambda x: x if x["status"] == "completed" else None)(self._worker(w["worker_id"])),
+                          timeout=30, what="后台完成")
+        self.assertEqual(done["result"], "后台结论：42")
+        self._wait(lambda: any("后台结论：42" in (m.get("content") or "") for m in
+                               self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]), what="结果回到前台")
+
     def test_06_stop_worker_and_eta_from_history(self):
         self._install(worker_steps=1, step_sleep=0.1)
-        sid = self._session()
+        # 单独的 Bot：前面测试里很快完成的后台任务不要进这个用时中位数
+        self.request("PUT", "/v1/bots/eta", {"name": "用时测试", "instructions": "测试 Bot"})
+        self.request("PUT", "/v1/bots/eta/reply", {"front_model": FRONT, "back_model": BACK})
+        sid = self._session("eta")
         # 三个完成的历史任务（真实用时 120 / 150 / 180 秒） → 新任务有预计剩余（中位数 150 - 已用）
         conn = self.srv.get_db_connection()
         try:
             now = time.time()
             for i, dur in enumerate((120, 150, 180)):
                 conn.execute("INSERT INTO bot_workers (worker_id, bot_id, front_session, worker_session, title, goal, status, created_at, "
-                             "started_at, finished_at, reported) VALUES (?, 'rb', ?, ?, 't', 'g', 'completed', ?, ?, ?, 1)",
+                             "started_at, finished_at, reported) VALUES (?, 'eta', ?, ?, 't', 'g', 'completed', ?, ?, ?, 1)",
                              (f"wk_00000000{i:02d}", sid, f"sess_hist0000000{i}", now - 900, now - 900, now - 900 + dur))
             conn.commit()
         finally:
