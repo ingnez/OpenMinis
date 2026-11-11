@@ -119,6 +119,9 @@ final class E2EFlowsUITests: XCTestCase {
     private func launch(attach: Int = 0) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["-OpenMinis_homeMode", "bots", "-OpenMinisCloud_name", "E2E云电脑", "-OpenMinisCloud_host", "127.0.0.1"]
+        // 假 Bot 带自己的模型凭据，App 会按「存了密钥的 Bot 默认上锁」把它锁上，打开要 Face ID（模拟器没录入）。
+        // 这里把它标成「已决定过、不上锁」，测的是对话流程；上锁本身另有单测
+        app.launchArguments += ["-OpenMinisCloud_lockDefaultsDecided", "(e2ebot)", "-OpenMinisCloud_lockedBots", "()"]
         app.launchEnvironment["OPENMINIS_E2E_TOKEN"] = Self.token
         app.launchEnvironment["OPENMINIS_E2E_PORT"] = "18765"
         if attach > 0 { app.launchEnvironment["OPENMINIS_E2E_ATTACH"] = String(attach) }
