@@ -429,6 +429,11 @@ extension CollectionViewMessageListV3.Coordinator {
                             bi += 1
                             continue
                         }
+                        // 秒回前台不在对话里摊开深度思考和派活简报，详情走长按「查看详情」或底部进度页
+                        if vm.isInstantFrontTurn, blocks[bi].hiddenInInstantReply {
+                            bi += 1
+                            continue
+                        }
                         newItems.append(.assistantBlock(message.id, blocks[bi].id))
                         bi += 1
                     }

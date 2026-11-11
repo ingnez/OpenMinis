@@ -227,12 +227,30 @@ struct CloudReplyTracker {
 /// 状态行该显示哪个任务：进行中的优先（最新开始的那个）；都结束了显示刚结束的一个几秒钟
 enum CloudReplyRow {
     static let lingerSeconds: Double = 4
+    /// 胶囊条最多同时露出几个任务，多出来的进「+N」角标
+    static let capsuleLimit = 4
 
     static func current(_ workers: [CloudReplyWorker], finishedAt: [String: Date] = [:], now: Date = Date()) -> CloudReplyWorker? {
-        let active = workers.filter(\.active).sorted { $0.createdAt > $1.createdAt }
-        if let a = active.first { return a }
-        return workers.filter { w in finishedAt[w.id].map { now.timeIntervalSince($0) < lingerSeconds } ?? false }
-            .sorted { $0.createdAt > $1.createdAt }.first
+        let items = visible(workers, finishedAt: finishedAt, now: now)
+        if let a = items.filter(\.active).sorted(by: { $0.createdAt > $1.createdAt }).first { return a }
+        return items.sorted { $0.createdAt > $1.createdAt }.first
+    }
+
+    /// 进行中的，加上刚结束、还要停留几秒打勾的
+    static func visible(_ workers: [CloudReplyWorker], finishedAt: [String: Date] = [:], now: Date = Date()) -> [CloudReplyWorker] {
+        workers.filter { w in
+            w.active || finishedAt[w.id].map { now.timeIntervalSince($0) < lingerSeconds } ?? false
+        }.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    static func overflowCount(_ visible: Int, limit: Int = capsuleLimit) -> Int {
+        max(0, visible - limit)
+    }
+
+    /// 多任务里选中胶囊的主文字
+    static func dispatchPhrase(title: String) -> String {
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "派单给后台" : "派单给\(t)"
     }
 
     /// 横滑停止：往左拖过这个距离松手就停

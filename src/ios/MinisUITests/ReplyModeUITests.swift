@@ -41,6 +41,8 @@ final class ReplyModeUITests: XCTestCase {
         openBot(app)
         send(app, "帮我查一下天气")
         XCTAssertTrue(waitText(app, contains: "好，我让后台去查", timeout: 20), "前台没先回一句")
+        assertNoReasoningOrBrief(app)
+        shot(app, "reply-02-无思考无简报")
         let row = app.descendants(matching: .any)["replyStatusRow"]
         XCTAssertTrue(row.waitForExistence(timeout: 15), "底部没出现后台状态行")
         XCTAssertTrue(poll(10) { row.label.contains(Self.botName) && row.label.contains("正在") }, "状态行文字不对：\(row.label)")
@@ -72,9 +74,11 @@ final class ReplyModeUITests: XCTestCase {
         hideKeyboard(app)
         row.tap()
         let collapse = app.buttons["收起"]
-        XCTAssertTrue(collapse.waitForExistence(timeout: 10), "点状态行没打开过程")
-        XCTAssertTrue(app.buttons["replyStepsStop"].exists, "过程页没有停止按钮")
-        shot(app, "reply-03a-展开过程")
+        XCTAssertTrue(collapse.waitForExistence(timeout: 10), "点状态行没打开进度页")
+        XCTAssertTrue(app.buttons["replyStepsStop"].waitForExistence(timeout: 5), "进度页没有停止按钮")
+        XCTAssertTrue(app.buttons["replyStepsDetail"].waitForExistence(timeout: 3) || app.buttons["查看详情"].exists, "进度页没有「查看详情」")
+        assertNoReasoningOrBrief(app)
+        shot(app, "reply-03a-展开进度")
         collapse.tap()
         XCTAssertTrue(waitGone(collapse, timeout: 5))
 
@@ -150,6 +154,31 @@ final class ReplyModeUITests: XCTestCase {
         shot(app, "reply-04d-Bot切回详细")
     }
 
+
+    /// 两个并行后台任务：底部变成胶囊条，点第二颗会展开、原先那颗收起
+    func testReply_twoWorkerCapsules() throws {
+        let app = launch(mode: "instant")
+        openBot(app)
+        send(app, "慢活 查一下资料")
+        XCTAssertTrue(app.descendants(matching: .any)["replyStatusRow"].waitForExistence(timeout: 20), "第一个后台任务没出现")
+        send(app, "查一下天气")
+        hideKeyboard(app)
+        let strip = app.descendants(matching: .any)["replyCapsuleStrip"]
+        XCTAssertTrue(strip.waitForExistence(timeout: 20), "两个后台任务没有变成胶囊条")
+        let expanded = app.descendants(matching: .any)["replyCapsuleExpanded"]
+        let compact = app.descendants(matching: .any)["replyCapsuleCompact"]
+        XCTAssertTrue(expanded.waitForExistence(timeout: 8) && compact.waitForExistence(timeout: 8), "没有一颗展开、一颗收起的胶囊")
+        let before = expanded.label + ((expanded.value as? String) ?? "")
+        compact.tap()
+        XCTAssertTrue(poll(6) {
+            let exp = app.descendants(matching: .any)["replyCapsuleExpanded"]
+            let com = app.descendants(matching: .any)["replyCapsuleCompact"]
+            let text = exp.label + ((exp.value as? String) ?? "")
+            return exp.exists && com.exists && text != before
+        }, "点另一颗胶囊没有展开，或原来那颗没收起：expanded=\(app.descendants(matching: .any)["replyCapsuleExpanded"].label) compact=\(app.descendants(matching: .any)["replyCapsuleCompact"].label)")
+        shot(app, "reply-06-两个胶囊")
+    }
+
     /// 详细模式：和以前一样，主模型直接干活、步骤条显示步骤，没有后台状态行
     func testReply_verboseModeUnchanged() throws {
         let app = launch(mode: "verbose")
@@ -188,6 +217,8 @@ final class ReplyModeUITests: XCTestCase {
         openLocalComposer(app)
         sendLocal(app, "帮我查一下天气")
         XCTAssertTrue(waitText(app, contains: "好，我让后台去查", timeout: 20), "本地前台没先回一句")
+        assertNoReasoningOrBrief(app)
+        shot(app, "local-reply-02-无思考无简报")
         let row = app.descendants(matching: .any)["replyStatusRow"]
         XCTAssertTrue(row.waitForExistence(timeout: 20), "本地底部没出现后台状态行")
         XCTAssertTrue(poll(10) { row.label.contains("正在") && row.label.contains("秒") }, "本地状态行文字不对：\(row.label)")
@@ -214,10 +245,13 @@ final class ReplyModeUITests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 25), "本地底部没出现后台状态行")
         hideKeyboard(app)
         row.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["replyStepsSheet"].waitForExistence(timeout: 10)
+        XCTAssertTrue(app.descendants(matching: .any)["replyProgressSheet"].waitForExistence(timeout: 10)
+                      || app.descendants(matching: .any)["replyStepsSheet"].waitForExistence(timeout: 2)
                       || app.buttons["replyStepsStop"].waitForExistence(timeout: 2)
-                      || app.buttons["收起"].waitForExistence(timeout: 2), "点状态行没打开过程")
-        shot(app, "local-reply-03a-展开过程")
+                      || app.buttons["收起"].waitForExistence(timeout: 2), "点状态行没打开进度页")
+        XCTAssertTrue(app.buttons["replyStepsDetail"].waitForExistence(timeout: 3) || app.buttons["查看详情"].exists, "本地进度页没有「查看详情」")
+        assertNoReasoningOrBrief(app)
+        shot(app, "local-reply-03a-展开进度")
         if app.buttons["收起"].exists { app.buttons["收起"].tap() }
         else { app.swipeDown() }
 
@@ -283,6 +317,31 @@ final class ReplyModeUITests: XCTestCase {
         shot(app, "local-reply-04d-设置切回详细")
     }
 
+
+    /// 本地两个并行后台任务：底部胶囊条，点第二颗展开、第一颗收起
+    func testLocalReply_twoWorkerCapsules() throws {
+        let app = launchLocal(mode: "instant")
+        openLocalComposer(app)
+        sendLocal(app, "慢活 查一下资料")
+        XCTAssertTrue(app.descendants(matching: .any)["replyStatusRow"].waitForExistence(timeout: 25), "本地第一个后台任务没出现")
+        sendLocal(app, "查一下天气")
+        hideKeyboard(app)
+        let strip = app.descendants(matching: .any)["replyCapsuleStrip"]
+        XCTAssertTrue(strip.waitForExistence(timeout: 20), "本地两个后台任务没有变成胶囊条")
+        let expanded = app.descendants(matching: .any)["replyCapsuleExpanded"]
+        let compact = app.descendants(matching: .any)["replyCapsuleCompact"]
+        XCTAssertTrue(expanded.waitForExistence(timeout: 8) && compact.waitForExistence(timeout: 8), "本地没有一颗展开、一颗收起的胶囊")
+        let before = expanded.label + ((expanded.value as? String) ?? "")
+        compact.tap()
+        XCTAssertTrue(poll(6) {
+            let exp = app.descendants(matching: .any)["replyCapsuleExpanded"]
+            let com = app.descendants(matching: .any)["replyCapsuleCompact"]
+            let text = exp.label + ((exp.value as? String) ?? "")
+            return exp.exists && com.exists && text != before
+        }, "本地点另一颗胶囊没有展开：expanded=\(app.descendants(matching: .any)["replyCapsuleExpanded"].label)")
+        shot(app, "local-reply-06-两个胶囊")
+    }
+
     /// 本地详细模式：主模型直接回话，没有后台状态行，也不叫前台模型
     func testLocalReply_verboseModeUnchanged() throws {
         let app = launchLocal(mode: "verbose")
@@ -302,6 +361,20 @@ final class ReplyModeUITests: XCTestCase {
         if back.waitForExistence(timeout: 5) { back.tap() } else {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.5)).press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5)))
         }
+    }
+
+
+    /// 秒回对话里默认不能看到深度思考，也不能看到派给后台的任务简报原文
+    private func assertNoReasoningOrBrief(_ app: XCUIApplication, file: StaticString = #file, line: UInt = #line) {
+        XCTAssertFalse(app.staticTexts["深度思考"].waitForExistence(timeout: 1.5), "秒回里出现了「深度思考」", file: file, line: line)
+        let brief = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "TASK_BRIEF_SHOULD_BE_HIDDEN", "TASK_BRIEF_SHOULD_BE_HIDDEN")
+        ).firstMatch
+        XCTAssertFalse(brief.waitForExistence(timeout: 1.0), "秒回里出现了任务简报：\(brief.label)", file: file, line: line)
+        let reason = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label CONTAINS %@", "REASONING_SHOULD_BE_HIDDEN")
+        ).firstMatch
+        XCTAssertFalse(reason.waitForExistence(timeout: 0.8), "秒回里出现了思考原文：\(reason.label)", file: file, line: line)
     }
 
     private func launchLocal(mode: String) -> XCUIApplication {

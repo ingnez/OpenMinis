@@ -102,6 +102,19 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(l.firstTextMs == 420, "首字 \(l.firstTextMs ?? -1)")
         l.sent(at: now)
         check(l.firstTextMs == nil, "新一条重新计")
-        print("PASS：回复方式解析、状态行文字、预计剩余只用真实数据、提示音只响一次、状态行选任务、语音播报节流、首字时间")
+        let a = CloudReplyWorker(id: "a", title: "慢活", status: "running", createdAt: 1)
+        let b = CloudReplyWorker(id: "b", title: "查资料", status: "running", createdAt: 2)
+        let done = CloudReplyWorker(id: "c", title: "旧的", status: "completed", createdAt: 0)
+        let now = Date()
+        let lingering = CloudReplyRow.visible([a, b, done], finishedAt: ["c": now.addingTimeInterval(-1)], now: now)
+        check(lingering.map(\.id) == ["c", "a", "b"], "可见顺序按创建时间：\(lingering.map(\.id))")
+        check(CloudReplyRow.current([a, b, done], finishedAt: ["c": now.addingTimeInterval(-1)], now: now)?.id == "b", "当前优先最新进行中")
+        check(CloudReplyRow.overflowCount(2) == 0 && CloudReplyRow.overflowCount(5) == 1, "多于 4 个才有角标")
+        check(CloudReplyRow.dispatchPhrase(title: "PPT大师做课件") == "派单给PPT大师做课件", "派单文案")
+        check(CloudReplyRow.dispatchPhrase(title: "  ") == "派单给后台", "空标题")
+        check(CloudReplyRow.visible([done], finishedAt: ["c": now.addingTimeInterval(-10)], now: now).isEmpty, "结束超过停留时间就收起")
+
+        print("PASS：回复方式解析、状态行文字、预计剩余只用真实数据、提示音只响一次、状态行选任务、语音播报节流、首字时间、多任务胶囊")
+
     }
 }

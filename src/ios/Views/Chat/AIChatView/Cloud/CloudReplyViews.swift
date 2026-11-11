@@ -341,7 +341,7 @@ struct CloudReplyStatusRow: View {
 }
 
 /// 头像轻轻呼吸（工作中）
-private struct CloudReplyBreath: ViewModifier {
+struct CloudReplyBreath: ViewModifier {
     let active: Bool
     @State private var on = false
     func body(content: Content) -> some View {
@@ -564,12 +564,10 @@ struct CloudReplyComposerSlot: View {
     let firstTextMs: Int?
 
     var body: some View {
-        if instant, let w = status.current {
-            // 秒回：后台在做什么（一句话 + 用时），点开看过程、左滑停止、长按补充要求
-            CloudReplyStatusRow(worker: w, count: status.activeCount, fetchedAt: status.fetchedAt, theme: theme,
-                                onExpand: { status.expanded = w }, onStop: { status.stop(w) },
-                                onInterject: { status.interjecting = w })
-                .padding(.horizontal, 12)
+        if instant, !CloudReplyRow.visible(status.workers, finishedAt: status.finishedAt).isEmpty {
+            // 秒回：一件事仍是原来的状态行；多件并行时换成可横滑的胶囊条。点开看进度，不先摊开任务简报。
+            CloudReplyLiveBar(status: status, theme: theme)
+                .padding(.horizontal, CloudReplyRow.visible(status.workers, finishedAt: status.finishedAt).count == 1 ? 12 : 0)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
         }
         #if DEBUG
@@ -608,9 +606,11 @@ struct CloudReplyChatChrome: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.cloudReplyInstant, instant)
-            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: status.current?.id)
+            .animation(CloudE2E.pauseIdleAnimations ? nil : .spring(response: 0.4, dampingFraction: 0.85), value: status.current?.id)
             .sheet(item: $status.expanded) { w in
-                CloudReplyStepsSheet(worker: w, onStop: { status.stop(w) }, onInterject: { status.interjecting = w })
+                CloudReplyProgressSheet(worker: w, fetchedAt: status.fetchedAt, onStop: { status.stop(w) }, onInterject: { status.interjecting = w }) {
+                    CloudWorkerTimelineView(workerId: w.id, title: w.title)
+                }
             }
             .alert("给后台补充要求", isPresented: interjectShown) {
                 TextField("比如：结果用表格列出来", text: $text)

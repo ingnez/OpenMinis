@@ -22,6 +22,7 @@ struct CloudAssistantTurnView: View {
     var collapsible = false
     @State private var expanded = false
     @Environment(\.cloudReplyInstant) private var replyInstant
+    @State private var showHiddenDetail = false
 
     private var isResetNote: Bool {
         message.blocks.count == 1 && (message.blocks[0].toolUseId ?? "").hasPrefix(CloudEventApplier.resetPrefix)
@@ -95,7 +96,7 @@ struct CloudAssistantTurnView: View {
                 case .text(let block):
                     CloudTextBlockView(block: block, accent: accent)
                 case .thinking(let block):
-                    CloudThinkingView(text: block.content, streaming: false)
+                    if !replyInstant { CloudThinkingView(text: block.content, streaming: false) }
                 case .injected(let block):
                     CloudInjectedNote(text: block.content)
                 case .reset(let block):
@@ -113,7 +114,7 @@ struct CloudAssistantTurnView: View {
                     CloudNoticeCapsule(text: text, systemImage: "eye")
                 }
             }
-            if !liveReasoning.isEmpty {
+            if !replyInstant, !liveReasoning.isEmpty {
                 CloudThinkingView(text: liveReasoning, streaming: true)
             }
             if !liveText.isEmpty {
@@ -128,7 +129,55 @@ struct CloudAssistantTurnView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .modifier(CloudCollapse(active: collapsible && isLong, expanded: $expanded))
+        .contextMenu {
+            if replyInstant, hasHiddenDetail {
+                Button("查看详情") { showHiddenDetail = true }
+            }
+        }
+        .sheet(isPresented: $showHiddenDetail) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if !hiddenThinking.isEmpty {
+                            Text("深度思考").font(.headline)
+                            Text(hiddenThinking).font(.callout).foregroundStyle(.secondary)
+                        }
+                        ForEach(hiddenBriefs, id: \.self) { brief in
+                            Text(brief).font(.callout).textSelection(.enabled)
+                        }
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .navigationTitle("详情")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("收起") { showHiddenDetail = false } } }
+            }
+            .accessibilityIdentifier("replyBriefSheet")
+        }
     }
+
+    private var hiddenThinking: String {
+        let blocks = message.blocks.filter { $0.kind == .thinking }.map(\.content).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        var parts = blocks
+        if !liveReasoning.isEmpty { parts.append(liveReasoning) }
+        return parts.joined(separator: "\n\n")
+    }
+
+    private var hiddenBriefs: [String] {
+        message.blocks.compactMap { b -> String? in
+            if let mark = CloudDelegationMark.parse(b.content) { return mark.shownBody }
+            if let card = CloudCards.decode(b), card.kind == .worker {
+                let title = card.payload["title"] as? String ?? ""
+                let goal = (card.payload["goal"] as? String) ?? (card.payload["context"] as? String) ?? ""
+                let text = [title, goal].filter { !$0.isEmpty }.joined(separator: "\n")
+                return text.isEmpty ? nil : text
+            }
+            return nil
+        }
+    }
+
+    private var hasHiddenDetail: Bool { !hiddenThinking.isEmpty || !hiddenBriefs.isEmpty }
 }
 
 /// 长回复折叠：最多显示约 480pt，底部渐隐 +「展开全部」；展开后可「收起」

@@ -268,8 +268,17 @@ struct LocalReplyChatChrome: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.cloudReplyInstant, instant)
-            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: status.current?.id)
-            .sheet(item: $status.expanded) { w in LocalReplyStepsSheet(worker: w, onStop: { status.stop(w) }, onInterject: { status.interjecting = w }) }
+            .animation(CloudE2E.pauseIdleAnimations ? nil : .spring(response: 0.4, dampingFraction: 0.85), value: status.current?.id)
+            .sheet(item: $status.expanded) { w in
+                CloudReplyProgressSheet(worker: w, fetchedAt: status.fetchedAt, onStop: { status.stop(w) }, onInterject: { status.interjecting = w }) {
+                    if let cid = LocalReplyHub.childSessionId(for: w.id) {
+                        HelperTranscriptPage(target: HelperSheetTarget(id: cid, title: w.title))
+                            .helperTranscriptSheetStyle()
+                    } else {
+                        Text("这个后台任务还没有过程可以看").foregroundStyle(.secondary)
+                    }
+                }
+            }
             .alert("给后台补充要求", isPresented: interjectShown) {
                 TextField("比如：结果用表格列出来", text: $text)
                 Button("发送") { send() }

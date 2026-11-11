@@ -82,11 +82,15 @@ def _fresh_tools(data):
     return [m for m in msgs[(users[-1] if users else 0):] if m.get("role") == "tool"]
 
 
-def _stream_then_tool(text, call_id, name, args):
+def _stream_then_tool(text, call_id, name, args, reasoning=None):
     # 先流出一句回话，再在同一条回复里调工具（和真模型一样：文字在前，tool_calls 在后）
-    return {"_chunks": [text, {"tool_calls": [{"index": 0, "id": call_id, "type": "function",
-                                                "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}}]}],
-            "_delay": 0.02}
+    chunks = []
+    if reasoning:
+        chunks.append({"reasoning_content": reasoning})
+    chunks.append(text)
+    chunks.append({"tool_calls": [{"index": 0, "id": call_id, "type": "function",
+                                   "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}}]})
+    return {"_chunks": chunks, "_delay": 0.02}
 
 
 def front_script(data):
@@ -114,7 +118,9 @@ def front_script(data):
         return _stream_then_tool("收到插话，马上转给后台。", "f2", "task_message", {"id": m.group(1), "text": text or " ".join(all_user)})
     if "查一下" in text:
         title = "慢活" if "慢活" in text else "查资料"
-        return _stream_then_tool("好，我让后台去查，做完告诉你。", "f1", "spawn_task", {"goal": text, "context": "假数据", "title": title})
+        return _stream_then_tool("好，我让后台去查，做完告诉你。", "f1", "spawn_task",
+                                {"goal": text, "context": "TASK_BRIEF_SHOULD_BE_HIDDEN\nFull English brief for the worker: compile a vasoactive-drugs slide deck.", "title": title},
+                                reasoning="REASONING_SHOULD_BE_HIDDEN: I will delegate this job to a background worker.")
     return {"_chunks": ["秒回：", text[:20]], "_delay": 0.02}
 
 
@@ -144,7 +150,9 @@ def local_front_script(data):
         return _stream_then_tool("收到插话，马上转给后台。", "lf2", "task_message", {"id": m.group(1), "text": text or " ".join(all_user)})
     if "查一下" in text:
         title = "慢活" if "慢活" in text else "查资料"
-        return _stream_then_tool("好，我让后台去查，做完告诉你。", "lf1", "spawn_task", {"goal": text, "context": "假数据", "title": title})
+        return _stream_then_tool("好，我让后台去查，做完告诉你。", "lf1", "spawn_task",
+                                {"goal": text, "context": "TASK_BRIEF_SHOULD_BE_HIDDEN\nFull English brief for the worker: compile a vasoactive-drugs slide deck.", "title": title},
+                                reasoning="REASONING_SHOULD_BE_HIDDEN: I will delegate this job to a background worker.")
     return {"_chunks": ["秒回：", text[:20]], "_delay": 0.02}
 
 
