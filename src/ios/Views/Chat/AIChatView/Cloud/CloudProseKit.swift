@@ -49,6 +49,8 @@ struct CloudProseAssistant: View {
 struct CloudProseUser: View {
     let content: String
     let accent: Color
+    /// 长按菜单只挂在文字气泡上：挂在整条上会盖住图片叠放卡片自己的「长按铺开」（42963481185 test10）
+    var textMenu: (() -> AnyView)? = nil
 
     var body: some View {
         let shown = CloudMessageText.display(content)
@@ -65,9 +67,18 @@ struct CloudProseUser: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal, 16).padding(.vertical, 10)
                         .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(accent))
+                        .modifier(CloudOptionalMenu(menu: textMenu))
                 }
             }
         }
+    }
+}
+
+/// 有菜单才挂 .contextMenu
+struct CloudOptionalMenu: ViewModifier {
+    let menu: (() -> AnyView)?
+    func body(content: Content) -> some View {
+        if let menu { content.contextMenu { menu() } } else { content }
     }
 }
 

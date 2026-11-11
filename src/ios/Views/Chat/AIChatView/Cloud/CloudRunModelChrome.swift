@@ -126,15 +126,16 @@ struct CloudUserTurnRow: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
             if let q = extras.replyExcerpt { CloudReplyQuote(excerpt: q, role: extras.replyRole) }
-            CloudProseUser(content: content, accent: accent)
-                .contextMenu {
+            CloudProseUser(content: content, accent: accent, textMenu: {
+                AnyView(Group {
                     Button { UIPasteboard.general.string = CloudMessageText.display(content).text } label: { Label("复制", systemImage: "doc.on.doc") }
                     if let id = extras.id {
                         Button { onReply(CloudReplyTarget(id: id, excerpt: CloudMessageText.display(content).text)) } label: {
                             Label("回复", systemImage: "arrowshape.turn.up.left")
                         }
                     }
-                }
+                })
+            })
             if let e = extras.botReaction {
                 // Bot 用表情回应了这条（代替文字回复）
                 CloudReactionPill(emoji: e).padding(.trailing, 14).offset(y: -12).padding(.bottom, -12)

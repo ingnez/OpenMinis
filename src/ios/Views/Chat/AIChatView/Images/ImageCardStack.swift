@@ -34,11 +34,25 @@ struct ImageCardStack: View {
             }
         }
         .contentShape(Rectangle())
-        .onLongPressGesture(minimumDuration: 0.35) {
-            guard count > 1 else { return }
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { fanned.toggle() }
-        }
+        // 长按和轻点放在同一层、互斥：以前长按挂在外层、轻点挂在每张卡上，卡片的轻点和外面整行的
+        // 上下文菜单会先抢到手势，长按就铺不开（42956011241 / 42963481185 两次都弹出了「复制 / 回复」菜单）。
+        // highPriority 让这一块比外面的手势先判定。卡片区在 VStack 顶上、比说明文字宽，所以 .local 就是卡片区坐标
+        .highPriorityGesture(
+            LongPressGesture(minimumDuration: 0.35)
+                .exclusively(before: SpatialTapGesture(coordinateSpace: .local))
+                .onEnded { value in
+                    switch value {
+                    case .first:
+                        guard count > 1 else { return }
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { fanned.toggle() }
+                    case .second(let tap):
+                        onOpen(ImageStackLayout.hitIndex(at: tap.location, count: count, fanned: fanned))
+                    }
+                },
+            // 有上传失败的卡时让卡上的「重试」按钮自己接手势，不被这一层抢走
+            including: sources.contains { $0.state == .failed } ? .subviews : .all
+        )
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(count == 1 ? "图片" : "\(count) 张图片")
         .accessibilityValue(count > 1 ? (fanned ? "已展开" : "叠放") : "")
@@ -69,7 +83,6 @@ struct ImageCardStack: View {
         .rotationEffect(.degrees(card.rotation))
         .offset(card.offset)
         .zIndex(card.zIndex)
-        .onTapGesture { onOpen(fanned ? card.index : 0) }
         .task(id: src.id) {
             if images[src.id] == nil, let img = await src.load() { images[src.id] = img }
         }

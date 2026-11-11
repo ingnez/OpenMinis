@@ -63,6 +63,20 @@ enum ImageStackLayout {
     }
 }
 
+extension ImageStackLayout {
+    /// 点在卡片区域（左上角为原点）的哪一张上：从最上面那张往下找；没点中任何一张算第一张。
+    /// 叠放时永远是第一张；旋转忽略（角度很小，按未旋转的矩形算）
+    static func hitIndex(at p: CGPoint, count: Int, fanned: Bool) -> Int {
+        guard fanned, count > 1 else { return 0 }
+        let box = stackSize(count: count)
+        for card in cards(count: count, fanned: true).sorted(by: { $0.zIndex > $1.zIndex }) {
+            let cx = box.width / 2 + card.offset.width, cy = box.height / 2 + card.offset.height
+            if abs(p.x - cx) <= cardSize.width / 2, abs(p.y - cy) <= cardSize.height / 2 { return card.index }
+        }
+        return 0
+    }
+}
+
 /// 全屏看图的页码规则
 enum ImageViewerIndex {
     static func clamp(_ index: Int, count: Int) -> Int { max(0, min(index, max(count - 1, 0))) }
