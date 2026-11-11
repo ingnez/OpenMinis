@@ -16,10 +16,14 @@ on:
         type: string
         default: ""
       mac_runner:
-        description: "macOS 机器标签。默认 macos-26（arm64，适合 UI 测试）。GitHub 对托管 Mac 排队约 15 分钟领不到就取消（「job was not acquired」），这段时间不算进 job 的 timeout-minutes；本工作流会先在 Linux 上等到本仓库空出 Mac，领不到再自动重排。UI 测试不要用 macos-15-intel（模拟器没有 x86_64）。构建 IPA 可用 macos-15-intel。"
+        description: "macOS 机器标签。默认 macos-26（arm64，适合 UI 测试）。GitHub 对托管 Mac 排队约 15 分钟领不到就取消（「job was not acquired」），这段时间不算进 job 的 timeout-minutes；本工作流会先在 Linux 上等到本仓库空出 Mac，领不到再自动改派，并在 macos-26 / macos-15 / xcode-27 之间轮换（都是 arm64）。不要用已退休的 macos-14。UI 测试不要用 macos-15-intel（模拟器没有 x86_64）。构建 IPA 可用 macos-15-intel。"
         type: choice
-        options: [macos-15, macos-15-intel, macos-26, macos-latest]
+        options: [macos-15, macos-15-intel, macos-26, macos-latest, xcode-27]
         default: macos-26
+      mac_retry:
+        description: "内部：领不到 Mac 后的自动重派次数，请留默认值"
+        type: string
+        default: "0"
 
 permissions:
   contents: read
@@ -1401,7 +1405,9 @@ jobs:
           exit 1
 
   # 若 Mac 任务因「job was not acquired」被平台取消（排队满约 15 分钟仍没领到机器，
-  # 步骤列表为空），自动重跑失败任务，换一段新的 15 分钟窗口。人工取消或已开跑后取消不重排。
+  # 步骤列表为空），自动再派发一次同样输入的运行，换一段新的 15 分钟窗口。
+  # 不能对「当前这次运行」调用 rerun-failed-jobs：本任务还在跑时 API 会 403
+  # 「This workflow is already running」（43072823187 已证实）。人工取消或已开跑后取消不重排。
   # if 必须是 always()：ui-tests 被平台取消时，在 if 里再写 needs.*.result == 'cancelled'
   # 会被 GitHub 直接跳过这个任务（43069823758 / 43069832887 已证实）。不 depends 于
   # quick-linux。是否真的该重排由下面脚本根据注释与步骤判断。
@@ -1414,31 +1420,41 @@ jobs:
       actions: write
       contents: read
     steps:
-      - name: 领不到 Mac 就再排一次
+      - name: 领不到 Mac 就再派一次
         env:
           GH_TOKEN: ${{ github.token }}
           GH_RUN_ID: ${{ github.run_id }}
-          GH_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_REF: ${{ github.ref_name }}
+          INPUT_QUICK: ${{ inputs.quick }}
+          INPUT_UI_TESTS: ${{ inputs.ui_tests }}
+          INPUT_ONLY_TESTING: ${{ inputs.only_testing }}
+          INPUT_MAC_RUNNER: ${{ inputs.mac_runner }}
+          INPUT_MAC_RETRY: ${{ inputs.mac_retry }}
         run: |
           python3 <<'PY'
           import json, os, urllib.error, urllib.request
           repo = os.environ["GITHUB_REPOSITORY"]
           run_id = os.environ["GH_RUN_ID"]
           token = os.environ["GH_TOKEN"]
-          attempt = os.environ.get("GH_RUN_ATTEMPT", "1")
 
-          def api(path, method="GET"):
-              data = b"" if method != "GET" else None
+          def flag(name):
+              return os.environ.get(name, "").strip().lower() in ("true", "1", "yes")
+
+          def api(path, method="GET", payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              headers = {
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "openminis-retry-mac",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              }
+              if data is not None:
+                  headers["Content-Type"] = "application/json"
               req = urllib.request.Request(
                   f"https://api.github.com/repos/{repo}{path}",
                   data=data,
                   method=method,
-                  headers={
-                      "Authorization": f"Bearer {token}",
-                      "Accept": "application/vnd.github+json",
-                      "User-Agent": "openminis-retry-mac",
-                      "X-GitHub-Api-Version": "2022-11-28",
-                  },
+                  headers=headers,
               )
               with urllib.request.urlopen(req, timeout=30) as r:
                   raw = r.read()
@@ -1473,14 +1489,50 @@ jobs:
           if not unacquired:
               print("这次取消不是因为领不到机器，不重排", flush=True)
               raise SystemExit(0)
-          print("领不到 Mac，准备重排失败任务（第 %s 次运行）：" % attempt, flush=True)
+          try:
+              retry = int((os.environ.get("INPUT_MAC_RETRY") or "0").strip() or "0")
+          except ValueError:
+              retry = 0
+          if retry >= 5:
+              print("已自动重派 5 次仍领不到 Mac，停止", flush=True)
+              for line in unacquired:
+                  print("  " + line, flush=True)
+              raise SystemExit(1)
+          ref = (os.environ.get("GH_REF") or "").strip()
+          if not ref:
+              print("没有 ref，无法重派", flush=True)
+              raise SystemExit(1)
+          print("领不到 Mac，准备再派一次同样输入的运行（第 %s 次重派，ref=%s）：" % (retry + 1, ref), flush=True)
           for line in unacquired:
               print("  " + line, flush=True)
+          # 每次换一个 arm64 池。macos-14 已于 2026-11-02 退役。
+          # macos-26-xlarge / macos-15-xlarge 是付费 larger runner，未确认免费前不用。
+          # UI 测试绝不能换到 *-intel / *-large（模拟器没有 x86_64）。
+          ui_tests = flag("INPUT_UI_TESTS")
+          ui_chain = ["macos-26", "macos-15", "xcode-27"]
+          build_chain = ["macos-26", "macos-15", "macos-15-intel", "xcode-27"]
+          chain = ui_chain if ui_tests else build_chain
+          current = (os.environ.get("INPUT_MAC_RUNNER") or "macos-26").strip()
+          if current in chain:
+              next_runner = chain[(chain.index(current) + 1) % len(chain)]
+          else:
+              next_runner = chain[0]
+          print("机器标签从 %s 换到 %s" % (current, next_runner), flush=True)
+          payload = {
+              "ref": ref,
+              "inputs": {
+                  "quick": "true" if flag("INPUT_QUICK") else "false",
+                  "ui_tests": "true" if ui_tests else "false",
+                  "only_testing": os.environ.get("INPUT_ONLY_TESTING") or "",
+                  "mac_runner": next_runner,
+                  "mac_retry": str(retry + 1),
+              },
+          }
           try:
-              api(f"/actions/runs/{run_id}/rerun-failed-jobs", method="POST")
+              api("/actions/workflows/build-ios.yml/dispatches", method="POST", payload=payload)
           except urllib.error.HTTPError as e:
               body = e.read().decode("utf-8", "replace")
-              print(f"重排失败 HTTP {e.code}: {body}", flush=True)
+              print(f"重派失败 HTTP {e.code}: {body}", flush=True)
               raise SystemExit(1)
-          print("已请求重跑失败任务，等待下一次领机器", flush=True)
+          print("已派发新运行：", payload["inputs"], flush=True)
           PY
