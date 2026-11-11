@@ -79,14 +79,14 @@ if cc != 0 { print(ccOut) } else {
 
 print("[3] source guards")
 // The decision sits inside the busy stop-button branch only.
-let stopBranch = between(button, "} else if isBusy && !canSend {", "// Typing while a sub agent runs") ?? ""
+let stopBranch = between(button, "} else if isBusy && !canSend && placement != .trailingNoStop {", "// Typing while a sub agent runs") ?? ""
 check("confirmation is decided inside the busy stop branch", stopBranch.contains("StopConfirmPolicy.onTap("))
 check("the dialog is attached in that branch", stopBranch.contains(".alert(AppLocalized(\"Stop this task?\"), isPresented: $showStopConfirm)"))
 check("dialog buttons: Stop (destructive) + Keep Running (cancel)",
       stopBranch.contains("Button(AppLocalized(\"Stop\"), role: .destructive)") && stopBranch.contains("Button(AppLocalized(\"Keep Running\"), role: .cancel) {}"))
 check("dialog message", stopBranch.contains("Text(AppLocalized(\"The current reply and any running tools will be stopped.\"))"))
 check("Stop re-checks the turn before stopping", stopBranch.contains("guard StopConfirmPolicy.confirmStillApplies("))
-check("the queue / send branches never ask", !(between(button, "} else if vm.isProcessing && canEnqueue {", "} else if isBusy && !canSend {") ?? "x").contains("StopConfirmPolicy"))
+check("the queue / send branches never ask", !(between(button, "} else if vm.isProcessing && canEnqueue {", "} else if isBusy && !canSend && placement != .trailingNoStop {") ?? "x").contains("StopConfirmPolicy"))
 check("busy branches stay inside body (other suites anchor there)", button.contains("    var body: some View {\n        Group {"))
 check("dialog closes when its turn ends (publisher, not onChange)",
       button.contains(".onReceive(vm.$isProcessing)") && button.contains("processingEndCount &+= 1"))

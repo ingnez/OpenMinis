@@ -44,6 +44,11 @@ struct ChatSendButton: View {
     var isWaitingToSendVoice: Bool = false
     let onSend: () -> Void
     let onEnqueue: () -> Void
+    /// 放在哪里：输入框右侧的变形按钮从不变成停止键（2026-11-11 00:43 约定，和 Bot 模式一致），
+    /// 停止挪到输入框上面的状态行（`.statusStop`，只在忙时出现）。
+    var placement: Placement = .composer
+
+    enum Placement { case composer, trailingNoStop, statusStop }
 
     @ObservedObject private var jobs = AgentJobRegistry.shared
     /// [T-scheduled-active-session] The tracker's ACTIVE conversations — the
@@ -107,7 +112,26 @@ struct ChatSendButton: View {
         vm.isProcessing || hasRunningSubAgent || (vm.sessionId.map(tracker.isBusy) ?? false)
     }
 
+    @ViewBuilder
     var body: some View {
+        if placement == .statusStop {
+            if isBusy {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(vm.isProcessing ? "正在回复…" : hasRunningSubAgent ? "子代理在干活…" : "有定时任务待执行")
+                        .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    Spacer()
+                    content.scaleEffect(0.7).frame(width: 26, height: 26)
+                }
+                .padding(.horizontal, 14)
+                .transition(.opacity)
+            }
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         Group {
             // [T-voice-send-lock] First, before every other state: while the send
             // waits for recognition the button would otherwise still look like
@@ -133,7 +157,7 @@ struct ChatSendButton: View {
                 }
                 .accessibilityLabel(Text("Add to queue", comment: "VoiceOver label for the send button while a reply is generating"))
                 .accessibilityHint(Text("Queues this message to send after the current reply finishes", comment: "VoiceOver hint for the queue button"))
-            } else if isBusy && !canSend {
+            } else if isBusy && !canSend && placement != .trailingNoStop {
                 // Stop. When only a sub agent is running, cancelling stops it
                 // rather than a (non-existent) reply — vm.cancel() covers both,
                 // and the label says which one the user is stopping.

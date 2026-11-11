@@ -74,7 +74,7 @@ check("grey button is NOT .disabled (that would kill the long-press too)",
 check("tap on the grey button does nothing", button.contains("{ if canSend { onSend() } }"))
 check("⌘Return still sends via a hidden button",
       button.contains("Button(\"\", action: primaryAction)\n                .keyboardShortcut(.return, modifiers: .command)"))
-check("Stop button keeps its plain tap (no menu)", slice(button, "} else if isBusy && !canSend {", "} else {").contains("returnModeMenu") == false)
+check("Stop button keeps its plain tap (no menu)", slice(button, "} else if isBusy && !canSend && placement != .trailingNoStop {", "} else {").contains("returnModeMenu") == false)
 check("VoiceOver can switch without the long-press", button.contains(".accessibilityAction(named:"))
 
 print("\n▶️  takes effect in the open composer")

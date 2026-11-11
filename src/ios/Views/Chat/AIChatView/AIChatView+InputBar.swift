@@ -95,6 +95,7 @@ extension AIChatView {
             // before its modifier chain so each opaque step copies a pointer,
             // not the whole composer (30 dynamic stack buffers in this closure).
             AnyView(VStack(spacing: 5) {
+                localBusyStatusRow
                 // [T-paste-placeholder] Stashed long pastes referenced by the
                 // draft. Removal also strips the literal from the input text.
                 if !vm.pastedTexts.isEmpty {

@@ -88,10 +88,11 @@ extension AIChatView {
             micButtonContainer
             // 和 Bot 模式同一个变形圆按钮：没字 = 声波（顶部浮动胶囊实时语音，长按按住说话），有字 / 生成中 = 原来的发送 / 排队按钮
             LocalMorphTrailing(call: CloudLocalCall.controller,
-                               showsCall: !canSend && !canEnqueue && !vm.isProcessing && !vm.isCompacting && !isWaitingToSendVoice,
+                               // 生成中空框也是声波：右侧按钮从不变停止键，停止在输入框上面的状态行
+                               showsCall: !canSend && !canEnqueue && !isWaitingToSendVoice,
                                tint: Color.accentColor,
                                onCall: { ptt in await startLocalCall(pushToTalk: ptt) },
-                               fallback: sendButton)
+                               fallback: trailingSendButton)
         }
         return AnyView(row)
     }
@@ -337,13 +338,17 @@ extension AIChatView {
     /// `AgentJobRegistry` without adding another `@StateObject` to
     /// `AIChatView` — the same reason `SessionLockGateOverlay` was split out
     /// (this body's generic depth already blew iOS 26's metadata budget once).
-    private var sendButton: some View {
-        ChatSendButton(vm: vm,
-                       canSend: canSend,
-                       canEnqueue: canEnqueue,
-                       isWaitingToSendVoice: isWaitingToSendVoice,
-                       onSend: { performSend() },
-                       onEnqueue: { performEnqueue() })
+    /// 输入框右侧：发送 / 排队，忙时不变成停止键
+    private var trailingSendButton: some View {
+        ChatSendButton(vm: vm, canSend: canSend, canEnqueue: canEnqueue, isWaitingToSendVoice: isWaitingToSendVoice,
+                       onSend: { performSend() }, onEnqueue: { performEnqueue() }, placement: .trailingNoStop)
+            .accessibilityIdentifier("localComposerSendButton")
+    }
+
+    /// 输入框上面的状态行：忙时「正在回复…」+ 停止（确认 / 定时任务提醒和原来的停止键一样）
+    var localBusyStatusRow: some View {
+        ChatSendButton(vm: vm, canSend: false, canEnqueue: false,
+                       onSend: {}, onEnqueue: {}, placement: .statusStop)
     }
 
     /// Either the multi-line text field or the audio waveform, depending on

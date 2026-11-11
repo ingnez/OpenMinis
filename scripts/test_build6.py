@@ -71,8 +71,13 @@ assert '|| showRealtimeVoice' in view
 row=block(controls,'var inputBottomRow: AnyView {','return AnyView(row)')
 # 本地模式和 Bot 模式同一个输入框：单独的电话按钮并进右侧变形圆按钮（没字 = 声波开实时语音，有字 = 原发送 / 排队）
 assert 'phone.circle.fill' not in row
-assert 'LocalMorphTrailing(call: CloudLocalCall.controller' in row and 'fallback: sendButton' in row
-assert 'showsCall: !canSend && !canEnqueue && !vm.isProcessing' in row
+assert 'LocalMorphTrailing(call: CloudLocalCall.controller' in row and 'fallback: trailingSendButton' in row
+# 生成中空框仍是声波；右侧按钮从不变停止键，停止在输入框上面的状态行（2026-11-11 00:43 约定）
+assert 'showsCall: !canSend && !canEnqueue && !isWaitingToSendVoice' in row and 'vm.isProcessing' not in row.split('showsCall:')[1].split('\n')[0]
+assert 'placement: .trailingNoStop' in controls and 'placement: .statusStop' in controls
+assert 'localBusyStatusRow' in read(active+'AIChatView+InputBar.swift')
+btn=read(active+'Composer/ChatSendButton.swift')
+assert 'isBusy && !canSend && placement != .trailingNoStop' in btn
 start=block(controls,'func startLocalCall(pushToTalk: Bool) async {','await CloudLocalCall.controller.start')
 assert 'voiceInputActive = false' in start and 'showRealtimeVoice = true' in start and 'RealtimeLocalChatHost(chat: vm)' in start
 assert 'LocalCallOverlay(call: CloudLocalCall.controller' in view
