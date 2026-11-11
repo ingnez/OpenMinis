@@ -207,20 +207,6 @@ extension AIChatViewModel {
         cancelPendingUserAsk()
         userDidCancel = true
 
-        // [CloudComputer] If cloud execution is active, explicitly cancel remote task on VPS
-        if let sid = sessionId, isCloudExecutionActive {
-            Task { @MainActor [weak self] in
-                do {
-                    if !CloudConnection.shared.isConnected { try await CloudConnection.shared.connect() }
-                    try await CloudChatBridge.shared.cancelRemoteTask(localSessionId: sid)
-                } catch {
-                    guard let self, !self.isRetiredByReset else { return }
-                    self.messages.last(where: { $0.role == .assistant })?.error = "尚未确认云端停止，任务可能仍在 VPS 执行。请恢复连接后重试停止：\(error.localizedDescription)"
-                    self.objectWillChange.send()
-                }
-            }
-        }
-
         currentTask?.cancel()
         currentTask = nil
         dropPresetsOfStoppedTurn()  // [T-preset-cleared-on-stop]

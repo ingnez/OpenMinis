@@ -20,7 +20,7 @@ enum CloudCredentialSync {
         return "ios-" + (cleaned.isEmpty ? "default" : cleaned)
     }
 
-    /// 与 runCloudAgentLoop 相同的 Base URL 规则。
+    /// OpenAI 兼容服务商的 Base URL 规则（按需补 /v1）。
     static func baseURL(for instance: ProviderInstance) -> String {
         let (rawBase, appendV1) = instance.resolvedBaseURL(default: "https://api.openai.com")
         return appendV1 ? (rawBase.hasSuffix("/v1") ? rawBase : rawBase + "/v1") : rawBase

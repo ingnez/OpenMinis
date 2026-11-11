@@ -90,22 +90,9 @@ extension AIChatViewModel {
     func runAgentLoop(resumingAt existingMsgIdx: Int? = nil, committedBlocks: Int? = nil) async throws {
         guard !isRetiredByReset else { throw CancellationError() }
 
-        // [CloudComputer] Check if cloud execution is enabled for this session
-        if isCloudExecutionActive {
-            logger.info("☁️ Cloud Computer execution active for session \(self.sessionId ?? "nil") — routing directly to VPS, strictly disabling local fallback.")
-            let targetMsg: ChatMessage
-            if let idx = existingMsgIdx, messages.indices.contains(idx), messages[idx].role == .assistant {
-                targetMsg = messages[idx]
-            } else if let last = messages.last, last.role == .assistant {
-                targetMsg = last
-            } else {
-                let fresh = ChatMessage(role: .assistant, content: "", blocks: [])
-                messages.append(fresh)
-                targetMsg = fresh
-            }
-            try await runCloudAgentLoop(targetAssistantMessage: targetMsg)
-            return
-        }
+        // 本地就是本地：本地对话只在本机跑。以前这里看到旧版「云电脑」开关留下的偏好
+        // 就把整轮悄悄导到 VPS 主 Bot 上执行（11-11 真机：本地任务出现在云端小猪包对话里）。
+        // 开关 UI 在 c3678d6 去掉了，路由没去掉；现在路由删除，旧偏好启动时清掉（LocalCloudIsolation）。交给云端只走「交给 Bot」。
 
         do {
             try await runAgentLoopCore(resumingAt: existingMsgIdx, committedBlocks: committedBlocks)

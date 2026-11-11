@@ -135,6 +135,8 @@ struct MinisApp: App {
         CrashSignalHandler.install()
         SharedContainerStore.recoverCloudSyncPreferences()
         CloudE2E.applyLaunchDefaults()
+        // 本地 / 云端隔离：清掉旧版「云电脑」开关留下的「本地对话在云端执行」偏好（路由已删除，这里防止旧值被别处再读到）
+        LocalCloudIsolation.purgeLegacyRouting()
         // [T-crash-breadcrumbs] Rotate the previous run's breadcrumbs and start
         // this run's ring + 15 s resource sampling, before anything else runs.
         CrashBreadcrumbs.start()

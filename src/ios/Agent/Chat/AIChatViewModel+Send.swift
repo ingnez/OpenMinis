@@ -268,7 +268,7 @@ extension AIChatViewModel {
 
         // Ensure kernel is booted before running
         // 云端提交由CloudConnection管理SSH所需的iSH，不等待本机Agent内核状态。
-        if !isCloudExecutionActive { ensureKernelBooted() }
+        ensureKernelBooted()
         beginBackgroundProcessing()
 
         currentTask = Task { [weak self] in
@@ -731,7 +731,7 @@ extension AIChatViewModel {
         forceScrollToBottom.send()
 
         // 云端提交由CloudConnection管理SSH所需的iSH，不等待本机Agent内核状态。
-        if !isCloudExecutionActive { ensureKernelBooted() }
+        ensureKernelBooted()
         beginBackgroundProcessing()
 
         currentTask = Task { [weak self] in
@@ -869,7 +869,7 @@ extension AIChatViewModel {
         isProcessing = true
 
         // 云端提交由CloudConnection管理SSH所需的iSH，不等待本机Agent内核状态。
-        if !isCloudExecutionActive { ensureKernelBooted() }
+        ensureKernelBooted()
         beginBackgroundProcessing()
 
         currentTask = Task { [weak self] in
@@ -985,7 +985,7 @@ extension AIChatViewModel {
         forceScrollToBottom.send()
 
         // 云端提交由CloudConnection管理SSH所需的iSH，不等待本机Agent内核状态。
-        if !isCloudExecutionActive { ensureKernelBooted() }
+        ensureKernelBooted()
         beginBackgroundProcessing()
 
         currentTask = Task { [weak self] in
@@ -1160,14 +1160,12 @@ extension AIChatViewModel {
     /// (callers `defer` it right after), or nil when the wait was cancelled -
     /// the run state has then been reset and the caller must return. A nil
     /// result holds nothing, so there is nothing to release.
-    /// 云电脑不等待本机Agent的启动状态；SSH环境仍由CloudConnection单独准备。
     func prepareExecutionForSend() async -> Bool {
         if Task.isCancelled || isRetiredByReset {
             isProcessing = false
             endBackgroundProcessing()
             return false
         }
-        if isCloudExecutionActive { return true }
         let deadline = Date().addingTimeInterval(60)
         while kernelStatus == .booting {
             if Task.isCancelled || isRetiredByReset || Date() >= deadline {

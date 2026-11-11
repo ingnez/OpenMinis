@@ -46,7 +46,6 @@ public final class CloudChatBridge: ObservableObject {
     public static let shared = CloudChatBridge()
 
     private let activeTaskPrefix = "OpenMinisCloud_ActiveTask_"
-    private let executionModePrefix = "OpenMinisCloud_Mode_"
     private let remoteSessionPrefix = "OpenMinisCloud_RemoteSession_"
 
     @Published public private(set) var activeTaskIdBySession: [String: String] = [:]
@@ -79,20 +78,8 @@ public final class CloudChatBridge: ObservableObject {
         return "\(deviceNamespace)_\(username)@\(host):\(actualPort)"
     }
 
-    // MARK: - Execution Mode & Binding Persistence (Scoped by Host Identity)
-
-    public func isCloudExecutionEnabled(for localSessionId: String) -> Bool {
-        let key = executionModePrefix + hostIdentityScope() + "_" + localSessionId
-        if UserDefaults.standard.object(forKey: key) == nil {
-            return UserDefaults.standard.bool(forKey: "OpenMinisCloud_DefaultExecution")
-        }
-        return UserDefaults.standard.bool(forKey: key)
-    }
-
-    public func setCloudExecutionEnabled(_ enabled: Bool, for localSessionId: String) {
-        let key = executionModePrefix + hostIdentityScope() + "_" + localSessionId
-        UserDefaults.standard.set(enabled, forKey: key)
-    }
+    // MARK: - Binding Persistence (Scoped by Host Identity)
+    // 本地对话不再整轮导到云端执行（LocalCloudIsolation 启动时清掉旧的执行模式偏好）
 
     public func remoteSessionId(for localSessionId: String) -> String? {
         let scopedKey = hostIdentityScope() + "_" + localSessionId
