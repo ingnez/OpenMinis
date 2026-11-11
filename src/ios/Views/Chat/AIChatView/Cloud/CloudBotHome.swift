@@ -945,10 +945,10 @@ struct CloudBotHubView: View {
                     onDone()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { CloudBotEntry.openVoice(bot: id) }
                 })) { Label("控制中心与手表", systemImage: "applewatch") }
-                NavigationLink(destination: CloudNightModePage()) { Label("夜间护眼", systemImage: "moon.stars") }
-                NavigationLink(destination: CloudDataSaverPage()) { Label("省流模式", systemImage: "antenna.radiowaves.left.and.right") }
-                NavigationLink(destination: CloudPocketModePage()) { Label("口袋模式", systemImage: "headphones") }
-                NavigationLink(destination: CloudWatchComplicationPage()) { Label("手表表盘小组件", systemImage: "applewatch") }
+                NavigationLink(destination: CloudLazyDestination { CloudNightModePage() }) { Label("夜间护眼", systemImage: "moon.stars") }
+                NavigationLink(destination: CloudLazyDestination { CloudDataSaverPage() }) { Label("省流模式", systemImage: "antenna.radiowaves.left.and.right") }
+                NavigationLink(destination: CloudLazyDestination { CloudPocketModePage() }) { Label("口袋模式", systemImage: "headphones") }
+                NavigationLink(destination: CloudLazyDestination { CloudWatchComplicationPage() }) { Label("手表表盘小组件", systemImage: "clock") }
                 NavigationLink(destination: CloudBotsView()) { Label("我的 Bot（模板、导入导出）", systemImage: "person.3") }
                 NavigationLink(destination: CloudPluginsView()) { Label("插件市场", systemImage: "puzzlepiece.extension") }
                 NavigationLink(destination: CloudRoutinesView()) { Label("例行任务", systemImage: "clock.arrow.circlepath") }

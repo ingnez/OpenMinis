@@ -123,3 +123,10 @@ struct CloudWardVoiceMenu: View {
         Toggle(isOn: $doubleTap) { Label("双击消息区开语音", systemImage: "hand.tap") }
     }
 }
+
+
+/// 设置列表里的 NavigationLink(destination:) 会在打开设置时就把目标页建出来。包一层，点进去才建。
+struct CloudLazyDestination<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+    var body: some View { content() }
+}

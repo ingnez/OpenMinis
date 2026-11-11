@@ -1202,6 +1202,7 @@ jobs:
             -only-testing:MinisUITests/E2EFlowsUITests \
             -only-testing:MinisUITests/MiscControlsUITests \
             -only-testing:MinisUITests/ReplyModeUITests \
+            -only-testing:MinisUITests/IdeasBUITests \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 150 \
             -maximum-test-execution-time-allowance 240 \
