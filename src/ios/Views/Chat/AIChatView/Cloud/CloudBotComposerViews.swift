@@ -19,8 +19,9 @@ struct CloudMorphButton: View {
     /// 按住说话：true 按下、false 松开
     var onPushToTalk: ((Bool) -> Void)?
     @State private var holding = false
-    /// 刚结束一次按住说话：吞掉紧跟着的那次点按
-    @State private var didHold = false
+    /// 刚结束一次按住说话的时间：只吞掉紧跟着（0.4 秒内）的那次点按。
+    /// 以前是一个永久的 didHold 标记：按住没触发点按时它一直留着，下一次真正的点按就被吞掉——真机「点声波没反应」
+    @State private var holdEndedAt: Date?
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -45,7 +46,8 @@ struct CloudMorphButton: View {
         .animation(.spring(response: 0.25, dampingFraction: 0.6), value: holding)
         .contentShape(Circle())
         .onTapGesture {
-            if didHold { didHold = false; return }
+            if CloudMorphTap.swallow(holdEndedAt: holdEndedAt) { holdEndedAt = nil; return }
+            holdEndedAt = nil
             if enabled && !holding { onTap() }
         }
         .simultaneousGesture(pushToTalk)
@@ -62,13 +64,13 @@ struct CloudMorphButton: View {
                 guard action.supportsPushToTalk, let onPushToTalk else { return }
                 if case .second(true, _) = v, !holding {
                     holding = true
-                    didHold = true
                     onPushToTalk(true)
                 }
             }
             .onEnded { _ in
                 guard holding else { return }
                 holding = false
+                holdEndedAt = Date()
                 onPushToTalk?(false)
             }
     }

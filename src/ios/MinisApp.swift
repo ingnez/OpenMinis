@@ -241,6 +241,10 @@ struct MinisApp: App {
                 // tap-to-dismiss catcher), so no positioning wrapper here.
                 SpeechPlayerControl()
                 AppLockOverlay()
+                // 只给 XCUITest（启动参数 -OpenMinisComposerHarness）：盖在最上面的声波按钮测试页
+                if ProcessInfo.processInfo.arguments.contains(CloudComposerHarness.launchArgument) {
+                    CloudComposerHarness().background(Color(.systemBackground))
+                }
             }
                 .onReceive(SessionLockStore.shared.$appIsLocked) { locked in
                     guard !locked, let url = pendingURLWhileLocked else { return }

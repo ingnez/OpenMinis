@@ -214,10 +214,15 @@ struct CloudBotEditSheet: View {
                         voice.save(bot.id)
                         CloudBotSpeaker.speak("你好，我是\(bot.name.isEmpty ? "你的 Bot" : bot.name)。", botId: bot.id)
                     }
+                    NavigationLink {
+                        RealtimeVoiceSettingsScreen(botId: bot.id)
+                    } label: {
+                        Label("实时语音（服务商、模型、声音）", systemImage: "waveform")
+                    }
                 } header: {
                     Text("语音通话")
                 } footer: {
-                    Text("用于在 Bot 对话里朗读回复；保存在本机。")
+                    Text("朗读设置用于在 Bot 对话里朗读回复；「实时语音」可以给这个 Bot 单独选实时模型。都保存在本机。")
                 }
                 CloudProactiveSection(botId: bot.id, botName: bot.name)
                 CloudWeeklyReviewSection(botId: bot.id, botName: bot.name)

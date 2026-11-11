@@ -666,6 +666,11 @@ struct CloudSessionView: View {
     /// 通话方式：realtime = 实时双向（需在实时语音设置里选好服务商）；turns = 听完 → 发送 → 朗读
     @State private var voiceMode = "turns"
     @State private var realtimeNotice: String?
+    /// 点声波没接通的原因：浮在输入框上方，几秒后消失
+    @State private var voiceProblem: String?
+    /// 实时语音接不通的原因：有值时弹去处面板
+    @State private var voiceRoute: String?
+    @State private var showRealtimeSettings = false
     @StateObject private var dictation = CloudDictation()
     @State private var dictationBase = ""
     @State private var showModelPicker = false
@@ -807,13 +812,21 @@ struct CloudSessionView: View {
         }
         .animation(.spring(response: 0.45, dampingFraction: 0.78), value: call.active)
         .modifier(CloudRetractToast(item: $retractable, onUndo: undoSend))
+        .overlay(alignment: .bottom) { CloudFollowUpToast(text: $voiceProblem, icon: "waveform.badge.exclamationmark") }
         .sheet(isPresented: $showPins) { if let theme { CloudPinsSheet(botId: theme.botId, botName: theme.name) } }
         .modifier(CloudSessionExtras(followUp: $followUpNotice, outboxCount: outboxCount, privacyHits: $privacyHits,
                                      onDiscard: discardOutbox, onRedact: sendRedacted, onSend: sendAnyway,
                                      onAppear: resumeOutbox, onDisappear: pauseOutbox))
         .onAppear { callDividers = CloudCallDivider.load(sessionId) }
         .modifier(CloudDraftKeeper(sessionId: sessionId, text: $inputPrompt))
-        .onChange(of: call.error) { e in if let e, !call.active { realtimeNotice = e } }
+        // 通话中途断开等：也走去处面板（不再往消息列表底下塞灰字，那里还会压住滚动箭头）
+        .onChange(of: call.error) { e in if let e, !call.active { reportVoiceProblem(e) } }
+        .sheet(isPresented: Binding(get: { voiceRoute != nil }, set: { if !$0 { voiceRoute = nil } })) {
+            CloudVoiceRouteSheet(problem: voiceRoute ?? "", botId: theme?.botId,
+                                 onRetry: { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { if let theme { startFloatingCall(theme, pushToTalk: false) } } },
+                                 onTurns: { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { openTurnsVoice() } })
+        }
+        .sheet(isPresented: $showRealtimeSettings) { RealtimeVoiceSettingsSheet(botId: theme?.botId) }
         .sheet(isPresented: $showPhotos) { CloudPhotoPicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showCamera) { CloudCameraPicker { attachments.append($0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showScanner) { CloudDocumentScanner { attachments.append($0) }.ignoresSafeArea() }
@@ -1079,6 +1092,7 @@ struct CloudSessionView: View {
         }
         if let realtimeNotice {
             Label(realtimeNotice, systemImage: "waveform.badge.exclamationmark").font(.caption).foregroundStyle(.secondary)
+                .padding(.trailing, 48)   // 右下角有滚动箭头，别压住
                 .onTapGesture { self.realtimeNotice = nil }
         }
     }
@@ -1170,6 +1184,7 @@ struct CloudSessionView: View {
                     Button { showFiles = true } label: { Label("选择文件", systemImage: "folder") }
                     Button { showCaseNote = true } label: { Label("口述病例（脱敏后复盘）", systemImage: "stethoscope") }
                     Button { showPins = true } label: { Label("要点板", systemImage: "pin") }
+                    Button { showRealtimeSettings = true } label: { Label("实时语音设置", systemImage: "waveform") }
                     Button { if !inputPrompt.hasPrefix("/") { inputPrompt = "/" } } label: { Label("斜杠命令", systemImage: "slash.circle") }
                     Picker("Bot 干活时发消息", selection: $steerInterrupt) {
                         Label("插话：直接告诉它", systemImage: "arrow.turn.up.right").tag(true)
@@ -1202,6 +1217,7 @@ struct CloudSessionView: View {
                                      if !hasDraft { openVoiceCall() } else if working { steerOrQueue() } else { sendTask() }
                                  },
                                  onPushToTalk: { on in pushToTalk(on, theme: theme) })
+                    .accessibilityIdentifier("composerVoiceButton")
             }
             .padding(.horizontal, 12)
         }
@@ -1318,17 +1334,32 @@ struct CloudSessionView: View {
     /// 有附件时先上传（文件存到工作区，图片同时作为图片消息发给模型），再提交任务
     /// 打开通话：选好了实时语音服务就用实时双向，否则轮流模式
     private func openVoiceCall() {
+        // 点了就先给手感，接不通也一定说原因（真机：键盘开着点声波「没反应」——接通失败只写在消息列表底下看不见的小字里）
+        CloudHaptics.tap()
         // 配好了实时语音：顶部浮动胶囊通话，对话留在下面；没配好：轮流通话全屏页
-        guard CloudBotRealtimeAvailability.isConfigured, let theme else {
-            voiceMode = "turns"
-            showVoiceCall = true
-            return
-        }
+        guard let theme, CloudBotRealtimeAvailability.isConfigured(botId: theme.botId) else { openTurnsVoice(); return }
+        // 选过「以后这个模型都直接用普通语音」
+        if CloudVoicePrecheck.remembersTurns(botId: theme.botId) { openTurnsVoice(); return }
+        // 协议对不上（如普通 Gemini 名字）：在按钮这儿弹出去处面板，不再只留一行看不见的灰字
+        if let problem = CloudVoicePrecheck.problem(botId: theme.botId) { reportVoiceProblem(problem); return }
         startFloatingCall(theme, pushToTalk: false)
     }
 
+    /// 普通语音：录音→识别→回复→朗读（轮流通话全屏页）
+    private func openTurnsVoice() {
+        voiceMode = "turns"
+        showVoiceCall = true
+    }
+
+    /// 接不通：警告震动 + 去处面板（换模型 / 普通语音 / 仍然尝试 / 去设置）
+    private func reportVoiceProblem(_ text: String) {
+        guard voiceRoute != text else { return }   // 接通流程和 call.error 可能报同一句
+        CloudHaptics.warning()
+        voiceRoute = text
+    }
+
     private func startFloatingCall(_ theme: CloudBotChatTheme, pushToTalk: Bool) {
-        guard !call.active else { return }
+        guard !call.active else { withAnimation { voiceProblem = CloudVoiceStart.alreadyInCall }; return }
         CloudBotSpeaker.stop()
         let sid = sessionId
         call.onEnded = { start, seconds in
@@ -1341,7 +1372,11 @@ struct CloudSessionView: View {
                                      onSaved: { problem in
                                          realtimeNotice = problem
                                          loadSessionDetail()
-                                     }, pushToTalk: pushToTalk)
+                                     }, pushToTalk: pushToTalk, botId: theme.botId)
+            if let problem = CloudVoiceStart.problem(active: call.active, error: call.error) {
+                reportVoiceProblem(problem)
+                return
+            }
             if pushToTalk && pttHeld { call.setTalking(true) }
         }
     }
@@ -1349,7 +1384,12 @@ struct CloudSessionView: View {
     /// 长按声波：按住说话（没在通话就先以「按住说话」模式接通）
     private func pushToTalk(_ on: Bool, theme: CloudBotChatTheme) {
         pttHeld = on
-        if call.active { call.setTalking(on) } else if on, CloudBotRealtimeAvailability.isConfigured { startFloatingCall(theme, pushToTalk: true) }
+        if call.active { call.setTalking(on) }
+        else if on, CloudBotRealtimeAvailability.isConfigured(botId: theme.botId), CloudVoicePrecheck.problem(botId: theme.botId) == nil {
+            startFloatingCall(theme, pushToTalk: true)
+        }
+        // 实时语音用不了时，长按声波 = 打开「实时语音设置」（以前什么都不发生）
+        else if on { CloudHaptics.selection(); showRealtimeSettings = true }
     }
 
     /// 实时通话里 Bot 要真正动手：走和输入框一样的发送流程，返回新任务 ID（交不出去返回 nil）

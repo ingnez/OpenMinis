@@ -58,6 +58,11 @@ struct CloudBotComposerTests {
         check(dv.count == 1 && dv[0].seconds == 75, "分隔线按会话保存，0 秒不存")
         check(CloudCallDivider.anchor(dv[0], timestamps: [100, 140, 160]) == 1 && CloudCallDivider.anchor(dv[0], timestamps: [200]) == -1, "分隔线位置")
         check(CloudCallDivider.load("s2", defaults: ud).isEmpty, "别的会话没有")
+        // 声波按钮：按住说话结束后 0.4 秒内的点按吞掉，之后的点按是新的一次（以前永久标记会吞掉下一次真正的点按）
+        let t0 = Date(timeIntervalSince1970: 1000)
+        check(!CloudMorphTap.swallow(holdEndedAt: nil, now: t0), "没按住过不吞")
+        check(CloudMorphTap.swallow(holdEndedAt: t0, now: t0.addingTimeInterval(0.1)), "松手紧跟的点按吞掉")
+        check(!CloudMorphTap.swallow(holdEndedAt: t0, now: t0.addingTimeInterval(2)), "隔久了的点按不吞")
         if failed > 0 { print("\(failed) 项失败"); exit(1) }
         print("Bot 输入框按钮状态机测试全部通过")
     }

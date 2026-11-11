@@ -12,6 +12,12 @@ enum CloudBotRealtimeAvailability {
               let provider = ProviderConfigStore.shared.instance(for: providerID), provider.isEnabled else { return false }
         return true
     }
+
+    /// 这个 Bot 能不能开实时语音：有单独设置且服务商可用，或者全局配好了
+    @MainActor static func isConfigured(botId: String?) -> Bool {
+        if let o = CloudBotRealtimeOverride.load(botId), let p = ProviderConfigStore.shared.instance(for: o.provider), p.isEnabled { return true }
+        return isConfigured
+    }
 }
 
 @MainActor

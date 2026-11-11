@@ -103,13 +103,23 @@ extension AIChatView {
         voiceInputActive = false
         vm.stopSpeechForThisSession()
         inputFocused = false
-        guard CloudBotCallController.isConfigured else {
-            if !pushToTalk { showRealtimeVoice = true }
-            return
-        }
+        // 没配好实时语音：打开原来的全屏页（里面有设置）。以前按住说话时这里直接 return，什么都不发生
+        guard CloudBotCallController.isConfigured else { showRealtimeVoice = true; return }
+        if CloudVoicePrecheck.remembersTurns(botId: nil) { startLocalVoiceInput(); return }
+        // 协议对不上（如普通 Gemini 名字）：弹出去处面板，不再静默失败
+        if let problem = CloudVoicePrecheck.problem(botId: nil) { localVoiceProblem = problem; return }
         let host = RealtimeLocalChatHost(chat: vm)
         if let reason = host.blockReason { vm.errorMessage = reason; return }
-        await CloudLocalCall.controller.start(host: host, name: soulName, pushToTalk: pushToTalk)
+        let controller = CloudLocalCall.controller
+        await controller.start(host: host, name: soulName, pushToTalk: pushToTalk)
+        if let problem = CloudVoiceStart.problem(active: controller.active, error: controller.error) { localVoiceProblem = problem }
+    }
+
+    /// 本地模式的「普通语音」：切到输入框的语音输入（说完识别成文字再发）
+    func startLocalVoiceInput() {
+        vm.voiceUsedInComposition = true
+        VoiceModePreference.shared.enteredFromText = true
+        withAnimation(.easeInOut(duration: 0.2)) { voiceInputActive = true }
     }
 
     /// [T-ios-de-voice-toolbar] Fixed controls in `inputBottomRow`: two 34pt

@@ -42,20 +42,30 @@ final class CloudBotCallController: ObservableObject {
 
     /// Bot 模式：实时模型扮演这个 Bot（灵魂设定 + 语音设置在 persona 里），要动手的事交给云端的这个 Bot
     func startCloudBot(botName: String, persona: String, sessionId: String, history: [[String: String]],
-                       delegate: @escaping (String) async -> String?, onSaved: @escaping (String?) -> Void, pushToTalk: Bool = false) async {
+                       delegate: @escaping (String) async -> String?, onSaved: @escaping (String?) -> Void, pushToTalk: Bool = false, botId: String? = nil) async {
         let host = RealtimeCloudBotHost(botName: botName, persona: persona, sessionId: sessionId, history: history,
                                         delegate: delegate, onSaved: onSaved)
-        await start(host: host, name: botName, pushToTalk: pushToTalk)
+        await start(host: host, name: botName, pushToTalk: pushToTalk, botId: botId)
     }
 
-    func start(host: RealtimeVoiceHost, name: String, pushToTalk: Bool = false) async {
-        guard !active else { return }
+    /// 实际要用的服务商 / 模型 / 声音 / 协议：这个 Bot 有单独设置就用它，否则用全局「实时语音」
+    static func effectiveConfig(botId: String?) -> (provider: String, model: String, voice: String, protocolMode: String) {
         let d = UserDefaults.standard
-        let providerID = d.string(forKey: "realtimeVoice.provider") ?? ""
-        let model = (d.string(forKey: "realtimeVoice.model") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let voice = d.string(forKey: "realtimeVoice.voice") ?? "alloy"
-        let preview = d.bool(forKey: "realtimeVoice.preview")
         let protocols = (try? JSONDecoder().decode([String: String].self, from: Data((d.string(forKey: "realtimeVoice.protocolsByProvider") ?? "{}").utf8))) ?? [:]
+        let globalVoice = d.string(forKey: "realtimeVoice.voice") ?? "alloy"
+        if let o = CloudBotRealtimeOverride.load(botId) {
+            return (o.provider, o.model.trimmingCharacters(in: .whitespacesAndNewlines), o.voice.isEmpty ? globalVoice : o.voice, o.protocolMode)
+        }
+        let provider = d.string(forKey: "realtimeVoice.provider") ?? ""
+        return (provider, (d.string(forKey: "realtimeVoice.model") ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                globalVoice, protocols[provider] ?? "automatic")
+    }
+
+    func start(host: RealtimeVoiceHost, name: String, pushToTalk: Bool = false, botId: String? = nil) async {
+        guard !active else { return }
+        let cfg = Self.effectiveConfig(botId: botId)
+        let providerID = cfg.provider, model = cfg.model, voice = cfg.voice
+        let preview = model.contains("preview")
         guard !providerID.isEmpty, !model.isEmpty else { error = "先在「实时语音」设置里选好服务商和模型"; return }
         let s = RealtimeVoiceSession(host: host)
         s.continuesInBackground = true
@@ -65,7 +75,7 @@ final class CloudBotCallController: ObservableObject {
         self.pushToTalk = pushToTalk
         bind(s)
         startedAt = Date()
-        await s.start(providerID: providerID, model: model, voice: voice, preview: preview, protocolMode: protocols[providerID] ?? "automatic")
+        await s.start(providerID: providerID, model: model, voice: voice, preview: preview, protocolMode: cfg.protocolMode)
         if s.active, pushToTalk { s.setTalking(false) }
     }
 

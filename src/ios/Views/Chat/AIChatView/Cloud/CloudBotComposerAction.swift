@@ -127,3 +127,14 @@ struct CloudCallDivider: Codable, Equatable, Identifiable {
         return idx
     }
 }
+
+/// 声波按钮：按住说话结束后紧跟着的那次点按要吞掉（否则松手又开一次通话）；隔久了的点按是新的一次
+enum CloudMorphTap {
+    static let window: TimeInterval = 0.4
+
+    static func swallow(holdEndedAt: Date?, now: Date = Date()) -> Bool {
+        guard let t = holdEndedAt else { return false }
+        let dt = now.timeIntervalSince(t)
+        return dt >= 0 && dt < window
+    }
+}

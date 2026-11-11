@@ -95,6 +95,20 @@ struct SettingsSheet: View {
                 }
 
                 Section("Agent Runtime") {
+                    // 实时语音：全局默认的服务商 / 模型 / 声音 / 协议 / 百炼地域（以前只能从通话页右上角进）
+                    NavigationLink {
+                        RealtimeVoiceSettingsScreen()
+                    } label: {
+                        Label {
+                            Text("实时语音")
+                        } icon: {
+                            Image(systemName: "waveform")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white)
+                                .frame(width: 21, height: 21)
+                                .background(.cyan, in: Circle())
+                        }
+                    }
                     // [T-tools-granular-switches] First row: per-tool switches.
                     NavigationLink {
                         ToolsSettingsView()

@@ -292,6 +292,21 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopInputError.swift scripts/CloudDesktopInputErrorTests.swift -o /tmp/cloud-desktopinputerror-tests
           /tmp/cloud-desktopinputerror-tests
+      - name: 声波按钮接不通提示测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudVoiceStart.swift scripts/CloudVoiceStartTests.swift -o /tmp/cloud-voicestart-tests
+          /tmp/cloud-voicestart-tests
+      - name: 声波按钮去处测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/CloudVoiceRoute.swift scripts/CloudVoiceRouteTests.swift -o /tmp/cloud-voiceroute-tests
+          /tmp/cloud-voiceroute-tests
+      - name: 服务商报错中文测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/CloudProviderErrorText.swift scripts/CloudProviderErrorTextTests.swift -o /tmp/cloud-providererror-tests
+          /tmp/cloud-providererror-tests
       - name: 实时通话灵魂设定与语音设置测试
         run: |
           set -o pipefail
@@ -468,6 +483,12 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/CloudProviderErrorText.swift scripts/CloudProviderErrorTextTests.swift -o /tmp/cloud-providererror-tests
+          /tmp/cloud-providererror-tests | tee cloud-providererror-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/CloudVoiceRoute.swift scripts/CloudVoiceRouteTests.swift -o /tmp/cloud-voiceroute-tests
+          /tmp/cloud-voiceroute-tests | tee cloud-voiceroute-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudVoiceStart.swift scripts/CloudVoiceStartTests.swift -o /tmp/cloud-voicestart-tests
+          /tmp/cloud-voicestart-tests | tee cloud-voicestart-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopInputError.swift scripts/CloudDesktopInputErrorTests.swift -o /tmp/cloud-desktopinputerror-tests
           /tmp/cloud-desktopinputerror-tests | tee cloud-desktopinputerror-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWardVoice.swift scripts/CloudWardVoiceTests.swift -o /tmp/cloud-wardvoice-tests
@@ -811,6 +832,12 @@ jobs:
           /tmp/cloud-presence-tests | tee cloud-presence-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudRealtimePersona.swift scripts/CloudRealtimePersonaTests.swift -o /tmp/cloud-rtpersona-tests
           /tmp/cloud-rtpersona-tests | tee cloud-rtpersona-test.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/CloudProviderErrorText.swift scripts/CloudProviderErrorTextTests.swift -o /tmp/cloud-providererror-tests
+          /tmp/cloud-providererror-tests | tee cloud-providererror-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/CloudVoiceRoute.swift scripts/CloudVoiceRouteTests.swift -o /tmp/cloud-voiceroute-tests
+          /tmp/cloud-voiceroute-tests | tee cloud-voiceroute-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudVoiceStart.swift scripts/CloudVoiceStartTests.swift -o /tmp/cloud-voicestart-tests
+          /tmp/cloud-voicestart-tests | tee cloud-voicestart-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDesktopInputError.swift scripts/CloudDesktopInputErrorTests.swift -o /tmp/cloud-desktopinputerror-tests
           /tmp/cloud-desktopinputerror-tests | tee cloud-desktopinputerror-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWardVoice.swift scripts/CloudWardVoiceTests.swift -o /tmp/cloud-wardvoice-tests
@@ -1013,6 +1040,7 @@ jobs:
             -scmProvider system \
             -disableAutomaticPackageResolution \
             -only-testing:MinisUITests/MinisSmokeUITests \
+            -only-testing:MinisUITests/ComposerVoiceButtonUITests \
             -resultBundlePath ui-tests.xcresult \
             CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= | tee ui-tests.log
 

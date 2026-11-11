@@ -3,6 +3,23 @@ import SwiftUI
 // 声明必须与 Realtime/CloudBotRealtimeCall.swift 一字不差（scripts/check_typecheck_stubs.py 会核对）。
 enum CloudBotRealtimeAvailability {
     @MainActor static var isConfigured: Bool { false }
+    @MainActor static func isConfigured(botId: String?) -> Bool { false }
+}
+enum CloudVoicePrecheck {
+    @MainActor static func problem(botId: String?) -> String? { nil }
+    @MainActor static func remembersTurns(botId: String?) -> Bool { false }
+}
+struct CloudVoiceRouteSheet: View {
+    @MainActor init(problem: String, botId: String?, onRetry: @escaping () -> Void, onTurns: @escaping () -> Void) {}
+    var body: some View { EmptyView() }
+}
+struct RealtimeVoiceSettingsScreen: View {
+    @MainActor init(botId: String? = nil) {}
+    var body: some View { EmptyView() }
+}
+struct RealtimeVoiceSettingsSheet: View {
+    @MainActor init(botId: String? = nil) {}
+    var body: some View { EmptyView() }
 }
 struct CloudBotRealtimeCallView: View {
     @MainActor init(botName: String, persona: String, sessionId: String, history: [[String: String]], delegate: @escaping (String) async -> String?, onSaved: @escaping (String?) -> Void, onFallback: @escaping () -> Void) {}
@@ -30,7 +47,7 @@ final class CloudBotCallController: ObservableObject {
     init() {}
     static var isConfigured: Bool { false }
     func startCloudBot(botName: String, persona: String, sessionId: String, history: [[String: String]],
-                       delegate: @escaping (String) async -> String?, onSaved: @escaping (String?) -> Void, pushToTalk: Bool = false) async {}
+                       delegate: @escaping (String) async -> String?, onSaved: @escaping (String?) -> Void, pushToTalk: Bool = false, botId: String? = nil) async {}
     func toggleMute() {}
     func setTalking(_ on: Bool) {}
     func setPushToTalk(_ on: Bool) {}

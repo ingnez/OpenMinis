@@ -9,19 +9,11 @@ struct RealtimeVoiceView: View {
     @AppStorage("realtimeVoice.voice") private var voice = "alloy"
     @AppStorage("realtimeVoice.preview") private var preview = false
     @AppStorage("realtimeVoice.protocolsByProvider") private var protocolsByProvider = "{}"
-    @State private var protocolMode = "automatic"
-    private var selectedProtocol: RealtimeConnectionProtocol? {
-        try? RealtimeConnectionProtocol.resolve(protocolMode, model: model)
+    /// 当前服务商的协议（设置页里按服务商保存）
+    private var protocolMode: String {
+        ((try? JSONDecoder().decode([String: String].self, from: Data(protocolsByProvider.utf8))) ?? [:])[providerID] ?? "automatic"
     }
-    private var availableVoices: [String] {
-        selectedProtocol?.voices(model: model) ?? RealtimeConnectionProtocol.openAIVoices
-    }
-    @AppStorage("realtimeVoice.dashscopeRegion") private var dashscopeRegion = ""
-    @AppStorage("realtimeVoice.dashscopeWorkspace") private var dashscopeWorkspace = ""
     @State private var showSettings = false
-    @StateObject private var catalog = RealtimeModelCatalog()
-    @AppStorage("realtimeVoice.modelsByProvider") private var modelSelections = "{}"
-    @State private var selectionProvider = ""
     private var title = "实时语音"
     private var fallbackTitle: String?
     private var onFallback: (() -> Void)?
@@ -33,12 +25,7 @@ struct RealtimeVoiceView: View {
         self.fallbackTitle = fallbackTitle
         self.onFallback = onFallback
     }
-    private var supportedProviders: [ProviderInstance] {
-        providers.instances.filter { $0.isEnabled && ($0.providerType == .openAI || $0.providerType == .openAIResponses || $0.providerType == .gemini) && $0.credentialType == .apiKey }
-    }
-    private var candidates: [ModelEntry] {
-        providers.modelEntries.filter { $0.providerInstanceId == providerID && RealtimeVoiceProtocol.isConversationModel($0.model.id) }
-    }
+    private var supportedProviders: [ProviderInstance] { RealtimeVoiceSettingsForm.supportedProviders(providers) }
     var body: some View {
         NavigationStack {
             VStack(spacing: 18) {
@@ -108,89 +95,10 @@ struct RealtimeVoiceView: View {
                         .accessibilityLabel("实时语音设置").disabled(session.active)
                 }
             }
-            .sheet(isPresented: $showSettings) { settings }
+            .sheet(isPresented: $showSettings) { RealtimeVoiceSettingsSheet() }
             .onAppear { chooseInitialProvider() }
-            .task(id: providerID) {
-                prepareCatalog()
-                await refreshCatalog()
-            }
-            .onChange(of: model) { value in
-                guard selectionProvider == providerID else { return }
-                saveSelection(value, for: providerID)
-            }
-            .onChange(of: protocolMode) { value in
-                guard selectionProvider == providerID else { return }
-                var saved = (try? JSONDecoder().decode([String: String].self, from: Data(protocolsByProvider.utf8))) ?? [:]
-                saved[providerID] = value
-                if let data = try? JSONEncoder().encode(saved), let text = String(data: data, encoding: .utf8) { protocolsByProvider = text }
-                voice = selectedProtocol?.normalizedVoice(voice, model: model) ?? "alloy"
-            }
-            .onChange(of: model) { _ in voice = selectedProtocol?.normalizedVoice(voice, model: model) ?? "alloy" }
             .onDisappear { session.finish() }
         }.interactiveDismissDisabled(session.active)
-    }
-    private var settings: some View {
-        NavigationStack {
-            Form {
-                Section("实时音频服务") {
-                    Picker("服务商", selection: $providerID) {
-                        Text("请选择").tag("")
-                        ForEach(supportedProviders, id: \.id) { provider in Text(provider.label).tag(provider.id) }
-                    }
-                    NavigationLink {
-                        RealtimeModelPicker(catalog: catalog, model: $model, refresh: refreshCatalog)
-                    } label: {
-                        LabeledContent("选择语音模型", value: model.isEmpty ? "请选择" : model)
-                    }.disabled(providerID.isEmpty)
-                    Button {
-                        Task { await refreshCatalog() }
-                    } label: {
-                        HStack {
-                            Label("刷新服务商模型", systemImage: "arrow.clockwise")
-                            Spacer()
-                            if catalog.loading { ProgressView() }
-                        }
-                    }.disabled(providerID.isEmpty || catalog.loading)
-                    if let error = catalog.error {
-                        Text("刷新失败：\(error)\n仍可查看已有列表或手动填写。").font(.footnote).foregroundStyle(.red)
-                    } else if let updated = catalog.updatedAt {
-                        Text("已获取 \(catalog.models.count) 个模型 · \(updated.formatted(date: .omitted, time: .shortened))")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    } else {
-                        Text(catalog.loading ? "正在获取服务商完整模型列表…" : "当前为本地列表，尚未在线验证。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    TextField("手动填写模型名称", text: $model).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .onChange(of: model) { preview = $0.contains("preview") }
-                    Picker("实时协议", selection: $protocolMode) {
-                        ForEach(RealtimeConnectionProtocol.allCases) { item in Text(item.title).tag(item.rawValue) }
-                    }
-                    Text(selectedProtocol.map { "将使用：\($0.title)" } ?? "此名称没有可识别的 Gemini Live 标识。请选择 Live/native-audio 型号；已确认的实时别名可手动选择协议。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Picker("声音", selection: $voice) {
-                        ForEach(availableVoices, id: \.self) { Text($0).tag($0) }
-                    }
-                    if selectedProtocol == .dashScope {
-                        RealtimeDashScopeFields(region: $dashscopeRegion, workspace: $dashscopeWorkspace, model: model)
-                    }
-                    Button {
-                        Task { await session.start(providerID: providerID, model: model.trimmingCharacters(in: .whitespacesAndNewlines), voice: voice, preview: preview, protocolMode: protocolMode, validateOnly: true) }
-                    } label: { Label(session.active ? "验证中…" : "验证实时连接（不开麦）", systemImage: "checkmark.shield") }
-                    .disabled(session.active || providerID.isEmpty || model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    if let result = session.validationResult { Text(result).font(.footnote).foregroundStyle(.green) }
-                    if let error = session.error { Text(error).font(.footnote).foregroundStyle(.red).textSelection(.enabled) }
-                    Text("验证只建立所选模型会话，不传录音和聊天历史。服务商可能对会话建立收费。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                Section {
-                    Text("需要服务商开放双向 Realtime 音频接口。列出模型名不保证实时通道可用；连接失败时可更换服务商。密钥直接使用服务商设置中的现有凭据。")
-                    Text("本模式传送当前聊天文字与灵魂设定。语音通话暂不执行终端、浏览器等工具，挂断后可在普通聊天中继续。")
-                }.font(.footnote).foregroundStyle(.secondary)
-            }.navigationTitle("通话设置").navigationBarTitleDisplayMode(.inline)
-                .refreshable { await refreshCatalog() }
-                .task { if !catalog.loading { await refreshCatalog() } }
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showSettings = false } } }
-        }
     }
     private func chooseInitialProvider() {
         guard !supportedProviders.contains(where: { $0.id == providerID }) else { return }
@@ -199,52 +107,5 @@ struct RealtimeVoiceView: View {
         }) {
             providerID = entry.providerInstanceId; model = entry.model.id; preview = model.contains("preview")
         } else { providerID = supportedProviders.first?.id ?? ""; showSettings = true }
-    }
-    private func saveSelection(_ value: String, for id: String) {
-        guard !id.isEmpty else { return }
-        var saved = (try? JSONDecoder().decode([String: String].self, from: Data(modelSelections.utf8))) ?? [:]
-        saved[id] = value
-        if let data = try? JSONEncoder().encode(saved), let json = String(data: data, encoding: .utf8) { modelSelections = json }
-    }
-    private func prepareCatalog() {
-        if !selectionProvider.isEmpty, selectionProvider != providerID { saveSelection(model, for: selectionProvider) }
-        let saved = (try? JSONDecoder().decode([String: String].self, from: Data(modelSelections.utf8))) ?? [:]
-        let switching = !selectionProvider.isEmpty && selectionProvider != providerID
-        selectionProvider = providerID
-        let protocolMap = (try? JSONDecoder().decode([String: String].self, from: Data(protocolsByProvider.utf8))) ?? [:]
-        protocolMode = protocolMap[providerID] ?? "automatic"
-        if let selected = saved[providerID] { model = selected }
-        else if switching { model = "" }
-        var local = providers.modelEntries.filter { $0.providerInstanceId == providerID }.map { choice($0.model) }
-        // 百炼服务商：补上文档列出的实时对话模型（在线刷新后以账号实际返回为准）
-        if let provider = supportedProviders.first(where: { $0.id == providerID }),
-           RealtimeDashScope.isDashScopeHost(URLComponents(string: provider.resolvedBaseURL(default: "").url)?.host) {
-            local += RealtimeDashScope.documentedModels.map { RealtimeModelChoice(id: $0.id, name: $0.note, audioInput: true, audioOutput: true) }
-        }
-        catalog.select(providerID, local: local)
-    }
-    private func choice(_ value: LLMModel) -> RealtimeModelChoice {
-        let modes = value.modalityOverride ?? value.capabilities.supportedModalities
-        return RealtimeModelChoice(id: value.id, name: value.displayName,
-                                   audioInput: modes.contains(.audioInput), audioOutput: modes.contains(.audioOutput))
-    }
-    private func refreshCatalog() async {
-        let id = providerID
-        guard !session.active, let provider = supportedProviders.first(where: { $0.id == id }) else { return }
-        if catalog.providerID != id { prepareCatalog() }
-        await catalog.refresh(provider: id) {
-            guard let key = ProviderKeychainHelper.loadAPIKey(instanceId: id), !key.isEmpty else {
-                throw NSError(domain: "RealtimeModels", code: 401, userInfo: [NSLocalizedDescriptionKey: "服务商未配置 API 密钥"])
-            }
-            if provider.providerType == .gemini {
-                let values = try await GeminiModelsAPI.fetchModels(apiKey: key, customBaseURL: provider.effectiveCustomBaseURL, forceRefresh: true, includeNonChat: true)
-                return values.map { choice($0) }
-            }
-            let values = try await OpenAIModelsAPI.fetchModels(apiKey: key, baseURL: provider.effectiveCustomBaseURL,
-                appendV1Suffix: provider.appendV1Suffix, forceRefresh: true,
-                userAgent: provider.supportsCustomUserAgent ? provider.effectiveCustomUserAgent : nil, includeNonChat: true)
-            return values.map { choice($0) }
-        }
-        // 刷新只更新目录，不替用户选择新模型，也不覆盖正在编辑的名称。
     }
 }

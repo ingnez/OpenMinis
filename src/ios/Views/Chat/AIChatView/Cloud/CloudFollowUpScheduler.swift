@@ -36,10 +36,11 @@ import SwiftUI
 /// 发出含「N 分钟后…」的消息后，底部浮出 3 秒「已设 … 后提醒」
 struct CloudFollowUpToast: View {
     @Binding var text: String?
+    var icon = "alarm"
 
     var body: some View {
         if let text {
-            Label(text, systemImage: "alarm")
+            Label(text, systemImage: icon)
                 .font(.footnote.weight(.medium))
                 .lineLimit(2)
                 .padding(.horizontal, 14).padding(.vertical, 9)

@@ -340,6 +340,8 @@ struct AIChatView: View {
     @State var totalSessionCount: Int? = nil
     @State var showBrowserSheet = false
     @State var showRealtimeVoice = false
+    /// 本地模式点声波没接通的原因（弹去处面板）
+    @State var localVoiceProblem: String?
     @State var showTerminal = false
     @State private var terminalInitCommand: String?
     @State var showAttachmentMenu = false
@@ -1122,6 +1124,11 @@ struct AIChatView: View {
                 }
             }
             .presentationDetents([.large])
+        }
+        .sheet(isPresented: Binding(get: { localVoiceProblem != nil }, set: { if !$0 { localVoiceProblem = nil } })) {
+            CloudVoiceRouteSheet(problem: localVoiceProblem ?? "", botId: nil,
+                                 onRetry: { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { Task { await startLocalCall(pushToTalk: false) } } },
+                                 onTurns: { startLocalVoiceInput() })
         }
         .fullScreenCover(isPresented: $showRealtimeVoice) {
             RealtimeVoiceView(chat: cached.vm)

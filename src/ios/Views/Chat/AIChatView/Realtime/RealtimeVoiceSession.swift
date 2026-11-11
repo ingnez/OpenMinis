@@ -50,6 +50,9 @@ final class RealtimeVoiceSession: ObservableObject {
     private var saveTask: Task<Void, Never>?
     private var connectionProtocol: RealtimeConnectionProtocol = .openAI
     private var validationOnly = false
+    /// 快速测试：握手之后再发一句文字、等模型回一句（不开麦、不播放）
+    private var validationRoundTrip = false
+    private var roundTripAudioBytes = 0
     private var diagnosticKey = ""
     private var diagnosing = false
     private var geminiUserID = UUID().uuidString
@@ -63,11 +66,25 @@ final class RealtimeVoiceSession: ObservableObject {
     @Published var validationResult: String?
 
     init(host: RealtimeVoiceHost) { self.host = host }
+    /// 等一个任务最多 seconds 秒；按时完成返回 true（超时不取消它，让它在后台自己跑完）
+    static func finishes(_ task: Task<Void, Never>, within seconds: Double) async -> Bool {
+        final class Once: @unchecked Sendable { var done = false }
+        let once = Once()
+        return await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+            Task { @MainActor in await task.value; if !once.done { once.done = true; c.resume(returning: true) } }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                if !once.done { once.done = true; c.resume(returning: false) }
+            }
+        }
+    }
+
     convenience init(chat: AIChatViewModel) { self.init(host: RealtimeLocalChatHost(chat: chat)) }
 
-    func start(providerID: String, model: String, voice: String, preview: Bool, protocolMode: String = "automatic", validateOnly: Bool = false) async {
+    func start(providerID: String, model: String, voice: String, preview: Bool, protocolMode: String = "automatic", validateOnly: Bool = false, roundTrip: Bool = false) async {
         guard !active else { return }
-        if let saveTask { await saveTask.value }
+        // 上一通的记录还在保存：最多等 3 秒。以前无限等，保存卡住（网络差）时再点声波按钮就像没反应
+        if let saveTask, !(await Self.finishes(saveTask, within: 3)) { self.saveTask = nil }
         guard !active else { return }
         if let reason = host.blockReason { error = reason; return }
         guard let provider = ProviderConfigStore.shared.instance(for: providerID), provider.isEnabled,
@@ -78,7 +95,8 @@ final class RealtimeVoiceSession: ObservableObject {
         do { connectionProtocol = try RealtimeConnectionProtocol.resolve(protocolMode, model: model) }
         catch { self.error = error.localizedDescription; return }
         connectionLabel = "\(provider.label) · \(model)"; geminiPlaybackID = nil
-        validationOnly = validateOnly; diagnosticKey = key; diagnosing = false; audioStarted = false
+        // Gemini Live 的内容事件要等开麦后才处理，一来一回只对 OpenAI / 百炼协议做
+        validationOnly = validateOnly; validationRoundTrip = validateOnly && roundTrip && !connectionProtocol.isGemini; roundTripAudioBytes = 0; diagnosticKey = key; diagnosing = false; audioStarted = false
         geminiUserID = UUID().uuidString; geminiAssistantID = UUID().uuidString; geminiSuppressOutput = false
         let generation = UUID(); epoch = generation
         active = true; connected = false; error = nil; lines = []; elapsed = 0; muted = false
@@ -188,6 +206,11 @@ final class RealtimeVoiceSession: ObservableObject {
             emit(connectionProtocol.setup(model: model, voice: voice, instructions: opening, tools: voiceTools))
         case "session.updated":
             guard !seeded else { return }; seeded = true
+            if validationRoundTrip {
+                status = "握手通过，正在测试一来一回"
+                if connectionProtocol.isDashScope { emit(["type": "response.create"]) } else { sendValidationText() }
+                return
+            }
             if completeValidation() { return }
             // 仅传递可见文本；已压缩会话携带摘要，不发送工具内部数据或附件。
             // 百炼：历史已经在 instructions 里，不逐条插入
@@ -230,6 +253,7 @@ final class RealtimeVoiceSession: ObservableObject {
                   !ignoredResponses.contains(response),
                   let item = event["item_id"] as? String,
                   let encoded = event["delta"] as? String, let bytes = Data(base64Encoded: encoded) else { return }
+            if validationOnly { roundTripAudioBytes += bytes.count; return }   // 测试时只数字节，不播放
             let newItem = ledger.itemID != item
             guard ledger.accept(response: response, item: item, index: event["content_index"] as? Int ?? 0, byteCount: bytes.count) else { return }
             if newItem { audio.markItemStart() }
@@ -251,6 +275,7 @@ final class RealtimeVoiceSession: ObservableObject {
             if response["status"] as? String == "failed" {
                 fail("实时模型生成失败，请检查模型权限、余额和服务商状态。"); return
             }
+            if validationRoundTrip { _ = completeValidation(); return }
             if !audio.hasPendingAudio { status = muted ? "麦克风已静音" : "正在听你说" }
             if pendingResponseCreate {
                 pendingResponseCreate = false
@@ -272,6 +297,7 @@ final class RealtimeVoiceSession: ObservableObject {
     }
 
     private var instructions: String {
+        if validationRoundTrip { return "这是连接测试。不管收到什么，只用一个字回答：好。" }
         if validationOnly { return "Connection validation only. Do not generate a response." }
         return host.instructions(toolsEnabled: !voiceTools.isEmpty)
     }
@@ -326,9 +352,20 @@ final class RealtimeVoiceSession: ObservableObject {
             requestResponse()
         }
     }
+    /// 一来一回测试：发一句固定文字（不含任何聊天内容）
+    private func sendValidationText() {
+        emit(RealtimeVoiceProtocol.history(role: "user", text: "连接测试：请只回答一个字「好」。"))
+        requestResponse()
+    }
     private func completeValidation() -> Bool {
         guard validationOnly else { return false }
-        validationResult = "\(connectionLabel)\n\(connectionProtocol.title) 会话握手通过；未录音、未发送聊天历史，实际音频尚未测试。"
+        if validationRoundTrip {
+            let reply = lines.last(where: { $0.role == "assistant" })?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            validationResult = "\(connectionLabel)\n\(connectionProtocol.title) 握手通过，一来一回通过："
+                + (reply.isEmpty ? "" : "回复「\(String(reply.prefix(40)))」，") + "收到音频 \(roundTripAudioBytes / 1024) KB。未录音、未发送聊天历史。"
+        } else {
+            validationResult = "\(connectionLabel)\n\(connectionProtocol.title) 会话握手通过；未录音、未发送聊天历史，实际音频尚未测试。"
+        }
         finish(reason: "实时连接验证通过")
         return true
     }
@@ -536,7 +573,14 @@ final class RealtimeVoiceSession: ObservableObject {
     }
 
     func toggleMute() { muted.toggle(); status = muted ? "麦克风已静音" : "正在听你说" }
-    private func fail(_ message: String) { error = message; finish(reason: "连接已停止") }
+    private func fail(_ message: String) {
+        // 一来一回测试：握手已经通过、只是回一句没成功时，算「部分通过」并说明，不当成连不上
+        if validationRoundTrip && seeded && active {
+            validationResult = "\(connectionLabel)\n\(connectionProtocol.title) 握手通过；一来一回没通过：\(message)"
+            finish(reason: "实时连接验证结束"); return
+        }
+        error = message; finish(reason: "连接已停止")
+    }
     func finish(reason: String = "通话已结束") {
         guard active else { return }
         // 先禁用发送，防止发送队列溢出时挂断再次发取消事件造成递归。
