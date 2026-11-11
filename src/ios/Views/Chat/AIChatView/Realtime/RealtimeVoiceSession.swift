@@ -684,6 +684,14 @@ final class RealtimeVoiceSession: ObservableObject {
     }
 
     private func observeLifecycle() {
+        // 秒回模式：对话页把后台进度（一句话）发过来，通话中口头告诉用户（只在通话真的接通时）
+        observers.append(NotificationCenter.default.addObserver(forName: Notification.Name("OpenMinisReplyStatusSpoken"), object: nil, queue: .main) { [weak self] note in
+            guard let text = note.userInfo?["text"] as? String, !text.isEmpty else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.active else { return }
+                self.announce("[后台进度] " + text + "\n请用一句很短的话口头告诉用户，然后继续听用户说。")
+            }
+        })
         let names: [Notification.Name] = [AVAudioSession.interruptionNotification,
             AVAudioSession.routeChangeNotification, AVAudioSession.mediaServicesWereResetNotification,
             UIApplication.didEnterBackgroundNotification, .newChatRequested]

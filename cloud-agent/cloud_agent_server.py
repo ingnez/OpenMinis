@@ -91,6 +91,7 @@ import cloud_bots
 import cloud_admin
 import cloud_vault
 import cloud_workers
+import cloud_reply
 import cloud_runmodel
 import cloud_shift_card
 import cloud_workbench
@@ -334,6 +335,7 @@ def init_db():
     cloud_admin.ensure_schema(conn)
     cloud_vault.ensure_schema(conn)
     cloud_workers.ensure_schema(conn)
+    cloud_reply.ensure_schema(conn)
     cloud_runmodel.ensure_schema(conn)
     cloud_vision.ensure_schema(conn)
     cloud_botthreads.ensure_schema(conn)
@@ -638,7 +640,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.49.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.50.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -2735,8 +2737,58 @@ def worker_view(w):
         except Exception:
             pass
         w["steps"] = steps
+    w.update(worker_status_extras(w))
     w.pop("context", None)
     return w
+
+def worker_status_extras(w):
+    """底部状态行用：这一刻在做什么（一句短语）、预计剩余（只在有真实历史数据时）、是否在等用户决定。"""
+    conn = get_db_connection()
+    try:
+        steps = []
+        if w.get("task_id"):
+            rows = conn.execute("SELECT event_type, payload FROM task_events WHERE task_id = ? AND event_type IN ('tool_call', 'tool_result') "
+                                "ORDER BY id DESC LIMIT 40", (w["task_id"],)).fetchall()
+            done_ids = set()
+            for et, pl in reversed(rows):
+                try:
+                    d = json.loads(pl)
+                except (ValueError, TypeError):
+                    continue
+                if et == "tool_result":
+                    done_ids.add(d.get("id"))
+                else:
+                    steps.append([d.get("tool"), d.get("arguments") if isinstance(d.get("arguments"), dict) else {}, d.get("id")])
+            steps = [(t, a, i in done_ids) for t, a, i in steps]
+        out = {"status_phrase": cloud_reply.status_phrase(w["status"], steps),
+               "needs_decision": cloud_reply.decision_needed(conn, w.get("task_id")) if w["status"] == "running" else False}
+        if out["needs_decision"]:
+            out["status_phrase"] = "等你决定"
+        if w["status"] == "running":
+            eta = cloud_reply.eta_seconds(cloud_reply.recent_durations(conn, w.get("bot_id")), w.get("elapsed_s") or 0)
+            if eta is not None:
+                out["eta_s"] = eta
+        return out
+    except Exception as e:
+        print(f"worker status extras failed: {type(e).__name__}", flush=True)
+        return {}
+    finally:
+        conn.close()
+
+def reply_plan(session_id, model):
+    """这个对话这一轮的回复方式（秒回 / 详细）和前台、后台模型。"""
+    conn = get_db_connection()
+    try:
+        return cloud_reply.resolve(conn, session_persona_id(session_id), session_id, model, resource_settings().get("fast_model") or None)
+    finally:
+        conn.close()
+
+def session_reply_view(conn, sid, bot_id):
+    plan = cloud_reply.resolve(conn, bot_id, sid, (get_persona(bot_id) or {}).get("model") if bot_id else None,
+                               resource_settings().get("fast_model") or None)
+    return {k: plan[k] for k in ("mode", "source", "bot_mode", "override", "front_model", "back_model")}
+
+REPLY_BACK_MODEL = {}        # task_id -> 秒回前台这一轮派出去的后台任务用的模型
 
 def _worker_launch(wid):
     """名额够就开跑（同一 Bot 最多 SOFT_CAP 个），不够就留在队列里，等前面的任务结束再开。返回是否开跑。"""
@@ -4556,7 +4608,11 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     if _bot_fast(session_id):
         system_text += FAST_MODE_NOTE
     front_session = depth == 0 and session_is_front(session_id)
-    if front_session:
+    reply = reply_plan(session_id, model) if front_session else None
+    instant = bool(reply and reply["mode"] == "instant")
+    if instant:
+        system_text += cloud_reply.FRONT_INSTANT_NOTE
+    elif front_session:
         system_text += FRONT_NOTE
     system_text += cloud_runmodel.ATTACHMENT_NOTE
     if depth == 0:
@@ -4647,8 +4703,19 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     # 主模型连续失败（5xx / 429 / 超时 / 断连）：先原地重试一次，再按资源设置里的 failover 依次换用备用服务商
     route = {"url": chat_url, "key": api_key, "model": model, "chain": list(rs_perf.get("failover") or [])}
     main_model = model
+    if instant:
+        # 秒回：前台用快模型马上回话；真正干活的后台任务用后台模型（没填就是主模型）
+        REPLY_BACK_MODEL[task_id] = reply["back_model"]
+        if reply["front_model"] and reply["front_model"] != model:
+            route["model"] = model = reply["front_model"]
+            perf["auto_model"] = model       # 前台模型出错时本轮回到主模型（同自动选模型的退路）
+        perf["reply_mode"] = "instant"
+        log_event(task_id, "reply_mode", {"mode": "instant", "source": reply["source"], "front_model": route["model"],
+                                          "back_model": reply["back_model"]})
     # 自动选模型：简单的短问题用同一服务商的快速模型；快速模型出错就回到主模型
-    if depth == 0 and rs_perf.get("auto_model") and rs_perf.get("fast_model") and rs_perf["fast_model"] != model \
+    if instant:
+        pass
+    elif depth == 0 and rs_perf.get("auto_model") and rs_perf.get("fast_model") and rs_perf["fast_model"] != model \
             and eff.is_simple_request(initial_content):
         route["model"] = model = rs_perf["fast_model"]
         perf["auto_model"] = model
@@ -4663,7 +4730,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             effort = "high"
         perf["hard"] = True
         log_event(task_id, "status", {"message": "难题：" + (f"换用强模型 {model}，" if perf.get("auto_model") else "") + f"思考深度 {effort or '默认'}"})
-    if front_session and rs_perf.get("quick_ack", True) and rs_perf.get("fast_model") and rs_perf["fast_model"] != route["model"]:
+    if front_session and not instant and rs_perf.get("quick_ack", True) and rs_perf.get("fast_model") and rs_perf["fast_model"] != route["model"]:
         # 先回话：主模型 1.5 秒还没出字，就用快速模型先回一句简短确认
         threading.Thread(target=_quick_ack, args=(task_id, session_id, initial_content, rs_perf["fast_model"], chat_url, api_key, perf),
                          daemon=True).start()
@@ -4816,8 +4883,11 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     log_event(task_id, "status", {"message": "对话较长，已自动精简较早的内容"})
                 if dynamic_note:
                     send_msgs = _append_note(send_msgs, dynamic_note)
-                tools, _omitted = cloud_llm.select_tools(session_tools(session_id, depth) + plugin_defs, send_msgs, extra_tools,
-                                                          always_all=not rs_perf.get("lazy_tools", True))
+                if instant:
+                    tools = cloud_reply.front_tools(session_tools(session_id, depth))   # 前台不拿干活的工具，全部交给后台
+                else:
+                    tools, _omitted = cloud_llm.select_tools(session_tools(session_id, depth) + plugin_defs, send_msgs, extra_tools,
+                                                              always_all=not rs_perf.get("lazy_tools", True))
                 perf["tool_defs"] = max(perf["tool_defs"], len(tools))
                 live_update(task_id, "", reasoning="", tool=None)
                 try:
@@ -4918,6 +4988,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     blocked = loop_guard.check(fn_name, fn_args)
                     if blocked:
                         return (tc_id, fn_name, blocked, 0)
+                    if instant:
+                        front_err = cloud_reply.front_blocked(fn_name)
+                        if front_err:
+                            return (tc_id, fn_name, front_err, 0)
                     if fn_name in ("browser_action", "desktop_action") and isinstance(fn_args, dict):
                         cloud_replay.note_action(task_id, fn_name, fn_args)     # 录屏回放：记下这一步做了什么（不含输入原文）
 
@@ -4960,7 +5034,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     elif fn_name in VAULT_TOOLS: res = tool_vault(task_id, session_id, fn_name, fn_args)
                     elif fn_name in RUNMODEL_TOOLS: res = tool_runmodel(task_id, session_id, fn_name, fn_args, model, provider_config, depth)
                     elif fn_name in WORKER_FRONT_TOOLS:
-                        res = tool_worker(task_id, session_id, fn_name, fn_args, model, provider_config) \
+                        res = tool_worker(task_id, session_id, fn_name, fn_args, REPLY_BACK_MODEL.get(task_id) or main_model, provider_config) \
                             if depth == 0 and session_is_front(session_id) else {"error": "这里不能派后台任务，直接完成"}
                     elif fn_name in ADMIN_TOOLS:
                         res = tool_admin(task_id, session_id, fn_name, fn_args) if is_admin_session(session_id, depth) \
@@ -5078,6 +5152,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         except Exception as e:
             print(f"choice card post failed: {type(e).__name__}", flush=True)
         TURN_FLAGS.pop(task_id, None)
+        REPLY_BACK_MODEL.pop(task_id, None)
         conn = get_db_connection()
         c = conn.cursor()
         c.execute("UPDATE tasks SET status = ? WHERE task_id = ? AND status IN ('running', 'waiting_user')", (final_status, task_id))
@@ -6172,7 +6247,8 @@ class Handler(BaseHTTPRequestHandler):
                     "event_longpoll": True,
                     "streaming": True,
                     "perf": True,
-                    "plugins": True
+                    "plugins": True,
+                    "reply_modes": True
                 },
                 "timestamp": time.time()
             })
@@ -6278,6 +6354,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/v1/workers" or path.startswith("/v1/workers/"):
             self._workers("GET", path, query_params, None)
+            return
+        if self._reply("GET", path, None):
             return
         if path == "/v1/bot_sections":
             conn = get_db_connection()
@@ -6920,9 +6998,14 @@ class Handler(BaseHTTPRequestHandler):
                 for t_ in tasks:
                     if t_["task_id"] in tmap:
                         t_["timings"] = tmap[t_["task_id"]]
+                try:
+                    _rp = session_reply_view(conn, sid, session_persona_id(sid))
+                except Exception as e:
+                    print(f"reply view failed: {type(e).__name__}", flush=True)
+                    _rp = None
                 conn.close()
                 self._send(200, {"session_id": s[0], "local_session_id": s[1], "title": s[2], "instructions": s[3], "created_at": s[4], "messages": msgs, "tasks": tasks,
-                                 "incognito": bool(s[5]), "has_more": has_more})
+                                 "incognito": bool(s[5]), "has_more": has_more, "reply": _rp})
                 return
 
         if path == "/v1/routines":
@@ -7147,6 +7230,39 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _reply(self, method, path, body):
+        """回复方式：GET/PUT /v1/bots/<id|_default>/reply {mode, front_model, back_model}；
+        GET/PUT /v1/sessions/<sid>/reply {mode: instant|verbose|null}（这个对话单独覆盖，null = 跟随 Bot）。返回是否处理了。"""
+        m_b = re.match(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31}|_default)/reply$", path)
+        m_s = re.match(r"^/v1/sessions/(sess_[a-f0-9]{12})/reply$", path)
+        if not m_b and not m_s:
+            return False
+        conn = get_db_connection()
+        try:
+            if m_b:
+                bot_id = None if m_b.group(1) == "_default" else m_b.group(1)
+                if bot_id and not get_persona(bot_id):
+                    self._send(404, {"error": "Bot not found"})
+                    return True
+                if method == "PUT":
+                    cloud_reply.set_bot_settings(conn, bot_id, body)
+                self._send(200, {"reply": cloud_reply.bot_settings(conn, bot_id), "fast_model": resource_settings().get("fast_model") or None})
+                return True
+            sid = m_s.group(1)
+            row = conn.execute("SELECT persona_id FROM sessions WHERE session_id = ?", (sid,)).fetchone()
+            if not row:
+                self._send(404, {"error": "Session not found"})
+                return True
+            if method == "PUT":
+                cloud_reply.set_session_override(conn, sid, (body or {}).get("mode"))
+            self._send(200, {"reply": session_reply_view(conn, sid, row[0])})
+            return True
+        except cloud_reply.ReplyError as e:
+            self._send(400, {"error": str(e)})
+            return True
+        finally:
+            conn.close()
+
     def _workers(self, method, path, query, body):
         """后台任务：GET /v1/workers?session_id=|bot=、GET /v1/workers/<id>（含过程事件）、POST /v1/workers/<id>/stop|message。"""
         parts = path.strip("/").split("/")
@@ -7255,6 +7371,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_json = self._read_json_body()
         if req_json is None:
+            return
+        if self._reply("PUT", path, req_json):
             return
 
         m_ev = re.match(r"^/v1/event-triggers/(evt_[0-9a-f]{10})$", path)
