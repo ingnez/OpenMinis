@@ -623,7 +623,7 @@ struct CloudBotHomeScreen: View {
                         if search.isEmpty {
                             CloudHiddenFooter(count: model.hiddenBots.count) { path = ["hidden"] }
                             if CloudFocusFilter.active {
-                                Label("专注模式过滤中：只显示医疗 Bot（在系统专注模式里关掉）", systemImage: "moon.circle")
+                                Label("专注模式过滤中：只显示医疗 Bot 和置顶的 Bot（想留着的 Bot 置顶即可；在系统专注模式里关掉）", systemImage: "moon.circle")
                                     .font(.caption).foregroundStyle(.secondary).padding(.top, 6)
                             }
                         }
