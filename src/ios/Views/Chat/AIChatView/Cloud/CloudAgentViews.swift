@@ -1870,18 +1870,27 @@ struct CloudSessionView: View {
         NotificationCenter.default.post(name: CloudReplyService.kick, object: nil)
     }
 
-    private func markUserSent(content: String) {
-        if let t = turns.last(where: { $0.message.role == .user && $0.message.content == content && $0.message.sendTick == .failed }) {
-            t.message.sendTick = nil
-            failedSends[t.message.id] = nil
+    private func lastUserTurn(content: String? = nil, failedOnly: Bool = false) -> CloudHistoryAdapter.Turn? {
+        for turn in turns.reversed() {
+            let m = turn.message
+            guard m.role == .user else { continue }
+            if let content, m.content != content { continue }
+            if failedOnly, m.sendTick != .failed { continue }
+            return turn
         }
+        return nil
+    }
+
+    private func markUserSent(content: String) {
+        guard let t = lastUserTurn(content: content, failedOnly: true) else { return }
+        t.message.sendTick = nil
+        failedSends[t.message.id] = nil
     }
 
     private func markUserFailed(item: CloudDeliveryBox.Item) {
-        if let t = turns.last(where: { $0.message.role == .user && $0.message.content == item.content }) {
-            t.message.sendTick = .failed
-            failedSends[t.message.id] = item
-        }
+        guard let t = lastUserTurn(content: item.content) else { return }
+        t.message.sendTick = .failed
+        failedSends[t.message.id] = item
     }
 
     private func retryUserSend(_ message: ChatMessage) {
@@ -1892,9 +1901,7 @@ struct CloudSessionView: View {
     }
 
     private func markUserAdopted() {
-        if let t = turns.last(where: { $0.message.role == .user }) {
-            t.message.adoptedMark = true
-        }
+        lastUserTurn()?.message.adoptedMark = true
     }
 
     private func submit(content: String, body rawBody: [String: Any], alreadyShown: Bool = true) {

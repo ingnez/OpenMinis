@@ -125,6 +125,7 @@ struct CloudUserTurnRow: View {
     var onRetry: (() -> Void)? = nil
 
     private var content: String { message.content }
+    private var sendFailed: Bool { message.sendTick == MessageSendTick.failed }
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
@@ -139,7 +140,7 @@ struct CloudUserTurnRow: View {
                     }
                 })
             })
-            MessageSendStatusRow(failed: message.sendTick == .failed, adopted: message.adoptedMark, onRetry: onRetry)
+            MessageSendStatusRow(failed: sendFailed, adopted: message.adoptedMark, onRetry: onRetry)
             if let e = extras.botReaction {
                 // Bot 用表情回应了这条（代替文字回复）
                 CloudReactionPill(emoji: e).padding(.trailing, 14).offset(y: -12).padding(.bottom, -12)

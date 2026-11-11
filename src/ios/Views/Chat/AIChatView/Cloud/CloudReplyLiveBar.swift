@@ -321,7 +321,7 @@ extension AssistantBlock {
     /// 秒回前台对话里默认不画出深度思考和派活简报
     var hiddenInInstantReply: Bool {
         switch kind {
-        case .thinking, .delegateTool(_): return true
+        case .thinking, .delegateTool(title: _): return true
         default: return false
         }
     }
