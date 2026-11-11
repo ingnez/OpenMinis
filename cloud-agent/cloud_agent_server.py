@@ -8172,6 +8172,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"error": "key must be an xdotool key name such as Return or ctrl+v"})
                     return
                 args = {"action": "key", "key": key}
+                rep = req_json.get("repeat", 1)
+                if not isinstance(rep, int) or isinstance(rep, bool) or not 1 <= rep <= 50:
+                    self._send(400, {"error": "repeat must be an integer 1-50"})
+                    return
+                if rep > 1:
+                    args["repeat"] = rep
             elif action in ("clipboard_get", "vault"):
                 args = None
             elif action == "clipboard_set":

@@ -412,6 +412,11 @@ jobs:
             test "$MS" -lt 3000
           done
           echo "$R" | head -n1 | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d["text"]=="手机剪贴板→云电脑", d; print("剪贴板往返一致")' | tee -a cloud-unicode-type.log
+      - name: 云电脑剪贴板与输入法中文（真 Xvfb + xclip / xdotool + 真 Tk 程序收字；服务无 LANG 时的 locale 根因）
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -q python3-tk >/dev/null
+          cd cloud-agent && OPENMINIS_REAL_X_TEST=1 python3 -m unittest test_cc_clipboard_utf8 -v 2>&1 | tee ../cloud-cc-clipboard.log
       - name: 云电脑画面页 window.om 真浏览器端到端（指针 / 点击 / 按键 / 剪贴板 / 滚轮 / 缩放 / 画质 / 截图 / 录屏）
         run: |
           set -o pipefail
@@ -466,6 +471,7 @@ jobs:
             cloud-proxy.log
             cloud-desktop-bench.log
             cloud-desktop-bridge-e2e.log
+            cloud-cc-clipboard.log
   build:
     if: ${{ !inputs.quick && !inputs.ui_tests }}
     runs-on: ${{ inputs.mac_runner || 'macos-15' }}

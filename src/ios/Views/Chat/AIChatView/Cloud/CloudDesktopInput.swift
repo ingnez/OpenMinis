@@ -86,6 +86,39 @@ struct CloudZoom: Equatable {
 
     mutating func reset() { scale = 1; offset = .zero }
 
+    var isZoomed: Bool { scale > 1.01 }
+
+    /// 视口里看到的点（手指位置）→ 未缩放的画面坐标（再交给 CloudScreenFit / 画布换算成远端像素）
+    func toContent(_ v: CGPoint) -> CGPoint {
+        CGPoint(x: (v.x - offset.width) / max(0.0001, scale), y: (v.y - offset.height) / max(0.0001, scale))
+    }
+
+    /// 未缩放的画面坐标 → 视口里实际显示的位置
+    func toViewport(_ p: CGPoint) -> CGPoint {
+        CGPoint(x: p.x * scale + offset.width, y: p.y * scale + offset.height)
+    }
+
+    /// 捏合的一帧：两指中心从 previous 移到 anchor（画面跟着平移），同时以 anchor 为中心缩放 factor 倍。
+    /// 不碰边界时，手指下的那一点始终留在手指下；最后统一夹一次边界（先夹再缩会让画面跳一下）
+    mutating func pinch(by factor: CGFloat, around anchor: CGPoint, from previous: CGPoint, viewport: CGSize) {
+        let s = min(Self.maxScale, max(Self.minScale, scale * factor))
+        let k = s / scale
+        let ox = offset.width + anchor.x - previous.x, oy = offset.height + anchor.y - previous.y
+        offset = CGSize(width: anchor.x - (anchor.x - ox) * k, height: anchor.y - (anchor.y - oy) * k)
+        scale = s
+        clampOffset(viewport)
+    }
+
+    /// 松手：几乎没放大（< 1.05 倍）就吸回原始大小，免得留一个看不出来的 1.02 倍
+    mutating func settle() { if scale < 1.05 { reset() } }
+
+    static let doubleTapScale: CGFloat = 2.5
+
+    /// 双击：放大了就恢复原始大小；没放大就以点到的位置为中心放大到 2.5 倍
+    mutating func toggle(at p: CGPoint, viewport: CGSize) {
+        if isZoomed { reset() } else { pinch(by: Self.doubleTapScale, around: p, viewport: viewport) }
+    }
+
     mutating func clampOffset(_ viewport: CGSize) {
         let minX = viewport.width - viewport.width * scale, minY = viewport.height - viewport.height * scale
         offset = CGSize(width: min(0, max(minX, offset.width)), height: min(0, max(minY, offset.height)))
@@ -94,7 +127,8 @@ struct CloudZoom: Equatable {
     /// 光标（视图坐标，未缩放时的位置）离可见区域边缘不到 margin 时平移，让光标留在中间 70%
     mutating func follow(_ p: CGPoint, viewport: CGSize, margin: CGFloat = 0.15) -> Bool {
         guard scale > 1.01 else { return false }
-        let sx = p.x * scale + offset.width, sy = p.y * scale + offset.height
+        let v = toViewport(p)
+        let sx = v.x, sy = v.y
         let mx = viewport.width * margin, my = viewport.height * margin
         var d = CGSize.zero
         if sx < mx { d.width = mx - sx } else if sx > viewport.width - mx { d.width = viewport.width - mx - sx }
@@ -118,6 +152,41 @@ struct CloudScreenFit: Equatable {
     func toView(_ p: CGPoint) -> CGPoint { CGPoint(x: origin.x + p.x * ratio, y: origin.y + p.y * ratio) }
     /// 视图点（已去掉缩放平移）→ 远端像素
     func toScreen(_ v: CGPoint) -> CGPoint { CGPoint(x: (v.x - origin.x) / max(0.0001, ratio), y: (v.y - origin.y) / max(0.0001, ratio)) }
+}
+
+/// 远端像素 ↔ 视口点的完整映射：画布在视图里的位置和比例（noVNC 报的画布矩形，或按比例居中估算）再叠上缩放平移。
+/// 触控板光标、点按、「指给 Bot 看」都走这一条，任何放大倍数下手指点到哪、远端就收到哪
+struct CloudViewMapping: Equatable {
+    /// 画布左上角（未缩放的视图坐标）
+    var origin: CGPoint
+    /// 1 个远端像素 = ratio 个视图点（未缩放）
+    var ratio: CGFloat
+    var zoom: CloudZoom
+
+    init(origin: CGPoint, ratio: CGFloat, zoom: CloudZoom) {
+        self.origin = origin
+        self.ratio = max(0.0001, ratio)
+        self.zoom = zoom
+    }
+
+    init(fit: CloudScreenFit, zoom: CloudZoom) { self.init(origin: fit.origin, ratio: fit.ratio, zoom: zoom) }
+
+    /// noVNC 画布矩形（未缩放的视图坐标）+ 远端分辨率
+    init(canvas: CGRect, screen: CGSize, zoom: CloudZoom) {
+        self.init(origin: canvas.origin, ratio: canvas.width / max(1, screen.width), zoom: zoom)
+    }
+
+    /// 远端像素 → 未缩放的视图点
+    func toView(_ p: CGPoint) -> CGPoint { CGPoint(x: origin.x + p.x * ratio, y: origin.y + p.y * ratio) }
+    /// 远端像素 → 视口里实际显示的位置（放大平移之后）
+    func toViewport(_ p: CGPoint) -> CGPoint { zoom.toViewport(toView(p)) }
+    /// 视口里手指的位置 → 远端像素（未夹边界）
+    func toRemote(_ v: CGPoint) -> CGPoint {
+        let c = zoom.toContent(v)
+        return CGPoint(x: (c.x - origin.x) / ratio, y: (c.y - origin.y) / ratio)
+    }
+    /// 未缩放时 1 个视图点是几个远端像素（触控板移动用；放大后的细调由 CloudTrackpad.gain 除以 zoom）
+    var pixelsPerPoint: CGFloat { 1 / ratio }
 }
 
 /// 额外按键行：X11 keysym（noVNC rfb.sendKey 直接发），修饰键可以「按住」
@@ -250,6 +319,30 @@ enum CloudIMECommit {
 
     /// 纯 ASCII 直接按键（经 VNC，几乎零延迟）；含中文等字符走服务器剪贴板粘贴（xdotool 打不了中文）
     static func viaServer(_ text: String) -> Bool { text.contains { CloudKey.keysym(for: $0) == nil } }
+}
+
+/// 输入法上屏的发送顺序：中文等走服务器（HTTP 剪贴板粘贴，慢），ASCII 和退格走 VNC（几乎零延迟）。
+/// 服务器那边还有没送完的字时，后面的字和退格也排进服务器队列，否则「中a」会到云电脑变成「a中」、退格删错字
+struct CloudTypeOrder: Equatable {
+    enum Route: Equatable { case vnc, server }
+    private(set) var inFlight = 0
+
+    func route(_ e: CloudIMECommit.Event) -> Route {
+        if inFlight > 0 { return .server }
+        if case .text(let t) = e, CloudIMECommit.viaServer(t) { return .server }
+        return .vnc
+    }
+
+    mutating func sent() { inFlight += 1 }
+    mutating func finished() { inFlight = max(0, inFlight - 1) }
+
+    /// 走服务器时的请求体：文字用 type（服务器按 UTF-8 粘贴 / 逐字），退格用 xdotool 的 BackSpace 连按
+    static func serverPayload(_ e: CloudIMECommit.Event) -> [String: Any] {
+        switch e {
+        case .text(let t): return ["action": "type", "text": String(t.prefix(10000))]
+        case .backspace(let n): return ["action": "key", "key": "BackSpace", "repeat": min(max(1, n), 50)]
+        }
+    }
 }
 
 /// 画质：先低清快速出第一帧，连上后升级；之后按往返延迟自适应

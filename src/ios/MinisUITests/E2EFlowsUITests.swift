@@ -768,3 +768,131 @@ final class E2EFlowsUITests: XCTestCase {
         add(a)
     }
 }
+
+// MARK: - 云电脑：双指缩放 / 平移、放大后点按映射、剪贴板两个方向和输入法中文（假桌面）
+
+/// 模拟器上没有 Xvfb：App 用 OPENMINIS_E2E_FAKE_DESKTOP=1 换成假画面（1280×800 格子，回报收到的指针），
+/// e2e 栈的 /_e2e/desktop?on=1 把云端的剪贴板 / 输入换成内存假桌面（UTF-8 原样存）。真 X 上的同一套由 Linux CI 的 test_cc_clipboard_utf8 验证
+extension E2EFlowsUITests {
+    private struct CCDesk: Decodable { let on: Bool; let clip: String; let typed: [String]; let clip_sets: [String] }
+
+    private func ccDesk(_ query: [String: String] = [:]) -> CCDesk? {
+        var c = URLComponents(string: "http://127.0.0.1:18799/_e2e/desktop")!
+        if !query.isEmpty { c.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
+        guard let url = c.url, let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(CCDesk.self, from: data)
+    }
+
+    /// App 里的探针：scale=…;cursor=x,y;onscreen=x,y;viewport=w,h;click=x,y;toPhone=文字
+    private func ccProbe(_ app: XCUIApplication) -> [String: String] {
+        let v = app.descendants(matching: .any)["ccDesktopProbe"].value as? String ?? ""
+        var out: [String: String] = [:]
+        let parts = v.components(separatedBy: ";toPhone=")
+        out["toPhone"] = parts.count > 1 ? parts[1] : ""
+        for kv in parts[0].split(separator: ";") {
+            let p = kv.split(separator: "=", maxSplits: 1)
+            if p.count == 2 { out[String(p[0])] = String(p[1]) }
+        }
+        return out
+    }
+
+    private func ccPair(_ s: String?) -> (Int, Int)? {
+        let p = (s ?? "").split(separator: ",")
+        guard p.count == 2, let a = Int(p[0]), let b = Int(p[1]) else { return nil }
+        return (a, b)
+    }
+
+    private func ccAllowPaste(_ app: XCUIApplication) {
+        let sb = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        for _ in 0..<12 {
+            for label in ["Allow Paste", "允许粘贴"] {
+                if app.buttons[label].exists { app.buttons[label].tap(); return }
+                if sb.buttons[label].exists { sb.buttons[label].tap(); return }
+            }
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+    }
+
+    @objc func test25_CC_pinchZoomAndClipboard() throws {
+        executionTimeAllowance = 300
+        let app = launch(extraEnv: ["OPENMINIS_E2E_FAKE_DESKTOP": "1"])
+        XCTAssertEqual(ccDesk(["on": "1"])?.on, true, "e2e 栈没有假桌面开关（/_e2e/desktop）")
+        let gear = app.buttons["设置"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
+        gear.tap()
+        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "云电脑桌面")).firstMatch
+        XCTAssertTrue(scrollTo(app, row), "Bot 设置里没有「云电脑桌面」")
+        row.tap()
+
+        let probe = app.descendants(matching: .any)["ccDesktopProbe"]
+        XCTAssertTrue(probe.waitForExistence(timeout: 30), "云电脑页没打开（没有探针）")
+        let surface = app.descendants(matching: .any)["ccTrackpadSurface"]
+        XCTAssertTrue(surface.waitForExistence(timeout: 30), "接管后没有触控板层")
+        XCTAssertTrue(poll(20) { (self.ccPair(self.ccProbe(app)["viewport"])?.0 ?? 0) > 0 }, "画面没连上：\(probe.value as? String ?? "")")
+        Thread.sleep(forTimeInterval: 1.0)   // 等假画面报完画布矩形（om.fb）
+        shot(app, "25a-云电脑原始大小")
+
+        // 1. 双指放大：倍数变大；捏合时不能顺带把滚轮发给远端（以前一边捏一边滚远端页面）
+        surface.pinch(withScale: 2.5, velocity: 1.5)
+        XCTAssertTrue(poll(10) { (Double(self.ccProbe(app)["scale"] ?? "") ?? 1) >= 1.5 }, "双指放大没生效：\(probe.value as? String ?? "")")
+        let badge = app.buttons["ccZoomBadge"]
+        XCTAssertTrue(badge.waitForExistence(timeout: 5), "放大后右上角没有倍数 / 恢复按钮")
+        XCTAssertEqual(ccProbe(app)["click"], "-1,-1", "捏合时远端收到了按键 / 滚轮：\(probe.value as? String ?? "")")
+        shot(app, "25b-双指放大")
+
+        // 2. 放大后点一下：远端收到的点击位置 = 光标位置，而且光标在屏幕上看得见
+        surface.tap()
+        XCTAssertTrue(poll(10) { let p = self.ccProbe(app); return p["click"] != "-1,-1" && p["click"] == p["cursor"] },
+                      "放大后点按，远端收到的位置和光标不一致：\(probe.value as? String ?? "")")
+        // 3. 单指拖动移光标：放大时光标靠边，画面自动跟着挪，光标始终在可见区域
+        let before = ccProbe(app)["cursor"]
+        surface.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.4))
+            .press(forDuration: 0.05, thenDragTo: surface.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.75)))
+        XCTAssertTrue(poll(10) { self.ccProbe(app)["cursor"] != before }, "单指拖动光标没动")
+        let p = ccProbe(app)
+        if let on = ccPair(p["onscreen"]), let vp = ccPair(p["viewport"]) {
+            XCTAssertTrue(on.0 >= 0 && on.0 <= vp.0 && on.1 >= 0 && on.1 <= vp.1, "放大后光标跑出可见区域：\(probe.value as? String ?? "")")
+        } else { XCTFail("探针格式不对：\(probe.value as? String ?? "")") }
+        surface.tap()
+        XCTAssertTrue(poll(10) { let q = self.ccProbe(app); return q["click"] == q["cursor"] && q["cursor"] != before },
+                      "移动后点按，远端收到的位置和光标不一致：\(probe.value as? String ?? "")")
+        shot(app, "25c-放大后点按位置正确")
+
+        // 4. 点倍数恢复原始大小
+        badge.tap()
+        XCTAssertTrue(poll(10) { self.ccProbe(app)["scale"] == "1.00" }, "点倍数没恢复原始大小：\(probe.value as? String ?? "")")
+        XCTAssertTrue(waitGone(badge, timeout: 5), "恢复后倍数按钮还在")
+
+        // 5. 云电脑 → 手机：远端程序里复制了一段中文，几秒内到手机剪贴板（UTF-8，不乱码）
+        let remote = "远端复制：中文剪贴板✓"
+        XCTAssertEqual(ccDesk(["clip": remote])?.clip, remote)
+        XCTAssertTrue(poll(20) { self.ccProbe(app)["toPhone"] == remote }, "云电脑剪贴板没到手机：\(probe.value as? String ?? "")")
+        shot(app, "25d-云电脑剪贴板到手机")
+
+        // 6. 手机 → 云电脑剪贴板（中文）
+        let phone = "手机剪贴板：中文同步✓"
+        UIPasteboard.general.string = phone
+        let clipMenu = app.buttons["剪贴板"]
+        XCTAssertTrue(clipMenu.waitForExistence(timeout: 10), "底栏没有剪贴板按钮")
+        clipMenu.tap()
+        let sync = app.buttons["同步到云电脑剪贴板"]
+        XCTAssertTrue(sync.waitForExistence(timeout: 10), "剪贴板菜单里没有「同步到云电脑剪贴板」")
+        sync.tap()
+        ccAllowPaste(app)
+        XCTAssertTrue(poll(20) { self.ccDesk()?.clip_sets.contains(phone) ?? false }, "手机剪贴板没到云电脑：\(String(describing: ccDesk()))")
+
+        // 7. 手机输入法打中文 → 云电脑；云端「剪贴板 + 粘贴」改了远端剪贴板，手机不能把它当成远端复制再拷回来
+        let keyboard = app.buttons["键盘"]
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 10), "底栏没有键盘按钮")
+        keyboard.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10), "系统键盘没弹出来")
+        dismissKeyboardIntro(app)
+        let typed = "云电脑中文输入"
+        app.typeText(typed)
+        XCTAssertTrue(poll(20) { (self.ccDesk()?.typed.joined() ?? "").contains(typed) }, "输入法中文没到云电脑：\(String(describing: ccDesk()))")
+        shot(app, "25e-输入法中文到云电脑")
+        Thread.sleep(forTimeInterval: 6)   // 剪贴板轮询 2.5 秒一次，等两轮
+        XCTAssertEqual(ccProbe(app)["toPhone"], remote, "手机自己打的中文被当成云电脑复制拷回了手机")
+        _ = ccDesk(["on": "0"])
+    }
+}

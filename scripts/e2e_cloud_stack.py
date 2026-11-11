@@ -168,6 +168,47 @@ def start_fake_realtime():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
 
+# 云电脑 E2E 的假桌面（macOS 模拟器机器上没有 Xvfb）：/_e2e/desktop?on=1 打开后，/v1/desktop/input 的
+# 剪贴板 / 输入 / 按键落到这里的内存里，UTF-8 原样保存；中文输入像真服务器一样「放进剪贴板再粘贴」，会改掉远端剪贴板。
+# 真 X 上的同一套行为由 Linux CI 的 test_cc_clipboard_utf8 验证。全是假数据。
+FAKE_DESK = {"on": False, "clip": "", "typed": [], "keys": [], "clip_sets": []}
+
+
+def install_fake_desktop():
+    import cloud_desktop as cd
+    real_avail, real_exec, real_read, real_write = cd.is_desktop_available, cd.execute_desktop_action, cd.read_clipboard, cd.write_clipboard
+
+    def avail():
+        return True if FAKE_DESK["on"] else real_avail()
+
+    def execute(session_id, workspace_dir, args, display_override=None):
+        if not FAKE_DESK["on"] or session_id != "phone":
+            return real_exec(session_id, workspace_dir, args, display_override=display_override)
+        if args.get("action") == "type":
+            text = args.get("text", "")
+            FAKE_DESK["typed"].append(text)
+            if any(ord(c) > 127 for c in text):
+                FAKE_DESK["clip"] = text
+                return {"status": "ok", "action": "type", "length": len(text), "method": "clipboard", "via": "fake"}
+            return {"status": "ok", "action": "type", "length": len(text)}
+        if args.get("action") == "key":
+            FAKE_DESK["keys"].append([args.get("key"), int(args.get("repeat") or 1)])
+            return {"status": "ok", "action": "key", "key": args.get("key"), "repeat": int(args.get("repeat") or 1)}
+        return {"error": "fake desktop: unsupported"}
+
+    def read(display):
+        return (FAKE_DESK["clip"], None) if FAKE_DESK["on"] else real_read(display)
+
+    def write(display, text):
+        if not FAKE_DESK["on"]:
+            return real_write(display, text)
+        FAKE_DESK["clip"] = text
+        FAKE_DESK["clip_sets"].append(text)
+        return None
+
+    cd.is_desktop_available, cd.execute_desktop_action, cd.read_clipboard, cd.write_clipboard = avail, execute, read, write
+
+
 def main():
     work = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "/tmp/openminis-e2e")
     os.makedirs(os.path.join(work, "conf"), exist_ok=True)
@@ -206,9 +247,24 @@ def main():
                     db.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
                 db.commit()
                 db.close()
+                FAKE_DESK.update({"on": False, "clip": "", "typed": [], "keys": [], "clip_sets": []})
                 body = json.dumps({"cleared_sessions": len(sids)}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if urlparse(self.path).path == "/_e2e/desktop":
+                # ?on=1 / ?on=0 开关假桌面（同时清空记录）；?clip=文字 模拟在远端程序里复制了一段
+                q = parse_qs(urlparse(self.path).query)
+                if "on" in q:
+                    FAKE_DESK.update({"on": q["on"][0] == "1", "clip": "", "typed": [], "keys": [], "clip_sets": []})
+                if "clip" in q:
+                    FAKE_DESK["clip"] = q["clip"][0]
+                body = json.dumps(FAKE_DESK, ensure_ascii=False).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -248,6 +304,7 @@ def main():
     threading.Thread(target=probe.serve_forever, daemon=True).start()
 
     import cloud_agent_server as srv
+    install_fake_desktop()
     srv.SERVER_TOKEN = TOKEN
     srv.init_db()
     api = ThreadingHTTPServer(("127.0.0.1", int(os.environ.get("OPENMINIS_E2E_PORT", "18765"))), srv.CloudAgentHandler)

@@ -351,7 +351,15 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
     om.quality = (q, c) => { const rfb = R(); try { if (rfb) { rfb.qualityLevel = q; rfb.compressionLevel = c; } } catch (e) {} };
     om.viewOnly = v => { const rfb = R(); try { if (rfb) rfb.viewOnly = !!v; } catch (e) {} };
     om.cursor = v => { cur.style.display = v ? 'block' : 'none'; place(); };
-    om.view = (s, tx, ty) => { view.s = s; scr.style.transformOrigin = '0 0'; scr.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + s + ')'; };
+    // 缩放平移只改 transform（合成层上做，不重排、不重画画布），捏合时 120Hz 跟手；同一帧里多次调用只落最后一次
+    let viewReq = null;
+    scr.style.transformOrigin = '0 0'; scr.style.willChange = 'transform';
+    om.view = (s, tx, ty) => {
+      view.s = s;
+      const apply = () => { viewReq = null; scr.style.transform = 'translate3d(' + tx + 'px,' + ty + 'px,0) scale(' + s + ')'; };
+      if (viewReq) cancelAnimationFrame(viewReq);
+      viewReq = requestAnimationFrame(apply);
+    };
     om.shot = () => { const c = cvs(); if (!c) { om.send({ type: 'shot', error: 'nocanvas' }); return; } try { om.send({ type: 'shot', data: c.toDataURL('image/png') }); } catch (e) { om.send({ type: 'shot', error: String(e) }); } };
     let rec = null, chunks = [];
     om.rec = on => {
@@ -384,7 +392,8 @@ final class CloudNoVNCBridge: NSObject, WKScriptMessageHandler {
         current = url
         fellBack = false
         guard let base = URL(string: "http://127.0.0.1:\(url.port ?? 18766)/") else { return }
-        web.loadHTMLString(Self.page(for: url), baseURL: base)
+        let html = Self.page(for: url)
+        web.loadHTMLString(CloudE2E.fakeDesktop ? CloudDesktopFakePage.patch(html) : html, baseURL: base)
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {

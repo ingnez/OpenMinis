@@ -80,7 +80,15 @@ await viewer.ev('om.wheel(500,400,5,0,0)');
 check(await until(() => target.ev('scrollY>0')), '双指拖 = 滚轮向下');
 
 await viewer.ev('om.quality(7,4);om.viewOnly(false);om.cursor(true);om.view(2,-100,-50)');
-check(await viewer.ev("document.getElementById('screen').style.transform==='translate(-100px, -50px) scale(2)'"), '缩放平移作用在画面层');
+check(await until(() => viewer.ev("document.getElementById('screen').style.transform==='translate3d(-100px, -50px, 0px) scale(2)'"), 3000),
+  '缩放平移作用在画面层（下一帧落地）：' + await viewer.ev("document.getElementById('screen').style.transform"));
+// App 的点按映射用 om.fb 报的画布矩形（未缩放坐标）：放大平移之后报的必须和放大前一样，不然放大后点偏
+await viewer.ev('om.fb()');
+const fbZoomed = await viewer.ev("(__msgs.filter(m=>m.type==='fb').pop()||{})");
+const near = (a, b) => Math.abs(a - b) < 0.5;
+check(near(fbZoomed.x, fb.x) && near(fbZoomed.y, fb.y) && near(fbZoomed.cw, fb.cw) && near(fbZoomed.ch, fb.ch),
+  `放大 2 倍后画布矩形不变（${JSON.stringify(fb)} → ${JSON.stringify(fbZoomed)}）`);
+await viewer.ev('om.view(1,0,0)');
 check(await viewer.ev("__omRFB.qualityLevel===7&&__omRFB.compressionLevel===4"), '画质切换');
 
 await viewer.ev('om.shot()');

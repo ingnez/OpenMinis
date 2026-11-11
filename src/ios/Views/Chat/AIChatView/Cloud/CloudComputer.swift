@@ -34,6 +34,8 @@ struct CloudComputerView: View {
     @State private var ownDisplay = false
     @State private var rechecking = false
     @State private var pointing = false
+    /// 最近一次拷到手机剪贴板的云电脑文字（端到端探针用）
+    @State private var lastToPhone = ""
 
     enum Phase: Equatable { case connecting, live, failed(String), problem(CloudDesktopProblem) }
 
@@ -79,13 +81,50 @@ struct CloudComputerView: View {
                                      onLoaded: { reused in pageLoaded(reused) }, onState: { vncStateChanged($0) })
                 if ctl.controlling && ctl.mode == .trackpad {
                     CloudTrackpadSurface(controller: ctl)
+                } else if !ctl.controlling && !pointing {
+                    CloudZoomSurface(controller: ctl)
                 }
                 if pointing && !ctl.controlling {
                     CloudPointOverlay(ctl: ctl, onSend: { p, t in sendPoint(p, t) }, onCancel: { pointing = false })
                 }
             }
+            .overlay(alignment: .topTrailing) { if phase == .live, ctl.zoom.isZoomed { zoomBadge } }
+            .overlay(alignment: .topLeading) { e2eProbe }
             .opacity(phase == .live ? 1 : 0.01)
             .ignoresSafeArea(edges: .bottom)
+        }
+    }
+
+    /// 放大时右上角的倍数，点一下恢复原始大小（双击 / 双指双击也行）
+    private var zoomBadge: some View {
+        Button { withAnimation(.easeOut(duration: 0.2)) { ctl.resetZoom() } } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.down.right.and.arrow.up.left").font(.system(size: 11, weight: .bold))
+                Text(String(format: "%.1f×", ctl.zoom.scale)).monospacedDigit()
+            }
+            .font(.caption.weight(.semibold)).foregroundStyle(.white)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(Capsule().fill(Color.black.opacity(0.6)))
+        }
+        .accessibilityIdentifier("ccZoomBadge")
+        .accessibilityLabel("恢复原始大小")
+        .accessibilityValue(String(format: "%.2f", ctl.zoom.scale))
+        .padding(.top, 10).padding(.trailing, 12)
+    }
+
+    /// 模拟器端到端探针：缩放倍数、光标（远端像素和在屏幕上的位置）、假画面收到的点击、拷到手机的文字
+    @ViewBuilder private var e2eProbe: some View {
+        if CloudE2E.fakeDesktop {
+            let c = ctl.trackpad.cursor, v = ctl.cursorOnScreen, k = ctl.lastRemoteClick
+            // 画面左上角一个几乎看不见的小字（Color.clear 会被无障碍树忽略）
+            Text("e2e").font(.system(size: 4)).foregroundStyle(Color.white.opacity(0.05))
+                .allowsHitTesting(false)
+                .accessibilityElement()
+                .accessibilityIdentifier("ccDesktopProbe")
+                .accessibilityLabel("ccDesktopProbe")
+                .accessibilityValue(String(format: "scale=%.2f;cursor=%ld,%ld;onscreen=%ld,%ld;viewport=%ld,%ld;click=%ld,%ld;toPhone=",
+                                           ctl.zoom.scale, Int(c.x), Int(c.y), Int(v.x), Int(v.y),
+                                           Int(ctl.viewport.width), Int(ctl.viewport.height), k.x, k.y) + lastToPhone)
         }
     }
 
@@ -189,11 +228,18 @@ struct CloudComputerView: View {
 
     private func setUp() {
         ctl.onNotice = { show($0) }
-        ctl.onClipboard = { text in
+        ctl.onClipboard = { rfbText in
+            // noVNC 的剪贴板事件只有 Latin-1（中文是乱码）：只当信号，文字以服务器 xclip 读到的 UTF-8 为准
             guard ctl.controlling else { return }
-            clipWatch.noteKnown(text)
-            UIPasteboard.general.string = text
-            show("云电脑剪贴板已同步到手机")
+            Task { @MainActor in
+                var payload: [String: Any] = ["action": "clipboard_get"]
+                if ownDisplay, let botId { payload["bot_id"] = botId }
+                let server = (try? await connection.request(method: "POST", path: "/v1/desktop/input", body: payload))?["text"] as? String
+                guard let text = CloudClipboardWatch.pick(server: server, rfb: rfbText), !clipWatch.isOwn(text),
+                      text != clipWatch.baseline else { return }
+                clipWatch.noteKnown(text)
+                copyToPhone(text, toast: "云电脑剪贴板已同步到手机（\(text.count) 字）")
+            }
         }
         ctl.onNetworkChange = {
             guard phase == .live else { return }
@@ -218,7 +264,8 @@ struct CloudComputerView: View {
         timeline = CloudConnectTimeline(start: Date())
         timed = false
         let r: CloudDesktopCheckResult
-        if let warm = CloudDesktopWarmup.take(botId: botId) { r = warm } else { r = await CloudDesktopCheck.run(botId: botId) }
+        if CloudE2E.fakeDesktop { r = .ready(token: "main", ownDisplay: false) }
+        else if let warm = CloudDesktopWarmup.take(botId: botId) { r = warm } else { r = await CloudDesktopCheck.run(botId: botId) }
         switch r {
         case .problem(let p):
             phase = .problem(p)
@@ -333,10 +380,12 @@ struct CloudComputerView: View {
     }
 
     /// 按顺序把请求发到云电脑（与 Agent 共用桌面锁）
-    private func send(_ body: [String: Any], done: String? = nil, onResult: (([String: Any]) -> Void)? = nil) {
+    private func send(_ body: [String: Any], done: String? = nil, always: (() -> Void)? = nil,
+                      onResult: (([String: Any]) -> Void)? = nil) {
         let previous = sendChain
         sendChain = Task { @MainActor in
             await previous?.value
+            defer { always?() }
             do {
                 var payload = body
                 if ownDisplay, let botId { payload["bot_id"] = botId }
@@ -350,13 +399,24 @@ struct CloudComputerView: View {
         }
     }
 
-    private func typeViaServer(_ text: String) {
-        send(["action": "type", "text": String(text.prefix(10000))])
+    /// 走服务器的输入（中文等，或排在中文后面的字 / 退格）。中文在服务器上是「放进剪贴板 + Ctrl+V」，
+    /// 先记成手机自己送的，剪贴板轮询读到它不会当成「云电脑里复制了」再拷回手机
+    private func typeViaServer(_ e: CloudIMECommit.Event, done: @escaping () -> Void) {
+        if case .text(let t) = e, CloudIMECommit.viaServer(t) { clipWatch.expect(String(t.prefix(10000))) }
+        send(CloudTypeOrder.serverPayload(e), always: done)
     }
 
     private func pastePhoneClipboard() {
         guard let text = UIPasteboard.general.string, !text.isEmpty else { show("剪贴板没有文字"); return }
-        send(["action": "type", "text": String(text.prefix(10000))], done: "已输入到云电脑")
+        let t = String(text.prefix(10000))
+        if CloudIMECommit.viaServer(t) { clipWatch.expect(t) }
+        send(["action": "type", "text": t], done: "已输入到云电脑")
+    }
+
+    private func copyToPhone(_ text: String, toast: String) {
+        UIPasteboard.general.string = text
+        lastToPhone = text
+        show(toast)
     }
 
     /// 接管时每隔几秒看一眼云电脑剪贴板，那边复制了新文字就拷到手机（见 CloudClipboardWatch）
@@ -369,16 +429,17 @@ struct CloudComputerView: View {
             guard let r = try? await connection.request(method: "POST", path: "/v1/desktop/input", body: payload),
                   let text = r["text"] as? String else { continue }
             if let fresh = clipWatch.observe(text) {
-                UIPasteboard.general.string = fresh
-                show("云电脑里复制的文字已到手机（\(fresh.count) 字）")
+                copyToPhone(fresh, toast: "云电脑里复制的文字已到手机（\(fresh.count) 字）")
             }
         }
     }
 
     private func syncClipboardToRemote() {
         guard let text = UIPasteboard.general.string, !text.isEmpty else { show("剪贴板没有文字"); return }
-        clipWatch.noteKnown(String(text.prefix(10000)))
-        send(["action": "clipboard_set", "text": String(text.prefix(10000))], done: "已放进云电脑剪贴板，可在那边 Ctrl+V")
+        let t = String(text.prefix(10000))
+        clipWatch.noteKnown(t)
+        clipWatch.expect(t)
+        send(["action": "clipboard_set", "text": t], done: "已放进云电脑剪贴板，可在那边 Ctrl+V")
     }
 
     private func fetchRemoteClipboard() {
@@ -386,8 +447,7 @@ struct CloudComputerView: View {
             let text = r["text"] as? String ?? ""
             if text.isEmpty { show("云电脑剪贴板是空的"); return }
             clipWatch.noteKnown(text)
-            UIPasteboard.general.string = text
-            show("已复制云电脑剪贴板（\(text.count) 字）")
+            copyToPhone(text, toast: "已复制云电脑剪贴板（\(text.count) 字）")
         }
     }
 

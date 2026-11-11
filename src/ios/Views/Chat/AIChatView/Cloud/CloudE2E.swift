@@ -50,6 +50,9 @@ enum CloudE2E {
     static var fakeMic: Bool { token != nil && ProcessInfo.processInfo.environment["OPENMINIS_E2E_FAKE_MIC"] == "1" }
     /// 听写 E2E：假音量 + 一句逐字出来的假文字（不碰麦克风和语音识别权限）
     static var fakeDictation: Bool { token != nil && ProcessInfo.processInfo.environment["OPENMINIS_E2E_FAKE_DICTATION"] == "1" }
+    /// 云电脑 E2E：模拟器上没有 Xvfb / VNC，画面页换成假的 RFB（画格子、回报收到的指针），跳过桌面体检；
+    /// 剪贴板和输入照常走 e2e 栈里的云端服务（那边换成内存里的假桌面）
+    static var fakeDesktop: Bool { token != nil && ProcessInfo.processInfo.environment["OPENMINIS_E2E_FAKE_DESKTOP"] == "1" }
 
     /// 点声波时再注入一次：启动时注入的服务商会被服务商库的异步首次加载（数据库 dump 覆盖内存配置）冲掉，
     /// 42976420696 test21 两次都因此走了轮流通话页。到点按钮时首次加载早已结束，这次注入会留下
@@ -123,6 +126,7 @@ enum CloudE2E {
     static var realtimeURL: String? { nil }
     static var fakeMic: Bool { false }
     static var fakeDictation: Bool { false }
+    static var fakeDesktop: Bool { false }
     static func reapplyRealtimeProvider() {}
     static let realtimeLabel = ""
     static var token: String? { nil }

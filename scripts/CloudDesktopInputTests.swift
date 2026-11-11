@@ -116,6 +116,107 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(mac.steps.count == 4 && mac.steps[1] == .typed(count: 7), "宏合并打字与滚动")
         let sk = mac.skill(name: "宏：示例", screen: CGSize(width: 1280, height: 800))
         check(sk.contains("1. 点击 屏幕坐标 (10, 20)") && sk.contains("输入了 7 个字，原文未记录") && sk.contains("4. 按组合键「复制」") && sk.contains("先截图"), "宏技能文本：\(sk)")
+        zoomMappingTests()
+        typeOrderTests()
         print("CloudDesktopInputTests OK")
     }
+}
+
+func near(_ a: CGPoint, _ b: CGPoint, _ eps: CGFloat = 0.01) -> Bool { abs(a.x - b.x) < eps && abs(a.y - b.y) < eps }
+
+/// 任意放大倍数下：手指点到画面哪里，远端就收到哪个像素；光标画在哪，就是远端光标所在
+func zoomMappingTests() {
+    let screen = CGSize(width: 1280, height: 800)
+    // 竖屏手机：画面按比例居中（上下留黑边），视口 390×700
+    let vp = CGSize(width: 390, height: 700)
+    let fit = CloudScreenFit(screen: screen, viewport: vp)
+    for s: CGFloat in [1, 1.5, 2, 2.5, 3.7, 4] {
+        for anchor in [CGPoint(x: 195, y: 350), CGPoint(x: 20, y: 300), CGPoint(x: 380, y: 420)] {
+            var z = CloudZoom()
+            z.pinch(by: s, around: anchor, viewport: vp)
+            let m = CloudViewMapping(fit: fit, zoom: z)
+            // 往返一致：远端像素 → 屏幕 → 远端像素
+            for p in [CGPoint(x: 0, y: 0), CGPoint(x: 640, y: 400), CGPoint(x: 1279, y: 799), CGPoint(x: 123, y: 456)] {
+                check(near(m.toRemote(m.toViewport(p)), p), "放大 \(s) 倍往返一致 \(p)")
+            }
+            // 屏幕上的点 → 远端：按定义手算
+            let v = CGPoint(x: 200, y: 360)
+            let content = CGPoint(x: (v.x - z.offset.width) / z.scale, y: (v.y - z.offset.height) / z.scale)
+            let want = CGPoint(x: (content.x - fit.origin.x) / fit.ratio, y: (content.y - fit.origin.y) / fit.ratio)
+            check(near(m.toRemote(v), want), "放大 \(s) 倍点按映射 \(m.toRemote(v)) vs \(want)")
+        }
+    }
+    // 具体数：390 宽的视口放 1280 宽的画面，ratio = 390/1280；居中时上下黑边 (700 - 800*ratio)/2
+    let r: CGFloat = 390.0 / 1280.0
+    check(abs(fit.ratio - r) < 0.0001 && abs(fit.origin.y - (700 - 800 * r) / 2) < 0.0001, "按比例居中")
+    var z2 = CloudZoom()
+    z2.pinch(by: 2, around: CGPoint(x: 195, y: 350), viewport: vp)
+    let m2 = CloudViewMapping(fit: fit, zoom: z2)
+    // 2 倍时视口中心看到的正是远端中心
+    check(near(m2.toRemote(CGPoint(x: 195, y: 350)), CGPoint(x: 640, y: 400), 0.5), "2 倍放大视口中心 = 远端中心：\(m2.toRemote(CGPoint(x: 195, y: 350)))")
+    // 2 倍时手指往右挪 10 点 = 远端往右 10 / 2 / ratio 像素
+    let a = m2.toRemote(CGPoint(x: 195, y: 350)), b = m2.toRemote(CGPoint(x: 205, y: 350))
+    check(abs((b.x - a.x) - 10 / 2 / r) < 0.01, "2 倍时 10 点 = \(b.x - a.x) 像素")
+
+    // noVNC 报的画布矩形（未缩放坐标）：和按比例居中的估算一致时映射也一致
+    let canvas = CGRect(x: fit.origin.x, y: fit.origin.y, width: screen.width * fit.ratio, height: screen.height * fit.ratio)
+    let mc = CloudViewMapping(canvas: canvas, screen: screen, zoom: z2)
+    check(near(mc.toRemote(CGPoint(x: 100, y: 300)), m2.toRemote(CGPoint(x: 100, y: 300))), "画布矩形与估算一致")
+    check(abs(mc.pixelsPerPoint - 1 / r) < 0.0001, "未缩放时 1 点 = 1/ratio 像素")
+
+    // 捏合时两指一起挪：手指下的那一点始终在手指下（不碰边界时）
+    var z = CloudZoom()
+    z.pinch(by: 2, around: CGPoint(x: 195, y: 350), viewport: vp)
+    let under = z.toContent(CGPoint(x: 195, y: 350))
+    z.pinch(by: 1.2, around: CGPoint(x: 180, y: 340), from: CGPoint(x: 195, y: 350), viewport: vp)
+    check(near(z.toContent(CGPoint(x: 180, y: 340)), under, 0.001), "捏合 + 平移：手指下的点跟着手指 \(z.toContent(CGPoint(x: 180, y: 340))) vs \(under)")
+    check(abs(z.scale - 2.4) < 0.0001, "倍数累乘")
+    // 超出边界时夹住，不露黑边
+    z.pinch(by: 1, around: CGPoint(x: 900, y: 900), from: CGPoint(x: 0, y: 0), viewport: vp)
+    check(z.offset.width <= 0 && z.offset.height <= 0 && z.offset.width >= vp.width - vp.width * z.scale, "平移夹边界")
+    // 缩到 1 以下夹回 1
+    z.pinch(by: 0.01, around: .zero, from: .zero, viewport: vp)
+    check(z.scale == 1 && z.offset == .zero, "最小 1 倍")
+
+    // 松手吸附、双击放大 / 恢复
+    var sn = CloudZoom()
+    sn.pinch(by: 1.03, around: CGPoint(x: 100, y: 100), viewport: vp)
+    sn.settle()
+    check(sn == CloudZoom(), "几乎没放大松手吸回 1 倍")
+    var dt = CloudZoom()
+    dt.toggle(at: CGPoint(x: 100, y: 200), viewport: vp)
+    check(dt.scale == CloudZoom.doubleTapScale && near(dt.toContent(CGPoint(x: 100, y: 200)), CGPoint(x: 100, y: 200)), "双击放大到点的位置")
+    dt.toggle(at: CGPoint(x: 300, y: 10), viewport: vp)
+    check(dt == CloudZoom(), "再双击恢复原始大小")
+
+    // 光标跟随：放大后光标走到视口边上，画面跟着挪，光标回到可见区域
+    var fz = CloudZoom()
+    fz.pinch(by: 3, around: CGPoint(x: 0, y: 0), viewport: vp)
+    let mf = CloudViewMapping(fit: fit, zoom: fz)
+    let farCursor = CGPoint(x: 1200, y: 700)
+    _ = fz.follow(mf.toView(farCursor), viewport: vp)
+    let shown = CloudViewMapping(fit: fit, zoom: fz).toViewport(farCursor)
+    check(shown.x >= 0 && shown.x <= vp.width && shown.y >= 0 && shown.y <= vp.height, "光标跟随后在视口里：\(shown)")
+}
+
+/// 输入法的发送顺序：服务器有字在路上时，后面的 ASCII 和退格也排进服务器
+func typeOrderTests() {
+    var o = CloudTypeOrder()
+    check(o.route(.text("abc")) == .vnc && o.route(.backspace(1)) == .vnc, "空闲时 ASCII / 退格走 VNC")
+    check(o.route(.text("中")) == .server && o.route(.text("a中")) == .server, "含中文走服务器")
+    o.sent()
+    check(o.route(.text("a")) == .server && o.route(.backspace(2)) == .server, "中文还在路上：ASCII、退格也排队")
+    o.sent(); o.finished()
+    check(o.route(.text("a")) == .server, "还有一个在路上")
+    o.finished(); o.finished()
+    check(o.inFlight == 0 && o.route(.text("a")) == .vnc, "都送完回到 VNC，计数不会变负")
+    let p1 = CloudTypeOrder.serverPayload(.text("中文"))
+    check(p1["action"] as? String == "type" && p1["text"] as? String == "中文", "文字请求")
+    let p2 = CloudTypeOrder.serverPayload(.backspace(80))
+    check(p2["action"] as? String == "key" && p2["key"] as? String == "BackSpace" && p2["repeat"] as? Int == 50, "退格连按最多 50")
+    check(CloudTypeOrder.serverPayload(.backspace(0))["repeat"] as? Int == 1, "至少 1 次")
+    // 输入法上屏事件
+    check(CloudIMECommit.events(old: CloudIMECommit.sentinel, new: CloudIMECommit.sentinel + "你好", composing: false) == [.text("你好")], "上屏中文")
+    check(CloudIMECommit.events(old: CloudIMECommit.sentinel, new: CloudIMECommit.sentinel + "ni", composing: true).isEmpty, "拼音组字中不发")
+    check(CloudIMECommit.events(old: CloudIMECommit.sentinel, new: "", composing: false) == [.backspace(1)], "空框退格")
 }

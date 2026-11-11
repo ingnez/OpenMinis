@@ -22,7 +22,13 @@ final class CloudDesktopController: ObservableObject {
         }
     }
     /// 你在操作（false = 看 Bot 干活，画面只读）
-    @Published var controlling = false { didSet { syncPage() } }
+    @Published var controlling = false {
+        didSet {
+            // 直接触控时 noVNC 按未缩放的画布算点击位置：看着时放大了、接管时又是直接触控，先恢复原始大小再交给 noVNC
+            if controlling && mode == .direct && zoom.isZoomed { zoom.reset(); applyView() }
+            syncPage()
+        }
+    }
     @Published private(set) var trackpad = CloudTrackpad()
     @Published private(set) var zoom = CloudZoom()
     @Published var modifiers = CloudModifiers()
@@ -54,6 +60,10 @@ final class CloudDesktopController: ObservableObject {
     var onNetworkChange: (() -> Void)?
 
     private var canvas: CGRect?
+    /// 端到端探针：假画面回报的最后一次指针 / 点击（远端像素）
+    @Published private(set) var lastRemotePointer: (x: Int, y: Int, mask: Int) = (-1, -1, 0)
+    @Published private(set) var lastRemoteClick: (x: Int, y: Int) = (-1, -1)
+    private var typeOrder = CloudTypeOrder()
     private var buttons = 0
     private var history: [CloudStreamQuality.Level] = []
     private var latencyTask: Task<Void, Never>?
@@ -91,6 +101,10 @@ final class CloudDesktopController: ObservableObject {
             }
         case "bytes":
             bytesReceived += ev["n"] as? Int ?? 0
+        case "fakeptr":
+            // 只有模拟器端到端的假画面会发：远端真正收到的指针（像素、按键掩码）
+            lastRemotePointer = (Int(ev["x"] as? Double ?? 0), Int(ev["y"] as? Double ?? 0), ev["mask"] as? Int ?? 0)
+            if lastRemotePointer.mask != 0 { lastRemoteClick = (lastRemotePointer.x, lastRemotePointer.y) }
         case "shot":
             saveShot(ev)
         case "rec":
@@ -102,30 +116,26 @@ final class CloudDesktopController: ObservableObject {
 
     // MARK: 触控板
 
-    /// 视图点 → 远端像素（「指给 Bot 看」用；未缩放时）
-    func remotePoint(fromView v: CGPoint) -> CGPoint {
+    /// 当前的完整映射（画布位置 + 缩放平移）；noVNC 还没报画布时按比例居中估算
+    var mapping: CloudViewMapping {
         if let c = canvas, c.width > 0, trackpad.screen.width > 0 {
-            let k = trackpad.screen.width / c.width
-            let z = zoom.scale
-            let vx = (v.x - zoom.offset.width) / max(0.0001, z), vy = (v.y - zoom.offset.height) / max(0.0001, z)
-            return CloudPointAndTell.clamp(CGPoint(x: (vx - c.minX) * k, y: (vy - c.minY) * k), screen: trackpad.screen)
+            return CloudViewMapping(canvas: c, screen: trackpad.screen, zoom: zoom)
         }
-        return CloudPointAndTell.clamp(CloudScreenFit(screen: trackpad.screen, viewport: viewport).toScreen(v), screen: trackpad.screen)
+        return CloudViewMapping(fit: CloudScreenFit(screen: trackpad.screen, viewport: viewport), zoom: zoom)
     }
+
+    /// 视口里的点 → 远端像素（「指给 Bot 看」用；任何放大倍数下都对）
+    func remotePoint(fromView v: CGPoint) -> CGPoint {
+        CloudPointAndTell.clamp(mapping.toRemote(v), screen: trackpad.screen)
+    }
+
+    /// 光标此刻在视口里的位置（放大平移之后）
+    var cursorOnScreen: CGPoint { mapping.toViewport(trackpad.cursor) }
 
     /// 远端像素 → 视图点（未缩放）
-    private func toView(_ p: CGPoint) -> CGPoint {
-        if let c = canvas, c.width > 0, trackpad.screen.width > 0 {
-            let k = c.width / trackpad.screen.width
-            return CGPoint(x: c.minX + p.x * k, y: c.minY + p.y * k)
-        }
-        return CloudScreenFit(screen: trackpad.screen, viewport: viewport).toView(p)
-    }
+    private func toView(_ p: CGPoint) -> CGPoint { mapping.toView(p) }
 
-    private var pixelsPerPoint: CGFloat {
-        if let c = canvas, c.width > 0 { return trackpad.screen.width / c.width }
-        return 1 / max(0.0001, CloudScreenFit(screen: trackpad.screen, viewport: viewport).ratio)
-    }
+    private var pixelsPerPoint: CGFloat { mapping.pixelsPerPoint }
 
     private func sendPointer() {
         js("window.om&&om.ptr(\(Int(trackpad.cursor.x)),\(Int(trackpad.cursor.y)),\(buttons))")
@@ -164,9 +174,25 @@ final class CloudDesktopController: ObservableObject {
         js("window.om&&om.wheel(\(Int(trackpad.cursor.x)),\(Int(trackpad.cursor.y)),\(v),\(h),\(buttons))")
     }
 
-    func pinch(by factor: CGFloat, around anchor: CGPoint) {
-        guard mode == .trackpad else { return }
-        zoom.pinch(by: factor, around: anchor, viewport: viewport)
+    /// 捏合一帧：缩放 + 两指中心移动带着画面走（放大后两指一边捏一边挪就能平移）。
+    /// 接管 + 直接触控时不缩放（noVNC 按未缩放画布算点击位置），由 CloudDirectGestures 先切到触控板
+    func pinch(by factor: CGFloat, around anchor: CGPoint, from previous: CGPoint? = nil) {
+        guard mode == .trackpad || !controlling else { return }
+        zoom.pinch(by: factor, around: anchor, from: previous ?? anchor, viewport: viewport)
+        applyView()
+    }
+
+    func pinchEnded() {
+        let before = zoom
+        zoom.settle()
+        if zoom != before { applyView() }
+    }
+
+    /// 双击（看着时单指双击、接管触控板时双指双击）：放大了就恢复原始大小，没放大就放大到点的位置
+    func toggleZoom(at p: CGPoint) {
+        guard mode == .trackpad || !controlling else { return }
+        zoom.toggle(at: p, viewport: viewport)
+        haptic.impactOccurred(intensity: 0.6)
         applyView()
     }
 
@@ -175,7 +201,11 @@ final class CloudDesktopController: ObservableObject {
         applyView()
     }
 
-    func resetZoom() { zoom.reset(); applyView() }
+    func resetZoom() {
+        guard zoom.isZoomed || zoom.offset != .zero else { return }
+        zoom.reset()
+        applyView()
+    }
 
     private func applyView() {
         js("window.om&&om.view(\(zoom.scale),\(zoom.offset.width),\(zoom.offset.height))")
@@ -201,16 +231,22 @@ final class CloudDesktopController: ObservableObject {
         sendKeys(c.events)
     }
 
-    /// 输入法上屏的文字：ASCII 直接按键（带上粘住的修饰键），中文等交给服务器剪贴板粘贴
-    func type(_ events: [CloudIMECommit.Event], viaServer: (String) -> Void) {
+    /// 输入法上屏的文字：ASCII 直接按键（带上粘住的修饰键），中文等交给服务器剪贴板粘贴。
+    /// 服务器还有没送完的字时，后面的字和退格也走服务器（CloudTypeOrder），保证顺序；viaServer 送完必须调 done
+    func type(_ events: [CloudIMECommit.Event], viaServer: (CloudIMECommit.Event, @escaping () -> Void) -> Void) {
         for e in events {
-            switch e {
-            case .backspace(let n):
-                sendKeys(Array(repeating: [(CloudKey.backspace.keysym, true), (CloudKey.backspace.keysym, false)], count: min(n, 50)).flatMap { $0 })
-            case .text(let t):
-                macro?.add(.typed(count: t.count))
-                if CloudIMECommit.viaServer(t) { viaServer(t); continue }
-                sendKeys(t.compactMap(CloudKey.keysym(for:)).flatMap { modifiers.wrap($0) })
+            if case .text(let t) = e { macro?.add(.typed(count: t.count)) }
+            switch typeOrder.route(e) {
+            case .server:
+                typeOrder.sent()
+                viaServer(e) { [weak self] in self?.typeOrder.finished() }
+            case .vnc:
+                switch e {
+                case .backspace(let n):
+                    sendKeys(Array(repeating: [(CloudKey.backspace.keysym, true), (CloudKey.backspace.keysym, false)], count: min(n, 50)).flatMap { $0 })
+                case .text(let t):
+                    sendKeys(t.compactMap(CloudKey.keysym(for:)).flatMap { modifiers.wrap($0) })
+                }
             }
         }
     }
@@ -339,7 +375,15 @@ struct CloudTrackpadSurface: UIViewRepresentable {
         let long = UILongPressGestureRecognizer(target: c, action: #selector(Coordinator.longPress(_:)))
         long.minimumPressDuration = 0.35
         let pinch = UIPinchGestureRecognizer(target: c, action: #selector(Coordinator.pinch(_:)))
-        for g in [pan, scroll, move, tap, double, right, long, pinch] as [UIGestureRecognizer] {
+        // 双指双击 = 恢复原始大小（单指双击留给远端的双击）；右键要等它判定失败
+        let resetZoom = UITapGestureRecognizer(target: c, action: #selector(Coordinator.twoFingerDoubleTap(_:)))
+        resetZoom.numberOfTouchesRequired = 2
+        resetZoom.numberOfTapsRequired = 2
+        right.require(toFail: resetZoom)
+        v.isAccessibilityElement = true
+        v.accessibilityIdentifier = "ccTrackpadSurface"
+        v.accessibilityLabel = "云电脑触控板"
+        for g in [pan, scroll, move, tap, double, right, long, pinch, resetZoom] as [UIGestureRecognizer] {
             g.delegate = c
             v.addGestureRecognizer(g)
         }
@@ -397,7 +441,12 @@ struct CloudTrackpadSurface: UIViewRepresentable {
             controller.move(by: delta(g), speed: hypot(v.x, v.y))
         }
 
-        @objc func scroll(_ g: UIPanGestureRecognizer) { controller.scroll(by: delta(g)) }
+        /// 捏合进行中双指的移动属于平移画面，不能再当滚轮发给远端（以前一边捏一边把远端页面滚走）
+        @objc func scroll(_ g: UIPanGestureRecognizer) {
+            let d = delta(g)
+            guard pinchAnchor == nil else { return }
+            controller.scroll(by: d)
+        }
         @objc func panView(_ g: UIPanGestureRecognizer) { controller.pan(by: delta(g)) }
         @objc func tap(_ g: UITapGestureRecognizer) { controller.click(CloudPointer.left) }
         @objc func doubleTap(_ g: UITapGestureRecognizer) { controller.click(CloudPointer.left, double: true) }
@@ -417,10 +466,94 @@ struct CloudTrackpadSurface: UIViewRepresentable {
             }
         }
 
+        private var pinchAnchor: CGPoint?
         @objc func pinch(_ g: UIPinchGestureRecognizer) {
-            controller.pinch(by: g.scale, around: g.location(in: g.view))
-            g.scale = 1
+            pinchAnchor = CloudPinchTracker.handle(g, anchor: pinchAnchor, controller: controller)
         }
+
+        @objc func twoFingerDoubleTap(_ g: UITapGestureRecognizer) {
+            controller.toggleZoom(at: g.location(in: g.view))
+        }
+    }
+}
+
+/// 捏合手势的共同处理（触控板层和观看层共用）：两指中心的移动带着画面走；抬起一根手指时中心会跳，先不平移
+@MainActor
+enum CloudPinchTracker {
+    /// 返回新的锚点（手势结束返回 nil）
+    static func handle(_ g: UIPinchGestureRecognizer, anchor: CGPoint?, controller: CloudDesktopController) -> CGPoint? {
+        let p = g.location(in: g.view)
+        switch g.state {
+        case .began:
+            g.scale = 1
+            return p
+        case .changed:
+            guard g.numberOfTouches >= 2 else { g.scale = 1; return nil }
+            controller.pinch(by: g.scale, around: p, from: anchor ?? p)
+            g.scale = 1
+            return p
+        default:
+            controller.pinchEnded()
+            return nil
+        }
+    }
+}
+
+// MARK: - 看着时的缩放层
+
+/// 看 Bot 干活（没接管）时盖在画面上：捏合缩放（两指挪动平移）、放大后单指拖动平移、双击放大 / 恢复。
+/// 画面本来就是只读的，这一层不会把触摸漏给远端
+struct CloudZoomSurface: UIViewRepresentable {
+    let controller: CloudDesktopController
+
+    func makeCoordinator() -> Coordinator { Coordinator(controller) }
+
+    func makeUIView(context: Context) -> CloudTrackpadSurface.SurfaceView {
+        let v = CloudTrackpadSurface.SurfaceView()
+        v.backgroundColor = .clear
+        v.onLayout = { [weak controller] size in controller?.viewport = size }
+        v.isAccessibilityElement = true
+        v.accessibilityIdentifier = "ccZoomSurface"
+        v.accessibilityLabel = "云电脑画面（双指缩放，双击放大或恢复）"
+        let c = context.coordinator
+        let pinch = UIPinchGestureRecognizer(target: c, action: #selector(Coordinator.pinch(_:)))
+        let pan = UIPanGestureRecognizer(target: c, action: #selector(Coordinator.pan(_:)))
+        pan.maximumNumberOfTouches = 1
+        let double = UITapGestureRecognizer(target: c, action: #selector(Coordinator.doubleTap(_:)))
+        double.numberOfTapsRequired = 2
+        for g in [pinch, pan, double] as [UIGestureRecognizer] {
+            g.delegate = c
+            v.addGestureRecognizer(g)
+        }
+        return v
+    }
+
+    func updateUIView(_ uiView: CloudTrackpadSurface.SurfaceView, context: Context) {}
+
+    @MainActor final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        let controller: CloudDesktopController
+        private var anchor: CGPoint?
+        init(_ c: CloudDesktopController) { controller = c }
+
+        func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+            // 没放大时单指拖动没有可平移的，让给系统（例如边缘返回）
+            if g is UIPanGestureRecognizer { return controller.zoom.isZoomed }
+            return true
+        }
+
+        func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { false }
+
+        @objc func pinch(_ g: UIPinchGestureRecognizer) {
+            anchor = CloudPinchTracker.handle(g, anchor: anchor, controller: controller)
+        }
+
+        @objc func pan(_ g: UIPanGestureRecognizer) {
+            let t = g.translation(in: g.view)
+            g.setTranslation(.zero, in: g.view)
+            controller.pan(by: CGSize(width: t.x, height: t.y))
+        }
+
+        @objc func doubleTap(_ g: UITapGestureRecognizer) { controller.toggleZoom(at: g.location(in: g.view)) }
     }
 }
 
@@ -515,6 +648,7 @@ final class CloudDirectGestures: NSObject, UIGestureRecognizerDelegate {
     }
 
     private var pinchSwitched = false
+    private var pinchAnchor: CGPoint?
     @objc private func pinch(_ g: UIPinchGestureRecognizer) {
         guard let c = controller else { return }
         switch g.state {
@@ -523,14 +657,19 @@ final class CloudDirectGestures: NSObject, UIGestureRecognizerDelegate {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 c.mode = .trackpad
                 pinchSwitched = true
+                pinchAnchor = g.location(in: g.view)
             }
         case .changed:
             if pinchSwitched {
-                c.pinch(by: g.scale, around: g.location(in: g.view))
+                let p = g.location(in: g.view)
+                if g.numberOfTouches >= 2 { c.pinch(by: g.scale, around: p, from: pinchAnchor ?? p) }
+                pinchAnchor = g.numberOfTouches >= 2 ? p : nil
                 g.scale = 1
             }
         default:
+            if pinchSwitched { c.pinchEnded() }
             pinchSwitched = false
+            pinchAnchor = nil
         }
     }
 

@@ -17,6 +17,17 @@ import tempfile
 
 desktop_lock = threading.Lock()
 
+
+def utf8_env(env):
+    """X 工具（xdotool / xclip / xsel）按 locale 解码多字节文字。systemd 服务默认没有 LANG（= C / POSIX），
+    xdotool type 遇到中文报「Invalid multi-byte sequence encountered」、什么都不输入却返回成功；
+    所以调用 X 工具时，当前 locale 不是 UTF-8 就换成 C.UTF-8（Debian / Ubuntu 自带，不用另装语言包）。"""
+    cur = env.get("LC_ALL") or env.get("LC_CTYPE") or env.get("LANG") or ""
+    if "utf-8" not in cur.lower() and "utf8" not in cur.lower():
+        env["LC_ALL"] = "C.UTF-8"
+    return env
+
+
 def is_desktop_available():
     display = os.environ.get("DISPLAY", ":99")
     if not display:
@@ -59,10 +70,7 @@ def execute_desktop_action(session_id, workspace_dir, args, display_override=Non
     display = display_override or os.environ.get("DISPLAY", ":99")
 
     # Verify X11 tools & auth
-    env = os.environ.copy()
-    env["DISPLAY"] = display
-    if "XAUTHORITY" not in env and os.path.exists("/var/lib/openminis-cloud-agent/.Xauthority"):
-        env["XAUTHORITY"] = "/var/lib/openminis-cloud-agent/.Xauthority"
+    env = _x_env(display)
 
     attachments_dir = os.path.join(workspace_dir, "attachments")
     os.makedirs(attachments_dir, exist_ok=True)
@@ -147,11 +155,16 @@ def execute_desktop_action(session_id, workspace_dir, args, display_override=Non
             if not key:
                 return {"error": "Missing key parameter"}
             try:
-                cmd = ["xdotool", "key", "--", str(key)]
+                repeat = max(1, min(50, int(args.get("repeat") or 1)))
+            except (TypeError, ValueError):
+                repeat = 1
+            try:
+                # 手机输入法排在中文后面的退格走这里：连按 N 次（--repeat），一次请求、顺序不乱
+                cmd = ["xdotool", "key"] + (["--repeat", str(repeat), "--delay", "8"] if repeat > 1 else []) + ["--", str(key)]
                 res = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
                 if res.returncode != 0:
                     return {"error": f"xdotool key failed: {res.stderr.decode('utf-8', 'replace')}"}
-                return {"status": "ok", "action": "key", "key": key}
+                return {"status": "ok", "action": "key", "key": key, "repeat": repeat}
             except Exception as e:
                 return {"error": f"Desktop key error: {e}"}
 
@@ -221,7 +234,7 @@ def _x_env(display):
     env["DISPLAY"] = display
     if "XAUTHORITY" not in env and os.path.exists("/var/lib/openminis-cloud-agent/.Xauthority"):
         env["XAUTHORITY"] = "/var/lib/openminis-cloud-agent/.Xauthority"
-    return env
+    return utf8_env(env)
 
 
 # xclip / xsel 写剪贴板时会 fork 出一个常驻进程「持有」选区，直到别人接手。这个子进程继承父进程的
