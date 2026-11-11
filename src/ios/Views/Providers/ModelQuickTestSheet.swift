@@ -16,13 +16,14 @@ struct ModelQuickTestSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     enum Kind: String, CaseIterable {
-        case text, imageGen, speechOut, transcription
+        case text, imageGen, speechOut, transcription, realtime
         var title: LocalizedStringKey {
             switch self {
             case .text: return "Text"
             case .imageGen: return "Image generation"
             case .speechOut: return "Speech output"
             case .transcription: return "Transcription"
+            case .realtime: return "实时语音（WebSocket）"
             }
         }
         var icon: String {
@@ -31,6 +32,7 @@ struct ModelQuickTestSheet: View {
             case .imageGen: return "photo.badge.plus"
             case .speechOut: return "speaker.wave.2"
             case .transcription: return "waveform.badge.mic"
+            case .realtime: return "waveform.circle"
             }
         }
     }
@@ -117,6 +119,8 @@ final class TestRun: ObservableObject, Identifiable {
         case audio(Data)
         case transcript(spoken: String, heard: String)
         case failure(String)
+        /// 这一项对这个模型不适用（灰色，不算失败）
+        case notApplicable(String)
     }
 
     let id: String
@@ -151,6 +155,13 @@ final class TestSession: ObservableObject {
     /// included as a baseline if the model has text output (almost all do).
     private static func applicableKinds(for entry: ModelEntry) -> [ModelQuickTestSheet.Kind] {
         let m = entry.model.modalityOverride ?? entry.model.capabilities.supportedModalities
+        // 实时模型（*-realtime / Gemini Live）：用真的实时 WebSocket 握手 + 一来一回测；普通 HTTP 的几项标成「不适用」
+        if CloudVoiceRoute.isRealtimeCapable(entry.model.id) {
+            var kinds: [ModelQuickTestSheet.Kind] = [.realtime]
+            if m.contains(.audioInput) { kinds.append(.transcription) }
+            kinds.append(.text)
+            return kinds
+        }
         var kinds: [ModelQuickTestSheet.Kind] = []
         if m.contains(.imageOutput) { kinds.append(.imageGen) }
         if m.contains(.audioOutput) { kinds.append(.speechOut) }
@@ -181,7 +192,7 @@ final class TestSession: ObservableObject {
                     qtLog.info("[QuickTest] OK model=\(entry.model.id) kind=\(kind.rawValue) in \(String(format: "%.1f", run.elapsed))s")
                 } catch {
                     run.elapsed = Date().timeIntervalSince(start)
-                    run.state = .failure(error.localizedDescription)
+                    run.state = .failure(CloudProviderErrorText.chinese(error.localizedDescription))
                     qtLog.error("[QuickTest] FAIL model=\(entry.model.id) kind=\(kind.rawValue): \(error.localizedDescription)")
                 }
             }
@@ -210,7 +221,13 @@ final class TestSession: ObservableObject {
     }
 
     private static func performTest(_ kind: ModelQuickTestSheet.Kind, entry: ModelEntry) async throws -> TestRun.State {
+        if kind != .realtime, CloudVoiceRoute.isRealtimeCapable(entry.model.id) {
+            return .notApplicable(CloudProviderErrorText.notApplicableForRealtime)
+        }
         switch kind {
+        case .realtime:
+            return try await realtimeTest(entry: entry)
+
         case .text:
             let provider = try await quickTestProvider(for: entry)
             let messages = [LLMMessage(
@@ -289,6 +306,23 @@ final class TestSession: ObservableObject {
 
     /// Synthesize `text` to 16 kHz mono PCM WAV via AVSpeechSynthesizer's
     /// buffer-callback API (iOS 16+). Self-contained — no bundled audio asset.
+    /// 真的连一次实时语音：握手（session.update）后发一句固定文字、等模型回一句，不开麦、不播放、不带聊天内容
+    private static func realtimeTest(entry: ModelEntry) async throws -> TestRun.State {
+        let d = UserDefaults.standard
+        let protocols = (try? JSONDecoder().decode([String: String].self, from: Data((d.string(forKey: "realtimeVoice.protocolsByProvider") ?? "{}").utf8))) ?? [:]
+        let mode = protocols[entry.providerInstanceId] ?? "automatic"
+        let voice = (try? RealtimeConnectionProtocol.resolve(mode, model: entry.model.id))?.voices(model: entry.model.id).first ?? "alloy"
+        let session = RealtimeVoiceSession(host: RealtimeCloudBotHost(botName: "测试", persona: "", sessionId: "", history: [],
+                                                                      delegate: { _ in nil }, onSaved: { _ in }))
+        await session.start(providerID: entry.providerInstanceId, model: entry.model.id, voice: voice,
+                            preview: entry.model.id.contains("preview"), protocolMode: mode, validateOnly: true, roundTrip: true)
+        // 最多等 25 秒
+        for _ in 0..<250 where session.active { try? await Task.sleep(nanoseconds: 100_000_000) }
+        if session.active { session.finish(); throw QuickTestError.noOutput("实时语音 25 秒内没有回应") }
+        if let result = session.validationResult { return .text(result) }
+        throw QuickTestError.noOutput(CloudProviderErrorText.chinese(session.error ?? "实时语音没能连上"))
+    }
+
     private static func synthesizeTestWAV(_ text: String) async throws -> Data {
         // AVSpeechSynthesizer must be kept alive until the write callback
         // delivers the end-of-stream sentinel (frameLength == 0). A local
@@ -412,6 +446,10 @@ private struct TestCard: View {
             ProgressView()
         case .failure:
             Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+        case .notApplicable:
+            Text("不适用").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Capsule().fill(Color(UIColor.tertiarySystemFill)))
         default:
             HStack(spacing: 4) {
                 Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
@@ -456,6 +494,9 @@ private struct TestCard: View {
 
         case .failure(let message):
             Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+
+        case .notApplicable(let reason):
+            Text(reason).font(.caption).foregroundStyle(.tertiary)
         }
     }
 
