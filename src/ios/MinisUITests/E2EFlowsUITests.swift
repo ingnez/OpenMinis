@@ -9,6 +9,8 @@ final class E2EFlowsUITests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
+        // 单个流程卡住（等元素 / 等 App 空闲）最多 150 秒就记失败，不拖住整次运行
+        executionTimeAllowance = 150
     }
 
     // MARK: - 流程

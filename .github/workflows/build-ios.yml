@@ -1059,6 +1059,8 @@ jobs:
           grep -q "E2E 云端就绪" e2e-cloud-stack.log
 
       - name: XCUITest 端到端冒烟（模拟器）
+        # 卡住时尽快失败：整步最多 45 分钟，单个测试默认 150 秒、最多 240 秒（xcodebuild 会把超时的测试记成失败并截图）
+        timeout-minutes: 45
         run: |
           set -o pipefail
           DEV=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
@@ -1087,6 +1089,9 @@ jobs:
             -only-testing:MinisUITests/MinisSmokeUITests \
             -only-testing:MinisUITests/ComposerVoiceButtonUITests \
             -only-testing:MinisUITests/E2EFlowsUITests \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 150 \
+            -maximum-test-execution-time-allowance 240 \
             -resultBundlePath ui-tests.xcresult \
             CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= | tee ui-tests.log
 
@@ -1102,6 +1107,7 @@ jobs:
       - name: iOS 单元测试 MinisTests（模拟器，MinisUnitTests 方案）
         if: always()
         continue-on-error: true
+        timeout-minutes: 30
         run: |
           set -o pipefail
           DEV=$(xcrun simctl list devices booted -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for v in d.values() for x in v))")
