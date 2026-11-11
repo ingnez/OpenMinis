@@ -184,6 +184,58 @@ class GroupUxServerTests(CloudServerTestCase):
         self.assertTrue(any("上限" in (m.get("content") or "") for m in syss), msgs)
         self.assertTrue(any((m.get("meta") or {}).get("quota") == "turns" for m in syss), msgs)
 
+    def test_g11_group_events_push(self):
+        """「只推与我相关」要真正走到 user_notify：mention / 收尾 / 额度推，闲聊接话和表情不推。"""
+        gid = self._make()
+        sent = []
+        orig = self.srv.user_notify
+        self.srv.user_notify = lambda *a, **k: sent.append((a, k))
+        try:
+            c = self.srv.get_db_connection()
+            try:
+                g = cg.get_group(c, gid)
+                mid = cg.add_message(c, gid, "user", "text", "请看这个")
+                hist = [{"id": mid, "sender": "user", "kind": "text", "content": "请看这个"}]
+            finally:
+                c.close()
+            mention = {"sender": "gchef", "kind": "text", "content": "好的，我来看", "reply_to": mid, "meta": {"reason": "mention"}}
+            chain = {"sender": "gcode", "kind": "text", "content": "我也插一句", "meta": {"reason": "chain"}}
+            react = {"sender": "gchef", "kind": "reaction", "content": "👍"}
+            wrap = {"sender": "system", "kind": "wrap", "content": "总结：双方意见不一"}
+            quota = {"sender": "system", "kind": "system", "content": "本轮 Bot 发言已达上限 6 条", "meta": {"quota": "turns"}}
+            for m in (mention, chain, react, wrap, quota):
+                self.srv._group_push_message(g, m, hist)
+            events = [a[1] for a, _k in sent]
+            titles = [a[2] for a, _k in sent]
+            self.assertEqual(events, ["group_message", "group_message", "group_message"], events)
+            self.assertTrue(any("大厨" in t and "说了话" in t for t in titles), titles)
+            self.assertTrue(any("收尾" in t for t in titles), titles)
+            self.assertTrue(any("上限" in (a[3] or "") or "群聊" in a[2] for a, _k in sent), titles)
+            # all 模式：闲聊接话也推
+            sent.clear()
+            st, g2 = self.request("PUT", f"/v1/groups/{gid}", {"notify_mode": "all"})
+            self.assertEqual(st, 200, g2)
+            self.srv._group_push_message(g2, chain, hist)
+            self.assertEqual([a[1] for a, _k in sent], ["group_message"])
+            self.assertTrue(any("码农" in a[2] for a, _k in sent))
+            # wrap API 也走同一条推送
+            sent.clear()
+            st, wr = self.request("POST", f"/v1/groups/{gid}/wrap", {})
+            self.assertEqual(st, 201, wr)
+            self.assertTrue(any(a[1] == "group_message" and "收尾" in a[2] for a, _k in sent), sent)
+            # 关掉该 Bot 的推送后，它的发言不再推
+            sent.clear()
+            self.srv.set_bot_notify("gchef", False)
+            self.request("PUT", f"/v1/groups/{gid}", {"notify_mode": "relevant"})
+            self.srv._group_push_message(g, mention, hist)
+            self.assertEqual(sent, [])
+        finally:
+            self.srv.user_notify = orig
+            try:
+                self.srv.set_bot_notify("gchef", True)
+            except Exception:
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()

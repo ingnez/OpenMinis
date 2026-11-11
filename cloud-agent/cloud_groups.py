@@ -187,6 +187,14 @@ def recent_messages(conn, gid, limit=30):
     return [{"id": r[0], "sender": r[1], "kind": r[2], "content": r[3], "reply_to": r[4],
              "meta": json.loads(r[5]) if r[5] else None, "timestamp": r[6]} for r in reversed(rows)]
 
+def get_message(conn, gid, mid):
+    r = conn.execute("SELECT id, sender, kind, content, reply_to, meta, timestamp FROM group_messages "
+                     "WHERE group_id = ? AND id = ?", (gid, mid)).fetchone()
+    if not r:
+        return None
+    return {"id": r[0], "sender": r[1], "kind": r[2], "content": r[3], "reply_to": r[4],
+            "meta": json.loads(r[5]) if r[5] else None, "timestamp": r[6]}
+
 
 # ---------------- 编排（纯函数） ----------------
 
@@ -460,13 +468,31 @@ class GroupEngine:
             self._say(gid, "system", "system",
                       f"本群每分钟 token 额度已用完（{limit}）。", meta={"quota": "tokens"})
 
+    def _emit(self, gid, msg):
+        """把新消息交给 hooks.on_message（服务器用来按「只推与我相关」发通知）。"""
+        cb = self.h.get("on_message")
+        if not cb or not msg:
+            return
+        conn = self.h["db"]()
+        try:
+            group = get_group(conn, gid)
+            history = recent_messages(conn, gid, 80)
+        finally:
+            conn.close()
+        try:
+            cb(group, msg, history)
+        except Exception:
+            pass
+
     def _say(self, gid, sender, kind, text, meta=None):
         conn = self.h["db"]()
         try:
-            add_message(conn, gid, sender, kind, text, meta=meta)
+            mid = add_message(conn, gid, sender, kind, text, meta=meta)
+            msg = {"id": mid, "sender": sender, "kind": kind, "content": text, "reply_to": None, "meta": meta}
         finally:
             conn.close()
         self.notify()
+        self._emit(gid, msg)
 
     def _ask(self, group, bot, prompt, fallback):
         """辩论 / 投票里的一次发言：带上这个 Bot 的人设（含灵魂设定）"""
@@ -553,9 +579,12 @@ class GroupEngine:
             payload = compose_wrap(msgs, names or {})
             mid = add_message(conn, gid, "system", "wrap", payload["content"],
                               meta={"summary": payload["summary"], "disagreements": payload["disagreements"]})
+            msg = {"id": mid, "sender": "system", "kind": "wrap", "content": payload["content"],
+                   "reply_to": None, "meta": {"summary": payload["summary"], "disagreements": payload["disagreements"]}}
         finally:
             conn.close()
         self.notify()
+        self._emit(gid, msg)
         return {"message_id": mid, **payload}
 
     def _round_active(self, gid, rid):
@@ -629,21 +658,26 @@ class GroupEngine:
                 return
             mid = add_message(conn, gid, bid, "text", parsed["content"], reply_to=trigger_id,
                               meta={"reason": reason, "model": bot.get("model") or ""})
+            posted = {"id": mid, "sender": bid, "kind": "text", "content": parsed["content"],
+                      "reply_to": trigger_id, "meta": {"reason": reason, "model": bot.get("model") or ""}}
         finally:
             conn.close()
         with state["lock"]:
             state["spoke"].append(bid)
         self.notify()
+        self._emit(gid, posted)
         if parsed.get("task") and reason == "mention":
             try:
                 self.h["start_task"](group, bot, parsed["task"], mid)
             except Exception as e:
+                err = f"{bot.get('name')} 的任务没能开始：{str(e)[:160]}"
                 conn = self.h["db"]()
                 try:
-                    add_message(conn, gid, bid, "system", f"{bot.get('name')} 的任务没能开始：{str(e)[:160]}")
+                    eid = add_message(conn, gid, bid, "system", err)
                 finally:
                     conn.close()
                 self.notify()
+                self._emit(gid, {"id": eid, "sender": bid, "kind": "system", "content": err, "reply_to": None, "meta": None})
         # 其他 Bot 接话：被这条回复 @ 的必接，其余按活跃度随机；也可能只点个表情
         others = [m for m in members if m["persona_id"] != bid]
         chained = mentioned(parsed["content"], others)

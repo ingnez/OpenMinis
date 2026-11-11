@@ -3848,6 +3848,10 @@ def _group_start_task(group, bot, task, msg_id):
                                             meta={"task_id": tid, "session_id": sid, "status": "running"})
     finally:
         conn.close()
+    GROUPS._emit(group["group_id"], {
+        "id": task_msg, "sender": bot["persona_id"], "kind": "task", "content": task[:2000],
+        "reply_to": msg_id, "meta": {"task_id": tid, "session_id": sid, "status": "running"},
+    })
     with active_tasks_lock:
         active_tasks[tid] = {"process": None, "cancelled": False, "pid": None}
     TASK_HOP[tid] = 1
@@ -3869,13 +3873,44 @@ def _group_start_task(group, bot, task, msg_id):
             finally:
                 c2.close()
             GROUPS.notify()
-            cfg = current_notify_config()
-            if not _bot_muted(persona_id=bot["persona_id"]):
-                user_notify(cfg, "task_completed", f"{bot.get('name')} 在「{group['name']}」完成了任务"[:120], result[:600],
-                            bot_id=bot["persona_id"])
+            GROUPS._emit(group["group_id"], {
+                "id": None, "sender": bot["persona_id"], "kind": "task_result", "content": result,
+                "reply_to": task_msg, "meta": {"task_id": tid, "session_id": sid, "status": status},
+            })
 
     threading.Thread(target=worker, daemon=True, name="group-task").start()
     return tid
+
+def _group_push_message(group, msg, history=None):
+    """G11：群里的新消息按 notify_mode 过滤后走 user_notify（只推与我相关 / 全部）。"""
+    if not group or not msg:
+        return
+    mode = group.get("notify_mode") or "relevant"
+    if not cloud_groups.is_relevant_to_user(msg, history or [], mode):
+        return
+    sender = msg.get("sender") or ""
+    if sender not in ("user", "system", "") and _bot_muted(persona_id=sender):
+        return
+    kind = msg.get("kind") or "text"
+    name = group.get("name") or "群聊"
+    bot_id = None
+    if sender not in ("user", "system", ""):
+        bot = get_persona(sender)
+        who = (bot or {}).get("name") or sender
+        bot_id = sender
+        if kind == "task":
+            title = f"{who} 在「{name}」开始做任务"
+        elif kind == "task_result":
+            title = f"{who} 在「{name}」完成了任务"
+        else:
+            title = f"{who} 在「{name}」说了话"
+    elif kind == "wrap":
+        title = f"群聊「{name}」的收尾总结"
+    else:
+        title = f"群聊「{name}」"
+    event = "task_completed" if kind == "task_result" else "group_message"
+    user_notify(current_notify_config(), event, title[:120], (msg.get("content") or "")[:600], bot_id=bot_id)
+
 
 GROUPS = cloud_groups.GroupEngine({
     "db": lambda: get_db_connection(),
@@ -3884,6 +3919,7 @@ GROUPS = cloud_groups.GroupEngine({
     "persona_text": lambda bot: cloud_bots.prompt(bot, []),
     "llm": lambda bot, messages, fallback: _group_llm(bot, messages, fallback),
     "start_task": lambda group, bot, task, msg_id: _group_start_task(group, bot, task, msg_id),
+    "on_message": lambda group, msg, history: _group_push_message(group, msg, history),
 })
 
 def _group_names(g):

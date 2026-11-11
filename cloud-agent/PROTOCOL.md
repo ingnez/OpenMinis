@@ -756,4 +756,5 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - `POST /v1/groups/{id}/spin-task` `{bot_id, goal?}`：把讨论做成任务交给该成员，结果贴回群（G9）。没给 goal 时用收尾摘要。
 - 群详情和消息长轮询带 `quota`：`{turns, turns_max, tokens, tokens_max, hit, hint}`。打到上限时贴 `kind=system` 且 meta `quota`（G10）。
 - `notify_mode`：`relevant`（默认）只推回复你的、被 @ 的、任务、收尾、额度提示；`all` 推除表情外的消息；可用 `PUT /v1/groups/{id}` 修改（G11）。
+- 上述群事件经 `user_notify` 发出（event 为 `group_message`，任务结果仍为 `task_completed`）。该 Bot 关闭了推送时不发。
 - `/health` 的 `capabilities.group_wrap`、`group_spin_task` 为 true。
