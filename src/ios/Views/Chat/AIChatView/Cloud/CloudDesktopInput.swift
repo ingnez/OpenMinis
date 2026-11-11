@@ -355,14 +355,18 @@ struct CloudTypeOrder: Equatable {
             func flush() {
                 if !buf.isEmpty { out.append(["action": "type", "text": buf]); buf = "" }
             }
-            for ch in raw.prefix(10000) {
-                if skipNL { skipNL = false; if ch == "\n" { continue } }
-                if ch == "\r" || ch == "\n" {
+            // 按 Unicode scalar 走：CRLF 在 Swift 里是一个 Character，和 "\r" / "\n" 比较对不上
+            var n = 0
+            for scalar in raw.unicodeScalars {
+                n += 1
+                if n > 10000 { break }
+                if skipNL { skipNL = false; if scalar == "\n" { continue } }
+                if scalar == "\r" || scalar == "\n" {
                     flush()
                     out.append(["action": "key", "key": "Return"])
-                    skipNL = ch == "\r"
+                    skipNL = scalar == "\r"
                 } else {
-                    buf.append(ch)
+                    buf.unicodeScalars.append(scalar)
                 }
             }
             flush()
