@@ -25,6 +25,9 @@ LOCAL_MODEL_PORT = 18797
 FRONT_MODEL = "e2e-front-model"
 BACK_MODEL = "e2e-back-model"
 API_PORT = int(os.environ.get("OPENMINIS_E2E_PORT", "18765"))
+# test30 临时把假 Bot 设成主 Bot：记下原来的主 Bot，/_e2e/reset 时还原
+PREV_PRIMARY = []
+E2E_PRIMARY_SET = []
 
 
 def last_user_text(data):
@@ -394,6 +397,13 @@ def main():
                 sids = [r[0] for r in db.execute("SELECT session_id FROM sessions WHERE persona_id = ?", (BOT_ID,))]
                 for sid in sids:
                     db.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+                if PREV_PRIMARY:   # test30 把假 Bot 设成过主 Bot：还原
+                    db.execute("UPDATE personas SET is_primary = 0 WHERE persona_id = ?", (BOT_ID,))
+                    db.executemany("UPDATE personas SET is_primary = 1 WHERE persona_id = ?", [(p,) for p in PREV_PRIMARY])
+                    PREV_PRIMARY.clear()
+                elif E2E_PRIMARY_SET:
+                    db.execute("UPDATE personas SET is_primary = 0 WHERE persona_id = ?", (BOT_ID,))
+                E2E_PRIMARY_SET.clear()
                 db.commit()
                 db.close()
                 # 卸掉上一个流程留下的 e2e 假插件，保证「插件目录安装」可重复跑
@@ -405,6 +415,10 @@ def main():
                         headers={"Authorization": f"Bearer {TOKEN}"},
                     )
                     urllib.request.urlopen(req, timeout=3).read()
+                except Exception:
+                    pass
+                try:
+                    _api("PUT", f"/v1/bots/{BOT_ID}/prefs", {"pinned": False, "hidden": False})   # test31 左滑置顶过
                 except Exception:
                     pass
                 FAKE_DESK.update({"on": False, "clip": "", "typed": [], "keys": [], "clip_sets": []})
@@ -437,6 +451,25 @@ def main():
                     out, code = {"error": str(e)}, 500
                 body = json.dumps(out, ensure_ascii=False).encode()
                 self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if urlparse(self.path).path == "/_e2e/primary":
+                # 把假 Bot 设成主 Bot（测星标颜色）；/_e2e/reset 会改回来
+                import sqlite3
+                db = sqlite3.connect(os.environ["OPENMINIS_DB"])
+                prev = [r[0] for r in db.execute("SELECT persona_id FROM personas WHERE is_primary = 1 AND persona_id != ?", (BOT_ID,))]
+                if prev:
+                    PREV_PRIMARY[:] = prev
+                db.execute("UPDATE personas SET is_primary = 0")
+                db.execute("UPDATE personas SET is_primary = 1 WHERE persona_id = ?", (BOT_ID,))
+                db.commit()
+                db.close()
+                E2E_PRIMARY_SET.append(True)
+                body = b'{"ok": true}'
+                self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()

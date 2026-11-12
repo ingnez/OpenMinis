@@ -27,6 +27,19 @@ enum CloudHomeHeaderRules {
         case .offline, .idle: return .gray
         }
     }
+    /// H2：主 Bot 星号徽章按状态着色（取代齿轮上的小点和头像左下的红点），点一下弹一句说明
+    enum StarTone: String { case green, yellow, red }
+    static func star(_ link: Link, botError: Bool) -> (tone: StarTone, text: String) {
+        switch link {
+        case .offline, .idle: return (.red, "服务器断开，点这里重连")
+        case .connecting, .retrying: return (.yellow, "正在连接服务器…")
+        case .online(let attention):
+            if botError { return (.red, "服务器已连接，但这个 Bot 上次出错了，点头像进对话看看") }
+            if attention { return (.yellow, "服务器已连接，但有事要处理（服务器要更新或云电脑有问题）") }
+            return (.green, "服务器已连接")
+        }
+    }
+
     static func dotText(_ d: Dot) -> String {
         switch d { case .green: return "云端在线"; case .yellow: return "云端重连中"; case .gray: return "云端离线" }
     }
@@ -52,7 +65,9 @@ enum CloudHomeHeaderRules {
     /// 下拉多少显示「今天」卡片、往上滑多少收起
     static let revealPull: Double = 70
     static let hideScroll: Double = -40
-    static func todayVisible(was: Bool, scrollTop: Double) -> Bool {
+    /// panelOpen：「今天」下面有小窗口开着时不收起（在小窗口里上滑以前会把整条栏连同小窗口一起收掉，43145023039 test29）
+    static func todayVisible(was: Bool, scrollTop: Double, panelOpen: Bool = false) -> Bool {
+        if was && panelOpen { return true }
         if scrollTop >= revealPull { return true }
         if scrollTop <= hideScroll { return false }
         return was
@@ -97,5 +112,47 @@ enum CloudPreviewText {
             t = t.replacingOccurrences(of: pattern, with: template, options: .regularExpression)
         }
         return t
+    }
+
+    /// 多行可读版（首页「今天有消息」小窗口）：保留换行，「**加粗**」切成加粗段，其余行内记号去掉；
+    /// 不交给 cmark（中文标点旁的加粗它判不出来）
+    struct Segment: Equatable {
+        let text: String
+        let bold: Bool
+    }
+
+    static func rich(_ s: String) -> [Segment] {
+        var out: [Segment] = []
+        var lines: [String] = []
+        for raw in s.split(separator: "\n", omittingEmptySubsequences: false) {
+            var line = raw.trimmingCharacters(in: .whitespaces)
+            while line.hasPrefix(">") { line = String(line.dropFirst()).trimmingCharacters(in: .whitespaces) }
+            while line.hasPrefix("#") { line = String(line.dropFirst()).trimmingCharacters(in: .whitespaces) }
+            if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") { line = "• " + line.dropFirst(2) }
+            if line.range(of: #"^[-*_]{3,}$"#, options: .regularExpression) != nil { line = "" }
+            if line.isEmpty && (lines.last ?? "").isEmpty { continue }   // 连续空行只留一个
+            lines.append(line)
+        }
+        while lines.last?.isEmpty == true { lines.removeLast() }
+        while lines.first?.isEmpty == true { lines.removeFirst() }
+        let parts = lines.joined(separator: "\n").components(separatedBy: "**")
+        for (i, part) in parts.enumerated() {
+            // 落单的「**」（被截断的半个加粗）当普通文字，不加粗
+            let bold = i % 2 == 1 && i < parts.count - 1
+            let text = inline(part)
+            guard !text.isEmpty else { continue }
+            if let last = out.last, last.bold == bold { out[out.count - 1] = Segment(text: last.text + text, bold: bold) }
+            else { out.append(Segment(text: text, bold: bold)) }
+        }
+        return out
+    }
+}
+
+/// 首页「今天」统计栏下面的小窗口：「在跑的 Bot」「今天有消息」两格互斥，再点同一格收回
+enum CloudTodayPanel: String {
+    case running, messages
+
+    static func toggle(_ current: CloudTodayPanel?, tapped: CloudTodayPanel) -> CloudTodayPanel? {
+        current == tapped ? nil : tapped
     }
 }

@@ -109,17 +109,31 @@ final class E2EFlowsUITests: XCTestCase {
             XCTFail("插件目录里没有「E2E 回声」的安装按钮")
         }
         tapPoint(app, install)
+        // 装好后目录里这一行变成「已安装 / 打开」（目录在上，下面「已安装」分区里的行常在屏幕外、List 不渲染，不能只等它）
         let installed = app.descendants(matching: .any)["pluginInstalled-e2e-echo"]
-        if !poll(30, { installed.exists }) {
+        let catalogInstalled = app.descendants(matching: .any)["pluginCatalogInstalled-e2e-echo"]
+        let openLink = app.descendants(matching: .any)["pluginOpen-e2e-echo"]
+        if !poll(30, { catalogInstalled.exists || openLink.exists || installed.exists }) {
             dumpUI(app, "07b-安装后没有已安装")
             XCTFail("安装后没有出现在「已安装」")
         }
         // 已安装的条目留在目录里应显示「已安装」，不能再出现「安装」
         XCTAssertFalse(app.descendants(matching: .any)["pluginInstall-e2e-echo"].exists, "已安装插件仍留在插件目录并显示「安装」")
-        let marked = app.descendants(matching: .any)["pluginCatalogInstalled-e2e-echo"]
-        XCTAssertTrue(marked.waitForExistence(timeout: 5) || waitText(app, contains: "已安装", timeout: 5) || waitText(app, contains: "安装成功", timeout: 5) || waitText(app, contains: "已经安装", timeout: 2),
+        XCTAssertTrue(catalogInstalled.waitForExistence(timeout: 5) || waitText(app, contains: "已安装", timeout: 5) || waitText(app, contains: "安装成功", timeout: 5) || waitText(app, contains: "已经安装", timeout: 2),
                       "安装后没有可见的成功/已安装提示")
         shot(app, "07b-插件目录安装")
+        // 真机问题：退出插件市场再进来（重新从服务器拉目录），装过的仍显示「已安装」而不是「安装」
+        let back = app.navigationBars["插件市场"].buttons.element(boundBy: 0)
+        XCTAssertTrue(back.waitForExistence(timeout: 5), "插件市场页没有返回键")
+        back.tap()
+        let market = app.descendants(matching: .any)["pluginMarketRow"]
+        let marketName = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "插件市场")).firstMatch
+        XCTAssertTrue(market.waitForExistence(timeout: 8) || marketName.waitForExistence(timeout: 3), "返回后没回到 Bot 设置")
+        tapPoint(app, market.exists ? market : marketName)
+        XCTAssertTrue(waitText(app, contains: "E2E 回声", timeout: 30), "重新进插件市场目录没加载")
+        XCTAssertTrue(catalogInstalled.waitForExistence(timeout: 10), "重新进插件市场后，装过的插件不显示「已安装」")
+        XCTAssertFalse(app.descendants(matching: .any)["pluginInstall-e2e-echo"].exists, "重新进插件市场后，装过的插件又显示「安装」")
+        shot(app, "07b-重新进入仍已安装")
     }
 
     func test08_botStepPanelUsesCloudNames() throws {
@@ -677,10 +691,12 @@ final class E2EFlowsUITests: XCTestCase {
         return try? JSONDecoder().decode(RealtimeProbe.self, from: data)
     }
 
-    private func launch(attach: Int = 0, homeMode: String = "bots",
+    private func launch(attach: Int = 0, homeMode: String = "bots", primary: Bool = false,
                         extraEnv: [String: String] = [:], extraArgs: [String] = []) -> XCUIApplication {
         // 每个流程从空对话开始（历史太长时控件树取快照会超时）
         if let url = URL(string: "http://127.0.0.1:18799/_e2e/reset") { _ = try? Data(contentsOf: url) }
+        // 主 Bot 要在 reset 之后设（reset 会把假 Bot 改回普通 Bot；43145023039 test30 先设后 reset，星标没出来）
+        if primary, let url = URL(string: "http://127.0.0.1:18799/_e2e/primary") { _ = try? Data(contentsOf: url) }
         let app = XCUIApplication()
         // 首页模式不用 -OpenMinis_homeMode 启动参数（参数域盖住 App 里的切换），用环境变量让 App 启动时写进自己的设置
         app.launchEnvironment["OPENMINIS_E2E_HOMEMODE"] = homeMode
@@ -1236,14 +1252,214 @@ extension E2EFlowsUITests {
         shot(app, "27d-重新进对话仍是缩略图")
     }
 
-    /// 首页「今日」卡片：假 Bot 的主动消息正文带 **加粗**，预览里不露星号
+    /// 首页「今天」统计栏的「今天有消息」小窗口：假 Bot 的主动消息正文带 **加粗**，显示加粗、不露星号
     func test28_homeFeedPreviewNoMarkdown() throws {
         if let url = URL(string: "http://127.0.0.1:18799/_e2e/feed") { _ = try? Data(contentsOf: url) }
         let app = launch()
-        XCTAssertTrue(waitText(app, contains: "E2E下夜班", timeout: 60), "首页「今日」卡片没出现假主动消息")
-        XCTAssertFalse(anyElement(app, contains: "**"), "首页预览露出了 Markdown 星号")
+        XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 60), "首页没出现 Bot")
+        revealTodayBar(app)
+        let cell = app.buttons["todayCell.messages"]
+        XCTAssertTrue(cell.waitForExistence(timeout: 5), "「今天」统计栏没有「今天有消息」格")
+        cell.tap()
+        XCTAssertTrue(waitText(app, contains: "E2E下夜班", timeout: 15), "「今天有消息」小窗口里没有假主动消息")
+        XCTAssertFalse(anyElement(app, contains: "**"), "首页露出了 Markdown 星号")
         XCTAssertTrue(waitText(app, contains: "今天你是E2E下夜班", timeout: 3), "加粗去掉记号后文字不连贯")
-        shot(app, "28-今日卡片无星号")
+        shot(app, "28-今天有消息无星号")
+    }
+
+    /// H1：「今天」统计栏两格可展开（互斥、再点收回），消息小窗口能滑、点进聊天；大「今日」卡片不在了
+    func test29_todayBarPanels() throws {
+        executionTimeAllowance = 300
+        if let url = URL(string: "http://127.0.0.1:18799/_e2e/feed") { _ = try? Data(contentsOf: url) }
+        let app = launch()
+        // 43145023039 重试那次：上一次的 40 秒慢任务还在云端跑，这次的「慢任务」被当成插话，没有新的一步，
+        // 等的又是「sleep 40」（步骤行显示的是「运行命令」）。先等假 Bot 闲下来，再按云端真的收到请求来判断
+        XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 60), "首页没出现 Bot")
+        XCTAssertTrue(waitGone(app.descendants(matching: .any)["homeCenterStatus"], timeout: 60), "上一个流程的任务还没结束")
+        let before = (cloudProbe()?.requests ?? []).filter { $0.text.contains("慢任务") }.count
+        openBot(app)
+        send(app, "慢任务")
+        XCTAssertTrue(poll(60) { (cloudProbe()?.requests ?? []).filter { $0.text.contains("慢任务") }.count > before }, "云端没收到「慢任务」")
+        XCTAssertTrue(waitText(app, contains: "运行命令", timeout: 30), "Bot 没开始执行那一步")
+        goBack(app)
+        XCTAssertTrue(app.descendants(matching: .any)["homeCenterStatus"].waitForExistence(timeout: 20), "首页没显示 Bot 在干活")
+        XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 20), "没回到首页")
+        XCTAssertFalse(anyElement(app, contains: "找你"), "大「今日」卡片还在首页上（没展开小窗口就看到了主动消息）")
+        revealTodayBar(app)
+        let running = app.buttons["todayCell.running"], messages = app.buttons["todayCell.messages"]
+        XCTAssertTrue(running.waitForExistence(timeout: 5) && messages.exists, "统计栏没有「在跑的 Bot」「今天有消息」两格")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "云电脑")).firstMatch.exists, "「云电脑」格不见了")
+        shot(app, "29a-统计栏收起")
+        // 在跑的 Bot
+        running.tap()
+        let runPanel = app.descendants(matching: .any)["todayRunningPanel"]
+        XCTAssertTrue(runPanel.waitForExistence(timeout: 5), "点「在跑的 Bot」没展开小窗口")
+        let runRow = app.descendants(matching: .any)["todayRunning-e2ebot"]
+        XCTAssertTrue(runRow.waitForExistence(timeout: 20), "在跑的 Bot 小窗口里没有正在干活的假 Bot")
+        XCTAssertTrue(waitLabel(running, valueEquals: "已展开", timeout: 3), "「在跑的 Bot」格没标成已展开")
+        shot(app, "29b-在跑的Bot展开")
+        // 互斥：点「今天有消息」，另一个自动收起
+        messages.tap()
+        let msgPanel = app.descendants(matching: .any)["todayMessagesPanel"]
+        XCTAssertTrue(msgPanel.waitForExistence(timeout: 5), "点「今天有消息」没展开小窗口")
+        XCTAssertTrue(waitGone(runPanel, timeout: 5), "打开「今天有消息」时「在跑的 Bot」没自动收起")
+        XCTAssertTrue(waitText(app, contains: "今天你是E2E下夜班", timeout: 10), "消息小窗口里没有完整的主动消息")
+        XCTAssertFalse(anyElement(app, contains: "**"), "消息小窗口露出了 Markdown 星号")
+        shot(app, "29c-今天有消息展开")
+        msgPanel.swipeUp()
+        msgPanel.swipeDown()
+        XCTAssertTrue(msgPanel.exists, "在消息小窗口里上下滑把它弄没了")
+        shot(app, "29d-消息小窗口滑动后")
+        // 再点同一格收回
+        messages.tap()
+        XCTAssertTrue(waitGone(msgPanel, timeout: 5), "再点「今天有消息」没收回")
+        shot(app, "29e-再点收回")
+        // 点条目进聊天
+        messages.tap()
+        let row = app.descendants(matching: .any)["todayMessage-chat:e2ebot"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "消息小窗口里没有假 Bot 的条目")
+        row.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 20), "点消息条目没进聊天")
+        shot(app, "29f-点条目进聊天")
+    }
+
+    /// H2：齿轮上没有状态点；主 Bot 星标按状态变色（在线 = 绿），星标不可点；长按头像看说明，点头像照常进聊天
+    func test30_primaryStarShowsStatus() throws {
+        let app = launch(primary: true)
+        let badge = app.descendants(matching: .any)["primaryStarBadge"]
+        XCTAssertTrue(badge.waitForExistence(timeout: 60), "主 Bot 头像上没有星标状态")
+        XCTAssertTrue(poll(30) { (badge.value as? String) == "green" }, "云端在线时星标不是绿色（\(badge.value ?? "")）")
+        XCTAssertEqual(badge.label, "服务器已连接")
+        shot(app, "30a-主Bot星标绿色-齿轮无点")
+        let avatar = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "打开 \(Self.botName)")).firstMatch
+        XCTAssertTrue(avatar.waitForExistence(timeout: 10), "顶部没有主 Bot 大头像")
+        avatar.press(forDuration: 1.2)
+        let item = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "服务器已连接")).firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 5), "长按主 Bot 头像没有状态说明")
+        shot(app, "30b-长按头像状态说明")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)).tap()   // 关菜单
+        XCTAssertTrue(waitGone(item, timeout: 5), "长按菜单没关掉")
+        avatar.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 20), "点主 Bot 头像没进聊天")
+        shot(app, "30c-点头像进聊天")
+    }
+
+    /// H3：首页列表行左滑露出「置顶 / 隐藏」时不能进聊天；滑开时点行只收起；点「置顶」只置顶
+    func test31_swipeRowDoesNotOpenChat() throws {
+        let app = launch()
+        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 60), "首页没有假 Bot 的行")
+        let composer = app.descendants(matching: .any)["botComposerField"]
+        let pin = app.buttons["置顶"]
+        row.swipeLeft()
+        XCTAssertFalse(composer.waitForExistence(timeout: 3), "左滑把聊天打开了（滑动被当成点按）")
+        XCTAssertTrue(pin.waitForExistence(timeout: 5) && app.buttons["隐藏"].exists, "左滑没露出「置顶 / 隐藏」")
+        shot(app, "31a-左滑露出置顶隐藏")
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)).tap()
+        XCTAssertTrue(waitGone(pin, timeout: 5), "滑开时点行没收起")
+        XCTAssertFalse(composer.exists, "滑开时点行进了聊天（应只收起）")
+        shot(app, "31b-点行收起")
+        row.swipeLeft()
+        XCTAssertTrue(pin.waitForExistence(timeout: 5), "第二次左滑没露出按钮")
+        pin.tap()
+        XCTAssertFalse(composer.waitForExistence(timeout: 3), "点「置顶」进了聊天")
+        shot(app, "31c-点置顶只置顶")
+    }
+
+    /// H4：长按 Bot 回复弹出底部面板（背景模糊），后面的消息原地不动；表情、各动作可点；下拉 / 点空白收起
+    func test32_longPressMenuSheet() throws {
+        executionTimeAllowance = 300
+        let app = launch()
+        openBot(app)
+        send(app, "你好E2E长按")
+        XCTAssertTrue(waitText(app, contains: "收到：你好E2E长按", timeout: 60), "Bot 回复没出现")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()   // 收键盘
+        let reply = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "收到：你好E2E长按", "收到：你好E2E长按")).firstMatch
+        let mine = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@ OR value == %@", "你好E2E长按", "你好E2E长按")).firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 5) && mine.exists)
+        let panel = app.descendants(matching: .any)["messageMenuPanel"]
+
+        func openMenu(_ step: String) {
+            reply.press(forDuration: 1.0)
+            if !panel.waitForExistence(timeout: 5) {
+                shot(app, "32-长按没出面板-\(step)")
+                XCTFail("长按 Bot 回复没弹出底部面板（\(step)）")
+            }
+        }
+
+        let mineBefore = mine.frame, replyBefore = reply.frame
+        openMenu("首次")
+        XCTAssertTrue(app.descendants(matching: .any)["messageMenuBackdrop"].exists, "没有模糊背景")
+        // 全屏层盖住时，后面的控件不一定还在无障碍树里；在的话位置必须不变（看截图 32a），收起后再严格比一次
+        if mine.exists { XCTAssertEqual(mine.frame, mineBefore, "弹出面板后我的消息位置变了（被挤压）") }
+        if reply.exists { XCTAssertEqual(reply.frame, replyBefore, "弹出面板后 Bot 回复位置变了（被挤压）") }
+        for key in ["reply", "copy", "select", "speak", "pin", "zh", "en"] {
+            XCTAssertTrue(app.descendants(matching: .any)["messageMenuAction-\(key)"].exists, "面板里缺动作 \(key)")
+        }
+        XCTAssertTrue(app.descendants(matching: .any)["messageMenuEmoji-👍"].exists && app.descendants(matching: .any)["messageMenuEmojiCustom"].exists, "面板里没有表情行")
+        shot(app, "32a-长按底部面板")
+        // 复制：执行后收起
+        app.descendants(matching: .any)["messageMenuAction-copy"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5), "点「复制」后面板没收起")
+        XCTAssertTrue(mine.waitForExistence(timeout: 3), "面板收起后我的消息不见了")
+        XCTAssertEqual(mine.frame, mineBefore, "面板收起后消息位置变了")
+        XCTAssertEqual(reply.frame, replyBefore, "面板收起后 Bot 回复位置变了")
+        // 下拉收起
+        openMenu("下拉")
+        panel.swipeDown()
+        XCTAssertTrue(waitGone(panel, timeout: 5), "下拉面板没收起")
+        shot(app, "32b-下拉收起")
+        // 点空白收起
+        openMenu("点空白")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5), "点空白没收起")
+        // 选择文本
+        openMenu("选择文本")
+        app.descendants(matching: .any)["messageMenuAction-select"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["messageMenuSelectText"].waitForExistence(timeout: 5), "「选择文本」没显示可选文字")
+        shot(app, "32c-选择文本")
+        app.buttons["完成"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5), "选择文本点「完成」没收起")
+        // 表情回应
+        openMenu("表情")
+        app.descendants(matching: .any)["messageMenuEmoji-👍"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5), "点表情后面板没收起")
+        XCTAssertTrue(waitText(app, contains: "👍", timeout: 10), "点表情后回复下面没出现 👍")
+        shot(app, "32d-表情回应")
+        // 回复
+        openMenu("回复")
+        app.descendants(matching: .any)["messageMenuAction-reply"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5), "点「回复」后面板没收起")
+        shot(app, "32e-回复引用")
+    }
+
+    /// H5：底部浮动栏：左边圆按钮（四宫格），右边胶囊搜索框「搜索」，两者同高；搜索能用
+    func test33_homeBottomSearchBar() throws {
+        let app = launch()
+        XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 60), "首页没出现 Bot")
+        let apps = app.buttons["homeAppsButton"]
+        let field = app.textFields["homeSearchField"]
+        XCTAssertTrue(apps.waitForExistence(timeout: 10) && field.exists, "底部没有圆按钮 + 搜索框")
+        XCTAssertEqual(field.placeholderValue, "搜索", "搜索框占位文字不是「搜索」")
+        XCTAssertEqual(apps.frame.height, 50, accuracy: 2, "圆按钮不是 50pt 高")
+        XCTAssertEqual(apps.frame.midY, field.frame.midY, accuracy: 3, "圆按钮和搜索框没对齐")
+        shot(app, "33a-底部浮动搜索栏")
+        field.tap()
+        field.typeText("E2E")
+        XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 10), "搜索 E2E 没找到假 Bot")
+        shot(app, "33b-搜索中")
+    }
+
+    private func revealTodayBar(_ app: XCUIApplication) {
+        let bar = app.descendants(matching: .any)["todayCard"]
+        if bar.exists { return }
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)))
+        XCTAssertTrue(bar.waitForExistence(timeout: 8), "下拉没露出「今天」统计栏")
+    }
+
+    private func waitLabel(_ el: XCUIElement, valueEquals v: String, timeout: TimeInterval) -> Bool {
+        poll(timeout) { (el.value as? String) == v }
     }
 
     private func assertNoAttachmentText(_ app: XCUIApplication) {

@@ -363,6 +363,9 @@ struct CloudPluginsView: View {
                 }
                 .accessibilityIdentifier("pluginOpen-\(p.id)")
             }
+            // 43130239469：HStack 上直接挂标识会盖掉「已安装」「打开」各自的标识（树里全是 pluginCatalog-…），
+            // 先声明成容器，子控件保留自己的标识
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("pluginCatalog-\(p.id)")
         } else if busyId == p.id {
             HStack {
@@ -371,6 +374,7 @@ struct CloudPluginsView: View {
                 ProgressView()
                     .accessibilityIdentifier("pluginInstalling-\(p.id)")
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("pluginCatalog-\(p.id)")
         } else {
             Button {

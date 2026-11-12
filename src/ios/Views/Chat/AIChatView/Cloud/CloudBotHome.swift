@@ -555,6 +555,7 @@ struct CloudBotHomeScreen: View {
     @State private var showHub = false
     /// 下拉首页露出的「今天」卡片
     @State private var showToday = false
+    @State private var todayPanel: CloudTodayPanel?
     @State private var restScrollTop: CGFloat?
     @State private var showShiftCard = false
     @State private var showWorkbench = false
@@ -593,7 +594,7 @@ struct CloudBotHomeScreen: View {
                     VStack(spacing: 0) {
                         CloudHomeScrollProbe()
                         if showToday && search.isEmpty {
-                            CloudTodayCard(model: model).transition(.move(edge: .top).combined(with: .opacity))
+                            CloudTodayCard(model: model, open: open, panel: $todayPanel).transition(.move(edge: .top).combined(with: .opacity))
                         }
                         CloudLinkBanner(onOpenSettings: openCloudSettings)
                             .padding(.horizontal, 16).padding(.bottom, 8)
@@ -631,9 +632,7 @@ struct CloudBotHomeScreen: View {
                         if search.isEmpty && !model.exams.isEmpty {
                             CloudExamBoard(exams: model.exams)
                         }
-                        if search.isEmpty && model.feed.contains(where: { !CloudBotLock.shared.isLocked($0.botId) }) {
-                            CloudTodayFeed(items: model.feed.filter { !CloudBotLock.shared.isLocked($0.botId) }, bots: model.bots)
-                        }
+                        // H1：大「今日」卡片去掉，主动消息 / 例行结果收进顶部「今天」统计栏的「今天有消息」小窗口
                         LazyVStack(spacing: 0) {
                             ForEach(groupsMatching) { g in
                                 Button { path = ["group:" + g.id] } label: {
@@ -672,7 +671,7 @@ struct CloudBotHomeScreen: View {
                     guard let top = value else { return }
                     // 静止时内容顶部在导航栏下面（iOS 26 约 116pt），以第一次读到的位置为 0，下拉为正
                     if restScrollTop == nil { restScrollTop = top }
-                    let next = CloudHomeHeaderRules.todayVisible(was: showToday, scrollTop: Double(top - (restScrollTop ?? top)))
+                    let next = CloudHomeHeaderRules.todayVisible(was: showToday, scrollTop: Double(top - (restScrollTop ?? top)), panelOpen: todayPanel != nil)
                     if next != showToday { withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { showToday = next } }
                 }
                 .refreshable { await model.refresh() }
@@ -841,6 +840,8 @@ struct CloudBotHomeScreen: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showHub = true }
     }
 
+    /// H5：底部浮在列表上的一条：左边白色圆按钮（深色四宫格线框图标），右边白色胶囊搜索框，都带柔和阴影；
+    /// 后面的列表在底部淡出（不是一整块挡板）
     private var bottomBar: some View {
         HStack(spacing: 12) {
             Menu {
@@ -852,31 +853,44 @@ struct CloudBotHomeScreen: View {
                 }
             } label: {
                 Image(systemName: "square.grid.2x2")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(.primary)
+                    .font(.system(size: 19, weight: .regular))
+                    .foregroundStyle(Color(.label))
                     .frame(width: 50, height: 50)
-                    .background(Circle().fill(.regularMaterial))
-                    .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+                    .background(Circle().fill(Color(.systemBackground)))
+                    .overlay(Circle().stroke(Color.black.opacity(0.05), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.10), radius: 10, y: 3)
             }
+            .tint(Color(.label))
             .accessibilityLabel("连接应用")
+            .accessibilityIdentifier("homeAppsButton")
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("搜索 Bot 与聊天记录", text: $search)
+                Image(systemName: "magnifyingglass").font(.system(size: 17, weight: .semibold)).foregroundStyle(Color(.label))
+                TextField("搜索", text: $search)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitLabel(.search)
                     .onChange(of: search) { q in searchModel.update(q) }
+                    .accessibilityIdentifier("homeSearchField")
                 if !search.isEmpty {
                     Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
                 }
             }
             .padding(.horizontal, 16)
             .frame(height: 50)
-            .background(Capsule().fill(.regularMaterial))
-            .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+            .background(Capsule().fill(Color(.systemBackground)))
+            .overlay(Capsule().stroke(Color.black.opacity(0.05), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.08), radius: 10, y: 3)
         }
         .padding(.horizontal, 16)
+        .padding(.top, 22)
         .padding(.bottom, 8)
+        .background(alignment: .bottom) {
+            // 列表在底部淡出
+            LinearGradient(colors: [Color(.systemBackground).opacity(0), Color(.systemBackground).opacity(0.92), Color(.systemBackground)],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
+        }
     }
 }
 
@@ -1224,65 +1238,6 @@ struct CloudFeedItem: Identifiable, Equatable {
     }
 }
 
-/// 首页「今日」卡片：最近 24 小时 Bot 主动找你和例行任务的结果，默认显示 3 条
-struct CloudTodayFeed: View {
-    let items: [CloudFeedItem]
-    let bots: [CloudBot]
-    @State private var expanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("今日").font(.headline)
-                Spacer()
-                if items.count > 3 {
-                    Button(expanded ? "收起" : "全部 \(items.count) 条") { withAnimation { expanded.toggle() } }.font(.caption)
-                }
-            }
-            ForEach(expanded ? items : Array(items.prefix(3))) { item in
-                VStack(alignment: .leading, spacing: 4) {
-                    row(item)
-                    CloudFeedFeedbackBar(item: item).padding(.leading, 36)
-                }
-            }
-        }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.secondarySystemBackground)))
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
-    }
-
-    @ViewBuilder private func row(_ item: CloudFeedItem) -> some View {
-        let bot = bots.first { $0.id == item.botId }
-        let content = HStack(alignment: .top, spacing: 10) {
-            if let bot {
-                CloudBotAvatarView(spec: CloudBotAvatarSpec.of(bot), size: 26)
-            } else {
-                Image(systemName: "clock.arrow.circlepath").frame(width: 26, height: 26).foregroundStyle(.secondary)
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text(item.proactive ? "\(bot?.name ?? "Bot") 找你" : item.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Spacer()
-                    Text(item.at, style: .time).font(.caption2).foregroundStyle(.secondary)
-                }
-                Text(CloudPreviewText.plain(CloudMessageText.display(item.text).text)).font(.callout).foregroundStyle(.secondary).lineLimit(3)
-            }
-        }
-        .contentShape(Rectangle())
-        if item.sessionId.isEmpty {
-            content
-        } else {
-            NavigationLink {
-                CloudSessionView(sessionId: item.sessionId, sessionTitle: item.proactive ? (bot?.name ?? item.title) : item.title,
-                                 model: UserDefaults.standard.string(forKey: "OpenMinisCloud_manualModel") ?? "",
-                                 selectedInstanceId: UserDefaults.standard.string(forKey: "OpenMinisCloud_selectedInstanceId") ?? "",
-                                 botHasOwnModel: bot?.hasOwnModel ?? false, theme: bot.map { CloudBotChatTheme(bot: $0) })
-            } label: { content }
-            .buttonStyle(.plain)
-        }
-    }
-}
 
 /// 跟着 CloudBotChatView 的生命周期：视图真正离开（不是被别的页面盖住）时释放，顺手删掉还开着的无痕对话
 @MainActor
