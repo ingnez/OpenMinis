@@ -432,15 +432,11 @@ struct ChatMessageRow: View {
             Spacer(minLength: 60)
 
             VStack(alignment: .trailing, spacing: 6) {
-                // User-attached files above the text bubble
-                if !message.attachments.isEmpty {
-                    UserAttachmentList(attachments: message.attachments, searchMessageId: message.id)
-                } else if !message.inputAttachments.isEmpty {
-                    // Queued message: show previews from cache before queue drain
-                    QueuedAttachmentPreview(attachments: message.inputAttachments)
-                }
-
-                if !userDisplayText.isEmpty {
+                if userDisplayText.isEmpty {
+                    userAttachments
+                        .modifier(MessageActionMenu(selectableText: { "" }, groups: userMessageActions))
+                } else {
+                    userAttachments
                     HStack(spacing: 6) {
                         SearchHighlightText(userDisplayText, key: searchKey())
                             .font(.system(size: FontSettings.shared.scaledMessage(16.5),
@@ -450,6 +446,8 @@ struct ChatMessageRow: View {
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
                             .modifier(UserBubbleSurface(isQueued: message.isQueued))
+                            .contentShape(Rectangle())
+                            .modifier(MessageActionMenu(selectableText: { userDisplayText }, groups: userMessageActions))
 
                         if message.isQueued {
                             if let onWithdraw {
@@ -469,75 +467,6 @@ struct ChatMessageRow: View {
                 }
             }
             .modifier(MinisOpenURLHandler())
-            .contentShape(Rectangle())
-            // [T-ios-usermsg-contextmenu-preview-shape] The hit-test shape above
-            // stays a full Rectangle (so the whole row is long-pressable), but
-            // the context-menu PREVIEW must clip to the bubble's rounded shape —
-            // otherwise the lifted preview shows square corners while the bubble
-            // is RoundedRectangle(cornerRadius: 18). iOS 16+ lets us specify the
-            // preview clip shape independently from the interaction shape.
-            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18))
-            .contextMenu {
-                Button {
-                    UIPasteboard.general.string = message.content
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                if let onEdit {
-                    Button {
-                        onEdit()
-                    } label: {
-                        Label("Edit", systemImage: "square.and.pencil")
-                    }
-                }
-                if let onRetry {
-                    Button {
-                        onRetry()
-                    } label: {
-                        Label("Retry", systemImage: "arrow.counterclockwise")
-                    }
-                }
-                // [T-multi-select-share] Copy / Edit / Retry, a divider, then Share
-                // Chat… on its own; the destructive items stay last.
-                if let onShareMessages {
-                    Divider()
-                    Button {
-                        onShareMessages()
-                    } label: {
-                        Label(AppLocalized("Share Chat…"), systemImage: "square.and.arrow.up")
-                    }
-                }
-                // [T-in-chat-search]
-                if let open = searchHighlights?.openSearch {
-                    if onShareMessages == nil { Divider() }
-                    Button {
-                        open(nil)
-                    } label: {
-                        Label(AppLocalized("Search in Chat"), systemImage: "magnifyingglass")
-                    }
-                }
-                if onDeleteFrom != nil || onCompact != nil {
-                    Divider()
-                }
-                if onDeleteFrom != nil {
-                    Button(role: .destructive) {
-                        showDeleteFromConfirm = true
-                    } label: {
-                        Label("Delete From Here", systemImage: "trash")
-                    }
-                }
-                if let onCompact {
-                    Button(role: .destructive) {
-                        onCompact()
-                    } label: {
-                        Label("Compact Above", systemImage: "arrow.down.right.and.arrow.up.left")
-                    }
-                }
-            } preview: {
-                // [T-ios-longpress-menu-preview-background] Opaque card so the
-                // long-press preview isn't transparent (see MessageContextMenuPreview).
-                MessageContextMenuPreview(text: message.content)
-            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
@@ -552,6 +481,52 @@ struct ChatMessageRow: View {
         } message: {
             Text("This message and all messages after it will be deleted. This cannot be undone.")
         }
+    }
+
+    @ViewBuilder
+    private var userAttachments: some View {
+        if !message.attachments.isEmpty {
+            UserAttachmentList(attachments: message.attachments, searchMessageId: message.id)
+        } else if !message.inputAttachments.isEmpty {
+            QueuedAttachmentPreview(attachments: message.inputAttachments)
+        }
+    }
+
+    private func userMessageActions() -> [[CloudMessageAction]] {
+        var messageActions = CloudMessageAction.textActions(userDisplayText, copyText: message.content)
+        if userDisplayText.isEmpty {
+            messageActions.append(CloudMessageAction(title: AppLocalized("Copy"), symbol: "doc.on.doc", key: "copy") {
+                UIPasteboard.general.string = message.content
+            })
+        }
+        if let onEdit {
+            messageActions.append(CloudMessageAction(title: AppLocalized("Edit"), symbol: "square.and.pencil", key: "edit", run: onEdit))
+        }
+        if let onRetry {
+            messageActions.append(CloudMessageAction(title: AppLocalized("Retry"), symbol: "arrow.counterclockwise", key: "retry", run: onRetry))
+        }
+
+        var chatActions: [CloudMessageAction] = []
+        if let onShareMessages {
+            chatActions.append(CloudMessageAction(title: AppLocalized("Share Chat…"), symbol: "square.and.arrow.up", key: "share", run: onShareMessages))
+        }
+        if let openSearch = searchHighlights?.openSearch {
+            chatActions.append(CloudMessageAction(title: AppLocalized("Search in Chat"), symbol: "magnifyingglass", key: "search") {
+                openSearch(nil)
+            })
+        }
+
+        var destructiveActions: [CloudMessageAction] = []
+        if onDeleteFrom != nil {
+            destructiveActions.append(CloudMessageAction(title: AppLocalized("Delete From Here"), symbol: "trash", key: "delete", role: .destructive) {
+                showDeleteFromConfirm = true
+            })
+        }
+        if let onCompact {
+            destructiveActions.append(CloudMessageAction(title: AppLocalized("Compact Above"), symbol: "arrow.down.right.and.arrow.up.left",
+                                                          key: "compact", role: .destructive, run: onCompact))
+        }
+        return [messageActions, chatActions, destructiveActions]
     }
 
     // MARK: Assistant Row

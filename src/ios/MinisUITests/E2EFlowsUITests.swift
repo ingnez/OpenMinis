@@ -1568,6 +1568,71 @@ extension E2EFlowsUITests {
         shot(app, "33b-搜索中")
     }
 
+    func test34_longPressOwnCloudMessage() throws {
+        let app = launch()
+        openBot(app)
+        let prompt = "E2E我的云端气泡"
+        send(app, prompt)
+        XCTAssertTrue(waitText(app, contains: "收到：" + prompt, timeout: 60))
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+
+        let mine = app.staticTexts[prompt]
+        XCTAssertTrue(mine.waitForExistence(timeout: 5))
+        let frame = mine.frame
+        mine.press(forDuration: 1)
+        let panel = app.descendants(matching: .any)["messageMenuPanel"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["messageMenuAction-copy"].exists)
+        XCTAssertTrue(app.buttons["messageMenuAction-reply"].exists)
+        app.buttons["messageMenuAction-select"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["messageMenuSelectText"].waitForExistence(timeout: 5))
+        app.buttons["完成"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5))
+        XCTAssertEqual(mine.frame, frame, "收起菜单后气泡位置变了")
+
+        mine.press(forDuration: 1)
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        app.buttons["messageMenuAction-reply"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5))
+        XCTAssertTrue(app.buttons["取消回复"].waitForExistence(timeout: 5))
+    }
+
+    func test35_longPressLocalMessages() throws {
+        let app = launch(homeMode: "local", extraEnv: ["OPENMINIS_E2E_LOCAL_PROVIDER": "http://127.0.0.1:18797"],
+                         extraArgs: ["-launchScreen", "2"])
+        XCTAssertTrue(poll(60) { app.textViews.firstMatch.exists || app.textFields.firstMatch.exists })
+        XCTAssertTrue(localModelReady(app), "本地模式未加载模拟服务商")
+        let prompt = "E2E我的本地气泡，请加粗回复"
+        let input = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
+        input.tap()
+        dismissKeyboardIntro(app)
+        input.typeText(prompt)
+        let send = localSendButton(app)
+        XCTAssertTrue(send.waitForExistence(timeout: 10))
+        send.tap()
+        XCTAssertTrue(waitText(app, contains: "引用里的中文加粗", timeout: 45))
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+
+        let panel = app.descendants(matching: .any)["messageMenuPanel"]
+        let mine = app.staticTexts[prompt]
+        XCTAssertTrue(mine.waitForExistence(timeout: 5))
+        mine.press(forDuration: 1)
+        XCTAssertTrue(panel.waitForExistence(timeout: 5), "本地用户气泡没有打开底部面板")
+        XCTAssertTrue(app.buttons["messageMenuAction-edit"].exists)
+        app.buttons["messageMenuAction-copy"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5))
+
+        let reply = app.descendants(matching: .any).matching(identifier: "assistantTextBlock").firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 5))
+        reply.press(forDuration: 1)
+        XCTAssertTrue(panel.waitForExistence(timeout: 5), "本地 Bot 回复没有打开底部面板")
+        XCTAssertTrue(app.buttons["messageMenuAction-markdown"].exists)
+        app.buttons["messageMenuAction-select"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["messageMenuSelectText"].waitForExistence(timeout: 5))
+        app.buttons["完成"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5))
+    }
+
     private func revealTodayBar(_ app: XCUIApplication) {
         let bar = app.descendants(matching: .any)["todayCard"]
         if bar.exists { return }

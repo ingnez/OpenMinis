@@ -132,21 +132,7 @@ struct CloudUserTurnRow: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
             if let q = extras.replyExcerpt { CloudReplyQuote(excerpt: q, role: extras.replyRole) }
-            CloudProseUser(content: content, accent: accent, textMenu: {
-                AnyView(Group {
-                    Button { UIPasteboard.general.string = CloudMessageText.display(content).text } label: { Label("复制", systemImage: "doc.on.doc") }
-                    if let id = extras.id {
-                        Button { onReply(CloudReplyTarget(id: id, excerpt: CloudMessageText.display(content).text)) } label: {
-                            Label("回复", systemImage: "arrowshape.turn.up.left")
-                        }
-                    }
-                    if let onWithdraw {
-                        Button(role: .destructive, action: onWithdraw) {
-                            Label("撤回待处理消息", systemImage: "arrow.uturn.backward")
-                        }
-                    }
-                })
-            })
+            CloudProseUser(content: content, accent: accent, textActions: messageActions)
             MessageSendStatusRow(failed: sendFailed, adopted: message.adoptedMark,
                                  pendingLabel: pendingLabel, onRetry: onRetry)
             if let e = extras.botReaction {
@@ -155,6 +141,20 @@ struct CloudUserTurnRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    private func messageActions() -> [[CloudMessageAction]] {
+        let text = CloudMessageText.display(content).text
+        var actions = CloudMessageAction.textActions(text)
+        if let id = extras.id {
+            actions.insert(CloudMessageAction(title: "回复", symbol: "arrowshape.turn.up.left", key: "reply") {
+                onReply(CloudReplyTarget(id: id, excerpt: text))
+            }, at: 0)
+        }
+        let withdraw = onWithdraw.map { action in
+            CloudMessageAction(title: "撤回待处理消息", symbol: "arrow.uturn.backward", key: "withdraw", role: .destructive, run: action)
+        }
+        return [actions, [withdraw].compactMap { $0 }]
     }
 }
 
@@ -203,21 +203,16 @@ struct CloudAssistantLongPress: ViewModifier {
     /// 「翻译」等需要让 Bot 处理的：把一句话交给对话页发出去
     var onAsk: ((String) -> Void)? = nil
     @State private var systemTranslate = false
-    @State private var menuShown = false
 
     func body(content: Content) -> some View {
         if let id = extras.id {
             content
-                .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in
-                    CloudHaptics.tap()
-                    CloudMessageMenu.present($menuShown)
-                })
-                .fullScreenCover(isPresented: $menuShown) {
-                    CloudMessageActionSheet(emojis: CloudMessageActionSheet.allEmojis, current: extras.userReaction,
-                                            onEmoji: { onReact(id, CloudReactionLogic.next(current: extras.userReaction, picked: $0)) },
-                                            groups: groups(id), selectableText: CloudMessageText.display(text).text,
-                                            onClose: { CloudMessageMenu.dismiss($menuShown) })
-                }
+                .modifier(MessageActionMenu(
+                    selectableText: { CloudMessageText.display(text).text },
+                    currentReaction: extras.userReaction,
+                    onEmoji: { onReact(id, CloudReactionLogic.next(current: extras.userReaction, picked: $0)) },
+                    groups: { groups(id) }
+                ))
                 .modifier(CloudSystemTranslate(isPresented: $systemTranslate, text: String(CloudMessageText.display(text).text.prefix(4000))))
         } else {
             content
@@ -230,8 +225,7 @@ struct CloudAssistantLongPress: ViewModifier {
         if extras.userReaction != nil {
             first.append(CloudMessageAction(title: "取消表情回应", symbol: "face.dashed", key: "unreact") { onReact(id, nil) })
         }
-        var second = [CloudMessageAction(title: "复制", symbol: "doc.on.doc", key: "copy") { UIPasteboard.general.string = text; CloudHaptics.success() },
-                      CloudMessageAction(title: "选择文本", symbol: "character.cursor.ibeam", key: "select", keepsOpen: true) {}]
+        var second = CloudMessageAction.textActions(shown, copyText: text)
         if let botId {
             second.append(CloudMessageAction(title: "朗读", symbol: "speaker.wave.2", key: "speak") {
                 CloudTips.markUsed("longpress-reply"); CloudBotSpeaker.speak(shown, botId: botId)
@@ -258,12 +252,69 @@ struct CloudMessageAction: Identifiable {
     let title: String
     let symbol: String
     let key: String
-    var keepsOpen = false
+    let role: ButtonRole?
+    let isEnabled: Bool
     let run: () -> Void
     var id: String { key }
 
-    init(title: String, symbol: String, key: String, keepsOpen: Bool = false, run: @escaping () -> Void) {
-        self.title = title; self.symbol = symbol; self.key = key; self.keepsOpen = keepsOpen; self.run = run
+    init(title: String, symbol: String, key: String, role: ButtonRole? = nil,
+         isEnabled: Bool = true, run: @escaping () -> Void) {
+        self.title = title
+        self.symbol = symbol
+        self.key = key
+        self.role = role
+        self.isEnabled = isEnabled
+        self.run = run
+    }
+
+    static func textActions(_ text: String, copyText: String? = nil) -> [Self] {
+        guard !text.isEmpty else { return [] }
+        return [
+            Self(title: AppLocalized("Copy"), symbol: "doc.on.doc", key: "copy") {
+                UIPasteboard.general.string = copyText ?? text
+                CloudHaptics.success()
+            },
+            Self(title: "选择文本", symbol: "character.cursor.ibeam", key: "select") {}
+        ]
+    }
+}
+
+/// Shared presentation for cloud and local messages. Actions that open another
+/// view run after the full-screen cover has dismissed.
+struct MessageActionMenu: ViewModifier {
+    let selectableText: () -> String
+    var currentReaction: String? = nil
+    var onEmoji: ((String) -> Void)? = nil
+    let groups: () -> [[CloudMessageAction]]
+    @State private var isPresented = false
+    @State private var pendingAction: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        content
+            .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in present() })
+            .accessibilityAction(named: Text("消息操作")) { present() }
+            .background {
+                Color.clear.frame(width: 0, height: 0)
+                    .fullScreenCover(isPresented: $isPresented, onDismiss: {
+                        let action = pendingAction
+                        pendingAction = nil
+                        action?()
+                    }) {
+                        CloudMessageActionSheet(emojis: CloudMessageActionSheet.allEmojis, current: currentReaction,
+                                                onEmoji: onEmoji, groups: groups().filter { !$0.isEmpty },
+                                                selectableText: selectableText(),
+                                                onClose: { action in
+                                                    pendingAction = action
+                                                    CloudMessageMenu.dismiss($isPresented)
+                                                })
+                    }
+            }
+    }
+
+    private func present() {
+        guard !isPresented, onEmoji != nil || groups().contains(where: { !$0.isEmpty }) else { return }
+        CloudHaptics.tap()
+        CloudMessageMenu.present($isPresented)
     }
 }
 
@@ -300,8 +351,9 @@ struct CloudMessageActionSheet: View {
     let onEmoji: ((String) -> Void)?
     let groups: [[CloudMessageAction]]
     let selectableText: String
-    let onClose: () -> Void
+    let onClose: ((() -> Void)?) -> Void
     @State private var shown = false
+    @State private var closing = false
     @State private var drag: CGFloat = 0
     @State private var selecting = false
     @State private var askingCustom = false
@@ -320,12 +372,6 @@ struct CloudMessageActionSheet: View {
                 .accessibilityIdentifier("messageMenuBackdrop")
             panel
                 .offset(y: shown ? max(0, drag) : 900)
-                .gesture(DragGesture()
-                    .onChanged { drag = $0.translation.height }
-                    .onEnded { v in
-                        if v.translation.height > 110 || v.predictedEndTranslation.height > 260 { close() }
-                        else { withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { drag = 0 } }
-                    })
         }
         .background(CloudClearCoverBackground())
         .onAppear { withAnimation(.spring(response: 0.36, dampingFraction: 0.88)) { shown = true } }
@@ -334,17 +380,54 @@ struct CloudMessageActionSheet: View {
             Button("取消", role: .cancel) {}
             Button("好") {
                 if let e = customText.first.map(String.init), let u = e.unicodeScalars.first, u.properties.isEmoji, u.value > 0xFF {
-                    onEmoji?(e); close()
+                    close { onEmoji?(e) }
                 }
                 customText = ""
             }
         }
     }
 
+    private var dismissGesture: some Gesture {
+        DragGesture()
+            .onChanged { drag = $0.translation.height }
+            .onEnded { value in
+                if value.translation.height > 110 || value.predictedEndTranslation.height > 260 {
+                    close()
+                } else {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { drag = 0 }
+                }
+            }
+    }
+
+    private var handle: some View {
+        Capsule().fill(Color(.tertiaryLabel)).frame(width: 36, height: 5).padding(.top, 6)
+            .frame(maxWidth: .infinity, minHeight: 20)
+            .contentShape(Rectangle())
+            .accessibilityHidden(true)
+    }
+
     private var panel: some View {
+        ViewThatFits(in: .vertical) {
+            VStack(spacing: 8) {
+                handle
+                panelContents
+            }
+            .gesture(dismissGesture)
+            VStack(spacing: 8) {
+                handle.gesture(dismissGesture)
+                ScrollView { panelContents }
+            }
+        }
+        .padding(.horizontal, 14).padding(.bottom, 14)
+        .frame(maxWidth: 560)
+        .background(RoundedRectangle(cornerRadius: 30, style: .continuous).fill(.regularMaterial).ignoresSafeArea(edges: .bottom))
+        .padding(.horizontal, 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("messageMenuPanel")
+    }
+
+    private var panelContents: some View {
         VStack(spacing: 14) {
-            Capsule().fill(Color(.tertiaryLabel)).frame(width: 36, height: 5).padding(.top, 6)
-                .accessibilityHidden(true)
             if selecting {
                 ScrollView {
                     Text(selectableText).font(.body).textSelection(.enabled)
@@ -359,7 +442,7 @@ struct CloudMessageActionSheet: View {
                 if let onEmoji, !emojis.isEmpty {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6), spacing: 10) {
                         ForEach(emojis, id: \.self) { e in
-                            Button { onEmoji(e); close() } label: {
+                            Button { close { onEmoji(e) } } label: {
                                 Text(e).font(.system(size: 24))
                                     .frame(width: 46, height: 46)
                                     .background(Circle().fill(current == e ? Color.accentColor.opacity(0.28) : Color(.tertiarySystemFill)))
@@ -384,20 +467,24 @@ struct CloudMessageActionSheet: View {
                     VStack(spacing: 0) {
                         ForEach(Array(group.enumerated()), id: \.element.id) { i, a in
                             if i > 0 { Divider().padding(.leading, 52) }
-                            Button {
-                                if a.key == "select" { withAnimation(.easeInOut(duration: 0.2)) { selecting = true }; return }
-                                a.run()
-                                if !a.keepsOpen { close() }
+                            Button(role: a.role) {
+                                if a.key == "select" {
+                                    withAnimation(.easeInOut(duration: 0.2)) { selecting = true }
+                                } else {
+                                    close(then: a.run)
+                                }
                             } label: {
                                 HStack(spacing: 14) {
                                     Image(systemName: a.symbol).font(.system(size: 17)).frame(width: 22)
                                     Text(a.title).font(.body)
                                     Spacer(minLength: 0)
                                 }
+                                .foregroundStyle(a.role == .destructive ? Color.red : Color.primary)
                                 .padding(.horizontal, 16).padding(.vertical, 13)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .disabled(!a.isEnabled)
                             .accessibilityIdentifier("messageMenuAction-\(a.key)")
                         }
                     }
@@ -405,16 +492,12 @@ struct CloudMessageActionSheet: View {
                 }
             }
         }
-        .padding(.horizontal, 14).padding(.bottom, 14)
-        .frame(maxWidth: 560)
-        .background(RoundedRectangle(cornerRadius: 30, style: .continuous).fill(.regularMaterial).ignoresSafeArea(edges: .bottom))
-        .padding(.horizontal, 6)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("messageMenuPanel")
     }
 
-    private func close() {
+    private func close(then action: (() -> Void)? = nil) {
+        guard !closing else { return }
+        closing = true
         withAnimation(.easeIn(duration: 0.2)) { shown = false; drag = 0 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { onClose() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { onClose(action) }
     }
 }

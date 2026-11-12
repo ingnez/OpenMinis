@@ -43,6 +43,14 @@ struct BridgedAssistantBlockV3: View {
     }
 
     var body: some View {
+        if case .text = block.kind {
+            blockContent.modifier(MessageActionMenu(selectableText: { replyText }, groups: messageActions))
+        } else {
+            blockContent.overlay { toolContextMenu }
+        }
+    }
+
+    private var blockContent: some View {
         AssistantBlockView(
             block: block,
             message: message,
@@ -79,91 +87,120 @@ struct BridgedAssistantBlockV3: View {
         .environment(\.chatSearchDimmed, message.isCompactedHistory)
         .opacity(message.isCompactedHistory ? 0.5 : 1.0)
         .accessibilityIdentifier(blockAccessibilityId)
-        // Context menu on zero-size overlay so it doesn't inflate self-sizing
-        // (same pattern as BridgedAssistantFooterV3).
-        .overlay {
-            Color.clear.frame(width: 0, height: 0)
-                .contextMenu {
-                    Button {
-                        let text = message.blocks
-                            .filter { if case .text = $0.kind { return true }; return false }
-                            .map(\.content).joined(separator: "\n\n")
-                        UIPasteboard.general.string = text
-                    } label: {
-                        Label(AppLocalized("Copy All"), systemImage: "doc.on.doc")
-                    }
-                    Button {
-                        let text = message.blocks
-                            .filter { if case .text = $0.kind { return true }; return false }
-                            .map(\.content).joined(separator: "\n\n")
-                        UIPasteboard.general.string = text
-                    } label: {
-                        Label(AppLocalized("Copy as Markdown"), systemImage: "text.quote")
-                    }
-                    if let onReadAloud = bridge.onReadAloud {
-                        Button {
-                            onReadAloud()
-                        } label: {
-                            Label(AppLocalized("Read from Start"), systemImage: "play.circle")
-                        }
-                        // Greyed out while streaming so it can't clash with the
-                        // live streaming TTS of the same reply.
-                        .disabled(bridge.isStreaming)
-                    }
-                    if let onShareMessages = bridge.onShareMessages {
-                        Button {
-                            onShareMessages()
-                        } label: {
-                            Label(AppLocalized("Share Chat…"), systemImage: "square.and.arrow.up")
-                        }
-                    }
-                    // [T-in-chat-search]
-                    if let open = searchHighlights?.openSearch {
-                        Button {
-                            open(nil)
-                        } label: {
-                            Label(AppLocalized("Search in Chat"), systemImage: "magnifyingglass")
-                        }
-                    }
-                    if let onForceSync = bridge.onForceSync {
-                        Divider()
-                        Button {
-                            onForceSync()
-                        } label: {
-                            Label(AppLocalized("Force Sync"), systemImage: "arrow.triangle.2.circlepath.icloud")
-                        }
-                    }
-                    // [T-thinking-autoexpand-toggle-longpress] A thinking block's
-                    // long-press switches "Expand Thinking While Streaming".
-                    // Added to this cell's menu rather than a nested one inside
-                    // ThinkingBlockView, which would compete for the same press.
-                    if case .thinking = block.kind {
-                        Divider()
-                        Toggle(isOn: ThinkingAutoExpand.binding(liveBlock: { [bridge, message, block] in
-                            bridge.isActiveMessage && message.blocks.last?.id == block.id ? block : nil
-                        })) {
-                            Label(AppLocalized("Expand Thinking While Streaming"), systemImage: "brain")
-                        }
-                    }
-                    if let onCompact = bridge.onCompact {
-                        Divider()
-                        Button(role: .destructive) {
-                            onCompact()
-                        } label: {
-                            Label(AppLocalized("Compact Above"), systemImage: "arrow.down.right.and.arrow.up.left")
-                        }
-                    }
-                } preview: {
-                    // [T-ios-longpress-menu-preview-background] This .contextMenu
-                    // is on a zero-size Color.clear overlay (kept zero-size to
-                    // avoid inflating self-sizing), so without an explicit preview
-                    // SwiftUI snapshots that transparent overlay → see-through
-                    // preview. Supply an opaque card of the message text.
-                    MessageContextMenuPreview(text: message.blocks
-                        .filter { if case .text = $0.kind { return true }; return false }
-                        .map(\.content).joined(separator: "\n\n"))
+    }
+
+    // Non-text blocks retain their tool and thinking interactions.
+    private var toolContextMenu: some View {
+        Color.clear.frame(width: 0, height: 0)
+            .contextMenu {
+                Button {
+                    UIPasteboard.general.string = replyText
+                } label: {
+                    Label(AppLocalized("Copy All"), systemImage: "doc.on.doc")
                 }
+                Button {
+                    UIPasteboard.general.string = replyText
+                } label: {
+                    Label(AppLocalized("Copy as Markdown"), systemImage: "text.quote")
+                }
+                if let onReadAloud = bridge.onReadAloud {
+                    Button {
+                        onReadAloud()
+                    } label: {
+                        Label(AppLocalized("Read from Start"), systemImage: "play.circle")
+                    }
+                    // Greyed out while streaming so it can't clash with the
+                    // live streaming TTS of the same reply.
+                    .disabled(bridge.isStreaming)
+                }
+                if let onShareMessages = bridge.onShareMessages {
+                    Button {
+                        onShareMessages()
+                    } label: {
+                        Label(AppLocalized("Share Chat…"), systemImage: "square.and.arrow.up")
+                    }
+                }
+                // [T-in-chat-search]
+                if let open = searchHighlights?.openSearch {
+                    Button {
+                        open(nil)
+                    } label: {
+                        Label(AppLocalized("Search in Chat"), systemImage: "magnifyingglass")
+                    }
+                }
+                if let onForceSync = bridge.onForceSync {
+                    Divider()
+                    Button {
+                        onForceSync()
+                    } label: {
+                        Label(AppLocalized("Force Sync"), systemImage: "arrow.triangle.2.circlepath.icloud")
+                    }
+                }
+                // [T-thinking-autoexpand-toggle-longpress] A thinking block's
+                // long-press switches "Expand Thinking While Streaming".
+                // Added to this cell's menu rather than a nested one inside
+                // ThinkingBlockView, which would compete for the same press.
+                if case .thinking = block.kind {
+                    Divider()
+                    Toggle(isOn: ThinkingAutoExpand.binding(liveBlock: { [bridge, message, block] in
+                        bridge.isActiveMessage && message.blocks.last?.id == block.id ? block : nil
+                    })) {
+                        Label(AppLocalized("Expand Thinking While Streaming"), systemImage: "brain")
+                    }
+                }
+                if let onCompact = bridge.onCompact {
+                    Divider()
+                    Button(role: .destructive) {
+                        onCompact()
+                    } label: {
+                        Label(AppLocalized("Compact Above"), systemImage: "arrow.down.right.and.arrow.up.left")
+                    }
+                }
+            } preview: {
+                // [T-ios-longpress-menu-preview-background] This .contextMenu
+                // is on a zero-size Color.clear overlay (kept zero-size to
+                // avoid inflating self-sizing), so without an explicit preview
+                // SwiftUI snapshots that transparent overlay → see-through
+                // preview. Supply an opaque card of the message text.
+                MessageContextMenuPreview(text: replyText)
+            }
+    }
+
+    private var replyText: String {
+        message.blocks.filter { if case .text = $0.kind { return true }; return false }
+            .map(\.content).joined(separator: "\n\n")
+    }
+
+    private func messageActions() -> [[CloudMessageAction]] {
+        let text = replyText
+        var actions = CloudMessageAction.textActions(text)
+        if !text.isEmpty {
+            actions.append(CloudMessageAction(title: AppLocalized("Copy as Markdown"), symbol: "text.quote", key: "markdown") {
+                UIPasteboard.general.string = text
+            })
         }
+        if let read = bridge.onReadAloud {
+            actions.append(CloudMessageAction(title: AppLocalized("Read from Start"), symbol: "play.circle", key: "speak",
+                                              isEnabled: !bridge.isStreaming, run: read))
+        }
+
+        var chatActions: [CloudMessageAction] = []
+        if let share = bridge.onShareMessages {
+            chatActions.append(CloudMessageAction(title: AppLocalized("Share Chat…"), symbol: "square.and.arrow.up", key: "share", run: share))
+        }
+        if let open = searchHighlights?.openSearch {
+            chatActions.append(CloudMessageAction(title: AppLocalized("Search in Chat"), symbol: "magnifyingglass", key: "search") {
+                open(nil)
+            })
+        }
+        if let sync = bridge.onForceSync {
+            chatActions.append(CloudMessageAction(title: AppLocalized("Force Sync"), symbol: "arrow.triangle.2.circlepath.icloud", key: "sync", run: sync))
+        }
+        let compact = bridge.onCompact.map { action in
+            CloudMessageAction(title: AppLocalized("Compact Above"), symbol: "arrow.down.right.and.arrow.up.left",
+                               key: "compact", role: .destructive, run: action)
+        }
+        return [actions, chatActions, [compact].compactMap { $0 }]
     }
 
     /// [#414] The block the usage capsule sits right after: the message's LAST
