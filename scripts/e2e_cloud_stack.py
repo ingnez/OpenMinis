@@ -39,6 +39,19 @@ def last_user_text(data):
     return ""
 
 
+def user_texts(data):
+    out = []
+    for m in data.get("messages", []):
+        if m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, list):
+            out.append(" ".join(p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text"))
+        else:
+            out.append(c or "")
+    return out
+
+
 def image_count(data):
     n = 0
     for m in data.get("messages", []):
@@ -96,7 +109,8 @@ def _stream_then_tool(text, call_id, name, args, reasoning=None):
 
 def _front_intent(text):
     """把用户插话理解成一句自然回应 + 结构化动作（steer/new/cancel/answer）。回应必须反映原话，不能是套话。"""
-    t = (text or "").strip() or "这个要求"
+    # 每轮接在用户原话后面的后台任务摘要（「\n\n[这个对话的后台任务…」）不是用户说的，真模型也不会照抄进答复 / 转述
+    t = (text or "").split("\n\n[")[0].strip() or "这个要求"
     short = t[:28]
     if any(k in t for k in ("停掉", "取消任务", "不要做了", "停下当前")):
         return f"你想停下当前任务，我现在就停。", "cancel", None
@@ -475,7 +489,9 @@ def main():
                 self.wfile.write(body)
                 return
             want = (parse_qs(urlparse(self.path).query).get("model") or [MODEL])[0]
-            reqs = [{"model": r.get("model"), "images": image_count(r), "text": last_user_text(r)[:200]}
+            # users：这条请求里所有用户消息（插话 / 转给后台的补充要求按顺序接在后面，只看最后一条会漏掉前面的）
+            reqs = [{"model": r.get("model"), "images": image_count(r), "text": last_user_text(r)[:200],
+                     "users": [u[:300] for u in user_texts(r)]}
                     for r in sup.FakeModelHandler.requests if r.get("model") == want]
             all_texts = [last_user_text(r)[:200] for r in sup.FakeModelHandler.requests if r.get("model") != LOCAL_MODEL]
             imports = 0

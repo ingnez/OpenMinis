@@ -210,9 +210,9 @@ final class ReplyModeUITests: XCTestCase {
                 || (app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "转给后台")).firstMatch.exists)
         }, "胶囊或进度里没有前台决定")
         XCTAssertTrue(poll(90) {
-            let reqs = requests(model: "e2e-back-model").joined(separator: "\n")
+            let reqs = requestUserTexts(model: "e2e-back-model").joined(separator: "\n")
             return bursts.allSatisfy { reqs.contains("按用户补充调整：" + $0) || reqs.contains($0) }
-        }, "后台没收到改写后的要求：\(requests(model: "e2e-back-model"))")
+        }, "后台没收到改写后的要求：\(requestUserTexts(model: "e2e-back-model").map { String($0.suffix(400)) })")
         shot(app, "reply-07-连发插话")
     }
 
@@ -319,7 +319,7 @@ final class ReplyModeUITests: XCTestCase {
     func testLocalReply_switchPerChatAndSettings() throws {
         let app = launchLocal(mode: "verbose")
         openLocalComposer(app)
-        let title = app.descendants(matching: .any)["localChatTitle"]
+        let title = app.descendants(matching: .any).matching(identifier: "localChatTitle").firstMatch
         XCTAssertTrue(title.waitForExistence(timeout: 15), "本地对话没有标题")
         let chatInstant = app.buttons["这个对话：秒回"]
         var opened = false
@@ -410,9 +410,9 @@ final class ReplyModeUITests: XCTestCase {
                 || (app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "转给后台")).firstMatch.exists)
         }, "本地胶囊或进度里没有前台决定")
         XCTAssertTrue(poll(90) {
-            let reqs = requests(model: "e2e-local-back-model").joined(separator: "\n")
+            let reqs = requestUserTexts(model: "e2e-local-back-model").joined(separator: "\n")
             return bursts.allSatisfy { reqs.contains("按用户补充调整：" + $0) || reqs.contains($0) }
-        }, "本地后台没收到改写后的要求：\(requests(model: "e2e-local-back-model"))")
+        }, "本地后台没收到改写后的要求：\(requestUserTexts(model: "e2e-local-back-model").map { String($0.suffix(400)) })")
         shot(app, "local-reply-07-连发插话")
     }
 
@@ -503,6 +503,14 @@ final class ReplyModeUITests: XCTestCase {
 
     private func probeReply() -> ReplyProbe? {
         probe("/_e2e/reply").flatMap { try? JSONDecoder().decode(ReplyProbe.self, from: $0) }
+    }
+
+    /// 每条请求里的全部用户消息拼在一起：后台在跑时插话按顺序接在后面，只看最后一条会漏掉先到的补充要求
+    private func requestUserTexts(model: String) -> [String] {
+        struct P: Decodable { let text: String; let users: [String]? }
+        struct R: Decodable { let requests: [P] }
+        guard let d = probe("/_e2e/requests?model=" + model), let r = try? JSONDecoder().decode(R.self, from: d) else { return [] }
+        return r.requests.map { ($0.users ?? [$0.text]).joined(separator: "\n") }
     }
 
     private func requests(model: String) -> [String] {

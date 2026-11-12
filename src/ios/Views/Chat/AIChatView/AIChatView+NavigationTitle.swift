@@ -496,6 +496,8 @@ extension AIChatView {
                 LocalReplyChatMenu(sessionId: sid, plan: $localReplyPlan).items
             }
         }
+        // 只给外层一个标识：不加 .contain 时子元素都继承 localChatTitle，查询会命中多个（43117433250）
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("localChatTitle")
         // Blur the title (and model/provider subtitle) while the session
         // is locked, mirroring the chat body's SessionLockGateOverlay.

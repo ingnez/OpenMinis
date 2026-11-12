@@ -162,8 +162,11 @@ extension AIChatViewModel {
         // model.
         pendingModelSwitch = false
 
-        // Resolve provider from ProviderConfigStore
-        guard let entry = resolveCurrentEntry() else {
+        // Resolve provider from ProviderConfigStore.
+        // 秒回前台这一轮用前台模型：请求真正发给它（turnModelEntryOverride 只改路由标签时，
+        // 请求仍走对话绑定的主模型，本地前台既不秒回也不派活：43117433250 本地 6 个用例）。
+        let frontEntry = turnModelEntryOverride.flatMap { ProviderConfigStore.shared.entry(for: $0) }
+        guard let entry = frontEntry ?? resolveCurrentEntry() else {
             let errMsg = ChatMessage(role: .assistant, content: "", blocks: [])
             errMsg.error = AppLocalized("No model configured. Add a provider in Settings.")
             messages.append(errMsg)

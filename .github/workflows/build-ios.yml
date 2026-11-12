@@ -1234,9 +1234,9 @@ jobs:
           grep -q "E2E 云端就绪" e2e-cloud-stack.log
 
       - name: XCUITest 端到端冒烟（模拟器）
-        # 卡住时尽快失败：整套流程最多 80 分钟；传入 only_testing 时缩到 40 分钟（编译约 20 分钟 + 少量流程）。
+        # 卡住时尽快失败：整套流程最多 80 分钟；传入 only_testing 时 75 分钟（编译约 20 分钟 + 指定流程；43117433250 用 40 分钟时 ReplyModeUITests 只跑完 10 个就超时）。
         # 不用并行克隆模拟器（克隆冷启动「Timed out while launching application」，且假云端栈不能同时给两台模拟器用）；失败的流程自动重试一次，汇总里注明重试次数
-        timeout-minutes: ${{ inputs.only_testing != '' && 40 || 80 }}
+        timeout-minutes: ${{ inputs.only_testing != '' && 75 || 80 }}
         env:
           ONLY_TESTING: ${{ inputs.only_testing }}
         run: |
