@@ -30,17 +30,12 @@ struct RealtimeVoiceView: View {
         NavigationStack {
             VStack(spacing: 18) {
                 Spacer(minLength: 6)
-                Image(systemName: session.connected ? "waveform.circle.fill" : "phone.circle.fill")
-                    .font(.system(size: 92)).foregroundStyle(session.connected ? Color.cyan : Color.secondary)
-                    .accessibilityHidden(true)
-                Text(session.status).font(.headline).multilineTextAlignment(.center)
-                if let notice = session.notice {
-                    Text(notice).font(.callout).foregroundStyle(.orange).multilineTextAlignment(.center)
-                }
                 if session.active {
-                    Text(String(format: "%02d:%02d", session.elapsed / 60, session.elapsed % 60))
-                        .monospacedDigit().foregroundStyle(.secondary)
+                    activePanel
                 } else {
+                    Image(systemName: "waveform.circle.fill")
+                        .font(.system(size: 58)).foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                     Text("\(supportedProviders.first(where: { $0.id == providerID })?.label ?? "选择服务商") · \(model)")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
@@ -69,10 +64,11 @@ struct RealtimeVoiceView: View {
                     HStack(spacing: 30) {
                         Button { session.toggleMute() } label: {
                             Label(session.muted ? "取消静音" : "静音", systemImage: session.muted ? "mic.slash.fill" : "mic.fill")
-                        }.disabled(!session.connected)
+                        }.disabled(!session.connected || session.isEnding)
                         Button { session.interrupt() } label: { Label("打断", systemImage: "hand.raised.fill") }
-                            .disabled(!session.connected)
-                        Button(role: .destructive) { session.finish() } label: { Label("挂断", systemImage: "phone.down.fill") }
+                            .disabled(!session.connected || session.isEnding)
+                        Button(role: .destructive) { session.hangUp() } label: { Label("挂断", systemImage: "phone.down.fill") }
+                            .disabled(session.isEnding)
                     }.buttonStyle(.bordered).labelStyle(.iconOnly).controlSize(.large)
                 } else {
                     Button {
@@ -103,6 +99,30 @@ struct RealtimeVoiceView: View {
             .onDisappear { session.finish() }
         }.interactiveDismissDisabled(session.active)
     }
+
+    private var activePanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(session.status).font(.subheadline.weight(.semibold))
+                Spacer()
+                if session.connected {
+                    Text(String(format: "%02d:%02d", session.elapsed / 60, session.elapsed % 60))
+                        .font(.subheadline.monospacedDigit()).foregroundStyle(.white.opacity(0.75))
+                }
+            }
+            RealtimeCallSignal(connected: session.connected, micLevel: session.muted || session.isEnding ? 0 : session.micLevel,
+                               speakLevel: session.isEnding ? 0 : session.speakLevel)
+                .frame(height: 46)
+            if let notice = session.notice {
+                Text(notice).font(.caption).foregroundStyle(.orange)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(16)
+        .background(Color(white: 0.10), in: RoundedRectangle(cornerRadius: 24))
+        .padding(.horizontal, 24)
+    }
+
     private func chooseInitialProvider() {
         guard !supportedProviders.contains(where: { $0.id == providerID }) else { return }
         if let entry = providers.modelEntries.first(where: { entry in
@@ -110,5 +130,66 @@ struct RealtimeVoiceView: View {
         }) {
             providerID = entry.providerInstanceId; model = entry.model.id; preview = model.contains("preview")
         } else { providerID = supportedProviders.first?.id ?? ""; showSettings = true }
+    }
+}
+
+/// 连接中用滑动光段，接通后左右半边分别响应麦克风和 Bot 音量。
+struct RealtimeCallSignal: View {
+    let connected: Bool
+    let micLevel: Float
+    let speakLevel: Float
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let barsPerSide = 12
+    private let spacing: CGFloat = 3
+
+    var body: some View {
+        let paused = reduceMotion || CloudE2E.pauseIdleAnimations
+        let quiet = connected && max(micLevel, speakLevel) < 0.025
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: paused || quiet)) { context in
+            let phase = paused ? 0 : context.date.timeIntervalSinceReferenceDate
+            GeometryReader { proxy in
+                if connected {
+                    waveform(size: proxy.size, phase: phase)
+                } else {
+                    pendingTrack(width: proxy.size.width, phase: phase)
+                        .frame(maxHeight: .infinity)
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(connected ? "实时通话波形" : "正在连接实时通话")
+        .accessibilityIdentifier(connected ? "realtimeCallLiveWaveform" : "realtimeCallPendingTrack")
+    }
+
+    private func pendingTrack(width: CGFloat, phase: TimeInterval) -> some View {
+        let segment = width * 0.32
+        let progress = phase.truncatingRemainder(dividingBy: 1.35) / 1.35
+        return ZStack(alignment: .leading) {
+            Capsule().fill(.white.opacity(0.14))
+            Capsule().fill(.white.opacity(0.82))
+                .frame(width: segment)
+                .offset(x: (width - segment) * CGFloat(progress))
+        }
+        .frame(height: 4)
+        .clipShape(Capsule())
+    }
+
+    private func waveform(size: CGSize, phase: TimeInterval) -> some View {
+        let count = barsPerSide * 2
+        let barWidth = max(1, (size.width - CGFloat(count - 1) * spacing) / CGFloat(count))
+        return HStack(spacing: spacing) {
+            ForEach(0..<count, id: \.self) { index in
+                let isMic = index < barsPerSide
+                let level = max(0, min(1, isMic ? micLevel : speakLevel))
+                let position = Double(index % barsPerSide)
+                let envelope = 0.36 + 0.64 * (1 - abs(position - 5.5) / 5.5)
+                let movement = 0.72 + 0.28 * sin(phase * 11 + position * 0.89)
+                let height = 3 + max(0, size.height - 3) * CGFloat(Double(level) * envelope * movement)
+                Capsule()
+                    .fill((isMic ? Color.white : Color(red: 0.49, green: 0.80, blue: 1)).opacity(0.28 + Double(level) * 0.72))
+                    .frame(width: barWidth, height: height)
+            }
+        }
+        .frame(width: size.width, height: size.height)
     }
 }

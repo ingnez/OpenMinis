@@ -15,6 +15,7 @@ struct CloudBotCallLine: Identifiable, Equatable {
 final class CloudBotCallController: ObservableObject {
     @Published private(set) var active = false
     @Published private(set) var connected = false
+    @Published private(set) var isEnding = false
     @Published private(set) var muted = false
     @Published private(set) var micLevel: Float = 0
     @Published private(set) var speakLevel: Float = 0
@@ -95,6 +96,7 @@ final class CloudBotCallController: ObservableObject {
             self?.connected = c
             if c { UINotificationFeedbackGenerator().notificationOccurred(.success) }
         }.store(in: &bag)
+        s.$isEnding.sink { [weak self] in self?.isEnding = $0 }.store(in: &bag)
         s.$muted.sink { [weak self] in self?.muted = $0 }.store(in: &bag)
         s.$micLevel.sink { [weak self] in self?.micLevel = $0 }.store(in: &bag)
         s.$speakLevel.sink { [weak self] in self?.speakLevel = $0 }.store(in: &bag)
@@ -147,7 +149,7 @@ final class CloudBotCallController: ObservableObject {
     /// 通话中从输入框打来的问题：走实时语音回答，不另开一条文字聊天
     func speakUserText(_ text: String) { session?.insertUserText(text) }
 
-    func hangUp() { session?.finish() }
+    func hangUp() { session?.hangUp() }
 }
 
 /// 胶囊上的齿轮：声音和按住说话（声音下次通话生效）
@@ -155,6 +157,7 @@ struct CloudBotCallSettingsSheet: View {
     @ObservedObject var call: CloudBotCallController
     @AppStorage("realtimeVoice.voice") private var voice = "alloy"
     @AppStorage("realtimeVoice.model") private var model = ""
+    @AppStorage(RealtimeCallChime.preferenceKey) private var callChimes = true
     @Environment(\.dismiss) private var dismiss
 
     private var voices: [String] {
@@ -167,6 +170,7 @@ struct CloudBotCallSettingsSheet: View {
                 Section {
                     Toggle("按住说话（松开就静音）", isOn: Binding(get: { call.pushToTalk }, set: { call.setPushToTalk($0) }))
                     Toggle("静音", isOn: Binding(get: { call.muted }, set: { _ in call.toggleMute() }))
+                    Toggle("接通与挂断提示音", isOn: $callChimes)
                 }
                 Section {
                     Picker("声音（下次通话生效）", selection: $voice) { ForEach(voices, id: \.self) { Text($0).tag($0) } }

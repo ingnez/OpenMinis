@@ -74,6 +74,15 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(RealtimeVoiceProtocol.localTime(at: Date(timeIntervalSince1970: 0), in: shanghai)
               == "1970-01-01 08:00:00 +08:00 (Asia/Shanghai)", "报时使用传入的设备时区")
 
+        for cue in [RealtimeCallChime.connected, .disconnected] {
+            let samples = cue.samples()
+            check(samples.count == Int((cue.duration * Double(RealtimeVoiceProtocol.sampleRate)).rounded()), "通话短音的长度和采样率")
+            check(samples.first == 0 && abs(samples.last ?? 1) < 0.002, "短音两端平滑，避免爆音")
+            let peak = samples.map { abs($0) }.max() ?? 0
+            check(peak > 0.09 && peak < 0.26, "提示音有可辨识音量，保留混音余量")
+        }
+        check(RealtimeCallChime.connected.samples() != RealtimeCallChime.disconnected.samples(), "接通和挂断用不同的短音")
+
         check(RealtimeCallHealth.isServerHeard("input_audio_buffer.speech_started")
               && RealtimeCallHealth.isServerHeard("conversation.item.input_audio_transcription.delta")
               && RealtimeCallHealth.isServerHeard("response.created")

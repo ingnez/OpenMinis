@@ -38,6 +38,7 @@ struct CloudBotCallLine: Identifiable, Equatable {
 final class CloudBotCallController: ObservableObject {
     @Published private(set) var active = false
     @Published private(set) var connected = false
+    @Published private(set) var isEnding = false
     @Published private(set) var muted = false
     @Published private(set) var micLevel: Float = 0
     @Published private(set) var speakLevel: Float = 0
@@ -63,5 +64,11 @@ final class CloudBotCallController: ObservableObject {
 }
 struct CloudBotCallSettingsSheet: View {
     @ObservedObject var call: CloudBotCallController
+    var body: some View { EmptyView() }
+}
+struct RealtimeCallSignal: View {
+    let connected: Bool
+    let micLevel: Float
+    let speakLevel: Float
     var body: some View { EmptyView() }
 }

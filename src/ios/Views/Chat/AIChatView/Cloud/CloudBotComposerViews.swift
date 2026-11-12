@@ -76,8 +76,7 @@ struct CloudMorphButton: View {
     }
 }
 
-/// 对话页顶部的浮动通话胶囊（像灵动岛）：头像随 Bot 说话跳动、电平条、齿轮、静音、红色挂断。
-/// 往上滑缩成小药丸，点一下展开；对话照常显示在下面。
+/// 浮动通话面板：上滑收起，点小胶囊或下拉恢复。
 struct CloudCallCapsule<Avatar: View>: View {
     @ObservedObject var call: CloudBotCallController
     let name: String
@@ -86,17 +85,21 @@ struct CloudCallCapsule<Avatar: View>: View {
     @State private var minimized = false
     @State private var drag: CGFloat = 0
     @State private var showSettings = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let panelColor = Color(white: 0.10)
+    private let controlFill = Color.white.opacity(0.13)
 
     var body: some View {
         Group {
             if minimized { pill } else { full }
         }
-        .offset(y: min(0, drag))
+        .offset(y: drag / (1 + abs(drag) / 54))
         .gesture(
             DragGesture(minimumDistance: 8)
                 .onChanged { drag = $0.translation.height }
                 .onEnded { v in
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    withAnimation(panelAnimation) {
                         if v.translation.height < -24 { minimized = true }
                         if v.translation.height > 24 { minimized = false }
                         drag = 0
@@ -107,102 +110,104 @@ struct CloudCallCapsule<Avatar: View>: View {
         .sheet(isPresented: $showSettings) { CloudBotCallSettingsSheet(call: call) }
     }
 
-    private var pulse: CGFloat { 1 + CGFloat(min(1, call.speakLevel)) * 0.22 }
+    private var panelAnimation: Animation? {
+        reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.82)
+    }
+
+    private var headerStatus: String {
+        if call.isEnding { return "正在挂断" }
+        if !call.connected { return "正在连接" }
+        return call.muted ? "麦克风已静音" : "已接通"
+    }
 
     private var full: some View {
-        HStack(spacing: 10) {
-            avatar
-                .frame(width: 34, height: 34)
-                .scaleEffect(pulse)
-                .shadow(color: tint.opacity(Double(call.speakLevel) * 0.8), radius: 8)
-                .animation(.easeOut(duration: 0.12), value: call.speakLevel)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
+        VStack(spacing: 9) {
+            Capsule().fill(.white.opacity(0.24)).frame(width: 30, height: 3)
+                .accessibilityHidden(true)
+            HStack(spacing: 10) {
+                avatar
+                    .frame(width: 36, height: 36)
+                    .shadow(color: tint.opacity(Double(call.speakLevel) * 0.55), radius: 9)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
                     Text(name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text(call.connected ? CloudBotCallText.clock(call.elapsed) : "连接中…")
-                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(headerStatus).font(.caption).foregroundStyle(.white.opacity(0.62))
                 }
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("callCapsule")
-                .accessibilityValue(CloudCallCapsuleText.value(connected: call.connected, receivedKB: call.receivedAudioKB, lines: call.lines.count))
-                if let line = CloudCallCapsuleText.line(connected: call.connected, notice: call.notice, status: call.status) {
-                    // 没接通、或接通了但某个方向不通时，直接在胶囊里写原因（以前只有计时在走，两边都没声音也看不出来）
-                    Text(line).font(.caption2).foregroundStyle(call.notice != nil ? Color.orange : Color.secondary)
-                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("callCapsuleStatus")
-                } else {
-                    CloudLevelMeter(level: max(call.micLevel, call.speakLevel), tint: tint)
-                        .frame(height: 6)
+                Spacer(minLength: 4)
+                if call.connected {
+                    Text(CloudBotCallText.clock(call.elapsed))
+                        .font(.subheadline.monospacedDigit()).foregroundStyle(.white.opacity(0.8))
                 }
             }
-            Spacer(minLength: 4)
-            capsuleButton("gearshape.fill", label: "通话设置", fill: Color(.tertiarySystemFill), glyph: .primary) { showSettings = true }
-            capsuleButton(call.muted ? "mic.slash.fill" : "mic.fill", label: call.muted ? "取消静音" : "静音",
-                          fill: call.muted ? Color.primary : Color(.tertiarySystemFill), glyph: call.muted ? Color(.systemBackground) : .primary) {
-                call.toggleMute()
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("callCapsule")
+            .accessibilityValue(CloudCallCapsuleText.value(connected: call.connected, receivedKB: call.receivedAudioKB, lines: call.lines.count))
+            RealtimeCallSignal(connected: call.connected, micLevel: call.muted || call.isEnding ? 0 : call.micLevel,
+                               speakLevel: call.isEnding ? 0 : call.speakLevel)
+                .frame(height: 37)
+            if let line = CloudCallCapsuleText.line(connected: call.connected, notice: call.notice, status: call.status) {
+                Text(line).font(.caption2)
+                    .foregroundStyle(call.notice == nil ? Color.white.opacity(0.68) : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("callCapsuleStatus")
             }
-            .disabled(!call.connected)
-            capsuleButton("phone.down.fill", label: "挂断", fill: .red, glyph: .white) { call.hangUp() }
+            HStack(spacing: 13) {
+                capsuleButton("gearshape", label: "通话设置", fill: controlFill) { showSettings = true }
+                    .disabled(call.isEnding)
+                capsuleButton(call.muted ? "mic.slash.fill" : "mic.fill", label: call.muted ? "取消静音" : "静音",
+                              fill: call.muted ? .white : controlFill, glyph: call.muted ? .black : .white) {
+                    call.toggleMute()
+                }
+                .disabled(!call.connected || call.isEnding)
+                Spacer(minLength: 4)
+                capsuleButton("chevron.up", label: "收起通话", fill: controlFill) {
+                    withAnimation(panelAnimation) { minimized = true }
+                }
+                capsuleButton("phone.down.fill", label: "挂断", fill: .red) { call.hangUp() }
+                    .disabled(call.isEnding)
+            }
         }
-        .padding(.leading, 10).padding(.trailing, 8).padding(.vertical, 8)
-        .background(Capsule().fill(.regularMaterial))
-        .overlay(Capsule().stroke(tint.opacity(0.45), lineWidth: 1))
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .foregroundStyle(.white)
+        .padding(.horizontal, 15).padding(.vertical, 11)
+        .background(panelColor, in: RoundedRectangle(cornerRadius: 26))
+        .overlay(RoundedRectangle(cornerRadius: 26).strokeBorder(.white.opacity(0.12)))
+        .shadow(color: .black.opacity(0.24), radius: 16, y: 6)
         .padding(.horizontal, 12)
-        .overlay(alignment: .bottom) {
-            if let err = call.error, !call.active {
-                Text(err).font(.caption2).foregroundStyle(.red).offset(y: 18)
-            }
-        }
     }
 
     private var pill: some View {
         Button {
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { minimized = false }
+            withAnimation(panelAnimation) { minimized = false }
         } label: {
-            HStack(spacing: 6) {
-                Circle().fill(tint).frame(width: 8, height: 8).scaleEffect(pulse)
-                Text(call.connected ? CloudBotCallText.clock(call.elapsed) : "连接中").font(.caption.monospacedDigit().weight(.semibold))
-                Image(systemName: call.notice != nil ? "exclamationmark.triangle.fill" : (call.muted ? "mic.slash.fill" : "waveform"))
-                    .font(.caption2).foregroundStyle(call.notice != nil ? Color.orange : tint)
+            HStack(spacing: 8) {
+                Image(systemName: call.notice == nil ? (call.muted ? "mic.slash.fill" : "waveform") : "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(call.notice == nil ? Color.white : Color.orange)
+                Text(call.connected && !call.isEnding ? CloudBotCallText.clock(call.elapsed) : headerStatus)
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.58))
             }
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Capsule().fill(.regularMaterial))
-            .overlay(Capsule().stroke(tint.opacity(0.45), lineWidth: 1))
-            .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14).frame(minHeight: 44)
+            .background(panelColor, in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+            .shadow(color: .black.opacity(0.22), radius: 9, y: 4)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("和 \(name) 通话中，点一下展开")
+        .accessibilityLabel("展开与 \(name) 的通话")
+        .accessibilityIdentifier("callCapsuleCollapsed")
     }
 
-    private func capsuleButton(_ icon: String, label: String, fill: Color, glyph: Color, action: @escaping () -> Void) -> some View {
+    private func capsuleButton(_ icon: String, label: String, fill: Color, glyph: Color = .white,
+                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon).font(.system(size: 14, weight: .semibold)).foregroundStyle(glyph)
-                .frame(width: 34, height: 34).background(Circle().fill(fill))
+            Image(systemName: icon).font(.system(size: 15, weight: .semibold)).foregroundStyle(glyph)
+                .frame(width: 44, height: 44).background(Circle().fill(fill))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
-    }
-}
-
-/// 一排小竖条的电平表
-struct CloudLevelMeter: View {
-    let level: Float
-    let tint: Color
-    private let bars = 14
-
-    var body: some View {
-        GeometryReader { geo in
-            HStack(spacing: 2) {
-                ForEach(0..<bars, id: \.self) { i in
-                    let on = Float(i) / Float(bars) < level
-                    Capsule().fill(on ? tint : Color.secondary.opacity(0.25))
-                        .frame(width: max(2, (geo.size.width - CGFloat(bars - 1) * 2) / CGFloat(bars)))
-                }
-            }
-        }
-        .animation(.easeOut(duration: 0.1), value: level)
-        .accessibilityHidden(true)
     }
 }
 

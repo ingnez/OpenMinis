@@ -637,7 +637,61 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(waitGone(capsule, timeout: 10))
     }
 
-    private struct EchoProbe: Decodable { let cancels: Int; let loud_appends_in_reply: Int; let echo_done: Bool }
+    func test21e_realtimeCallIslandAndConnectCue() throws {
+        executionTimeAllowance = 180
+        let app = launch(extraEnv: ["OPENMINIS_E2E_REALTIME": "ws://127.0.0.1:18796", "OPENMINIS_E2E_FAKE_MIC": "1"],
+                         extraArgs: ["-realtimeVoice.callChimes", "YES"])
+        XCTAssertNotNil(echoProbe(scenario: "call_island"))
+        defer { _ = echoProbe(scenario: "") }
+        openBot(app)
+        let voice = app.buttons["composerVoiceButton"]
+        XCTAssertTrue(voice.waitForExistence(timeout: 20))
+        if app.keyboards.firstMatch.exists {
+            app.swipeDown()
+            _ = waitGone(app.keyboards.firstMatch, timeout: 5)
+        }
+        XCTAssertTrue(poll(5) { voice.isHittable })
+        voice.tap()
+        let elements = app.descendants(matching: .any)
+        let pending = elements["realtimeCallPendingTrack"]
+        let waveform = elements["realtimeCallLiveWaveform"]
+        XCTAssertTrue(pending.waitForExistence(timeout: 8), "未接通时应显示连接动画")
+        shot(app, "21e-连接中")
+        XCTAssertTrue(waveform.waitForExistence(timeout: 20), "接通后应切到双向波形")
+        XCTAssertTrue(waitGone(pending, timeout: 5))
+        XCTAssertTrue(waitText(app, contains: "e2e-realtime-ok", timeout: 20), "提示音后首句字幕没到")
+        let capsule = elements["callCapsule"]
+        XCTAssertTrue(poll(10) {
+            let value = capsule.value as? String ?? ""
+            return value.contains("收到声音") && !value.contains("收到声音 0 KB")
+        }, "提示音后首句音频没交给播放器")
+        let probe = try XCTUnwrap(echoProbe())
+        XCTAssertEqual(probe.opening_frames_loud.count, 6)
+        XCTAssertEqual(probe.opening_frames_loud.first, true, "接通音之前已有真实收音")
+        XCTAssertTrue(probe.opening_frames_loud.dropFirst().prefix(3).contains(false), "播放本地接通音时应向服务端送静音帧")
+        XCTAssertEqual(probe.opening_frames_loud.last, true, "短音播完后应恢复收音")
+        XCTAssertEqual(probe.cancels, 0, "接通音不能触发插话取消")
+        shot(app, "21e-已接通")
+
+        app.buttons["收起通话"].tap()
+        let collapsed = app.buttons["callCapsuleCollapsed"]
+        XCTAssertTrue(collapsed.waitForExistence(timeout: 5))
+        shot(app, "21e-收起")
+        collapsed.tap()
+        XCTAssertTrue(waveform.waitForExistence(timeout: 5))
+        app.buttons["静音"].tap()
+        XCTAssertTrue(app.buttons["取消静音"].waitForExistence(timeout: 5))
+        app.buttons["取消静音"].tap()
+        app.buttons["挂断"].tap()
+        XCTAssertTrue(waitGone(capsule, timeout: 8))
+    }
+
+    private struct EchoProbe: Decodable {
+        let cancels: Int
+        let loud_appends_in_reply: Int
+        let echo_done: Bool
+        let opening_frames_loud: [Bool]
+    }
     private func echoProbe(scenario: String? = nil) -> EchoProbe? {
         let q = scenario.map { "?scenario=\($0)" } ?? ""
         guard let url = URL(string: "http://127.0.0.1:18799/_e2e/realtime" + q), let data = try? Data(contentsOf: url) else { return nil }

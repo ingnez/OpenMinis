@@ -14,6 +14,7 @@ final class RealtimeVoiceSession: ObservableObject {
     @Published var status = "准备连接"
     @Published var active = false
     @Published var connected = false
+    @Published private(set) var isEnding = false
     @Published var muted = false
     @Published var error: String?
     @Published var lines: [Line] = []
@@ -35,6 +36,7 @@ final class RealtimeVoiceSession: ObservableObject {
     private var microphoneTask: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
     private var clockTask: Task<Void, Never>?
+    private var hangUpTask: Task<Void, Never>?
     private var outbound: AsyncStream<String>.Continuation?
     private let audio = RealtimeVoiceAudio()
     private var ledger = RealtimePlaybackLedger()
@@ -189,11 +191,11 @@ final class RealtimeVoiceSession: ObservableObject {
             senderTask = Task { [weak self] in
                 do {
                     for await message in stream {
-                        guard let self, self.epoch == generation, self.active else { return }
+                        guard let self, self.epoch == generation, self.active, !self.isEnding else { return }
                         try await socket.send(.string(message))
                     }
                 } catch {
-                    guard let self, self.epoch == generation, self.active else { return }
+                    guard let self, self.epoch == generation, self.active, !self.isEnding else { return }
                     await self.diagnose(socket: socket, request: request, generation: generation)
                 }
             }
@@ -201,7 +203,7 @@ final class RealtimeVoiceSession: ObservableObject {
                 do {
                     while !Task.isCancelled {
                         let frame = try await socket.receive()
-                        guard let self, self.active, self.epoch == generation else { return }
+                        guard let self, self.active, !self.isEnding, self.epoch == generation else { return }
                         let data: Data
                         switch frame { case .data(let d): data = d; case .string(let s): data = Data(s.utf8); @unknown default: continue }
                         guard let event = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
@@ -209,10 +211,10 @@ final class RealtimeVoiceSession: ObservableObject {
                         else { try self.handle(event, model: model, voice: voice, preview: preview) }
                     }
                 } catch let error as RealtimeVoiceAudio.AudioError {
-                    guard let self, self.epoch == generation, self.active else { return }
+                    guard let self, self.epoch == generation, self.active, !self.isEnding else { return }
                     self.fail(error.localizedDescription)
                 } catch {
-                    guard let self, self.epoch == generation, self.active else { return }
+                    guard let self, self.epoch == generation, self.active, !self.isEnding else { return }
                     await self.diagnose(socket: socket, request: request, generation: generation)
                 }
             }
@@ -229,7 +231,7 @@ final class RealtimeVoiceSession: ObservableObject {
     }
 
     private func emit(_ object: [String: Any]) {
-        guard active, let outbound else { return }
+        guard active, !isEnding, let outbound else { return }
         do {
             let data = try JSONSerialization.data(withJSONObject: object)
             guard let string = String(data: data, encoding: .utf8) else { return }
@@ -468,7 +470,7 @@ final class RealtimeVoiceSession: ObservableObject {
     /// 通话中从输入框打来的问题：交给实时会话用语音回答，不走云端文字聊天
     func insertUserText(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard active, !trimmed.isEmpty else { return }
+        guard active, !isEnding, !trimmed.isEmpty else { return }
         updateLine(id: "typed-" + UUID().uuidString, role: "user", text: trimmed, append: false)
         announce(trimmed)
         status = "正在回应"
@@ -629,13 +631,16 @@ final class RealtimeVoiceSession: ObservableObject {
         status = "已连上实时服务，正在打开麦克风"
         microphoneTask = Task { [weak self] in
             for await data in stream {
-                guard let self, self.active, self.epoch == generation else { return }
+                guard let self, self.active, !self.isEnding, self.epoch == generation else { return }
                 // 静音仍发送同长度的零音频，让服务端正确结束上一句话。
-                let level = self.muted ? 0 : RealtimeLevelMeter.level(pcm16: data)
-                self.noteMicLevel(level)
-                for bytes in self.gatedMicFrames(data, level: level) { self.emit(self.connectionProtocol.audio(bytes)) }
+                let quiet = self.muted || self.audio.isChimeSuppressingMicrophone
+                let level = quiet ? 0 : RealtimeLevelMeter.level(pcm16: data)
+                self.noteMicLevel(level, quiet: quiet)
+                for bytes in self.gatedMicFrames(data, level: level, quiet: quiet) {
+                    self.emit(self.connectionProtocol.audio(bytes))
+                }
                 let ms = data.count * 500 / max(1, self.connectionProtocol.inputSampleRate)
-                self.health.sent(ms: ms, level: level, muted: self.muted, at: Date())
+                self.health.sent(ms: ms, level: level, muted: quiet, at: Date())
                 // 服务端确认了会话、麦克风也真的送出了第一帧，才算接通、开始计时
                 if !self.connected { self.markConnected(generation: generation) }
             }
@@ -650,9 +655,9 @@ final class RealtimeVoiceSession: ObservableObject {
 
     /// 回声门：Bot 外放时扬声器的声音会被麦克风收回去，服务端 VAD 当成用户插话、还会把 Bot 的话转写成用户输入。
     /// 播音时只把本地确认是人声的音频发出去（连同门打开前攒下的半秒，免得丢掉开头几个字），其余发同长度静音。
-    private func gatedMicFrames(_ data: Data, level: Float) -> [Data] {
-        // 静音仍发送同长度的零音频，让服务端正确结束上一句话。
-        if muted { gatePreroll.removeAll(); return [Data(count: data.count)] }
+    private func gatedMicFrames(_ data: Data, level: Float, quiet: Bool) -> [Data] {
+        // 提示音和静音都只送等长静音，提示音的回采也不能混进后续的预录帧。
+        if quiet { gatePreroll.removeAll(); return [Data(count: data.count)] }
         let playing = audio.hasPendingAudio
         let pass = echoGate.feed(level: level, botPlaying: playing, at: Date())
         if pass {
@@ -665,7 +670,11 @@ final class RealtimeVoiceSession: ObservableObject {
     }
 
     private func markConnected(generation: UUID) {
-        connected = true; status = "正在听你说"; timeoutTask?.cancel()
+        guard active, !connected, !isEnding, epoch == generation else { return }
+        connected = true
+        status = muted ? "麦克风已静音" : "正在听你说"
+        timeoutTask?.cancel()
+        if chimesEnabled { audio.playChime(.connected) }
         clockTask = Task { [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
@@ -813,8 +822,8 @@ final class RealtimeVoiceSession: ObservableObject {
         if active { status = muted ? "麦克风已静音" : "正在听你说" }
     }
 
-    private func noteMicLevel(_ target: Float) {
-        let v = micMeter.feed(target)
+    private func noteMicLevel(_ target: Float, quiet: Bool) {
+        let v = quiet ? micMeter.decay() : micMeter.feedMicrophone(target)
         let now = Date()
         guard now.timeIntervalSince(lastMicLevelAt) > 0.08 else { return }
         lastMicLevelAt = now
@@ -837,12 +846,48 @@ final class RealtimeVoiceSession: ObservableObject {
 
     /// 按住说话：按下开麦、松开静音
     func setTalking(_ on: Bool) {
-        guard active else { return }
+        guard active, !isEnding else { return }
         muted = !on
         status = on ? "正在听你说（松开结束）" : "按住说话"
     }
 
-    func toggleMute() { muted.toggle(); status = muted ? "麦克风已静音" : "正在听你说" }
+    func toggleMute() {
+        guard active, !isEnding else { return }
+        muted.toggle()
+        status = muted ? "麦克风已静音" : "正在听你说"
+    }
+
+    private var chimesEnabled: Bool {
+        let defaults = UserDefaults.standard
+        let key = RealtimeCallChime.preferenceKey
+        return defaults.object(forKey: key) == nil || defaults.bool(forKey: key)
+    }
+
+    /// 用户挂断时立即停止收音和网络，只让已经打开的扬声器播完离线短音。
+    func hangUp() {
+        guard active, !isEnding else { return }
+        guard connected, chimesEnabled else { finish(); return }
+        isEnding = true
+        interrupt(sendCancel: false, userSpoke: false)
+        status = "正在挂断"
+        microphoneTask?.cancel()
+        clockTask?.cancel()
+        receiveTask?.cancel()
+        senderTask?.cancel()
+        socket?.cancel(with: .normalClosure, reason: nil)
+        audio.stopCapture()
+        VoiceModePreference.shared.isCapturing = false
+        guard audio.playChime(.disconnected, onPlayed: { [weak self] in self?.finish() }) else {
+            finish()
+            return
+        }
+        let generation = epoch
+        hangUpTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 650_000_000) } catch { return }
+            guard let self, self.epoch == generation else { return }
+            self.finish()
+        }
+    }
     private func fail(_ message: String) {
         // 一来一回测试：握手已经通过、只是回一句没成功时，算「部分通过」并说明，不当成连不上
         if validationRoundTrip && seeded && active {
@@ -855,6 +900,8 @@ final class RealtimeVoiceSession: ObservableObject {
         guard active else { return }
         // 先禁用发送，防止发送队列溢出时挂断再次发取消事件造成递归。
         active = false
+        isEnding = false
+        hangUpTask?.cancel(); hangUpTask = nil
         bargeInWait?.cancel(); bargeInWait = nil
         interrupt(sendCancel: false, userSpoke: false)
         connected = false; epoch = UUID()

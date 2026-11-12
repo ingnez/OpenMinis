@@ -4,6 +4,7 @@ import Foundation
 /// 用 RMS 再开方压一下，安静时接近 0、正常说话约 0.3～0.7；带平滑，避免条子乱跳。
 struct RealtimeLevelMeter {
     private(set) var value: Float = 0
+    private var ambientFloor: Float = 0.04
     /// 上升快、下降慢
     var attack: Float = 0.6
     var release: Float = 0.15
@@ -34,6 +35,14 @@ struct RealtimeLevelMeter {
         value += (target - value) * k
         if value < 0.005 { value = 0 }
         return value
+    }
+
+    /// 只给波形用：在较安静的帧更新底噪，不让说话抬高门槛。
+    mutating func feedMicrophone(_ target: Float) -> Float {
+        if target < 0.16 {
+            ambientFloor += (target - ambientFloor) * (target < ambientFloor ? 0.18 : 0.04)
+        }
+        return feed(max(0, target - ambientFloor - 0.025))
     }
 
     mutating func decay() -> Float { feed(0) }

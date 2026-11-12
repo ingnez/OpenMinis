@@ -167,7 +167,7 @@ REALTIME_PORT = 18796
 # 假实时服务（OpenAI Realtime 协议，标准库手写 WebSocket）：App 发 input_audio_buffer.append，够 1 秒后回一段字幕 + 声音
 REALTIME = {"connections": 0, "session_updates": 0, "appends": 0, "audio_bytes_in": 0, "replies": 0, "events": [],
             # echo 场景：模拟真机外放回声（服务端 VAD 持续「在说话」、把 Bot 自己的话转写成用户输入、上一句转写晚到）
-            "scenario": "", "cancels": 0, "loud_appends_in_reply": 0, "echo_done": False}
+            "scenario": "", "cancels": 0, "loud_appends_in_reply": 0, "echo_done": False, "opening_frames_loud": []}
 REALTIME_ECHO_TEXT = "我听到了"
 REALTIME_REPLY = "e2e-realtime-ok 我听到了"
 
@@ -269,6 +269,8 @@ def start_fake_realtime():
                         REALTIME["events"].append(ty)
                     if ty == "session.update":
                         REALTIME["session_updates"] += 1
+                        if REALTIME["scenario"] == "call_island":
+                            time.sleep(3)
                         send(sock, {"type": "session.updated", "session": ev.get("session", {})})
                     elif ty == "response.cancel":
                         REALTIME["cancels"] += 1
@@ -277,7 +279,13 @@ def start_fake_realtime():
                         REALTIME["appends"] += 1
                         pcm = base64.b64decode(ev.get("audio", ""))
                         REALTIME["audio_bytes_in"] += len(pcm)
-                        if in_reply and pcm and max(abs(v) for (v,) in struct.iter_unpack("<h", pcm[:len(pcm) // 2 * 2])) > 1500:
+                        inspect_opening = REALTIME["scenario"] == "call_island" and appends <= 6
+                        loud = (in_reply or inspect_opening) and any(
+                            abs(v) > 1500 for (v,) in struct.iter_unpack("<h", pcm[:len(pcm) // 2 * 2])
+                        )
+                        if inspect_opening:
+                            REALTIME["opening_frames_loud"].append(loud)
+                        if in_reply and loud:
                             REALTIME["loud_appends_in_reply"] += 1
                         if REALTIME["scenario"] == "echo" and appends >= 30 and not replied:
                             replied = True
@@ -501,7 +509,7 @@ def main():
             if urlparse(self.path).path == "/_e2e/realtime":
                 sc = parse_qs(urlparse(self.path).query, keep_blank_values=True).get("scenario")
                 if sc is not None:
-                    REALTIME.update(scenario=sc[0], cancels=0, loud_appends_in_reply=0, echo_done=False)
+                    REALTIME.update(scenario=sc[0], cancels=0, loud_appends_in_reply=0, echo_done=False, opening_frames_loud=[])
                 body = json.dumps(REALTIME, ensure_ascii=False).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")

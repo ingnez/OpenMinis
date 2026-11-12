@@ -114,6 +114,44 @@ enum RealtimeVoiceProtocol {
     }
 }
 
+/// 本机通话短音，复用语音输出的 24 kHz 采样率。
+enum RealtimeCallChime: Equatable, Sendable {
+    case connected
+    case disconnected
+
+    static let preferenceKey = "realtimeVoice.callChimes"
+    static let microphoneTail: TimeInterval = 0.035
+
+    var duration: TimeInterval {
+        switch self {
+        case .connected: return 0.17
+        case .disconnected: return 0.18
+        }
+    }
+
+    func samples() -> [Float] {
+        let rate = Double(RealtimeVoiceProtocol.sampleRate)
+        let frequencies: (Double, Double)
+        switch self {
+        case .connected: frequencies = (587.33, 783.99)
+        case .disconnected: frequencies = (659.25, 493.88)
+        }
+        let secondNoteAt = 0.062
+        func note(_ time: Double, duration: Double, frequency: Double, volume: Double) -> Double {
+            guard time >= 0, time < duration else { return 0 }
+            let envelope = min(time / 0.008, 1, (duration - time) / 0.045)
+            let phase = 2 * Double.pi * frequency * time
+            return volume * envelope * (sin(phase) + 0.12 * sin(phase * 2))
+        }
+        return (0..<Int((duration * rate).rounded())).map { frame in
+            let time = Double(frame) / rate
+            let first = note(time, duration: 0.085, frequency: frequencies.0, volume: 0.10)
+            let second = note(time - secondNoteAt, duration: duration - secondNoteAt, frequency: frequencies.1, volume: 0.14)
+            return Float(first + second)
+        }
+    }
+}
+
 /// 只跟踪实际播放帧，打断时不会把未听到的语音保留为已知对话。
 struct RealtimePlaybackLedger {
     var responseID: String?

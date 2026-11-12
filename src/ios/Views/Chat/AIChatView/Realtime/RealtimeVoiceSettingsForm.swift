@@ -35,6 +35,7 @@ struct RealtimeVoiceSettingsForm: View {
     @AppStorage("realtimeVoice.provider") private var providerID = ""
     @AppStorage("realtimeVoice.model") private var model = ""
     @AppStorage("realtimeVoice.voice") private var voice = "alloy"
+    @AppStorage(RealtimeCallChime.preferenceKey) private var callChimes = true
     @AppStorage("realtimeVoice.preview") private var preview = false
     @AppStorage("realtimeVoice.protocolsByProvider") private var protocolsByProvider = "{}"
     @AppStorage("realtimeVoice.dashscopeRegion") private var dashscopeRegion = ""
@@ -94,6 +95,7 @@ struct RealtimeVoiceSettingsForm: View {
                 Picker("声音", selection: $voice) {
                     ForEach(availableVoices, id: \.self) { Text($0).tag($0) }
                 }
+                Toggle("接通与挂断提示音", isOn: $callChimes)
                 if selectedProtocol == .dashScope {
                     RealtimeDashScopeFields(region: $dashscopeRegion, workspace: $dashscopeWorkspace, model: model)
                 }

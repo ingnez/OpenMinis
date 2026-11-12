@@ -41,6 +41,7 @@ final class RealtimeVoiceAudio {
     var onOverflow: (() -> Void)?
     private var playbackOrigin: AVAudioFramePosition = 0
     private var scheduledEnd: AVAudioFramePosition = 0
+    private var chimeQuietUntil = Date.distantPast
     private let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24_000,
                                       channels: 1, interleaved: false)!
     /// 引擎被系统停掉且重启不了（切换设备、别的功能改了音频会话）时回调中文原因
@@ -58,9 +59,11 @@ final class RealtimeVoiceAudio {
 
     /// 引擎真的在跑（收音和播放都靠它）
     var isRunning: Bool { fake ? fakeTask != nil : (engine?.isRunning ?? false) }
+    var isChimeSuppressingMicrophone: Bool { chimeQuietUntil > Date() }
 
     func start(inputSampleRate: Double = 24_000) throws -> AsyncStream<Data> {
         playedBytes = 0
+        chimeQuietUntil = .distantPast
         #if DEBUG
         if CloudE2E.fakeMic { return startFake(rate: inputSampleRate) }
         #endif
@@ -146,6 +149,50 @@ final class RealtimeVoiceAudio {
     }
     #endif
 
+    /// 短音与语音共用一个 FIFO：首句紧跟在接通音后面，短音的帧不会计入 Bot 回复。
+    @discardableResult
+    func playChime(_ chime: RealtimeCallChime, onPlayed: (@MainActor @Sendable () -> Void)? = nil) -> Bool {
+        guard isRunning, !hasPendingAudio else { return false }
+        let epoch = playbackEpoch
+        if fake {
+            if chime == .connected {
+                chimeQuietUntil = Date().addingTimeInterval(chime.duration + RealtimeCallChime.microphoneTail)
+            }
+            if let onPlayed {
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(chime.duration * 1_000_000_000))
+                    guard let self, self.playbackEpoch == epoch else { return }
+                    onPlayed()
+                }
+            }
+            return true
+        }
+        let samples = chime.samples()
+        let count = AVAudioFrameCount(samples.count)
+        guard let player, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: count),
+              let channel = buffer.floatChannelData?[0] else { return false }
+        buffer.frameLength = count
+        for (i, sample) in samples.enumerated() { channel[i] = sample }
+        if chime == .connected {
+            let session = AVAudioSession.sharedInstance()
+            let latency = min(0.25, session.outputLatency + session.ioBufferDuration * 2)
+            chimeQuietUntil = Date().addingTimeInterval(chime.duration + latency + RealtimeCallChime.microphoneTail)
+        }
+        scheduledEnd = max(scheduledEnd, totalPlayedFrames) + Int64(count)
+        playbackOrigin = scheduledEnd
+        player.scheduleBuffer(buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.playbackEpoch == epoch else { return }
+                if chime == .connected {
+                    self.chimeQuietUntil = Date().addingTimeInterval(RealtimeCallChime.microphoneTail)
+                }
+                onPlayed?()
+            }
+        }
+        if !player.isPlaying { player.play() }
+        return true
+    }
+
     func play(_ bytes: Data) throws {
         guard bytes.count % 2 == 0, bytes.count > 0 else {
             throw AudioError.start("实时服务返回了无效的音频数据。")
@@ -223,15 +270,19 @@ final class RealtimeVoiceAudio {
         fakeDrainTask?.cancel(); fakeDrainTask = nil
         player?.stop()
     }
+    func stopCapture() {
+        streamContinuation?.finish(); streamContinuation = nil
+        if tapped { engine?.inputNode.removeTap(onBus: 0); tapped = false }
+    }
     func stop() {
         if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
         configObserver = nil
         fakeTask?.cancel(); fakeTask = nil
         fakePlayingUntil = .distantPast; fakeDrainTask?.cancel(); fakeDrainTask = nil
-        if fake { fake = false; streamContinuation?.finish(); streamContinuation = nil; return }
-        streamContinuation?.finish(); streamContinuation = nil
+        chimeQuietUntil = .distantPast
+        stopCapture()
         playbackEpoch += 1; pendingBuffers = 0; scheduledEnd = 0; playbackOrigin = 0
-        if tapped { engine?.inputNode.removeTap(onBus: 0); tapped = false }
+        if fake { fake = false; return }
         engine?.stop(); player?.stop(); engine = nil; player = nil
         AudioSessionCoordinator.shared.end(.realtimeConversation)
     }
