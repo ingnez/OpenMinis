@@ -1083,6 +1083,7 @@ struct ScheduledPillFace: View {
     let ringSize: CGFloat
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     /// Around the ring on its leading side and above and below, so at the
     /// default size (26 pt ring, 34 pt pill) it sits concentric in the
@@ -1123,8 +1124,9 @@ struct ScheduledPillFace: View {
     }
 
     var body: some View {
-        // Content-hugging: [ring][+N][clock], fixed gaps, no segments.
-        HStack(spacing: 0) {
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
+        return layout {
             ring
                 .padding(.leading, Self.glyphInset)
                 .padding(.vertical, Self.glyphInset)
@@ -1138,7 +1140,7 @@ struct ScheduledPillFace: View {
             }
             // [T-sched-pill-vcenter] Every element centred on the pill's middle
             // line. (A shared text baseline put the smaller counter low.)
-            HStack(alignment: .center, spacing: 0) {
+            layout {
                 // Leading: any slack of the floor (e.g. "1h 5m" in the room of
                 // "00h 00m") goes after the clock, not between ring and clock.
                 // [T-sched-pill-clock-big] One size up (headline, 17 pt).
@@ -1157,7 +1159,8 @@ struct ScheduledPillFace: View {
                 .font(.system(.headline, design: .rounded).weight(.semibold).monospacedDigit())
                 .foregroundStyle(ScheduledAccent.color)
                 .lineLimit(1)
-                .fixedSize()
+                .fixedSize(horizontal: !typeSize.isAccessibilitySize, vertical: true)
+                .minimumScaleFactor(0.8)
                 // [T-sched-pill-count] Which run this is: secondary to the
                 // clock (smaller, lighter, same amber), with the same width
                 // floor so a fire or skip moving "9/30" to "10/30" does not
@@ -1249,8 +1252,7 @@ struct ScheduledTaskBanner: View {
     @ObservedObject private var dismissals = ScheduledBannerDismissals.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmCancelAll = false
-    /// The ring grows with Dynamic Type; the cap keeps it (and "+N") inside
-    /// the fixed glyph segment up to the xxxLarge limit below.
+    /// The ring has a bounded size while text follows the full system range.
     @ScaledMetric(relativeTo: .subheadline) private var ringSize: CGFloat = 26
 
     private var jobIds: Set<String> { registry.activeScheduleJobIdsBySession[sessionId] ?? [] }
@@ -1315,7 +1317,6 @@ struct ScheduledTaskBanner: View {
                 Button(AppLocalized("Run Now")) { runNow(state.job.id, run: state.job.runsDone) }
             }
         }
-        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .padding(.horizontal, 12)
         .padding(.top, 6)
         .padding(.bottom, 4)

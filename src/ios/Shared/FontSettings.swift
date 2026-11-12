@@ -120,7 +120,10 @@ final class FontSettings: ObservableObject {
             guard appBaseScale != oldValue else { return }
             UserDefaults.standard.set(appBaseScale.rawValue, forKey: Keys.appBase)
             // Defer to next runloop to avoid layout feedback loop with Slider
-            DispatchQueue.main.async { [weak self] in self?.applyAppScaleToAllWindows() }
+            DispatchQueue.main.async { [weak self] in
+                self?.applyAppScaleToAllWindows()
+                NotificationCenter.default.post(name: .fontSettingsMessageBaseChanged, object: nil)
+            }
         }
     }
 
@@ -156,11 +159,6 @@ final class FontSettings: ObservableObject {
 
     var chatInputFont: UIFont {
         ChatFontDesign.current.styled(.systemFont(ofSize: scaledChatInput(16.5)), boldText: systemBoldText)
-    }
-
-    /// Scale a font size by the app-base multiplier.
-    func scaledApp(_ size: CGFloat) -> CGFloat {
-        size * appBaseScale.multiplier
     }
 
     // MARK: - Init
@@ -283,6 +281,7 @@ private struct AppFontScaleModifier: ViewModifier {
             boldText: legibilityWeight == .bold || (legibilityWeight == nil && fontSettings.systemBoldText)
         )
         content.dynamicTypeSize(appSize)
+            .environment(\.legibilityWeight, legibilityWeight ?? (typography.boldText ? .bold : .regular))
             .environment(\.cloudChatTypography, typography)
             .onChange(of: designRaw) { _ in
                 NotificationCenter.default.post(name: .fontSettingsMessageBaseChanged, object: nil)

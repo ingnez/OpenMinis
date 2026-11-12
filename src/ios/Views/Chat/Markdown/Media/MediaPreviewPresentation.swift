@@ -80,7 +80,7 @@ final class ImageTapGesture: UITapGestureRecognizer {
         let preview = ScrollRestoringDismissWrapper(scrollView: scrollView, savedOffset: savedOffset) {
             ImagePreviewView(image: image, source: source)
         }
-        let hosting = UIHostingController(rootView: preview)
+        let hosting = UIHostingController(rootView: preview.appFontScale())
         hosting.modalPresentationStyle = .overFullScreen
         hosting.modalTransitionStyle = .crossDissolve
         presenter.present(hosting, animated: true)
@@ -124,7 +124,7 @@ final class VideoTapGesture: UITapGestureRecognizer {
         let playerView = ScrollRestoringDismissWrapper(scrollView: scrollView, savedOffset: savedOffset) {
             MinisVideoFullscreenPlayer(fileURL: url)
         }
-        let hosting = UIHostingController(rootView: playerView)
+        let hosting = UIHostingController(rootView: playerView.appFontScale())
         hosting.modalPresentationStyle = .overFullScreen
         hosting.modalTransitionStyle = .crossDissolve
         presenter.present(hosting, animated: true)
@@ -141,7 +141,7 @@ final class AudioTapGesture: UITapGestureRecognizer {
         guard let presenter = self.view?.nearestViewController() else { return }
         // Playback continues seamlessly — global player is shared with preview
         let preview = MinisAudioPreviewView(fileURL: url)
-        let hosting = UIHostingController(rootView: preview)
+        let hosting = UIHostingController(rootView: preview.appFontScale())
         if let sheet = hosting.sheetPresentationController {
             sheet.detents = [.large()]
             sheet.prefersGrabberVisible = false

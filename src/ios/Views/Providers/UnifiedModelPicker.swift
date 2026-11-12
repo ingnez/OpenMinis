@@ -1003,7 +1003,7 @@ struct UnifiedModelPicker: View {
             Image(systemName: strategy == .fallback ? "arrow.down.circle" : "arrow.triangle.branch")
                 .font(.system(size: 8))
             Text(strategy == .fallback ? "FB" : "LB")
-                .font(.system(size: 9, weight: .medium, design: .rounded))
+                .appTextFont(size: 9, weight: .medium, design: .rounded, relativeTo: .caption)
         }
         .foregroundStyle(.secondary)
         .padding(.horizontal, 4)
@@ -1234,7 +1234,7 @@ struct UnifiedModelPicker: View {
         }
         if disabled {
             Text("unavailable", comment: "Modality-incompatible model tag")
-                .font(.system(size: 9, weight: .medium))
+                .appTextFont(size: 9, weight: .medium, relativeTo: .caption)
                 .foregroundStyle(.orange)
         }
     }
@@ -1553,7 +1553,7 @@ struct UnifiedModelPicker: View {
     private func entryRowTags(_ badges: [String], disabled: Bool) -> some View {
         ForEach(badges, id: \.self) { badge in
             Text(badge)
-                .font(.system(size: 9, weight: .medium))
+                .appTextFont(size: 9, weight: .medium, relativeTo: .caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)
@@ -1562,7 +1562,7 @@ struct UnifiedModelPicker: View {
         }
         if disabled {
             Text("unavailable", comment: "Modality-incompatible model tag")
-                .font(.system(size: 9, weight: .medium))
+                .appTextFont(size: 9, weight: .medium, relativeTo: .caption)
                 .foregroundStyle(.orange)
         }
     }

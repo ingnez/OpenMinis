@@ -199,12 +199,12 @@ struct BrowserHistoryView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.title.isEmpty ? entry.domain : entry.title)
-                    .font(.system(size: 14, weight: .medium))
+                    .appTextFont(size: 14, weight: .medium)
                     .foregroundStyle(Color(UIColor.label))
                     .lineLimit(1)
 
                 Text(entry.url)
-                    .font(.system(size: 11, design: .monospaced))
+                    .appTextFont(size: 11, design: .monospaced, relativeTo: .caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -212,7 +212,7 @@ struct BrowserHistoryView: View {
             Spacer()
 
             Text(timeLabel(entry.timestamp))
-                .font(.system(size: 11))
+                .appTextFont(size: 11, relativeTo: .caption)
                 .foregroundStyle(.tertiary)
         }
         .contentShape(Rectangle())

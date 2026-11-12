@@ -279,7 +279,7 @@ extension AIChatView {
             vm.cancelEdit()
         } label: {
             Text("Exit Edit Mode", comment: "Cancel message editing")
-                .font(.system(size: 13, weight: .medium))
+                .appTextFont(size: 13, weight: .medium)
                 .foregroundStyle(ChatColors.secondaryText)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
@@ -295,7 +295,7 @@ extension AIChatView {
             speechManager.showLanguagePicker = true
         } label: {
             Text(speechManager.languageLabel)
-                .font(.system(size: 12, weight: .semibold))
+                .appTextFont(size: 12, weight: .semibold, relativeTo: .caption)
                 .foregroundStyle(ChatColors.secondaryText)
                 .frame(width: 34, height: 34)
                 .background(ChatColors.inputIconBg)

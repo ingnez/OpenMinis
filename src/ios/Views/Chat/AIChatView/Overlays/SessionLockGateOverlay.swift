@@ -97,12 +97,12 @@ struct SessionLockGateOverlay: View {
                     .foregroundStyle(.secondary)
 
                 Text("This session is locked")
-                    .font(.system(size: 18, weight: .semibold))
+                    .appTextFont(size: 18, weight: .semibold)
 
                 Text(attemptFailed
                      ? "Authentication failed. Tap to try again."
                      : "Tap to unlock with \(BiometricAuth.biometryDisplayName)")
-                    .font(.system(size: 14))
+                    .appTextFont(size: 14)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
 
@@ -113,7 +113,7 @@ struct SessionLockGateOverlay: View {
                           ? AppLocalized("Try again")
                           : AppLocalized("Unlock"),
                           systemImage: "faceid")
-                        .font(.system(size: 16, weight: .semibold))
+                        .appTextFont(size: 16, weight: .semibold)
                         .padding(.horizontal, 22).padding(.vertical, 10)
                         .background(.tint, in: Capsule())
                         .foregroundStyle(.white)

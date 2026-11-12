@@ -771,7 +771,7 @@ struct SyncLogView: View {
                     .foregroundStyle(.red)
             }
         }
-        .font(.system(size: 16))
+        .appTextFont(size: 16)
     }
 
     private func formatRecordName(_ name: String) -> String {

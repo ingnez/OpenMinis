@@ -471,13 +471,13 @@ struct HelperBlockView: View {
                     // badge would appear and then change, which reads as a
                     // glitch — HelperRunner sets the name at `markRunning`.
                     Text(badgeLabel(info))
-                        .font(.system(size: 10, weight: .semibold))
+                        .appTextFont(size: 10, weight: .semibold, relativeTo: .caption)
                         .foregroundStyle(HelperAccent.color)
                         .padding(.horizontal, 5).padding(.vertical, 1)
                         .background(HelperAccent.color.opacity(0.15))
                         .clipShape(Capsule())
                     SearchHighlightText(info.title, blockId: block.id, field: .title, messageId: searchMessageId)
-                        .font(.system(size: 13, weight: .medium))
+                        .appTextFont(size: 13, weight: .medium)
                         .foregroundStyle(ChatColors.primaryText)
                         .lineLimit(1)
                 }
@@ -595,13 +595,13 @@ struct HelperBlockView: View {
     private func secondLine(_ info: HelperBlockInfo) -> some View {
         switch info.phase {
         case .starting:
-            Text(AppLocalized("starting")).font(.system(size: 11)).foregroundStyle(ChatColors.secondaryText)
+            Text(AppLocalized("starting")).appTextFont(size: 11, relativeTo: .caption).foregroundStyle(ChatColors.secondaryText)
         case .running(let tool, let activity, let clock):
             HStack(spacing: 6) {
                 if let tool {
                     HStack(spacing: 3) {
                         Image(systemName: HelperAccent.symbol(forTool: tool)).font(.system(size: 10, weight: .semibold))
-                        Text(HelperAccent.displayName(forTool: tool)).font(.system(size: 11, weight: .semibold))
+                        Text(HelperAccent.displayName(forTool: tool)).appTextFont(size: 11, weight: .semibold, relativeTo: .caption)
                     }
                     .foregroundStyle(HelperAccent.color)
                     .lineLimit(1)
@@ -621,9 +621,9 @@ struct HelperBlockView: View {
                         SearchHighlightText(activity, blockId: block.id, field: .activity, messageId: searchMessageId)
                     }
                 }
-                .font(.system(size: 11)).foregroundStyle(ChatColors.secondaryText).lineLimit(1)
+                .appTextFont(size: 11, relativeTo: .caption).foregroundStyle(ChatColors.secondaryText).lineLimit(1)
                 if !clock.isEmpty {
-                    Text(clock).font(.system(size: 11, design: .monospaced)).foregroundStyle(ChatColors.tertiaryText)
+                    Text(clock).appTextFont(size: 11, design: .monospaced, relativeTo: .caption).foregroundStyle(ChatColors.tertiaryText)
                         .fixedSize()
                 }
             }
@@ -636,7 +636,7 @@ struct HelperBlockView: View {
             // the middle, so "Done · primary · … · 8s" always fits one line.
             HStack(spacing: 6) {
                 SearchHighlightText(info.statusText, blockId: block.id, field: .activity, messageId: searchMessageId)
-                    .font(.system(size: 11, weight: .semibold))
+                    .appTextFont(size: 11, weight: .semibold, relativeTo: .caption)
                     .foregroundStyle(HelperBlockInfo.statusColor(status))
                     .fixedSize()
                 // [T-sub-agents-badge] No agent chip here: the badge above
@@ -645,7 +645,7 @@ struct HelperBlockView: View {
                 // one thing this line exists to show.
                 if let tier = HelperBlockInfo.tierLabel(info.model, fallback: tier) {
                     Text(tier)
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .appTextFont(size: 9, weight: .semibold, design: .monospaced, relativeTo: .caption)
                         .padding(.horizontal, 4).padding(.vertical, 1)
                         .background(ChatColors.secondaryBg)
                         .clipShape(Capsule())
@@ -653,7 +653,7 @@ struct HelperBlockView: View {
                 }
                 if let model = info.model, let line = model.compactLine() {
                     Text(line)
-                        .font(.system(size: 11))
+                        .appTextFont(size: 11, relativeTo: .caption)
                         .foregroundStyle(model.hasEffective ? ChatColors.secondaryText : ChatColors.tertiaryText)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -661,7 +661,7 @@ struct HelperBlockView: View {
                 }
                 if let elapsed {
                     Text(HelperBlockInfo.elapsedLabel(elapsed))
-                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(ChatColors.tertiaryText)
+                        .appTextFont(size: 11, design: .monospaced, relativeTo: .caption).foregroundStyle(ChatColors.tertiaryText)
                         .fixedSize()
                 }
                 if escalation {
@@ -702,7 +702,7 @@ struct HelperThumbnailView: View {
                 Text(AppLocalized("Agent")).font(.system(size: 6, weight: .bold))
             }
             .foregroundStyle(HelperAccent.color)
-            Text(info.title).font(.system(size: 7, weight: .semibold)).foregroundStyle(.white)
+            Text(info.title).appTextFont(size: 7, weight: .semibold, relativeTo: .caption).foregroundStyle(.white)
                 .lineLimit(modelLine == nil ? 2 : 1)
             Spacer(minLength: 0)
             switch info.phase {
@@ -825,12 +825,12 @@ struct HelperDetailCard: View {
                             if let tool {
                                 HStack(spacing: 6) {
                                     Image(systemName: HelperAccent.symbol(forTool: tool)).font(.system(size: 13, weight: .semibold))
-                                    Text(HelperAccent.displayName(forTool: tool)).font(.system(size: 14, weight: .semibold))
+                                    Text(HelperAccent.displayName(forTool: tool)).appTextFont(size: 14, weight: .semibold)
                                 }
                                 .foregroundStyle(HelperAccent.color)
                             }
                             if !activity.isEmpty {
-                                Text(activity).font(.system(size: 13)).foregroundStyle(Color(UIColor.label))
+                                Text(activity).appTextFont(size: 13).foregroundStyle(Color(UIColor.label))
                                     .textSelection(.enabled)
                             }
                         }
@@ -859,7 +859,7 @@ struct HelperDetailCard: View {
                     AgentDetailCard(title: AppLocalized("Error"),
                                     icon: "exclamationmark.octagon") {
                         Text(detail)
-                            .font(.system(size: 13, design: .monospaced))
+                            .appTextFont(size: 13, design: .monospaced)
                             .foregroundStyle(Color(UIColor.label))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -901,7 +901,7 @@ struct HelperDetailCard: View {
                             SelectableMarkdownView(markdown: result)
                         } else {
                             Text(AppLocalized("No deliverable was returned"))
-                                .font(.system(size: 13))
+                                .appTextFont(size: 13)
                                 .foregroundStyle(Color(UIColor.secondaryLabel))
                         }
                     }
@@ -971,10 +971,10 @@ struct HelperDetailCard: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
                         HStack(alignment: .top, spacing: 8) {
-                            Text(r.0).font(.system(size: 12)).foregroundStyle(Color(UIColor.secondaryLabel))
+                            Text(r.0).appTextFont(size: 12, relativeTo: .caption).foregroundStyle(Color(UIColor.secondaryLabel))
                                 .lineLimit(1).minimumScaleFactor(0.8)
                                 .frame(width: 84, alignment: .leading)
-                            Text(r.1).font(.system(size: 12, design: r.mono ? .monospaced : .default))
+                            Text(r.1).appTextFont(size: 12, design: r.mono ? .monospaced : .default, relativeTo: .caption)
                                 .foregroundStyle(Color(UIColor.label))
                                 .textSelection(.enabled)
                             // [T-subagent-thinking-badge] Same pill the main
@@ -990,7 +990,7 @@ struct HelperDetailCard: View {
                                         .frame(width: 6, height: 6)
                                         .opacity(level.isEnabled ? 1.0 : 0.4)
                                     Text(level.displayName)
-                                        .font(.system(size: 8, weight: .medium))
+                                        .appTextFont(size: 8, weight: .medium, relativeTo: .caption)
                                 }
                                 .foregroundStyle(ChatColors.secondaryText)
                                 .padding(.horizontal, 4)
@@ -1010,20 +1010,20 @@ struct HelperDetailCard: View {
         HStack(spacing: 6) {
             switch info.phase {
             case .starting:
-                Text(AppLocalized("starting")).font(.system(size: 11, weight: .semibold)).foregroundStyle(HelperAccent.color)
+                Text(AppLocalized("starting")).appTextFont(size: 11, weight: .semibold, relativeTo: .caption).foregroundStyle(HelperAccent.color)
             case .running(_, _, let clock):
                 ReattachingSpinner(size: 11, lineWidth: 1.6, color: HelperAccent.color)
-                Text(AppLocalized("running")).font(.system(size: 11, weight: .semibold)).foregroundStyle(HelperAccent.color)
+                Text(AppLocalized("running")).appTextFont(size: 11, weight: .semibold, relativeTo: .caption).foregroundStyle(HelperAccent.color)
                 if !clock.isEmpty {
-                    Text(clock).font(.system(size: 11, design: .monospaced)).foregroundStyle(Color(UIColor.tertiaryLabel))
+                    Text(clock).appTextFont(size: 11, design: .monospaced, relativeTo: .caption).foregroundStyle(Color(UIColor.tertiaryLabel))
                 }
             case .finished(let status, let tier, _, let elapsed, _, _, _, _):
                 Text(info.statusText)
-                    .font(.system(size: 11, weight: .semibold))
+                    .appTextFont(size: 11, weight: .semibold, relativeTo: .caption)
                     .foregroundStyle(HelperBlockInfo.statusColor(status))
                 if let tier = HelperBlockInfo.tierLabel(info.model, fallback: tier) {
                     Text(tier)
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .appTextFont(size: 9, weight: .semibold, design: .monospaced, relativeTo: .caption)
                         .padding(.horizontal, 5).padding(.vertical, 1)
                         .background(HelperAccent.color.opacity(0.15))
                         .foregroundStyle(HelperAccent.color)
@@ -1031,7 +1031,7 @@ struct HelperDetailCard: View {
                 }
                 if let elapsed {
                     Text(HelperBlockInfo.elapsedLabel(elapsed))
-                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Color(UIColor.tertiaryLabel))
+                        .appTextFont(size: 11, design: .monospaced, relativeTo: .caption).foregroundStyle(Color(UIColor.tertiaryLabel))
                 }
             }
         }
@@ -1266,7 +1266,7 @@ struct AgentDetailCard<Trailing: View, Content: View>: View {
                     .font(.system(size: 12))
                     .foregroundStyle(iconTint)
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                    .appTextFont(size: 13, weight: .medium)
                     .foregroundStyle(Color(UIColor.label))
                     .lineLimit(1)
                 Spacer(minLength: 6)

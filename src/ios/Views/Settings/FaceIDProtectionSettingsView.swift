@@ -27,7 +27,7 @@ struct FaceIDProtectionSettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Lock App")
                         Text("Require \(BiometricAuth.biometryDisplayName) to open Minis.")
-                            .font(.system(size: 12))
+                            .appTextFont(size: 12, relativeTo: .caption)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -74,7 +74,7 @@ struct FaceIDProtectionSettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Lock Sessions")
                         Text("Long-press a session in the list to lock it.")
-                            .font(.system(size: 12))
+                            .appTextFont(size: 12, relativeTo: .caption)
                             .foregroundStyle(.secondary)
                     }
                 }

@@ -450,11 +450,14 @@ struct CloudBotHomeRow: View {
     var presence = CloudBotPresence(state: .idle, unread: 0, routine: .none, muted: false)
     /// 头像跟着系统字号一起变大，但不超过 60pt（首页一行一个 Bot，太大挤掉名字）
     @ScaledMetric(relativeTo: .headline) private var scaledAvatar: CGFloat = 46
+    @Environment(\.dynamicTypeSize) private var typeSize
     private var avatar: CGFloat { min(max(scaledAvatar, 40), 60) }
 
     var body: some View {
         let status = CloudBotStatus.of(bot)
         let spec = CloudBotAvatarSpec.of(bot)
+        let titleLayout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 3)) : AnyLayout(HStackLayout())
         HStack(spacing: 14) {
             Group {
                 if bot.activity != nil, !CloudBotLock.shared.isLocked(bot.id) {
@@ -474,12 +477,12 @@ struct CloudBotHomeRow: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(bot.name)，\(presence.accessibilityText)")
             VStack(alignment: .leading, spacing: 4) {
-                HStack {
+                titleLayout {
                     // 系统字体样式，跟着「更大字体」缩放（以前写死 17pt）
-                    Text(bot.name).font(.headline).lineLimit(1)
+                    Text(bot.name).font(.headline).lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
                         .accessibilityIdentifier("homeRowTitle")
                     CloudPresenceFlags(presence: presence)
-                    Spacer(minLength: 8)
+                    if !typeSize.isAccessibilitySize { Spacer(minLength: 8) }
                     Text(CloudBotHome.timeText(CloudTypingRules.sortTime(lastAt: max(bot.lastAt, showsThread ? bot.threadAt : 0), working: bot.activity != nil)))
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -497,10 +500,12 @@ struct CloudBotHomeRow: View {
                             .accessibilityHidden(true)
                     }
                     if let typing {
-                        Text(typing.subtitle).font(.subheadline).foregroundStyle(.green).lineLimit(1)
+                        Text(typing.subtitle).font(.subheadline).foregroundStyle(.green)
+                            .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
                             .transition(.opacity)
                     } else {
-                        Text(previewText).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        Text(previewText).font(.subheadline).foregroundStyle(.secondary)
+                            .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
                     }
                     Spacer(minLength: 0)
                     CloudUnreadMark(presence: presence)
@@ -509,8 +514,6 @@ struct CloudBotHomeRow: View {
         }
         .padding(.vertical, 10)
         .contentShape(Rectangle())
-        // 密集的列表行：字号最多放大到辅助功能 2 档，再大就一行放不下名字
-        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
     }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

@@ -158,7 +158,7 @@ struct SessionRow: View, Equatable {
     // Observe App Base font scale so the row re-evaluates when the user moves
     // the slider. The row's fonts use hardcoded `.system(size:)` which ignore
     // Dynamic Type, so we must explicitly multiply by the App Base scale.
-    @ObservedObject private var fontSettings = FontSettings.shared
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     init(session: ChatSession,
          isHighlighted: Bool = false,
@@ -277,10 +277,10 @@ struct SessionRow: View, Equatable {
             VStack(alignment: .leading, spacing: 4) {
                 highlightedText(
                     session.title ?? "New Chat",
-                    font: .system(size: fontSettings.scaledApp(16), weight: .semibold),
+                    size: 16, weight: .semibold,
                     color: Color(UIColor.label)
                 )
-                .lineLimit(1)
+                .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
 
                 if let snippet = matchSnippet, !snippet.isEmpty {
                     // During active search, prefer the body-match snippet over
@@ -290,23 +290,23 @@ struct SessionRow: View, Equatable {
                     // keyword stands out inside the ~100-char window.
                     highlightedText(
                         snippet,
-                        font: .system(size: fontSettings.scaledApp(14)),
+                        size: 14,
                         color: Color(UIColor.secondaryLabel)
                     )
                     .lineLimit(2)
                 } else if let typingPhase {
                     Text(typingPhase.subtitle)
-                        .font(.system(size: fontSettings.scaledApp(14)))
+                        .appTextFont(size: 14)
                         .foregroundStyle(Color.green)
                         .lineLimit(1)
                         .transition(.opacity)
                 } else {
                     highlightedText(
                         session.lastMessage ?? "No messages yet",
-                        font: .system(size: fontSettings.scaledApp(14)),
+                        size: 14,
                         color: Color(UIColor.secondaryLabel)
                     )
-                    .lineLimit(1)
+                    .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
                 }
             }
             // Blur the locked content. Compared to the earlier hard
@@ -329,7 +329,7 @@ struct SessionRow: View, Equatable {
             VStack(alignment: .trailing, spacing: 4) {
                 // Date
                 Text(relativeDate(session.updatedAt))
-                    .font(.system(size: fontSettings.scaledApp(13)))
+                    .appTextFont(size: 13)
                     .foregroundStyle(Color(UIColor.tertiaryLabel))
                 if isVisuallyLocked {
                     Image(systemName: "lock.fill")
@@ -388,13 +388,13 @@ struct SessionRow: View, Equatable {
     }
 
     @ViewBuilder
-    private func highlightedText(_ text: String, font: Font, color: Color) -> some View {
+    private func highlightedText(_ text: String, size: CGFloat, weight: Font.Weight = .regular, color: Color) -> some View {
         if let query = highlightQuery, !query.isEmpty,
            SearchKeywords.firstHit(in: text, terms: SearchKeywords.terms(query)) != nil {
             Text(Self.highlightedAttributedString(text: text, query: query, baseColor: color))
-                .font(font)
+                .appTextFont(size: size, weight: weight)
         } else {
-            Text(text).font(font).foregroundStyle(color)
+            Text(text).appTextFont(size: size, weight: weight).foregroundStyle(color)
         }
     }
 
@@ -601,11 +601,11 @@ struct RemoteSessionRow: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(session.title ?? "Untitled")
-                    .font(.system(size: 16, weight: .semibold))
+                    .appTextFont(size: 16, weight: .semibold)
                     .foregroundStyle(Color(UIColor.label))
                     .lineLimit(1)
                 Text(session.updatedAt, style: .relative)
-                    .font(.system(size: 14))
+                    .appTextFont(size: 14)
                     .foregroundStyle(Color(UIColor.secondaryLabel))
                     .lineLimit(1)
             }

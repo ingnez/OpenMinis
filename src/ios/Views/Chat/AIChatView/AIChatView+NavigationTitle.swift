@@ -275,8 +275,8 @@ extension AIChatView {
                     //                 naturally has breathing room above
                     //                 and below.
                     // iOS 26 path unchanged (16pt works inside liquid-glass).
-                    .font(.system(size: legacyLayout ? 13 : 16, weight: .semibold))
-                    .minimumScaleFactor(legacyLayout ? 0.85 : 1.0)
+                    .appTextFont(size: legacyLayout ? 13 : 16, weight: .semibold)
+                    .minimumScaleFactor(navigationTypeSize.isAccessibilitySize ? 0.75 : (legacyLayout ? 0.85 : 1.0))
                     .foregroundStyle(ChatColors.primaryText)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -307,6 +307,53 @@ extension AIChatView {
             // the 9pt row's cap headroom); the calibrated title↔group overlap
             // (outer -3) and the group pill's vertical padding are untouched.
             // iOS 26 keeps spacing 1 — the liquid-glass band has no crowding.
+            if navigationTypeSize <= .large {
+                modelDetails(modelName: modelName, isGroupBound: isGroupBound, resolved: resolved,
+                             isAuthed: isAuthed, currentEntry: currentEntry, quotaLow: quotaLow,
+                             legacyLayout: legacyLayout)
+            }
+        }
+        .padding(.top, legacyLayout && navigationTypeSize <= .large ? 6 : 0)
+        .modifier(NavTitleFrameModifier())
+        .contextMenu {
+            if navigationTypeSize > .large {
+                Button("Model") { showModelPicker = true }
+                if !vm.availableThinkingLevels.isEmpty {
+                    Button("Thinking Level") { showThinkingLevelSheet = true }
+                }
+            }
+            if let sid = vm.sessionId, !sid.isEmpty {
+                LocalReplyChatMenu(sessionId: sid, plan: $localReplyPlan).items
+            }
+        }
+        .accessibilityActions {
+            if navigationTypeSize > .large {
+                Button("Model") { showModelPicker = true }
+                if !vm.availableThinkingLevels.isEmpty {
+                    Button("Thinking Level") { showThinkingLevelSheet = true }
+                }
+            }
+        }
+        .sheet(isPresented: $showThinkingLevelSheet) {
+            ThinkingLevelSheetView(
+                currentLevel: vm.currentThinkingLevel,
+                availableLevels: vm.availableThinkingLevels,
+                onSelect: { newLevel in
+                    vm.setThinkingLevel(newLevel)
+                    showThinkingLevelSheet = false
+                }
+            )
+            .presentationDetents([.medium, .large])
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("localChatTitle")
+        .blur(radius: titleIsVisuallyLocked ? 8 : 0)
+        .allowsHitTesting(!titleIsVisuallyLocked)
+        .animation(.easeInOut(duration: 0.15), value: titleIsVisuallyLocked)
+    }
+
+    private func modelDetails(modelName: String, isGroupBound: Bool, resolved: (providerLabel: String, modelName: String)?,
+                              isAuthed: Bool, currentEntry: ModelEntry?, quotaLow: Bool, legacyLayout: Bool) -> some View {
             VStack(spacing: legacyLayout ? -1 : 1) {
                 HStack(spacing: 4) {
                     Button {
@@ -392,7 +439,7 @@ extension AIChatView {
                             showModelPicker = true
                         } label: {
                             Text("\(detail.providerLabel) · \(detail.modelName)")
-                                .font(.system(size: 9))
+                                .appTextFont(size: 9, relativeTo: .caption)
                                 .foregroundStyle(ChatColors.secondaryText)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
@@ -471,42 +518,6 @@ extension AIChatView {
                     withAnimation(.easeInOut(duration: 0.35)) { fallbackPulseOpacity = 0 }
                 }
             }
-        }
-        // [T-navbar-title-clip 2026-05-21] Nudge the whole legacy title
-        // stack down so the first row clears the status-bar / Dynamic
-        // Island band. iOS 16-18 baseline-aligns the `.principal` item
-        // to the toolbar title baseline — adding top padding on the
-        // OUTER stack shifts its rendered position downward without
-        // resizing any individual row. iOS 26 leaves at 0 (liquid
-        // glass centers correctly).
-        .padding(.top, legacyLayout ? 6 : 0)
-        // iOS 26+: fix height to match liquid-glass navbar; older OS: let it size naturally
-        .modifier(NavTitleFrameModifier())
-        // [T-navbar-title-fontsize] Lock the entire principal-toolbar
-        // title stack to the standard (.large) Dynamic Type size. Users
-        // with system / app font scaling cranked up were having the
-        // model name + "provider · model" subtitle overflow the navbar
-        // band and clip. The numeric sizes used above (16/.caption2/9)
-        // still scale with Dynamic Type by default; clamping the
-        // environment here freezes them at the design baseline without
-        // having to rewrite every Text modifier individually.
-        .dynamicTypeSize(.large)
-        .contextMenu {
-            if let sid = vm.sessionId, !sid.isEmpty {
-                LocalReplyChatMenu(sessionId: sid, plan: $localReplyPlan).items
-            }
-        }
-        // 只给外层一个标识：不加 .contain 时子元素都继承 localChatTitle，查询会命中多个（43117433250）
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("localChatTitle")
-        // Blur the title (and model/provider subtitle) while the session
-        // is locked, mirroring the chat body's SessionLockGateOverlay.
-        // `SessionLockStore.isVisuallyLocked` is the single source of
-        // truth — the same helper drives the gate overlay and the chat
-        // list row, so all three sites lock and unlock in lockstep.
-        .blur(radius: titleIsVisuallyLocked ? 8 : 0)
-        .allowsHitTesting(!titleIsVisuallyLocked)
-        .animation(.easeInOut(duration: 0.15), value: titleIsVisuallyLocked)
     }
 
     @ViewBuilder
@@ -527,7 +538,7 @@ extension AIChatView {
                 .frame(width: 6, height: 6)
                 .opacity(level.isEnabled ? 1.0 : 0.4)
             Text(level.displayName)
-                .font(.system(size: 8, weight: .medium))
+                .appTextFont(size: 8, weight: .medium, relativeTo: .caption)
         }
         .foregroundStyle(ChatColors.secondaryText)
         .padding(.horizontal, 4)
@@ -535,17 +546,6 @@ extension AIChatView {
         .background(Capsule().fill(Color.secondary.opacity(0.10)))
         .onTapGesture {
             showThinkingLevelSheet = true
-        }
-        .sheet(isPresented: $showThinkingLevelSheet) {
-            ThinkingLevelSheetView(
-                currentLevel: level,
-                availableLevels: vm.availableThinkingLevels,
-                onSelect: { newLevel in
-                    vm.setThinkingLevel(newLevel)
-                    showThinkingLevelSheet = false
-                }
-            )
-            .presentationDetents([.medium])
         }
     }
 

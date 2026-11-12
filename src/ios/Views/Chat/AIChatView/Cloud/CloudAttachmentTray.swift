@@ -47,7 +47,7 @@ struct CloudAttachmentTray: View {
                 } else {
                     VStack(spacing: 4) {
                         Image(systemName: "doc").font(.title3)
-                        Text(a.filename).font(.system(size: 9)).lineLimit(1).padding(.horizontal, 4)
+                        Text(a.filename).appTextFont(size: 9, relativeTo: .caption).lineLimit(1).padding(.horizontal, 4)
                     }.foregroundStyle(.secondary)
                 }
                 ImageUploadBadge(state: state, onRetry: onRetry).scaleEffect(0.8)

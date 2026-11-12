@@ -266,9 +266,9 @@ check("clock keeps its format's widest width (no twitch while counting), one siz
 // [T-sched-pill-vcenter] Everything centred on the pill's middle line (a
 // shared baseline put the smaller counter low); a status word is smaller
 // than the clock but keeps its height.
-check("clock, counter, +N and ring are centred on one middle line (no text-baseline alignment)",
-      face.contains("HStack(alignment: .center, spacing: 0) {") && !face.contains(".firstTextBaseline")
-      && face.contains("// Content-hugging: [ring][+N][clock], fixed gaps, no segments.\n        HStack(spacing: 0) {"))
+check("clock, counter, +N and ring centre horizontally or stack at accessibility sizes",
+      face.contains("AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))")
+      && !face.contains(".firstTextBaseline"))
 check("a status word (Running / Waiting) is footnote, below the 17 pt clock, in the clock's height",
       face.contains("static let statusFont: Font = .system(.footnote, design: .rounded).weight(.semibold)")
       && face.contains("if clockIsStatus {\n                        // [T-sched-pill-vcenter]")
@@ -290,8 +290,13 @@ check("VoiceOver reads the counter as a sentence",
 check("width changes (+N, clock format) are eased, not under Reduce Motion",
       face.contains(".animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: others)")
       && face.contains(".animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: Self.clockWidthTemplate(clock))"))
-// clockWidthTemplate is pure: compile the face block (SwiftUI on macOS) and run it.
-let faceHarness = "import SwiftUI\nenum ScheduledAccent { static let color = Color.orange; static let icon = \"x\" }\n" + face + #"""
+// Compile the formatter directly so this check also runs without SwiftUI.
+guard let formatterStart = face.range(of: "    static func clockWidthTemplate("),
+      let formatterEnd = face.range(of: "\n    var body:", range: formatterStart.lowerBound..<face.endIndex) else {
+    print("❌ countdown width formatter missing"); exit(1)
+}
+let formatter = face[formatterStart.lowerBound..<formatterEnd.lowerBound]
+let faceHarness = "enum ScheduledPillFace {\n" + formatter + "\n}\n" + #"""
 for c in ["00:48", "59:59", "1h 5m", "12h 30m", "1d 3h", "Running", "1 h 5 min", "1小时5分钟"] {
     print("T[\(c)]=\(ScheduledPillFace.clockWidthTemplate(c))")
 }
@@ -324,8 +329,9 @@ check("from an hour up the clock is a coarse, system-localized 1h 5m",
       page.contains("f.allowedUnits = [.hour, .minute]\n            return f.string(from: (s / 60).rounded(.up) * 60)"))
 check("countdown in monospaced digits", face.contains(".monospacedDigit())"))
 check("tap target reaches 44 pt around the ~34 pt pill", face.contains(".contentShape(Capsule().inset(by: -5))"))
-check("Dynamic Type honoured, capped; the ring scales and stays leading",
-      pill.contains(".dynamicTypeSize(...DynamicTypeSize.xxxLarge)")
+check("Dynamic Type adapts the layout, with a bounded ring",
+      !pill.contains(".dynamicTypeSize(")
+      && face.contains("typeSize.isAccessibilitySize")
       && page.contains("@ScaledMetric(relativeTo: .subheadline) private var ringSize: CGFloat = 26")
       && pill.contains("ringSize: min(ringSize, ScheduledPillFace.maxRingSize))")
       && face.contains("static let maxRingSize: CGFloat = 36"))

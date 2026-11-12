@@ -26,7 +26,7 @@ struct BrowserSheetView: View {
                         BrowserAddressBarIcon(isLoading: manager?.isLoading ?? false)
 
                         TextField("Search or enter URL", text: $addressText)
-                            .font(.system(size: 13, design: .monospaced))
+                            .appTextFont(size: 13, design: .monospaced)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
@@ -145,7 +145,7 @@ struct BrowserSheetView: View {
                         }
                         .disabled(isAgentBusy)
                     }
-                    .font(.system(size: 18))
+                    .appTextFont(size: 18)
                     .padding(.vertical, 10)
                     .background(Color(UIColor.secondarySystemBackground))
                     .allowsHitTesting(!isAgentBusy)
@@ -253,7 +253,7 @@ struct BrowserSheetView: View {
 
                 // Tab count badge
                 Text("\(pool.tabs.count)/\(BrowserTabPool.maxTabs)")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .appTextFont(size: 10, weight: .medium, design: .monospaced, relativeTo: .caption)
                     .foregroundStyle(.tertiary)
                     .padding(.leading, 4)
             }
@@ -270,7 +270,7 @@ struct BrowserSheetView: View {
         } label: {
             HStack(spacing: 4) {
                 Text(tabLabel(for: tab))
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .appTextFont(size: 12, weight: isSelected ? .semibold : .regular, relativeTo: .caption)
                     .lineLimit(1)
                     .frame(maxWidth: 120)
 
@@ -356,7 +356,7 @@ private struct AgentBrowsingOverlay: View {
                     .shadow(color: Color.accentColor.opacity(breathing ? 0.8 : 0), radius: breathing ? 8 : 0)
 
                 Text("Minis is browsing")
-                    .font(.system(size: 13, weight: .medium))
+                    .appTextFont(size: 13, weight: .medium)
                     .foregroundStyle(.white.opacity(0.9))
 
                 if let onTakeover {
@@ -454,7 +454,7 @@ struct BrowserDownloadFloatingButton: View {
                     .overlay(alignment: .topTrailing) {
                         if badge > 0 {
                             Text("\(badge)")
-                                .font(.system(size: 10, weight: .bold))
+                                .appTextFont(size: 10, weight: .bold, relativeTo: .caption)
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, badge > 9 ? 4 : 0)
                                 .frame(minWidth: 16, minHeight: 16)
@@ -592,7 +592,7 @@ private struct BrowserDownloadPanelRow: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(entry.filename)
-                    .font(.system(size: 14, weight: .medium))
+                    .appTextFont(size: 14, weight: .medium)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 switch entry.state {
@@ -602,18 +602,18 @@ private struct BrowserDownloadPanelRow: View {
                     let totalText = progress.total > 0
                         ? " / \(ByteCountFormatter.string(fromByteCount: progress.total, countStyle: .file))" : ""
                     Text("\(pctText)\(done)\(totalText)")
-                        .font(.system(size: 12))
+                        .appTextFont(size: 12, relativeTo: .caption)
                         .foregroundStyle(.secondary)
                     ProgressView(value: progress.fraction)
                         .progressViewStyle(.linear)
                         .tint(Color.accentColor)
                 case .completed(let sizeText):
                     Text("\(sizeText) · \(AppLocalized("Show in Files", comment: "Completed download row hint"))")
-                        .font(.system(size: 12))
+                        .appTextFont(size: 12, relativeTo: .caption)
                         .foregroundStyle(.secondary)
                 case .failed(let reason):
                     Text(reason)
-                        .font(.system(size: 12))
+                        .appTextFont(size: 12, relativeTo: .caption)
                         .foregroundStyle(.red)
                         .lineLimit(3)
                 }
@@ -697,7 +697,7 @@ struct BrowserDownloadCardRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(entry.filename)
-                    .font(.system(size: 13, weight: .medium))
+                    .appTextFont(size: 13, weight: .medium)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 subtitle
@@ -750,15 +750,15 @@ struct BrowserDownloadCardRow: View {
             let totalText = progress.total > 0
                 ? " / \(ByteCountFormatter.string(fromByteCount: progress.total, countStyle: .file))" : ""
             Text("\(pctText)\(done)\(totalText)")
-                .font(.system(size: 11))
+                .appTextFont(size: 11, relativeTo: .caption)
                 .foregroundStyle(.secondary)
         case .completed(let sizeText):
             Text("\(sizeText) · \(AppLocalized("Tap to view", comment: "Completed download card"))")
-                .font(.system(size: 11))
+                .appTextFont(size: 11, relativeTo: .caption)
                 .foregroundStyle(.secondary)
         case .failed(let reason):
             Text(reason)
-                .font(.system(size: 11))
+                .appTextFont(size: 11, relativeTo: .caption)
                 .foregroundStyle(.red)
                 .lineLimit(2)
         }

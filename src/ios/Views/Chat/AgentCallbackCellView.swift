@@ -279,11 +279,11 @@ struct AgentCallbackCellView: View {
                 SearchHighlightText(headline,
                                     key: searchMessageId.map { ChatSearchUnitKey(messageId: $0, blockId: nil, field: .title) },
                                     searchOffset: ChatSearchDisplayText.callbackHeadline(callback).titleOffset)
-                    .font(.system(size: 14, weight: .semibold))
+                    .appTextFont(size: 14, weight: .semibold)
                     .foregroundStyle(ChatColors.primaryText)
                     .lineLimit(1)
                 Text(subline)
-                    .font(.system(size: 12))
+                    .appTextFont(size: 12, relativeTo: .caption)
                     .foregroundStyle(ChatColors.secondaryText)
                     .lineLimit(1)
             }

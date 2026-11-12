@@ -191,7 +191,7 @@ extension ContentView {
     private func syncTypeChip(label: String, count: Int) -> some View {
         HStack(spacing: 3) {
             Text(label)
-                .font(.system(size: 9, weight: .semibold))
+                .appTextFont(size: 9, weight: .semibold, relativeTo: .caption)
                 .foregroundStyle(.secondary)
             Text(formatCompact(count))
                 .font(.caption2.monospacedDigit())
@@ -267,7 +267,7 @@ extension ContentView {
                 // drop a .soulMdChanged notification that arrives during the gap.
                 // This Text now only READS `soulName`.
                 let titleLabel = Text(soulName)
-                    .font(.system(size: 18.5, weight: .semibold))
+                    .appTextFont(size: 18.5, weight: .semibold)
                     .foregroundStyle(.primary)
                     // A custom SOUL name can be long, and the width claim below
                     // hands this label the whole column — without a limit a long

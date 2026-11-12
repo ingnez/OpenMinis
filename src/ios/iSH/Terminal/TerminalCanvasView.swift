@@ -23,8 +23,8 @@ struct TerminalCellMetrics {
     static let fontSize: CGFloat = 12
     static let fontName = "Menlo"
 
-    static let shared: TerminalCellMetrics = {
-        let font = CTFontCreateWithName(fontName as CFString, fontSize, nil)
+    static func measure(_ uiFont: UIFont) -> TerminalCellMetrics {
+        let font = CTFontCreateWithName(uiFont.fontName as CFString, uiFont.pointSize, nil)
 
         var chars: [UniChar] = [0x4D] // 'M'
         var glyphs: [CGGlyph] = [0]
@@ -45,7 +45,12 @@ struct TerminalCellMetrics {
             descent: descent,
             font: font
         )
-    }()
+    }
+}
+
+struct TerminalFontPreferences: Hashable {
+    let size: CGFloat
+    let boldText: Bool
 }
 
 // MARK: - SwiftUI Bridge
@@ -56,6 +61,7 @@ struct TerminalCanvasView: UIViewRepresentable {
     var onPaste: ((Data) -> Void)?
     var onTap: (() -> Void)?
     var onDoubleTap: (() -> Void)?
+    let fontPreferences: TerminalFontPreferences
 
     func makeCoordinator() -> TerminalScrollCoordinator {
         TerminalScrollCoordinator(emulator: emulator, onResize: onResize, onPaste: onPaste)
@@ -64,7 +70,8 @@ struct TerminalCanvasView: UIViewRepresentable {
     func makeUIView(context: Context) -> TerminalScrollContainerView {
         let container = TerminalScrollContainerView(
             emulator: emulator,
-            coordinator: context.coordinator
+            coordinator: context.coordinator,
+            fontPreferences: fontPreferences
         )
         context.coordinator.containerView = container
         container.onTap = onTap
@@ -261,23 +268,27 @@ final class TerminalScrollContainerView: UIView {
     private let boldFont: UIFont
     private let italicFont: UIFont
     private let boldItalicFont: UIFont
+    let metrics: TerminalCellMetrics
 
     /// Cache of glyph advances keyed by (character string, font pointer).
     /// Used to compute kern adjustments that snap every character to the grid.
     private var glyphAdvanceCache: [GlyphAdvanceKey: CGFloat] = [:]
 
-    init(emulator: TerminalEmulator, coordinator: TerminalScrollCoordinator) {
+    init(emulator: TerminalEmulator, coordinator: TerminalScrollCoordinator, fontPreferences: TerminalFontPreferences) {
         self.emulator = emulator
         self.coordinator = coordinator
 
         let name = TerminalCellMetrics.fontName
-        let size = TerminalCellMetrics.fontSize
-        self.regularFont = UIFont(name: name, size: size)
-            ?? .monospacedSystemFont(ofSize: size, weight: .regular)
+        let size = fontPreferences.size
+        let weight: UIFont.Weight = fontPreferences.boldText ? .bold : .regular
+        let regular = UIFont(name: fontPreferences.boldText ? "\(name)-Bold" : name, size: size)
+            ?? .monospacedSystemFont(ofSize: size, weight: weight)
+        self.regularFont = regular
+        self.metrics = TerminalCellMetrics.measure(regular)
         self.boldFont = UIFont(name: "\(name)-Bold", size: size)
             ?? .monospacedSystemFont(ofSize: size, weight: .bold)
-        self.italicFont = UIFont(name: "\(name)-Italic", size: size)
-            ?? .monospacedSystemFont(ofSize: size, weight: .regular)
+        self.italicFont = UIFont(name: fontPreferences.boldText ? "\(name)-BoldItalic" : "\(name)-Italic", size: size)
+            ?? .monospacedSystemFont(ofSize: size, weight: weight)
         self.boldItalicFont = UIFont(name: "\(name)-BoldItalic", size: size)
             ?? .monospacedSystemFont(ofSize: size, weight: .bold)
 
@@ -401,7 +412,7 @@ final class TerminalScrollContainerView: UIView {
     }
 
     private func reportSizeIfNeeded() {
-        let metrics = TerminalCellMetrics.shared
+        let metrics = self.metrics
         let cols = max(1, Int(bounds.width / metrics.cellWidth))
         let rows = max(1, Int(bounds.height / metrics.cellHeight))
         guard cols != lastReportedCols || rows != lastReportedRows else { return }
@@ -468,7 +479,6 @@ final class TerminalScrollContainerView: UIView {
     }
 
     private func updateContentLayout() {
-        let metrics = TerminalCellMetrics.shared
         let totalLines = emulator.activeBuffer.scrollback.count + emulator.rows
         let contentHeight = CGFloat(totalLines) * metrics.cellHeight
         let contentWidth = bounds.width
@@ -487,7 +497,6 @@ final class TerminalScrollContainerView: UIView {
     }
 
     func updateCursorOverlay() {
-        let metrics = TerminalCellMetrics.shared
         let buf = emulator.activeBuffer
         let scrollOff = computeScrollOffset()
 
@@ -513,7 +522,6 @@ final class TerminalScrollContainerView: UIView {
     }
 
     private func computeScrollOffset() -> Int {
-        let metrics = TerminalCellMetrics.shared
         let maxOffsetY = scrollView.contentSize.height - scrollView.bounds.height
         if maxOffsetY <= 0 { return 0 }
         let distanceFromBottom = maxOffsetY - scrollView.contentOffset.y
@@ -751,7 +759,6 @@ final class TerminalScrollContainerView: UIView {
     /// Styled newline separator used between frozen prefix and live tail.
     /// Matches the per-line newlines produced inside buildRange.
     private func newlineAttrString() -> NSAttributedString {
-        let metrics = TerminalCellMetrics.shared
         let paraStyle = NSMutableParagraphStyle()
         let fontNaturalHeight = regularFont.lineHeight
         paraStyle.lineHeightMultiple = metrics.cellHeight / fontNaturalHeight
@@ -870,7 +877,6 @@ final class TerminalScrollContainerView: UIView {
         // Paragraph style for exact line height matching cell metrics.
         // We use lineHeightMultiple to force the layout manager to use our
         // exact cell height regardless of font metrics.
-        let metrics = TerminalCellMetrics.shared
         let paraStyle = NSMutableParagraphStyle()
         let fontNaturalHeight = regularFont.lineHeight
         paraStyle.lineHeightMultiple = metrics.cellHeight / fontNaturalHeight
@@ -1058,7 +1064,7 @@ final class TerminalScrollCoordinator: NSObject, UIScrollViewDelegate {
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        let metrics = TerminalCellMetrics.shared
+        guard let metrics = containerView?.metrics else { return }
         let maxOffsetY = scrollView.contentSize.height - scrollView.bounds.height
         if maxOffsetY <= 0 {
             emulator.scrollOffset = 0

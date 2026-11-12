@@ -215,7 +215,7 @@ extension AIChatView {
                             Text(FileMentionIndex.shared.isScanning
                                  ? AppLocalized("Scanning files…")
                                  : AppLocalized("No matching files"))
-                                .font(.system(size: 13))
+                                .appTextFont(size: 13)
                                 .foregroundStyle(ChatColors.secondaryText)
                             Spacer()
                         }
@@ -270,7 +270,7 @@ extension AIChatView {
                         HStack(spacing: 6) {
                             ProgressView().scaleEffect(0.6)
                             Text("Scanning more locations…")
-                                .font(.system(size: 11))
+                                .appTextFont(size: 11, relativeTo: .caption)
                                 .foregroundStyle(ChatColors.secondaryText)
                             Spacer()
                         }
@@ -369,18 +369,18 @@ extension AIChatView {
                     .frame(width: 20)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(entry.basename)
-                        .font(.system(size: 13, weight: .medium))
+                        .appTextFont(size: 13, weight: .medium)
                         .foregroundStyle(isSelected ? Color.white : ChatColors.primaryText)
                         .lineLimit(1)
                     Text(entry.displayPath)
-                        .font(.system(size: 11))
+                        .appTextFont(size: 11, relativeTo: .caption)
                         .foregroundStyle(isSelected ? Color.white.opacity(0.75) : ChatColors.secondaryText)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
                 Spacer()
                 Text(entry.mountName ?? entry.scope.displayLabel)
-                    .font(.system(size: 10, weight: .medium))
+                    .appTextFont(size: 10, weight: .medium, relativeTo: .caption)
                     .foregroundStyle(isSelected ? Color.white.opacity(0.9) : ChatColors.secondaryText)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
@@ -508,12 +508,12 @@ extension AIChatView {
                         // height past 60pt, which then snowballed into a
                         // multi-screen picker.
                         Text("/\(cmd.title.lowercased())")
-                            .font(.system(size: 14, weight: .semibold))
+                            .appTextFont(size: 14, weight: .semibold)
                             .foregroundStyle(titleColor)
                             .lineLimit(1)
                             .truncationMode(.tail)
                         Text(subtitleText)
-                            .font(.system(size: 11))
+                            .appTextFont(size: 11, relativeTo: .caption)
                             .foregroundStyle(subtitleColor)
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -565,7 +565,7 @@ extension AIChatView {
 
                     HStack(spacing: 1) {
                         Text(level.displayName)
-                            .font(.system(size: 11, weight: isHighlighted ? .semibold : .medium))
+                            .appTextFont(size: 11, weight: isHighlighted ? .semibold : .medium, relativeTo: .caption)
                             .lineLimit(1)
                         if isClampedHighlight {
                             Image(systemName: "arrow.up")

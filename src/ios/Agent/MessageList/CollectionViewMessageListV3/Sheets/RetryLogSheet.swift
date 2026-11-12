@@ -98,7 +98,7 @@ struct RetryLogSheet: View {
                 Spacer()
                 outcomeChip(e.outcome)
                 Text(Self.timeFormatter.string(from: e.time))
-                    .font(.system(size: 11, design: .monospaced))
+                    .appTextFont(size: 11, design: .monospaced, relativeTo: .caption)
                     .foregroundStyle(.secondary)
             }
             if let n = e.attempt, let total = e.maxAttempts {
@@ -153,7 +153,7 @@ struct RetryLogSheet: View {
             }
         }()
         Text(text)
-            .font(.system(size: 10, weight: .semibold))
+            .appTextFont(size: 10, weight: .semibold, relativeTo: .caption)
             .foregroundStyle(color)
             .padding(.horizontal, 6).padding(.vertical, 1)
             .background(color.opacity(0.12))

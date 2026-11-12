@@ -94,7 +94,7 @@ extension AIChatView {
             // elision). Auto-dismisses after ~4s.
             if let notice = vm.transientNotice {
                 Text(notice)
-                    .font(.system(size: 12))
+                    .appTextFont(size: 12, relativeTo: .caption)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)

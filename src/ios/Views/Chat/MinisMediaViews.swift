@@ -414,7 +414,7 @@ private struct MinisFileChipView: View {
                     .font(.system(size: 13))
                     .foregroundColor(ChatColors.accent)
                 Text(filename)
-                    .font(.system(size: 14, weight: .medium))
+                    .appTextFont(size: 14, weight: .medium)
                     .foregroundColor(ChatColors.primaryText)
                     .lineLimit(1)
             }
@@ -982,13 +982,14 @@ struct MinisTextPreviewView: View {
 
 private struct MinisTextView: UIViewRepresentable {
     let text: String
+    private var typography = AppUIKitTextFont(size: 12, design: .mono, relativeTo: .caption)
 
     func makeUIView(context: Context) -> UITextView {
         let textView = UITextView(usingTextLayoutManager: true)
         textView.isEditable = false
         textView.isSelectable = true
         textView.backgroundColor = .clear
-        textView.font = .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular)
+        textView.font = typography.font
         textView.textColor = .label
         textView.textContainerInset = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
         textView.dataDetectorTypes = []
@@ -996,6 +997,7 @@ private struct MinisTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: UITextView, context: Context) {
+        if textView.font != typography.font { textView.font = typography.font }
         if textView.text != text {
             textView.text = text
         }

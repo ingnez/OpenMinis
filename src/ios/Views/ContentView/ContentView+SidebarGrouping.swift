@@ -521,7 +521,7 @@ extension ContentView {
                     FolderComposedIcon(glyphs: folderMiniBarGlyphs(folder.id), diameter: 30)
                     // Folder names are user data — verbatim.
                     Text(folder.name)
-                        .font(.system(size: 14, weight: .semibold))
+                        .appTextFont(size: 14, weight: .semibold)
                         .foregroundStyle(Color(UIColor.label))
                         .lineLimit(1)
                 }

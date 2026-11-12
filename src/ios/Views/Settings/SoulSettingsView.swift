@@ -443,9 +443,9 @@ private struct SoulEmojiPickerSheet: View {
                 }
 
                 TextField("✨", text: $draft)
-                    .font(.system(size: 28))
+                    .appTextFont(size: 28)
                     .multilineTextAlignment(.center)
-                    .frame(height: 52)
+                        .frame(minHeight: 52)
                     .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
                     // Every keystroke is normalized to a single emoji: typing
                     // a second one REPLACES the first, and non-emoji input is

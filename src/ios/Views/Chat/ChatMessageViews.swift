@@ -353,7 +353,7 @@ struct ChatMessageRow: View {
                         .font(.system(size: 10))
                 }
                 SearchHighlightText(message.content, key: searchKey())
-                    .font(.system(size: 12, weight: .medium))
+                    .appTextFont(size: 12, weight: .medium, relativeTo: .caption)
                 if !message.isCompactLoading && message.compactSummary != nil {
                     Button {
                         let summary = message.compactSummary ?? ""
@@ -397,7 +397,7 @@ struct ChatMessageRow: View {
                         .font(.system(size: 10))
                 }
                 SearchHighlightText(message.content, key: searchKey())
-                    .font(.system(size: 12, weight: .medium))
+                    .appTextFont(size: 12, weight: .medium, relativeTo: .caption)
                     .multilineTextAlignment(.center)
             }
             .foregroundStyle(.secondary)
@@ -646,7 +646,7 @@ struct ChatMessageRow: View {
                     // the clock shipped twice without ever being on screen.
                     if showUsage, let completedAt = message.completedAt {
                         Text(Self.completedAtFormatter.string(from: completedAt))
-                            .font(.system(size: 10, design: .monospaced))
+                            .appTextFont(size: 10, design: .monospaced, relativeTo: .caption)
                             .foregroundStyle(ChatColors.tertiaryText)
                             .opacity(usageContentVisible ? 1 : 0)
                     }
@@ -772,7 +772,7 @@ struct ChatMessageRow: View {
             Image(systemName: "speedometer")
                 .font(.system(size: 9))
             Text(usageSummary(usage))
-                .font(.system(size: 10, design: .monospaced))
+                .appTextFont(size: 10, design: .monospaced, relativeTo: .caption)
         }
         .foregroundStyle(ChatColors.tertiaryText)
         .padding(.horizontal, 8)

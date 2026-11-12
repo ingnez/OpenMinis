@@ -215,7 +215,7 @@ extension ContentView {
                             Text(group.label).foregroundStyle(Color(UIColor.label))
                         }
                     }
-                        .font(.system(size: 16, weight: .semibold))
+                        .appTextFont(size: 16, weight: .semibold)
                         .lineLimit(1)
                     Group {
                         if searchResultsActive {
@@ -230,7 +230,7 @@ extension ContentView {
                             Text("Empty group")
                         }
                     }
-                    .font(.system(size: 14))
+                    .appTextFont(size: 14)
                     .foregroundStyle(Color(UIColor.secondaryLabel))
                     .lineLimit(1)
                 }
@@ -240,7 +240,7 @@ extension ContentView {
                 VStack(alignment: .trailing, spacing: 6) {
                     if let date = group.latestDate {
                         Text(SessionRow.relativeDateImpl(date))
-                            .font(.system(size: 13))
+                            .appTextFont(size: 13)
                             .foregroundStyle(Color(UIColor.tertiaryLabel))
                     }
                     HStack(spacing: 4) {

@@ -124,7 +124,8 @@ struct ModelQuotaMemberPill: View {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 6, weight: .semibold))
                     }
-                    .font(.system(size: 9, weight: .medium).monospacedDigit())
+                    .appTextFont(size: 9, weight: .medium, relativeTo: .caption)
+                    .monospacedDigit()
                     .foregroundStyle(QuotaTagStyle.foreground(pill.level, normal: pill.tone.color))
                     // [T-quota-member-pill-padding] 2 pt top/bottom, 5 pt sides: the
                     // same proportions as the picker's Active badge beside it (≈15 pt
@@ -182,10 +183,11 @@ struct ModelQuotaHintView: View {
                 Image(systemName: QuotaHintStyle.icon(status))
                     .font(.system(size: 9))
                 Text(detail ?? QuotaHintStyle.word(status))
-                    .font(.system(size: 9, weight: .medium).monospacedDigit())
+                    .appTextFont(size: 9, weight: .medium, relativeTo: .caption)
+                    .monospacedDigit()
                 if isManual {
                     Text("(manual)", comment: "Picker quota hint: the pool comes from the user's manual mapping")
-                        .font(.system(size: 9))
+                        .appTextFont(size: 9, relativeTo: .caption)
                 }
             }
             .foregroundStyle(QuotaHintStyle.color(status))

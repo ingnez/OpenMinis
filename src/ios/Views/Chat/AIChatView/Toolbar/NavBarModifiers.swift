@@ -25,8 +25,10 @@ import WebKit
 
 // [T-agent-transcript-navbar] Shared with HelperTranscriptPage; logic unchanged.
 struct NavTitleFrameModifier: ViewModifier {
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     func body(content: Content) -> some View {
-        if #available(iOS 26, *) {
+        if #available(iOS 26, *), typeSize <= .large {
             // [NavTitleTopClip 2026-07-23] The principal titleView aligns to the
             // liquid-glass navbar's ~44pt band. Give it 46pt centered so tall
             // title glyphs (semibold 16pt + CJK/caps ascenders) render in full.

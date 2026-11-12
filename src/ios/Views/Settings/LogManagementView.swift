@@ -267,13 +267,14 @@ struct LogDetailView: View {
 
 private struct LogTextView: UIViewRepresentable {
     let text: String
+    private var typography = AppUIKitTextFont(size: 11, design: .mono, relativeTo: .caption)
 
     func makeUIView(context: Context) -> UITextView {
         let textView = UITextView(usingTextLayoutManager: true)
         textView.isEditable = false
         textView.isSelectable = true
         textView.backgroundColor = .clear
-        textView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.font = typography.font
         textView.textColor = .label
         textView.textContainerInset = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
         textView.dataDetectorTypes = []
@@ -281,6 +282,7 @@ private struct LogTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: UITextView, context: Context) {
+        if textView.font != typography.font { textView.font = typography.font }
         if textView.text != text {
             textView.text = text
         }

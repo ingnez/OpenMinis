@@ -107,7 +107,7 @@ struct MoveToSessionSheet: View {
                                 }
                                 Spacer(minLength: 1)
                                 Text(relativeDate(session.updatedAt))
-                                    .font(.system(size: 13))
+                                    .appTextFont(size: 13)
                                     .foregroundStyle(Color(UIColor.tertiaryLabel))
                             }
                         }

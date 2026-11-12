@@ -490,7 +490,7 @@ struct SpeechPlayerControl: View {
             speakerGlyph(size: 15, ring: 40).frame(width: 40, height: 40)
             if state.speechSpeed > 1.0 {
                 Text(Self.speedLabel(state.speechSpeed))
-                    .font(.system(size: 9, weight: .bold))
+                    .appTextFont(size: 9, weight: .bold, relativeTo: .caption)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 4).padding(.vertical, 1)
                     .background(Capsule().fill(Color.accentColor))

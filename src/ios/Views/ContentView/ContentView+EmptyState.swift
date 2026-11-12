@@ -176,7 +176,7 @@ extension ContentView {
                             .foregroundColor(.white)
                     } else {
                         Text("\(number)")
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .appTextFont(size: 15, weight: .semibold, design: .rounded)
                             .foregroundColor(.white)
                     }
                 }

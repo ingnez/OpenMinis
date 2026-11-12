@@ -328,14 +328,14 @@ struct HelperTranscriptPage: View {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).font(.system(size: 13))
                 }
                 Text(AgentJobRegistry.childSessionTitle(target.title))
-                    .font(.system(size: 15, weight: .semibold))
+                    .appTextFont(size: 15, weight: .semibold)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
             HStack(spacing: 6) {
                 if let tier = tierBadge {
                     Text(tier)
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .appTextFont(size: 10, weight: .semibold, design: .monospaced, relativeTo: .caption)
                         .padding(.horizontal, 6).padding(.vertical, 1)
                         .background(ChatColors.secondaryBg)
                         .clipShape(Capsule())
@@ -346,7 +346,7 @@ struct HelperTranscriptPage: View {
                 // widens the 46 pt principal frame or hides the timer.
                 if let model = identity, let line = model.thumbnailLine(max: 28) {
                     Text(line)
-                        .font(.system(size: 11))
+                        .appTextFont(size: 11, relativeTo: .caption)
                         .foregroundStyle(model.hasEffective ? ChatColors.secondaryText : ChatColors.tertiaryText)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -382,7 +382,7 @@ private struct HelperElapsedLabel: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 11, design: .monospaced))
+            .appTextFont(size: 11, design: .monospaced, relativeTo: .caption)
             .foregroundStyle(ChatColors.secondaryText)
             .fixedSize()
             .onReceive(clock) { now = $0 }

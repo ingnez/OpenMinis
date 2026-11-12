@@ -300,7 +300,7 @@ private struct AlarmRowView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(alarm.displayTime)
-                    .font(.system(size: 34, weight: .thin, design: .default))
+                    .appTextFont(size: 34, weight: .thin, design: .default)
                     .monospacedDigit()
                 if !alarm.label.isEmpty {
                     Text(alarm.label)

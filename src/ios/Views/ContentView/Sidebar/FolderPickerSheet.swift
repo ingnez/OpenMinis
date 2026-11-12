@@ -214,7 +214,7 @@ struct FolderPickerSheet: View {
                                         .foregroundStyle(Color(UIColor.label))
                                         .lineLimit(1)
                                     Text("Remove from its current group")
-                                        .font(.system(size: 13))
+                                        .appTextFont(size: 13)
                                         .foregroundStyle(Color(UIColor.secondaryLabel))
                                         .lineLimit(1)
                                 }
@@ -252,7 +252,7 @@ struct FolderPickerSheet: View {
                                                 Text("Empty group")
                                             }
                                         }
-                                        .font(.system(size: 13))
+                                        .appTextFont(size: 13)
                                         .foregroundStyle(Color(UIColor.secondaryLabel))
                                         .lineLimit(1)
                                     }

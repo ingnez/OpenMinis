@@ -83,7 +83,7 @@ extension AIChatView {
                     ProgressView()
                         .tint(.yellow)
                     Text("Waiting for other tasks to complete...")
-                        .font(.system(size: 13))
+                        .appTextFont(size: 13)
                         .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 8)
@@ -165,7 +165,7 @@ extension AIChatView {
                 if hasInjectedShareContent && hasMovableShareContent {
                     Button { showMoveToSheet = true } label: {
                         Label("Move to…", systemImage: "arrow.right.circle")
-                            .font(.system(size: 11, weight: .medium))
+                            .appTextFont(size: 11, weight: .medium, relativeTo: .caption)
                             .foregroundStyle(ChatColors.secondaryText)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)

@@ -153,7 +153,7 @@ extension ContentView {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 12, weight: .semibold))
                 Text("Show \(min(group.hiddenMatchCount, Self.searchFolderPageSize)) more (\(group.hiddenMatchCount) left)")
-                    .font(.system(size: 14, weight: .medium))
+                    .appTextFont(size: 14, weight: .medium)
                 Spacer(minLength: 0)
             }
             .foregroundStyle(Color.accentColor)

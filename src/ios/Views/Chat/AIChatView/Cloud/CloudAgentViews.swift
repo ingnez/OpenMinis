@@ -2712,7 +2712,7 @@ struct CloudStepsLine: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(st.label + (st.detail.isEmpty ? "" : "：" + st.detail)).font(.caption.weight(.medium))
                         if !st.result.isEmpty {
-                            Text(st.result).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(6)
+                            Text(st.result).appTextFont(size: 11, design: .monospaced, relativeTo: .caption).foregroundStyle(.secondary).lineLimit(6)
                                 .textSelection(.enabled)
                         }
                     }

@@ -350,7 +350,7 @@ struct CloudBotCreateSheet: View {
                     CloudBotAliveAvatar(spec: spec, size: 150).padding(.top, 12)
                     TextField("为 Bot 取个名字", text: $name)
                         .multilineTextAlignment(.center)
-                        .font(.system(size: 20, weight: .semibold))
+                        .appTextFont(size: 20, weight: .semibold)
                         .padding(.vertical, 14)
                         .background(RoundedRectangle(cornerRadius: 14).fill(Color(.systemBackground)))
                         .padding(.horizontal, 20)

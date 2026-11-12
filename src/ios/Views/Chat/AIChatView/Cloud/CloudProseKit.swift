@@ -115,7 +115,7 @@ struct CloudStepsProse: View {
                     .buttonStyle(.plain)
                     if openIndex == i, !st.result.isEmpty {
                         Text(CloudStepResult.readable(st.result))
-                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(12)
+                            .appTextFont(size: 11, design: .monospaced, relativeTo: .caption).foregroundStyle(.secondary).lineLimit(12)
                             .textSelection(.enabled)
                             .padding(8)
                             .frame(maxWidth: .infinity, alignment: .leading)

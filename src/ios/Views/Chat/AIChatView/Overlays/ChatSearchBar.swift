@@ -33,7 +33,7 @@ struct ChatSearchBar: View {
                     .foregroundStyle(ChatColors.secondaryText)
                 TextField(AppLocalized("Search this chat"), text: $search.query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 15))
+                    .appTextFont(size: 15)
                     .submitLabel(.search)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
@@ -75,7 +75,7 @@ struct ChatSearchBar: View {
                 onDone()
             } label: {
                 Text(AppLocalized("Done"))
-                    .font(.system(size: 15, weight: .semibold))
+                    .appTextFont(size: 15, weight: .semibold)
             }
             .buttonStyle(.plain)
             .foregroundStyle(Color.accentColor)
@@ -100,7 +100,8 @@ struct ChatSearchBar: View {
         } else if hasResults {
             Text(verbatim: ChatSearchNavigation.counterText(index: search.currentIndex, count: search.matchCount,
                                                             truncated: search.isTruncated))
-                .font(.system(size: 13).monospacedDigit())
+                .appTextFont(size: 13)
+                .monospacedDigit()
                 .foregroundStyle(ChatColors.secondaryText)
                 .lineLimit(1)
                 .fixedSize()
@@ -108,7 +109,7 @@ struct ChatSearchBar: View {
                 .accessibilityIdentifier("chatSearchCounter")
         } else {
             Text(AppLocalized("No results"))
-                .font(.system(size: 13))
+                .appTextFont(size: 13)
                 .foregroundStyle(ChatColors.secondaryText)
                 .lineLimit(1)
                 .fixedSize()
@@ -133,7 +134,7 @@ struct ChatSearchBar: View {
     private var noticeView: some View {
         if let notice = search.notice {
             Text(ChatSearchController.noticeText(notice))
-                .font(.system(size: 12, weight: .medium))
+                .appTextFont(size: 12, weight: .medium, relativeTo: .caption)
                 .foregroundStyle(.white)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)

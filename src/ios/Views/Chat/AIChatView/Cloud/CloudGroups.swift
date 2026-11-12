@@ -148,23 +148,26 @@ struct CloudGroupStackAvatar: View {
 struct CloudGroupHomeRow: View {
     let group: CloudGroup
     let bots: [CloudBot]
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
+        let titleLayout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 3)) : AnyLayout(HStackLayout())
         HStack(spacing: 14) {
             CloudGroupStackAvatar(bots: members)
             VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(group.name).font(.headline).lineLimit(1)
+                titleLayout {
+                    Text(group.name).font(.headline).lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
                     Text("\(group.members.count + 1)").font(.caption).foregroundStyle(.tertiary)
-                    Spacer(minLength: 8)
+                    if !typeSize.isAccessibilitySize { Spacer(minLength: 8) }
                     Text(CloudBotHome.timeText(group.lastAt)).font(.caption).foregroundStyle(.secondary)
                 }
-                Text(preview).font(.subheadline).foregroundStyle(group.typing.isEmpty ? Color.secondary : Color.green).lineLimit(1)
+                Text(preview).font(.subheadline).foregroundStyle(group.typing.isEmpty ? Color.secondary : Color.green)
+                    .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
             }
         }
         .padding(.vertical, 10)
         .contentShape(Rectangle())
-        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
     }
 
     private var members: [CloudBot] { group.members.compactMap { id in bots.first(where: { $0.id == id }) } }

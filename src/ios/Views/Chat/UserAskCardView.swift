@@ -1306,7 +1306,7 @@ enum UserAskInputPresenter {
                 save(kind: kind, requestId: ask.requestId, index: index, text: text, commit: true)
                 close()
             },
-            onCancel: { close() }))
+            onCancel: { close() }).appFontScale())
         hostRef = host
         if let sheet = host.sheetPresentationController {
             // [T-user-ask-dictation-style] One detent. With .medium as well,

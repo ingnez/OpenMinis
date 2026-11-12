@@ -97,7 +97,7 @@ struct BridgedAssistantFooterV3: View {
                     // capsule rather than lingering on its own after a tap.
                     if bridge.showUsage, let completedAt = message.completedAt {
                         Text(Self.completedAtFormatter.string(from: completedAt))
-                            .font(.system(size: 10, design: .monospaced))
+                            .appTextFont(size: 10, design: .monospaced, relativeTo: .caption)
                             .foregroundStyle(ChatColors.tertiaryText)
                             .opacity(bridge.usageContentVisible ? 1 : 0)
                     }
@@ -270,7 +270,7 @@ struct BridgedAssistantFooterV3: View {
     private func usageCapsule(_ usage: TokenUsage) -> some View {
         HStack(spacing: 4) {
             Image(systemName: "speedometer").font(.system(size: 9))
-            Text(usageSummary(usage)).font(.system(size: 10, design: .monospaced))
+            Text(usageSummary(usage)).appTextFont(size: 10, design: .monospaced, relativeTo: .caption)
         }
         .foregroundStyle(ChatColors.tertiaryText)
         .padding(.horizontal, 8).padding(.vertical, 3)

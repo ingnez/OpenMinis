@@ -319,7 +319,7 @@ struct SubAgentStatChips: View {
                 .foregroundStyle(tint ?? Color(UIColor.secondaryLabel))
             // Proportional with fixed-width digits: a monospaced face spread
             // "6 次工具调用" out with double-width gaps around the number.
-            Text(text).font(.system(size: 11, weight: .medium)).monospacedDigit()
+            Text(text).appTextFont(size: 11, weight: .medium, relativeTo: .caption).monospacedDigit()
                 .foregroundStyle(Color(UIColor.label))
                 .lineLimit(1)
         }
@@ -378,7 +378,7 @@ struct SubAgentCollapsibleText: View {
         let long = SubAgentTextPreview.isLong(text)
         VStack(alignment: .leading, spacing: 6) {
             Text(text)
-                .font(.system(size: 13, design: monospaced ? .monospaced : .default))
+                .appTextFont(size: 13, design: monospaced ? .monospaced : .default)
                 .foregroundStyle(Color(UIColor.label))
                 .lineLimit(long && !expanded ? 4 : nil)
                 .textSelection(.enabled)
@@ -388,7 +388,7 @@ struct SubAgentCollapsibleText: View {
                     withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
                 } label: {
                     Text(expanded ? AppLocalized("Show less") : AppLocalized("Show more"))
-                        .font(.system(size: 12, weight: .medium))
+                        .appTextFont(size: 12, weight: .medium, relativeTo: .caption)
                         .foregroundStyle(HelperAccent.color)
                 }
                 .buttonStyle(.plain)
@@ -411,7 +411,7 @@ struct SubAgentTaskCard: View {
                 if !args.context.isEmpty {
                     Divider()
                     Text(AppLocalized("Context"))
-                        .font(.system(size: 11, weight: .semibold))
+                        .appTextFont(size: 11, weight: .semibold, relativeTo: .caption)
                         .foregroundStyle(Color(UIColor.secondaryLabel))
                     SubAgentCollapsibleText(text: args.context)
                 }
@@ -440,7 +440,7 @@ struct SubAgentToolTimelineCard: View {
                                 Image(systemName: HelperAccent.symbol(forTool: entry.tool))
                                     .font(.system(size: 9, weight: .semibold))
                                 Text("\(HelperAccent.displayName(forTool: entry.tool)) ×\(entry.count)")
-                                    .font(.system(size: 10, weight: .medium))
+                                    .appTextFont(size: 10, weight: .medium, relativeTo: .caption)
                                     .lineLimit(1)
                             }
                             .foregroundStyle(Color(UIColor.secondaryLabel))
@@ -462,7 +462,7 @@ struct SubAgentToolTimelineCard: View {
     private var trailing: some View {
         if digest.total > limit {
             Text(String(format: AppLocalized("Latest %1$lld of %2$lld"), limit, digest.total))
-                .font(.system(size: 10))
+                .appTextFont(size: 10, relativeTo: .caption)
                 .foregroundStyle(Color(UIColor.tertiaryLabel))
         }
     }
@@ -476,13 +476,13 @@ struct SubAgentToolTimelineCard: View {
                     Image(systemName: HelperAccent.symbol(forTool: call.tool))
                         .font(.system(size: 10, weight: .semibold))
                     Text(HelperAccent.displayName(forTool: call.tool))
-                        .font(.system(size: 12, weight: .semibold))
+                        .appTextFont(size: 12, weight: .semibold, relativeTo: .caption)
                         .lineLimit(1)
                 }
                 .foregroundStyle(call.state == .running ? HelperAccent.color : Color(UIColor.label))
                 if !call.title.isEmpty {
                     Text(call.title)
-                        .font(.system(size: 12))
+                        .appTextFont(size: 12, relativeTo: .caption)
                         .foregroundStyle(Color(UIColor.secondaryLabel))
                         .lineLimit(2)
                         .textSelection(.enabled)
@@ -491,7 +491,7 @@ struct SubAgentToolTimelineCard: View {
             Spacer(minLength: 6)
             if let duration = call.duration {
                 Text(SubAgentRunDigest.durationLabel(duration))
-                    .font(.system(size: 11, design: .monospaced))
+                    .appTextFont(size: 11, design: .monospaced, relativeTo: .caption)
                     .foregroundStyle(Color(UIColor.tertiaryLabel))
             }
         }
@@ -532,7 +532,7 @@ struct SubAgentActionsCard: View {
                 if canSteer {
                     HStack(alignment: .bottom, spacing: 8) {
                         TextField(AppLocalized("Send a course correction…"), text: $draft, axis: .vertical)
-                            .font(.system(size: 13))
+                            .appTextFont(size: 13)
                             .lineLimit(1...4)
                             .focused($focused)
                             .padding(.horizontal, 10).padding(.vertical, 7)
@@ -555,7 +555,7 @@ struct SubAgentActionsCard: View {
                     Text(sentCount > 0
                          ? AppLocalized("Sent. The sub agent reads it at its next turn.")
                          : AppLocalized("Read at the sub agent's next turn; a tool call already running is not interrupted."))
-                        .font(.system(size: 11))
+                        .appTextFont(size: 11, relativeTo: .caption)
                         .foregroundStyle(Color(UIColor.secondaryLabel))
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -564,7 +564,7 @@ struct SubAgentActionsCard: View {
                         Image(systemName: "stop.circle.fill")
                         Text(AppLocalized("Stop agent"))
                     }
-                    .font(.system(size: 13, weight: .semibold))
+                    .appTextFont(size: 13, weight: .semibold)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
                     .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.12)))

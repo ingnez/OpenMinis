@@ -102,7 +102,7 @@ struct CloudConnectAppsSheet: View {
                         ForEach(sections, id: \.0) { title, items in
                             if !items.isEmpty {
                                 HStack(spacing: 4) {
-                                    Text(title).font(.system(size: 17, weight: .bold))
+                                    Text(title).appTextFont(size: 17, weight: .bold)
                                     Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
                                 }
                                 .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 6)
@@ -193,7 +193,7 @@ struct CloudConnectAppsSheet: View {
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(app.tint))
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
             VStack(alignment: .leading, spacing: 2) {
-                Text(app.name).font(.system(size: 17, weight: .medium)).lineLimit(1)
+                Text(app.name).appTextFont(size: 17, weight: .medium).lineLimit(1)
                 Text(app.subtitle).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer(minLength: 8)

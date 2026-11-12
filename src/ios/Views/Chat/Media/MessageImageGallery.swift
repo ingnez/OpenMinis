@@ -287,7 +287,7 @@ struct MessageImageGallery: View {
                         .padding(.bottom, 16)
                 } else if let item = currentItem {
                     Text(item.title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .appTextFont(size: 13, weight: .semibold)
                         .foregroundStyle(ChatColors.primaryText)
                         .lineLimit(1)
                         .truncationMode(.middle)

@@ -195,7 +195,7 @@ struct CloudDesktopKeyRow: View {
     }
 
     private func cap(_ text: String, on: Bool) -> some View {
-        Text(text).font(.system(size: 14, weight: .medium)).foregroundStyle(on ? .black : .white)
+        Text(text).appTextFont(size: 14, weight: .medium).foregroundStyle(on ? .black : .white)
             .padding(.horizontal, 12).frame(minWidth: 40, minHeight: 34)
             .background(RoundedRectangle(cornerRadius: 8).fill(on ? Color.white : Color(white: 0.2)))
     }

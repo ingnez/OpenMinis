@@ -48,7 +48,7 @@ struct CompactSummarySheet: View {
                             Image(systemName: "arrow.uturn.backward")
                             Text("Revert Compact")
                         }
-                        .font(.system(size: 15, weight: .medium))
+                        .appTextFont(size: 15, weight: .medium)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
                     }
@@ -94,6 +94,7 @@ struct CompactSummarySheet: View {
 /// UITextView wrapper for efficient rendering of long selectable text.
 private struct SelectableTextView: UIViewRepresentable {
     let text: String
+    private var typography = AppUIKitTextFont(size: 14)
 
     func makeUIView(context: Context) -> UITextView {
         let tv = UITextView()
@@ -106,7 +107,7 @@ private struct SelectableTextView: UIViewRepresentable {
         // stall during edit-menu construction, no Minis frames). It states the
         // policy so a future SDK default cannot silently opt this view in.
         tv.dataDetectorTypes = []
-        tv.font = .systemFont(ofSize: 14)
+        tv.font = typography.font
         tv.textColor = .label
         tv.backgroundColor = .clear
         tv.textContainerInset = UIEdgeInsets(top: 0, left: 0, bottom: 20, right: 0)
@@ -117,6 +118,7 @@ private struct SelectableTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ tv: UITextView, context: Context) {
+        if tv.font != typography.font { tv.font = typography.font }
         if tv.text != text {
             tv.text = text
         }

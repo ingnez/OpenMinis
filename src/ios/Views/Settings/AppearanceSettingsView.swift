@@ -83,7 +83,7 @@ private struct FontScaleRow: View {
                     }
                 } label: {
                     Text("A")
-                        .font(.system(size: 13, weight: .medium))
+                        .appTextFont(size: 13, weight: .medium)
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
@@ -102,7 +102,7 @@ private struct FontScaleRow: View {
                     }
                 } label: {
                     Text("A")
-                        .font(.system(size: 22, weight: .medium))
+                        .appTextFont(size: 22, weight: .medium)
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)

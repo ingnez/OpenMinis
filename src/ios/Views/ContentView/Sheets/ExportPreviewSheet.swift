@@ -61,7 +61,7 @@ struct ExportPreviewSheet: View {
                 } else {
                     ScrollView {
                         Text(previewText)
-                            .font(.system(size: 13, design: .monospaced))
+                            .appTextFont(size: 13, design: .monospaced)
                             .foregroundStyle(Color(UIColor.label))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(12)

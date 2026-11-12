@@ -39,15 +39,15 @@ struct EmptyChatDirectoryTimeline: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(ChatColors.secondaryText)
                 Text("Workspace layout")
-                    .font(.system(size: 12, weight: .semibold))
+                    .appTextFont(size: 12, weight: .semibold, relativeTo: .caption)
                     .foregroundStyle(ChatColors.secondaryText)
             }
             Text("Each chat gets its own **workspace**, **attachments**, **offloads**, and **browser** folders — wiped when the session ends.")
-                .font(.system(size: 12))
+                .appTextFont(size: 12, relativeTo: .caption)
                 .foregroundStyle(ChatColors.primaryText)
                 .fixedSize(horizontal: false, vertical: true)
             Text("All chats share **shared**, **skills**, **memory**, and **mounts** — persistent across sessions.")
-                .font(.system(size: 12))
+                .appTextFont(size: 12, relativeTo: .caption)
                 .foregroundStyle(ChatColors.primaryText)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
@@ -57,7 +57,7 @@ struct EmptyChatDirectoryTimeline: View {
                         Image(systemName: "folder")
                             .font(.system(size: 10, weight: .semibold))
                         Text("Browse Chat Files")
-                            .font(.system(size: 11, weight: .semibold))
+                            .appTextFont(size: 11, weight: .semibold, relativeTo: .caption)
                     }
                     .foregroundStyle(ChatColors.primaryText)
                     .padding(.horizontal, 10)

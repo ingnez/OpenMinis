@@ -83,3 +83,41 @@ extension EnvironmentValues {
         set { self[CloudChatTypographyKey.self] = newValue }
     }
 }
+
+private struct AppTextFont: ViewModifier {
+    @ScaledMetric private var size: CGFloat
+    @Environment(\.legibilityWeight) private var legibilityWeight
+    private let weight: Font.Weight
+    private let design: Font.Design
+
+    init(size: CGFloat, weight: Font.Weight, design: Font.Design, relativeTo style: Font.TextStyle) {
+        _size = ScaledMetric(wrappedValue: size, relativeTo: style)
+        self.weight = weight
+        self.design = design
+    }
+
+    func body(content: Content) -> some View {
+        let accessibleWeight = legibilityWeight == .bold && weight != .heavy && weight != .black ? Font.Weight.bold : weight
+        content.font(.system(size: size, weight: accessibleWeight, design: design))
+    }
+}
+
+extension View {
+    func appTextFont(size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default,
+                     relativeTo style: Font.TextStyle = .body) -> some View {
+        modifier(AppTextFont(size: size, weight: weight, design: design, relativeTo: style))
+    }
+}
+
+struct AppUIKitTextFont: DynamicProperty {
+    @ScaledMetric private var size: CGFloat
+    @Environment(\.legibilityWeight) private var legibilityWeight
+    private let design: ChatFontDesign
+
+    init(size: CGFloat, design: ChatFontDesign = .system, relativeTo style: Font.TextStyle = .body) {
+        _size = ScaledMetric(wrappedValue: size, relativeTo: style)
+        self.design = design
+    }
+
+    var font: UIFont { design.styled(.systemFont(ofSize: size), boldText: legibilityWeight == .bold) }
+}

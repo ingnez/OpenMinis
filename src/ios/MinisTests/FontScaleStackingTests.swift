@@ -25,6 +25,15 @@ final class FontScaleStackingTests: XCTestCase {
     }
 
     @MainActor
+    func testAppLabelFontFollowsAccessibilityTextSize() {
+        let text = Text("Interface label").appTextFont(size: 13)
+        let standard = UIHostingController(rootView: text.dynamicTypeSize(.large))
+        let accessible = UIHostingController(rootView: text.dynamicTypeSize(.accessibility3))
+        let proposal = CGSize(width: 320, height: 500)
+        XCTAssertGreaterThan(accessible.sizeThatFits(in: proposal).height, standard.sizeThatFits(in: proposal).height)
+    }
+
+    @MainActor
     func testBotMarkdownFollowsSystemSizeAndBoldText() {
         let standard = CloudChatTypography(design: .system, messageTypeSize: .large, inputTypeSize: .large, boldText: false)
         let accessible = CloudChatTypography(design: .system, messageTypeSize: .accessibility2, inputTypeSize: .accessibility2, boldText: true)

@@ -282,7 +282,7 @@ struct MinisAudioPreviewView: View {
                 }
                 .overlay(alignment: .topTrailing) {
                     Text(rateLabel(player.rate))
-                        .font(.system(size: 9, weight: .bold))
+                        .appTextFont(size: 9, weight: .bold, relativeTo: .caption)
                         .foregroundColor(.white)
                         .padding(.horizontal, 3)
                         .padding(.vertical, 1)

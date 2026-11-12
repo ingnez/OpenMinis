@@ -14,6 +14,8 @@ struct ISHTerminalView: View {
     var initCommand: String? = nil
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.legibilityWeight) private var legibilityWeight
+    @ScaledMetric(relativeTo: .caption) private var terminalFontSize = TerminalCellMetrics.fontSize
     @StateObject private var viewModel = ISHTerminalViewModel()
     @State private var showFileBrowser = false
     @State private var showRootfsManagement = false
@@ -32,6 +34,7 @@ struct ISHTerminalView: View {
     private var isSheetPresented: Bool { showFileBrowser || showRootfsManagement }
 
     var body: some View {
+        let fontPreferences = TerminalFontPreferences(size: terminalFontSize, boldText: legibilityWeight == .bold)
         ZStack {
             TerminalCanvasView(
                 emulator: viewModel.emulator,
@@ -58,8 +61,10 @@ struct ISHTerminalView: View {
                 },
                 onDoubleTap: {
                     viewModel.sendInput(Data([0x09]))
-                }
+                },
+                fontPreferences: fontPreferences
             )
+            .id(fontPreferences)
 
             // Invisible keyboard input capture
             TerminalInputView(

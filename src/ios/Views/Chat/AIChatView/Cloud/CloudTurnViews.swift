@@ -399,17 +399,18 @@ struct CloudToolStepRow: View {
                 HStack(spacing: 8) {
                     statusIcon(style: style)
                     Text(title)
-                        .font(.system(size: 13, weight: .medium))
+                        .appTextFont(size: 13, weight: .medium)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     if let dur = CloudToolTitle.duration(block.toolDuration) {
                         Text(dur)
-                            .font(.system(size: 11, design: .monospaced))
+                            .appTextFont(size: 11, design: .monospaced, relativeTo: .caption)
                             .foregroundStyle(.tertiary)
                     }
                 }
                 .padding(.horizontal, 12)
-                .frame(height: 34)
+            .padding(.vertical, 5)
+            .frame(minHeight: 34)
                 .background(Capsule().fill(Color(UIColor.systemGray6)))
                 .overlay(Capsule().stroke(Color(UIColor.separator).opacity(0.4), lineWidth: 0.5))
                 .contentShape(Capsule())
@@ -419,12 +420,12 @@ struct CloudToolStepRow: View {
                 VStack(alignment: .leading, spacing: 6) {
                     if !st.detail.isEmpty {
                         Text(st.detail)
-                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(.orange).lineLimit(6)
+                            .appTextFont(size: 11, design: .monospaced, relativeTo: .caption).foregroundStyle(.orange).lineLimit(6)
                             .textSelection(.enabled)
                     }
                     if !st.result.isEmpty {
                         Text(CloudStepResult.readable(st.result))
-                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(12)
+                            .appTextFont(size: 11, design: .monospaced, relativeTo: .caption).foregroundStyle(.secondary).lineLimit(12)
                             .textSelection(.enabled)
                     }
                 }
@@ -479,12 +480,12 @@ struct CloudThinkingView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Image("ThinkingIcon").resizable().frame(width: 14, height: 14).foregroundStyle(.blue)
-                Text("深度思考").font(.system(size: 13, weight: .semibold)).foregroundStyle(.blue)
+                Text("深度思考").appTextFont(size: 13, weight: .semibold).foregroundStyle(.blue)
                 if streaming { ProgressView().controlSize(.mini).tint(.blue) }
                 Spacer()
                 HStack(spacing: 4) {
                     Text(text.count > 1000 ? "\(text.count / 1000)K" : "\(text.count)")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .appTextFont(size: 11, weight: .medium, design: .monospaced, relativeTo: .caption)
                         .foregroundStyle(.blue.opacity(0.6))
                     Image(systemName: isOpen ? "chevron.up" : "chevron.down")
                         .font(.system(size: 11, weight: .medium)).foregroundStyle(.blue.opacity(0.5))
@@ -500,7 +501,7 @@ struct CloudThinkingView: View {
             if isOpen {
                 ScrollView {
                     Text(String(text.suffix(streaming ? 2000 : 8000)))
-                        .font(.system(size: 13))
+                        .appTextFont(size: 13)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
