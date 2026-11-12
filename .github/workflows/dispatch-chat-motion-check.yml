@@ -1,0 +1,26 @@
+name: Keep the latest requested iOS build
+on:
+  push:
+    branches: [grokbot-phase2-chat-motion-ci]
+    paths: [.github/workflows/dispatch-chat-motion-check.yml]
+permissions:
+  actions: write
+jobs:
+  cancel:
+    if: github.repository == 'ingnez/OpenMinis'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Stop superseded and duplicate iOS runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for run in 43247818239 43245027004 43251278897; do
+            run_info=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run")
+            jq -e '.head_branch == "grokbot-phase2-chat-motion" and .name == "Build Minis iOS IPA (unsigned)"' <<< "$run_info" >/dev/null
+            if jq -e '.status != "completed"' <<< "$run_info" >/dev/null; then
+              gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/force-cancel"
+              echo "Stopped superseded run $run"
+            fi
+          done
