@@ -44,6 +44,8 @@ final class MarkdownNSRenderer {
     /// call; when non-nil the slot key is simply messageId:blockId — immune
     /// to content collisions between tables with identical rows.
     var blockId: UUID?
+    var fontDesign = ChatFontDesign.current
+    var boldText = false
 
     init(baseFontSize: CGFloat? = nil) {
         self.theme = SelectableMarkdownTheme(baseFontSize: baseFontSize)
@@ -132,7 +134,10 @@ final class MarkdownNSRenderer {
         let tableCountBefore = tableAttachmentCache.count
 
         // 聊天字体（设置里选的圆体 / 衬线 / 等宽）；默认系统字体时原样返回
-        let result = ChatFontDesign.current.apply(renderBlockSequence(blocks, listDepth: 0, quoteDepth: 0, tightSpacing: false).attributed)
+        let result = fontDesign.apply(
+            renderBlockSequence(blocks, listDepth: 0, quoteDepth: 0, tightSpacing: false).attributed,
+            boldText: boldText
+        )
         let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
 
         // Only log noisy cases to keep signal-to-noise high: slow renders, or

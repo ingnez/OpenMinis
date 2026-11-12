@@ -126,5 +126,6 @@ struct SelectableMarkdownTheme {
 @MainActor
 func renderMarkdownBlocks(_ blocks: [BlockNode]) -> NSAttributedString {
     let renderer = MarkdownNSRenderer(baseFontSize: FontSettings.shared.scaledMessage(16.5))
+    renderer.boldText = FontSettings.shared.systemBoldText
     return renderer.render(blocks: blocks)
 }

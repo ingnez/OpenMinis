@@ -2083,6 +2083,45 @@ def purge_session(conn, sid):
     conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
 
 
+def delete_bot_sessions(bot_id, session_ids):
+    if not isinstance(session_ids, list) or not session_ids or any(
+            not isinstance(sid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", sid) for sid in session_ids):
+        return 400, {"error": "请选择要删除的对话"}
+    if not get_persona(bot_id):
+        return 404, {"error": "找不到此 Bot"}
+    session_ids = list(dict.fromkeys(session_ids))
+    conn = get_db_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        owned = []
+        for sid in session_ids:
+            row = conn.execute("SELECT persona_id, incognito FROM sessions WHERE session_id = ?", (sid,)).fetchone()
+            if not row:
+                continue
+            if row[0] != bot_id or row[1] or cloud_workers.is_worker_session(conn, sid):
+                return 404, {"error": "所选对话不属于此 Bot 的历史记录"}
+            workers = conn.execute("SELECT worker_session, status FROM bot_workers WHERE front_session = ?", (sid,)).fetchall()
+            active = conn.execute("SELECT 1 FROM tasks WHERE session_id = ? AND status IN ('running', 'queued', 'waiting_user')",
+                                  (sid,)).fetchone()
+            delegated = conn.execute("SELECT 1 FROM bot_delegations WHERE status = 'running' AND (from_session = ? OR to_session = ?)",
+                                     (sid, sid)).fetchone()
+            if active or delegated or any(status in cloud_workers.ACTIVE for _, status in workers):
+                return 409, {"error": "所选对话还有任务在运行，请停止任务或等它完成后再删除"}
+            owned.append((sid, workers))
+        for sid, workers in owned:
+            conn.execute("DELETE FROM bot_workers WHERE front_session = ?", (sid,))
+            for related in [sid] + [worker_session for worker_session, _ in workers]:
+                conn.execute("DELETE FROM message_reactions WHERE session_id = ?", (related,))
+                conn.execute("DELETE FROM session_reply WHERE session_id = ?", (related,))
+                purge_session(conn, related)
+        conn.commit()
+    finally:
+        conn.close()
+    if owned:
+        bots_changed()
+    return 200, {"deleted_session_ids": session_ids}
+
+
 def purge_stale_incognito(conn, now=None):
     """无痕对话最多留 24 小时（App 离开时会立刻删；这里兜底 App 被杀掉的情况）。正在跑的不删。"""
     cutoff = (now or time.time()) - INCOGNITO_TTL
@@ -2655,6 +2694,7 @@ def tool_list_bots(task_id, session_id, args):
     return out
 
 ADMIN_API_BLOCKED = re.compile(r"^/v1/(credentials|notify|backup|auth|token|vault)(/|$)")
+BOT_SESSION_DELETE_ROUTE = re.compile(r"^/v1/bots/([a-z0-9][a-z0-9_-]{0,31})/sessions/delete/?$")
 
 def _admin_api(method, path, body):
     """主 Bot 调本机 API（和 App 用的同一套）。密钥类接口不开放：模型不该经手原始密钥。"""
@@ -2663,6 +2703,8 @@ def _admin_api(method, path, body):
         return {"error": "path 必须是 /v1/ 开头的接口，method 为 GET/POST/PUT/DELETE"}
     if ADMIN_API_BLOCKED.match(path.split("?")[0]):
         return {"error": "密钥、推送、备份类接口不能由 Bot 调用，请让用户在 App 设置里操作"}
+    if method == "POST" and BOT_SESSION_DELETE_ROUTE.fullmatch(urlparse(path).path):
+        return {"error": "请在 App 的历史对话里删除"}
     if method == "DELETE" and path.split("?")[0].rstrip("/") in (f"/v1/bots/{primary_bot_id()}", f"/v1/personas/{primary_bot_id()}"):
         return {"error": "主 Bot 不能删除自己"}
     if method == "DELETE" and re.match(r"^/v1/(bots|personas)/[^/]+$", path.split("?")[0]):
@@ -2774,10 +2816,11 @@ def _post_when_idle(session_id, text, timeout=1800):
         try:
             busy = conn.execute("SELECT 1 FROM tasks WHERE session_id = ? AND status IN ('running', 'waiting_user')", (session_id,)).fetchone()
             if not busy or time.time() > deadline:
-                conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'assistant', ?, ?)",
-                             (session_id, text, time.time()))
+                inserted = conn.execute("INSERT INTO messages (session_id, role, content, timestamp) "
+                                        "SELECT session_id, 'assistant', ?, ? FROM sessions WHERE session_id = ?",
+                                        (text, time.time(), session_id)).rowcount
                 conn.commit()
-                return True
+                return inserted == 1
         finally:
             conn.close()
         time.sleep(1.0)
@@ -3487,7 +3530,8 @@ def _report_delegation(did):
     row = _delegation_row(did)
     target = get_persona(row["to_bot"]) or {}
     text = deleg.result_text(_bot_label(target), row["status"], row["result"])
-    _post_when_idle(row["from_session"], text)
+    if not _post_when_idle(row["from_session"], text):
+        return
     cfg = current_notify_config()
     if not _bot_muted(row["from_session"]):
         user_notify(cfg, "task_completed", f"{_bot_label(target)} 完成了委托"[:120], (row["result"] or "")[:600], session_id=row["from_session"])
@@ -8286,6 +8330,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_json = self._read_json_body()
         if req_json is None:
+            return
+        m_session_delete = BOT_SESSION_DELETE_ROUTE.fullmatch(path)
+        if m_session_delete:
+            self._send(*delete_bot_sessions(m_session_delete.group(1), req_json.get("session_ids")))
             return
         if path.startswith("/v1/proxy/"):
             self._proxy_post(path, req_json)

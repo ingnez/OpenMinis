@@ -135,12 +135,27 @@ final class FontSettings: ObservableObject {
 
     /// Scale a font size by the chat-input multiplier.
     func scaledChatInput(_ size: CGFloat) -> CGFloat {
-        size * chatInputScale.multiplier
+        scaledBody(size * chatInputScale.multiplier)
     }
 
     /// Scale a font size by the message-base multiplier.
     func scaledMessage(_ size: CGFloat) -> CGFloat {
-        size * messageBaseScale.multiplier
+        scaledBody(size * messageBaseScale.multiplier)
+    }
+
+    private var bodyScale: (category: DynamicTypeSize, multiplier: CGFloat)?
+
+    private func scaledBody(_ size: CGFloat) -> CGFloat {
+        let category = appTypeSize
+        if let bodyScale, bodyScale.category == category { return size * bodyScale.multiplier }
+        let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(category))
+        let multiplier = UIFontMetrics(forTextStyle: .body).scaledValue(for: 16.5, compatibleWith: traits) / 16.5
+        bodyScale = (category, multiplier)
+        return size * multiplier
+    }
+
+    var chatInputFont: UIFont {
+        ChatFontDesign.current.styled(.systemFont(ofSize: scaledChatInput(16.5)), boldText: systemBoldText)
     }
 
     /// Scale a font size by the app-base multiplier.
@@ -152,7 +167,9 @@ final class FontSettings: ObservableObject {
 
     /// 系统设置里的字号（含启动参数 UIPreferredContentSizeCategoryName）；窗口上的覆盖不影响它
     @Published private(set) var systemTypeSize: DynamicTypeSize = FontSettings.currentSystemTypeSize()
+    @Published private(set) var systemBoldText = UIAccessibility.isBoldTextEnabled
     private var systemSizeObserver: NSObjectProtocol?
+    private var boldTextObserver: NSObjectProtocol?
     private var activeObserver: NSObjectProtocol?
 
     /// App 实际用的字号：系统字号叠上 App 里的字号档
@@ -171,22 +188,28 @@ final class FontSettings: ObservableObject {
         DispatchQueue.main.async { [weak self] in self?.applyAppScaleToAllWindows() }
         activeObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,
                                                                 object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                let now = Self.currentSystemTypeSize()
-                if now != self.systemTypeSize { self.systemTypeSize = now; self.applyAppScaleToAllWindows() }
-            }
+            MainActor.assumeIsolated { self?.refreshSystemTypography() }
         }
         systemSizeObserver = NotificationCenter.default.addObserver(forName: UIContentSizeCategory.didChangeNotification,
                                                                     object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                let now = Self.currentSystemTypeSize()
-                guard now != self.systemTypeSize else { return }
-                self.systemTypeSize = now
-                self.applyAppScaleToAllWindows()
-            }
+            MainActor.assumeIsolated { self?.refreshSystemTypography() }
         }
+        boldTextObserver = NotificationCenter.default.addObserver(forName: UIAccessibility.boldTextStatusDidChangeNotification,
+                                                                  object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshSystemTypography() }
+        }
+    }
+
+    private func refreshSystemTypography() {
+        let size = Self.currentSystemTypeSize()
+        let bold = UIAccessibility.isBoldTextEnabled
+        guard size != systemTypeSize || bold != systemBoldText else { return }
+        if size != systemTypeSize {
+            systemTypeSize = size
+            applyAppScaleToAllWindows()
+        }
+        if bold != systemBoldText { systemBoldText = bold }
+        NotificationCenter.default.post(name: .fontSettingsMessageBaseChanged, object: nil)
     }
 
     // MARK: - UIKit global application
@@ -248,9 +271,22 @@ final class FontSettings: ObservableObject {
 private struct AppFontScaleModifier: ViewModifier {
     @ObservedObject private var fontSettings = FontSettings.shared
     @Environment(\.dynamicTypeSize) private var system
+    @Environment(\.legibilityWeight) private var legibilityWeight
+    @AppStorage(ChatFontDesign.key) private var designRaw = ChatFontDesign.system.rawValue
 
     func body(content: Content) -> some View {
-        content.dynamicTypeSize(fontSettings.appBaseScale.dynamicTypeSize(stackedOn: system))
+        let appSize = fontSettings.appBaseScale == .default ? system : fontSettings.appTypeSize
+        let typography = CloudChatTypography(
+            design: ChatFontDesign(rawValue: designRaw) ?? .system,
+            messageTypeSize: fontSettings.messageBaseScale.dynamicTypeSize(stackedOn: appSize),
+            inputTypeSize: fontSettings.chatInputScale.dynamicTypeSize(stackedOn: appSize),
+            boldText: legibilityWeight == .bold || (legibilityWeight == nil && fontSettings.systemBoldText)
+        )
+        content.dynamicTypeSize(appSize)
+            .environment(\.cloudChatTypography, typography)
+            .onChange(of: designRaw) { _ in
+                NotificationCenter.default.post(name: .fontSettingsMessageBaseChanged, object: nil)
+            }
     }
 }
 

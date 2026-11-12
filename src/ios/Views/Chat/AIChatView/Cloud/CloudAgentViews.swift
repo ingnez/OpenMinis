@@ -607,6 +607,8 @@ private struct CloudChatScrollTracking: ViewModifier {
 }
 
 struct CloudSessionView: View {
+    @Environment(\.cloudChatTypography) private var typography
+    @Environment(\.dynamicTypeSize) private var typeSize
     let sessionId: String
     let sessionTitle: String
     let model: String
@@ -1078,6 +1080,7 @@ struct CloudSessionView: View {
             do {
                 let res = try await quietly(CloudHistoryPager.firstPath(sessionId))
                 await MainActor.run {
+                    guard !CloudBotService.deletedSessions.contains(self.sessionId) else { return }
                     let fresh = res["messages"] as? [[String: Any]] ?? []
                     let freshTasks = res["tasks"] as? [[String: Any]] ?? []
                     self.canStoreOutbox = (res["incognito"] as? Bool) != true
@@ -1341,6 +1344,8 @@ struct CloudSessionView: View {
                     .accessibilityLabel("添加附件")
                     HStack(alignment: .bottom, spacing: 4) {
                         TextField(CloudBotComposerAction.placeholder(botName: theme.name, localHint: false), text: $inputPrompt, axis: .vertical)
+                            .font(.system(.body, design: typography?.design.swiftUI ?? .default))
+                            .dynamicTypeSize(typography?.inputTypeSize ?? typeSize)
                             .accessibilityIdentifier("botComposerField")
                             .lineLimit(1...6)
                             .padding(.vertical, 10).padding(.leading, 14)

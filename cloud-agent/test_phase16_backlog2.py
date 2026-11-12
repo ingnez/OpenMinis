@@ -141,6 +141,58 @@ class IncognitoTests(CloudServerTestCase):
 
 
 
+class BotConversationHistoryTests(CloudServerTestCase):
+    def setUp(self):
+        self.request("PUT", "/v1/bots/history-main", {"name": "主 Bot", "instructions": "x", "is_primary": True})
+        self.request("PUT", "/v1/bots/history-other", {"name": "其他 Bot", "instructions": "x"})
+
+    def create_chat(self, title, bot="history-main", incognito=False):
+        status, result = self.request("POST", "/v1/sessions", {"title": title, "persona_id": bot, "incognito": incognito})
+        self.assertEqual(status, 201)
+        self.assertIs(result["incognito"], incognito)
+        return result["session_id"]
+
+    def delete_chats(self, *ids):
+        return self.request("POST", "/v1/bots/history-main/sessions/delete", {"session_ids": list(ids)})
+
+    def test_main_bot_normal_and_private_chats_are_separate_and_only_own_history_is_deleted(self):
+        first = self.create_chat("已有对话")
+        new = self.create_chat("新对话")
+        private = self.create_chat("无痕对话", incognito=True)
+        other = self.create_chat("其他 Bot 对话", bot="history-other")
+        self.assertEqual(len({first, new, private, other}), 4)
+        listed = self.request("GET", "/v1/sessions?bot=history-main")[1]["sessions"]
+        self.assertEqual({row["session_id"] for row in listed}, {first, new})
+        self.assertEqual(self.request("GET", f"/v1/sessions/{new}")[1]["messages"], [])
+        self.assertEqual(self.delete_chats(first, private)[0], 404)
+        self.assertEqual(self.delete_chats(first, other)[0], 404)
+        self.assertEqual(self.request("GET", f"/v1/sessions/{first}")[0], 200)
+        self.assertEqual(self.delete_chats(first), (200, {"deleted_session_ids": [first]}))
+        self.assertEqual(self.delete_chats(first), (200, {"deleted_session_ids": [first]}))
+        self.assertEqual(self.request("GET", f"/v1/sessions/{private}")[0], 200)
+        self.assertEqual(self.request("GET", f"/v1/sessions/{other}")[0], 200)
+        self.assertEqual(self.request("GET", f"/v1/sessions/{new}")[0], 200)
+
+    def test_batch_delete_is_atomic_and_cleans_history(self):
+        idle = self.create_chat("第一条")
+        busy = self.create_chat("第二条")
+        connection = self.srv.get_db_connection()
+        try:
+            connection.execute("INSERT INTO tasks (task_id, session_id, status) VALUES ('test-delete-task', ?, 'running')", (busy,))
+            connection.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', '待清理历史', 0)", (idle,))
+            connection.commit()
+            self.assertEqual(self.delete_chats(idle, busy)[0], 409)
+            self.assertEqual(self.request("GET", f"/v1/sessions/{idle}")[0], 200)
+            connection.execute("UPDATE tasks SET status = 'completed' WHERE task_id = 'test-delete-task'")
+            connection.commit()
+            self.assertEqual(self.delete_chats(idle, busy, busy), (200, {"deleted_session_ids": [idle, busy]}))
+            self.assertFalse(self.srv._post_when_idle(idle, "迟到的任务消息"))
+            self.assertIsNone(connection.execute("SELECT 1 FROM messages WHERE session_id = ?", (idle,)).fetchone())
+            self.assertIsNone(connection.execute("SELECT 1 FROM tasks WHERE session_id = ?", (busy,)).fetchone())
+        finally:
+            connection.close()
+
+
 class AuditTests(CloudServerTestCase):
     def test_01_file_write_edit_undo(self):
         import os

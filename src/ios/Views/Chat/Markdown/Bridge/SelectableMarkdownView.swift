@@ -110,6 +110,13 @@ struct SelectableMarkdownView: UIViewRepresentable {
     /// [T-selection-menu-minis-tts] "Read Selection" (selected text) via Minis TTS.
     var onSpeakText: ((String) -> Void)?
     @Environment(\.openURL) private var openURL
+    @Environment(\.cloudChatTypography) private var cloudTypography
+    private var renderedDesign: ChatFontDesign { cloudTypography?.design ?? .current }
+    private var renderedBoldText: Bool { cloudTypography?.boldText ?? FontSettings.shared.systemBoldText }
+    var renderedFontSize: CGFloat { cloudTypography?.markdownSize ?? FontSettings.shared.scaledMessage(16.5) }
+    var renderedBodyFont: UIFont {
+        renderedDesign.styled(.systemFont(ofSize: renderedFontSize), boldText: renderedBoldText)
+    }
     /// [T-in-chat-search] Search highlights of the chat this block belongs to
     /// (nil outside the message list) and whether the row is dimmed.
     @Environment(\.chatSearchHighlights) private var searchHighlights
@@ -131,6 +138,10 @@ struct SelectableMarkdownView: UIViewRepresentable {
             SelectableMarkdownView.rendererCache[mid] = coord.renderer
             SelectableMarkdownView.touchRenderer(mid)
         }
+        coord.renderer.fontDesign = renderedDesign
+        coord.renderer.boldText = renderedBoldText
+        coord.renderer.updateFontSize(renderedFontSize)
+        coord.lastFontSize = renderedFontSize
         return coord
     }
 
@@ -283,8 +294,10 @@ struct SelectableMarkdownView: UIViewRepresentable {
             key: messageId.flatMap { mid in blockId.map { ChatSearchUnitKey(messageId: mid, blockId: $0, field: .body) } },
             dimmed: searchDimmed)
 
-        let currentFontSize = FontSettings.shared.scaledMessage(16.5)
+        let currentFontSize = renderedFontSize
         let fontChanged = context.coordinator.lastFontSize != currentFontSize
+            || context.coordinator.renderer.fontDesign != renderedDesign
+            || context.coordinator.renderer.boldText != renderedBoldText
 
         // [AttachHotPath] updateUIView entry — only log when this textView has
         // image attachments in its renderer's cache (the only scenario that can
@@ -406,9 +419,12 @@ struct SelectableMarkdownView: UIViewRepresentable {
         context.coordinator.lastMarkdown = markdown
 
         if fontChanged {
+            context.coordinator.renderer.fontDesign = renderedDesign
+            context.coordinator.renderer.boldText = renderedBoldText
             context.coordinator.renderer.updateFontSize(currentFontSize)
             context.coordinator.lastFontSize = currentFontSize
             context.coordinator.lastRenderedContentHash = nil
+            context.coordinator.cachedSizes.removeAll(keepingCapacity: true)
             // Math images are rendered at a specific font size — clear stale caches.
             context.coordinator.renderer.mathAttachmentCache.removeAll()
             textView.clearAllAttachmentViews()
@@ -558,7 +574,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
 
         var hasher = Hasher()
         hasher.combine(cachedContent != nil ? cachedContent!.blocks.hashValue : markdown.hashValue)
-        hasher.combine(FontSettings.shared.scaledMessage(16.5))
+        hasher.combine(currentFontSize)
         let contentHash: Int = hasher.finalize()
         if contentHash == context.coordinator.lastRenderedContentHash {
             // [DIAG-RENDER-3] Content hash matches — skip re-render.
@@ -630,7 +646,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
             if _hasPlainSuffix {
                 let mut = NSMutableAttributedString(attributedString: renderedBody)
                 let suffixAttrs: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: FontSettings.shared.scaledMessage(16.5)),
+                    .font: renderedBodyFont,
                     .foregroundColor: UIColor.label,
                 ]
                 mut.append(NSAttributedString(string: _splitForUpdate.plainSuffix, attributes: suffixAttrs))

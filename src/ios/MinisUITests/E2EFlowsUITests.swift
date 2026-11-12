@@ -440,7 +440,10 @@ final class E2EFlowsUITests: XCTestCase {
         openBot(app)
         send(app, "存一张图")
         XCTAssertTrue(waitText(app, contains: "收到 1 张图片", timeout: 45), "图片没发出去")
-        app.buttons["Bot 资料"].tap()
+        app.buttons["botConversationMenu"].tap()
+        let botDetails = app.buttons["Bot 资料"]
+        XCTAssertTrue(botDetails.waitForExistence(timeout: 8))
+        botDetails.tap()
         let lib = app.buttons["资料库"].exists ? app.buttons["资料库"] : app.staticTexts["资料库"]
         XCTAssertTrue(scrollTo(app, lib), "Bot 资料页没有「资料库」")
         lib.tap()

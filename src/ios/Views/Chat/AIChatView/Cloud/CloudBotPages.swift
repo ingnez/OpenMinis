@@ -336,6 +336,7 @@ struct CloudBotDetailView: View {
     @State private var exportURL: URL?
     @State private var showEdit = false
     @State private var showAdvanced = false
+    @State private var showHistory = false
     @State private var showResources = false
     @State private var confirmDelete = false
     @State private var busy = false
@@ -378,6 +379,7 @@ struct CloudBotDetailView: View {
             CloudBotOverviewSection(bot: bot)
 
             Section {
+                Button { showHistory = true } label: { Label("历史对话", systemImage: "clock.arrow.circlepath") }
                 NavigationLink { CloudBotSoulView(bot: bot, onSaved: { await refresh(); await onChanged() }) } label: {
                     LabeledContent("灵魂设定", value: bot.soul.isEmpty ? "未设置" : (bot.soul["language"] ?? "已设置"))
                 }
@@ -429,6 +431,7 @@ struct CloudBotDetailView: View {
         .cloudBotSaveToast()
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showHistory) { CloudBotHistorySheet(botId: bot.id) }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if let exportURL {

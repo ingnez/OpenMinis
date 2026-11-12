@@ -35,6 +35,41 @@ final class ReplyModeUITests: XCTestCase {
         shot(app, "reply-01-秒回首字")
     }
 
+    func testReply_primaryBotConversationHistory() throws {
+        _ = probe("/_e2e/reset")
+        XCTAssertNotNil(probe("/_e2e/primary"))
+        let app = launch(mode: "instant", reset: false)
+        openBot(app)
+        send(app, "保留在原对话")
+        XCTAssertTrue(waitText(app, contains: "秒回：保留在原对话", timeout: 25))
+        hideKeyboard(app)
+
+        let menu = app.buttons["botConversationMenu"]
+        menu.tap()
+        app.buttons["新对话"].tap()
+        XCTAssertTrue(waitText(app, contains: "和 \(Self.botName) 说点什么", timeout: 20))
+        XCTAssertFalse(waitText(app, contains: "保留在原对话", timeout: 0.5))
+
+        menu.tap()
+        app.buttons["无痕对话"].tap()
+        XCTAssertTrue(waitText(app, contains: "无痕对话 ·", timeout: 20))
+        app.buttons["结束"].tap()
+        XCTAssertTrue(waitGone(app.buttons["结束"], timeout: 10))
+
+        menu.tap()
+        app.buttons["历史对话"].tap()
+        let select = app.buttons["botHistorySelect"]
+        XCTAssertTrue(poll(20) { select.exists && select.isEnabled })
+        select.tap()
+        app.buttons["全选"].tap()
+        app.buttons["botHistoryDeleteSelection"].tap()
+        app.buttons["删除对话"].tap()
+        XCTAssertTrue(waitText(app, contains: "暂无历史对话", timeout: 20))
+        app.buttons["关闭"].tap()
+        XCTAssertTrue(app.buttons["新对话"].waitForExistence(timeout: 10))
+        shot(app, "reply-历史删除后可新建")
+    }
+
     /// 后台在干活时插话：前台马上答复并转给后台，后台结果里体现插话；输入框按钮始终不是停止键
     func testReply_interjectWhileWorking() throws {
         let app = launch(mode: "instant")

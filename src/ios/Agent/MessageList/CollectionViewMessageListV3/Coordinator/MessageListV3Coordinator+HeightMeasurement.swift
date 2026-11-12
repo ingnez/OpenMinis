@@ -165,7 +165,7 @@ extension CollectionViewMessageListV3.Coordinator {
             // real "…→expand" jitter is NOT primarily this residual (proven: every
             // measurement engine still left the symptom); the actual cause is
             // being investigated separately. Keep the measurement cheap.
-            let font = UIFont.systemFont(ofSize: fontSize)
+            let font = ChatFontDesign.current.styled(.systemFont(ofSize: fontSize), boldText: FontSettings.shared.systemBoldText)
             let attr = NSAttributedString(string: text, attributes: [.font: font])
             let bounds = attr.boundingRect(
                 with: CGSize(width: usableTextWidth, height: .greatestFiniteMagnitude),

@@ -6,12 +6,17 @@ struct CloudOneLineView: View {
     let detail: String
     let accent: Color
     @State private var open = false
+    @Environment(\.cloudChatTypography) private var typography
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
                 RoundedRectangle(cornerRadius: 2).fill(accent).frame(width: 4)
-                Text(head).font(.body.weight(.semibold)).textSelection(.enabled)
+                Text(head)
+                    .font(.system(.body, design: typography?.design.swiftUI ?? .default).weight(.semibold))
+                    .dynamicTypeSize(typography?.messageTypeSize ?? typeSize)
+                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !detail.isEmpty {

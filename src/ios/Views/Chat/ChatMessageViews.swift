@@ -77,7 +77,9 @@ struct MessageContextMenuPreview: View {
             // width comes from the ScrollView's width (the outer .frame below),
             // which starts at the cap and shrinks to the measured content.
             Text(shown)
-                .font(.system(size: FontSettings.shared.scaledMessage(16.5)))
+                .font(.system(size: FontSettings.shared.scaledMessage(16.5),
+                              weight: FontSettings.shared.systemBoldText ? .bold : .regular,
+                              design: ChatFontDesign.current.swiftUI))
                 .foregroundStyle(ChatColors.primaryText)
                 .multilineTextAlignment(.leading)
                 .padding(16)
@@ -441,7 +443,9 @@ struct ChatMessageRow: View {
                 if !userDisplayText.isEmpty {
                     HStack(spacing: 6) {
                         SearchHighlightText(userDisplayText, key: searchKey())
-                            .font(.system(size: FontSettings.shared.scaledMessage(16.5)))
+                            .font(.system(size: FontSettings.shared.scaledMessage(16.5),
+                                          weight: FontSettings.shared.systemBoldText ? .bold : .regular,
+                                          design: ChatFontDesign.current.swiftUI))
                             .foregroundStyle(message.isQueued ? ChatColors.secondaryText : ChatColors.primaryText)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)

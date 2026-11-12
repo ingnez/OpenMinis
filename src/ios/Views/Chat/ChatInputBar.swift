@@ -1791,7 +1791,7 @@ struct PastableTextView: UIViewRepresentable {
     func makeUIView(context: Context) -> PastableUITextView {
         let tv = PastableUITextView()
         tv.delegate = context.coordinator
-        tv.font = UIFont.systemFont(ofSize: FontSettings.shared.scaledChatInput(16.5))
+        tv.font = FontSettings.shared.chatInputFont
         tv.backgroundColor = .clear
         if let maxHeightOverride { tv.maxHeight = maxHeightOverride }
         tv.isScrollEnabled = false
@@ -1860,7 +1860,7 @@ struct PastableTextView: UIViewRepresentable {
         // constraint alone still truncates at one line.
         let placeholderLabel = UILabel()
         placeholderLabel.text = placeholder
-        placeholderLabel.font = UIFont.systemFont(ofSize: FontSettings.shared.scaledChatInput(16.5))
+        placeholderLabel.font = FontSettings.shared.chatInputFont
         placeholderLabel.textColor = .placeholderText
         placeholderLabel.tag = 999
         placeholderLabel.numberOfLines = 0
@@ -2035,7 +2035,7 @@ struct PastableTextView: UIViewRepresentable {
         }
 
         // Keep font in sync with FontSettings
-        let inputFont = UIFont.systemFont(ofSize: FontSettings.shared.scaledChatInput(16.5))
+        let inputFont = FontSettings.shared.chatInputFont
         if tv.font != inputFont {
             tv.font = inputFont
             tv.invalidateIntrinsicContentSize()

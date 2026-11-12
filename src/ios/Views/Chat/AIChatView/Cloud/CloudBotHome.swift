@@ -549,6 +549,7 @@ struct CloudBotHomeScreen: View {
     /// iPad / Mac 三栏里选中的对话
     @State private var splitSelection: String?
     @State private var search = ""
+    @FocusState private var searchFocused: Bool
     @StateObject private var searchModel = CloudSearchModel()
     @State private var showCreate = false
     @State private var showCreateGroup = false
@@ -840,8 +841,6 @@ struct CloudBotHomeScreen: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showHub = true }
     }
 
-    /// H5：底部浮在列表上的一条：左边白色圆按钮（深色四宫格线框图标），右边白色胶囊搜索框，都带柔和阴影；
-    /// 后面的列表在底部淡出（不是一整块挡板）
     private var bottomBar: some View {
         HStack(spacing: 12) {
             Menu {
@@ -852,20 +851,25 @@ struct CloudBotHomeScreen: View {
                     Label(model.hiddenBots.isEmpty ? "已隐藏对话" : "已隐藏对话（\(model.hiddenBots.count)）", systemImage: "eye.slash")
                 }
             } label: {
-                Image(systemName: "square.grid.2x2")
-                    .font(.system(size: 19, weight: .regular))
+                CloudHomeAppsGlyph()
+                    .stroke(style: StrokeStyle(lineWidth: 1.65, lineCap: .round, lineJoin: .round))
+                    .frame(width: 18, height: 18)
                     .foregroundStyle(Color(.label))
-                    .frame(width: 50, height: 50)
-                    .background(Circle().fill(Color(.systemBackground)))
-                    .overlay(Circle().stroke(Color.black.opacity(0.05), lineWidth: 0.5))
-                    .shadow(color: .black.opacity(0.10), radius: 10, y: 3)
+                    .frame(width: 48, height: 48)
+                    .modifier(FloatingCircleButtonSurface())
             }
+            .buttonStyle(.plain)
             .tint(Color(.label))
             .accessibilityLabel("连接应用")
             .accessibilityIdentifier("homeAppsButton")
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").font(.system(size: 17, weight: .semibold)).foregroundStyle(Color(.label))
-                TextField("搜索", text: $search)
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(Color(.label))
+                    .accessibilityHidden(true)
+                TextField("搜索", text: $search, prompt: Text("搜索").foregroundColor(.secondary))
+                    .font(.body.weight(.semibold))
+                    .focused($searchFocused)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitLabel(.search)
@@ -875,22 +879,36 @@ struct CloudBotHomeScreen: View {
                     Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
                 }
             }
-            .padding(.horizontal, 16)
-            .frame(height: 50)
-            .background(Capsule().fill(Color(.systemBackground)))
-            .overlay(Capsule().stroke(Color.black.opacity(0.05), lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.08), radius: 10, y: 3)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .frame(minHeight: 48)
+            .modifier(SearchBarSurface())
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 22)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 28)
+        .padding(.top, 16)
+        .padding(.bottom, searchFocused ? 8 : -5)
         .background(alignment: .bottom) {
-            // 列表在底部淡出
-            LinearGradient(colors: [Color(.systemBackground).opacity(0), Color(.systemBackground).opacity(0.92), Color(.systemBackground)],
+            LinearGradient(colors: [Color(.systemBackground).opacity(0), Color(.systemBackground).opacity(0.35)],
                            startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea(edges: .bottom)
                 .allowsHitTesting(false)
         }
+    }
+}
+
+private struct CloudHomeAppsGlyph: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let unit = rect.width / 18
+        for (x, y) in [(0.8, 0.8), (11.2, 0.8), (0.8, 11.2)] {
+            path.addRoundedRect(in: CGRect(x: CGFloat(x) * unit, y: CGFloat(y) * unit, width: 6 * unit, height: 6 * unit),
+                                cornerSize: CGSize(width: unit, height: unit))
+        }
+        path.move(to: CGPoint(x: 11 * unit, y: 14.2 * unit))
+        path.addLine(to: CGPoint(x: 17 * unit, y: 14.2 * unit))
+        path.move(to: CGPoint(x: 14 * unit, y: 11.2 * unit))
+        path.addLine(to: CGPoint(x: 14 * unit, y: 17.2 * unit))
+        return path
     }
 }
 
@@ -1001,8 +1019,11 @@ struct CloudBotChatView: View {
     @ObservedObject private var model = CloudBotHomeModel.shared
     @State private var sessionId: String?
     @State private var replyPlan: CloudReplyPlan?
-    @State private var history: [[String: Any]] = []
     @State private var errorText: String?
+    @State private var sessionError: String?
+    @State private var changingSession = false
+    @State private var showHistory = false
+    @State private var emptyHistory = false
     @State private var showDetail = false
     @State private var showComputer = false
 
@@ -1011,21 +1032,20 @@ struct CloudBotChatView: View {
     @State private var incognito: (id: String, previous: String?)?
     /// 页面真正关闭（被弹出）时删掉无痕对话；推到委托 / 电脑 / 资料页时不会触发
     @StateObject private var incognitoGuard = CloudIncognitoGuard()
-    @State private var incognitoError: String?
     @AppStorage private var backdropRaw: String
     @Environment(\.colorScheme) private var systemScheme
 
-    init(botId: String) {
+    init(botId: String, sessionId: String? = nil) {
         self.botId = botId
+        _sessionId = State(initialValue: sessionId)
         _backdropRaw = AppStorage(wrappedValue: "", CloudChatBackdrop.key(botId))
     }
 
-    @AppStorage(ChatFontDesign.key) private var chatFontRaw: String = ChatFontDesign.system.rawValue
+    @Environment(\.cloudChatTypography) private var typography
 
     var body: some View {
         chatBody
-            // 聊天字体：Bot 对话里没写死字体的文字都跟着换（消息正文由 Markdown 渲染器单独处理）
-            .font(.system(.body, design: (ChatFontDesign(rawValue: chatFontRaw) ?? .system).swiftUI))
+            .font(.system(.body, design: typography?.design.swiftUI ?? .default))
     }
 
     private var chatBody: some View {
@@ -1060,6 +1080,12 @@ struct CloudBotChatView: View {
                     Button("重试") { Task { await prepare() } }.buttonStyle(.bordered)
                 }
                 .padding()
+            } else if emptyHistory {
+                Button { Task { await startSession() } } label: {
+                    Label("新对话", systemImage: "square.and.pencil")
+                }
+                .buttonStyle(.bordered)
+                .disabled(changingSession)
             } else {
                 // 还没拿到对话编号（新 Bot 第一次打开）：骨架气泡，不整页转圈
                 CloudChatSkeleton()
@@ -1085,33 +1111,19 @@ struct CloudBotChatView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(bot.name) 资料")
-                    .contextMenu {
-                        Button { Task { await startNew() } } label: { Label("新对话", systemImage: "square.and.pencil") }
-                        if incognito == nil {
-                            Button { Task { await startIncognito() } } label: { Label("无痕对话", systemImage: "eye.slash") }
-                        }
-                        if let sid = sessionId {
-                            Button { speakLatest(sid) } label: { Label("朗读最新回复", systemImage: "speaker.wave.2") }
-                            Button { showComputer = true } label: { Label("电脑", systemImage: "display") }
-                            if incognito == nil {
-                                CloudReplyChatMenu(sessionId: sid, plan: $replyPlan)
-                            }
-                        }
-                        if history.count > 1 {
-                            Section("历史对话") {
-                                ForEach(history.indices, id: \.self) { i in
-                                    let sid = history[i]["session_id"] as? String ?? ""
-                                    Button(history[i]["title"] as? String ?? sid) { endIncognito(restore: false); sessionId = sid }
-                                }
-                            }
-                        }
-                    }
+                    .contextMenu { chatActions }
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                // … 打开 Bot 资料页；新对话 / 历史 / 朗读 / 电脑 在长按标题的菜单里
-                Button { showDetail = true } label: { Image(systemName: "ellipsis") }
-                    .accessibilityLabel("Bot 资料")
+                Menu {
+                    chatActions
+                    Button { showDetail = true } label: { Label("Bot 资料", systemImage: "info.circle") }
+                } label: {
+                    if changingSession { ProgressView().accessibilityLabel("正在创建对话") }
+                    else { Image(systemName: "ellipsis") }
+                }
+                .accessibilityLabel("对话菜单")
+                .accessibilityIdentifier("botConversationMenu")
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -1123,19 +1135,52 @@ struct CloudBotChatView: View {
                 CloudBotDetailView(bot: bot, onChanged: { await model.refresh() })
             }
         }
-        .task { await prepare() }
+        .sheet(isPresented: $showHistory) {
+            CloudBotHistorySheet(botId: botId, current: sessionId, onOpen: { sid in
+                endIncognito(restore: false)
+                selectSession(sid)
+                showHistory = false
+            })
+        }
+        .task(id: lock.needsUnlock(botId)) { await prepare() }
+        .onReceive(NotificationCenter.default.publisher(for: CloudBotHistorySheet.didDelete)) { note in
+            guard note.userInfo?["bot"] as? String == botId,
+                  let ids = note.userInfo?["ids"] as? Set<String> else { return }
+            handleDeletedSessions(ids, next: note.userInfo?["next"] as? String)
+        }
         .task(id: sessionId) {
             // 这个对话的回复方式（老服务器没有这个接口：菜单里就不出现）
-            if let sid = sessionId { replyPlan = try? await CloudReplyService.session(sid) }
+            guard let sid = sessionId, incognito == nil else { return }
+            let plan = try? await CloudReplyService.session(sid)
+            if !Task.isCancelled, sid == sessionId { replyPlan = plan }
         }
         .onReceive(NotificationCenter.default.publisher(for: CloudReplyService.changed)) { note in
             guard let sid = sessionId, note.userInfo?["session_id"] as? String == sid else { return }
-            Task { replyPlan = try? await CloudReplyService.session(sid) }
+            Task {
+                let plan = try? await CloudReplyService.session(sid)
+                if sid == sessionId { replyPlan = plan }
+            }
         }
-        .alert("没能开无痕对话", isPresented: Binding(get: { incognitoError != nil }, set: { if !$0 { incognitoError = nil } })) {
+        .alert("没能打开对话", isPresented: Binding(get: { sessionError != nil }, set: { if !$0 { sessionError = nil } })) {
             Button("好", role: .cancel) {}
-        } message: { Text(incognitoError ?? "") }
+        } message: { Text(sessionError ?? "") }
         .onDisappear { model.markSeen(botId); CloudBotSpeaker.stop() }
+    }
+
+    @ViewBuilder private var chatActions: some View {
+        Button { Task { await startSession() } } label: { Label("新对话", systemImage: "square.and.pencil") }
+            .disabled(changingSession || lock.needsUnlock(botId))
+        if incognito == nil {
+            Button { Task { await startSession(privateChat: true) } } label: { Label("无痕对话", systemImage: "eye.slash") }
+                .disabled(changingSession || lock.needsUnlock(botId))
+        }
+        Button { showHistory = true } label: { Label("历史对话", systemImage: "clock.arrow.circlepath") }
+            .disabled(changingSession || lock.needsUnlock(botId))
+        if let sid = sessionId, !lock.needsUnlock(botId) {
+            Button { speakLatest(sid) } label: { Label("朗读最新回复", systemImage: "speaker.wave.2") }
+            Button { showComputer = true } label: { Label("电脑", systemImage: "display") }
+            if incognito == nil { CloudReplyChatMenu(sessionId: sid, plan: $replyPlan) }
+        }
     }
 
     private func speakLatest(_ sid: String) {
@@ -1152,25 +1197,28 @@ struct CloudBotChatView: View {
         errorText = nil
         // 先用本地已知的对话编号直接打开（首页缓存的 Bot 列表 / 上次打开的），不等连接
         if sessionId == nil {
-            sessionId = model.bot(botId)?.latestSessionId ?? UserDefaults.standard.string(forKey: Self.lastSessionKey(botId))
+            sessionId = UserDefaults.standard.string(forKey: Self.lastSessionKey(botId)) ?? model.bot(botId)?.latestSessionId
         }
+        let initial = sessionId
         do {
             try await CloudQuiet.retry { try await CloudConnection.shared.ensureConnected() }
             if model.bot(botId) == nil { await model.refresh() }
-            guard let bot = model.bot(botId) else {
+            guard model.bot(botId) != nil else {
                 errorText = "找不到这个 Bot，可能已被删除"
                 return
             }
-            history = (try? await CloudBotService.sessions(botId)) ?? []
-            if sessionId == nil {
-                if let latest = bot.latestSessionId {
-                    sessionId = latest
-                } else {
-                    sessionId = try await CloudQuiet.retry(2) { try await CloudBotService.newSession(bot) }
-                }
+            guard !lock.needsUnlock(botId) else { return }
+            let ids = try await CloudBotService.sessions(botId).compactMap { $0["session_id"] as? String }
+            guard !Task.isCancelled, sessionId == initial, incognito == nil, !changingSession else { return }
+            if let initial, ids.contains(initial) {
+                selectSession(initial)
+            } else if let next = ids.first {
+                selectSession(next)
+            } else {
+                selectSession(nil)
+                await startSession()
             }
             model.markSeen(botId)
-            if let sid = sessionId, incognito?.id != sid { UserDefaults.standard.set(sid, forKey: Self.lastSessionKey(botId)) }
         } catch {
             // 已经在显示缓存的对话时不盖住它；对话页自己会提示在重连
             if sessionId == nil { errorText = error.localizedDescription }
@@ -1179,16 +1227,36 @@ struct CloudBotChatView: View {
 
     static func lastSessionKey(_ botId: String) -> String { "OpenMinisCloud_lastSession_" + botId }
 
-    private func startIncognito() async {
-        guard let bot = model.bot(botId) else { return }
+    private func selectSession(_ id: String?) {
+        if sessionId != id { replyPlan = nil }
+        sessionId = id
+        emptyHistory = id == nil
+        errorText = nil
+        UserDefaults.standard.set(id, forKey: Self.lastSessionKey(botId))
+    }
+
+    private func startSession(privateChat: Bool = false) async {
+        guard !changingSession, !lock.needsUnlock(botId) else { return }
+        changingSession = true
+        defer { changingSession = false }
         do {
-            let sid = try await CloudQuiet.retry(2) { try await CloudBotService.newIncognitoSession(bot) }
-            guard !sid.isEmpty else { return }
-            incognito = (sid, sessionId)
-            incognitoGuard.sessionId = sid
-            sessionId = sid
+            if model.bot(botId) == nil { await model.refresh() }
+            guard let bot = model.bot(botId) else {
+                sessionError = "找不到此 Bot，请返回首页后重试"
+                return
+            }
+            let sid = try await CloudBotService.newSession(bot, incognito: privateChat)
+            if privateChat {
+                incognito = (sid, sessionId)
+                incognitoGuard.sessionId = sid
+                replyPlan = nil
+                sessionId = sid
+            } else {
+                endIncognito(restore: false)
+                selectSession(sid)
+            }
         } catch {
-            incognitoError = error.localizedDescription
+            if !Task.isCancelled { sessionError = error.localizedDescription }
         }
     }
 
@@ -1196,17 +1264,194 @@ struct CloudBotChatView: View {
         guard let current = incognito else { return }
         incognito = nil
         incognitoGuard.sessionId = nil
-        if restore, sessionId == current.id { sessionId = current.previous }
+        if restore, sessionId == current.id { selectSession(current.previous) }
         CloudChatCache.remove(current.id)
         Task { await CloudBotService.deleteIncognito(current.id) }
     }
 
-    private func startNew() async {
-        endIncognito(restore: false)
-        guard let bot = model.bot(botId) else { return }
+    private func handleDeletedSessions(_ ids: Set<String>, next: String?) {
+        if let current = incognito, let previous = current.previous, ids.contains(previous) {
+            incognito = (current.id, next)
+            UserDefaults.standard.set(next, forKey: Self.lastSessionKey(botId))
+        } else if let sid = sessionId, ids.contains(sid) {
+            selectSession(next)
+        }
+        Task { await model.refreshBots() }
+    }
+}
+
+struct CloudBotHistorySheet: View {
+    static let didDelete = Notification.Name("OpenMinisBotSessionsDeleted")
+
+    let botId: String
+    var current: String? = nil
+    var onOpen: ((String) -> Void)? = nil
+    @Environment(\.dismiss) private var dismiss
+    @State private var sessions: [Entry] = []
+    @State private var selection: Set<String> = []
+    @State private var pendingDelete: Set<String> = []
+    @State private var selecting = false
+    @State private var loading = false
+    @State private var loaded = false
+    @State private var deleting = false
+    @State private var deletionRevision = 0
+    @State private var confirmDelete = false
+    @State private var errorText: String?
+
+    private struct Entry: Identifiable {
+        let id: String
+        let title: String
+        let created: Double
+
+        init?(_ raw: [String: Any]) {
+            guard let id = raw["session_id"] as? String, !id.isEmpty else { return nil }
+            self.id = id
+            title = (raw["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "未命名对话"
+            created = (raw["created_at"] as? NSNumber)?.doubleValue ?? 0
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if sessions.isEmpty {
+                    if loading || !loaded {
+                        ProgressView("正在读取对话")
+                    } else if errorText != nil {
+                        Button("重试") { Task { await load() } }
+                    } else {
+                        Text("暂无历史对话").foregroundStyle(.secondary)
+                    }
+                }
+                ForEach(sessions) { item in
+                    row(item)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            if !selecting {
+                                Button(role: .destructive) { requestDelete([item.id]) } label: {
+                                    Label("删除", systemImage: "trash")
+                                }
+                            }
+                        }
+                }
+            }
+            .navigationTitle("历史对话")
+            .navigationBarTitleDisplayMode(.inline)
+            .disabled(deleting)
+            .refreshable { await load() }
+            .task { await load() }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }.disabled(deleting)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button(selecting ? "完成" : "选择") {
+                        selecting.toggle()
+                        selection.removeAll()
+                    }
+                    .disabled(sessions.isEmpty || deleting)
+                    .accessibilityIdentifier("botHistorySelect")
+                }
+                if selecting {
+                    ToolbarItemGroup(placement: .bottomBar) {
+                        Button(selection.count == sessions.count ? "取消全选" : "全选") {
+                            selection = selection.count == sessions.count ? [] : Set(sessions.map(\.id))
+                        }
+                        Spacer()
+                        Button("删除 \(selection.count) 条", role: .destructive) { requestDelete(selection) }
+                            .disabled(selection.isEmpty || deleting)
+                            .accessibilityIdentifier("botHistoryDeleteSelection")
+                    }
+                }
+            }
+            .confirmationDialog("删除 \(pendingDelete.count) 条对话？", isPresented: $confirmDelete, titleVisibility: .visible) {
+                Button("删除对话", role: .destructive) {
+                    let ids = pendingDelete
+                    Task { await remove(ids) }
+                }
+            } message: {
+                Text("这些对话及其中的消息将从云端删除。")
+            }
+            .alert("历史对话", isPresented: Binding(get: { errorText != nil }, set: { if !$0 { errorText = nil } })) {
+                Button("好", role: .cancel) {}
+            } message: { Text(errorText ?? "") }
+            .interactiveDismissDisabled(deleting)
+        }
+    }
+
+    @ViewBuilder private func row(_ item: Entry) -> some View {
+        if selecting {
+            Button {
+                if !selection.insert(item.id).inserted { selection.remove(item.id) }
+            } label: {
+                HStack {
+                    Image(systemName: selection.contains(item.id) ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selection.contains(item.id) ? Color.accentColor : Color.secondary)
+                    rowLabel(item)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(selection.contains(item.id) ? .isSelected : [])
+        } else if let onOpen {
+            Button { onOpen(item.id) } label: { rowLabel(item) }.buttonStyle(.plain)
+        } else {
+            NavigationLink { CloudBotChatView(botId: botId, sessionId: item.id) } label: { rowLabel(item) }
+        }
+    }
+
+    private func rowLabel(_ item: Entry) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.title).foregroundStyle(.primary).lineLimit(2)
+                if item.created > 0 {
+                    Text(CloudBotHome.timeText(item.created)).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if item.id == current, !selecting {
+                Text("当前").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    private func requestDelete(_ ids: Set<String>) {
+        pendingDelete = ids
+        confirmDelete = true
+    }
+
+    private func load() async {
+        guard !loading, !deleting else { return }
+        let revision = deletionRevision
+        loading = true
+        defer { loading = false; loaded = true }
         do {
-            sessionId = try await CloudBotService.newSession(bot)
-            history = (try? await CloudBotService.sessions(botId)) ?? []
+            let fresh = try await CloudBotService.sessions(botId).compactMap(Entry.init)
+            guard !deleting, deletionRevision == revision, !Task.isCancelled else { return }
+            sessions = fresh
+            selection.formIntersection(fresh.map(\.id))
+        } catch {
+            if !Task.isCancelled { errorText = error.localizedDescription }
+        }
+    }
+
+    private func remove(_ ids: Set<String>) async {
+        guard !ids.isEmpty, !deleting else { return }
+        deleting = true
+        deletionRevision += 1
+        defer { deleting = false }
+        do {
+            let removed = try await CloudBotService.deleteSessions(ids, botId: botId)
+            sessions.removeAll { removed.contains($0.id) }
+            selection.subtract(removed)
+            if sessions.isEmpty { selecting = false }
+            var info: [String: Any] = ["bot": botId, "ids": removed]
+            let next = sessions.first?.id
+            if let next { info["next"] = next }
+            let key = CloudBotChatView.lastSessionKey(botId)
+            if let last = UserDefaults.standard.string(forKey: key), removed.contains(last) {
+                UserDefaults.standard.set(next, forKey: key)
+            }
+            NotificationCenter.default.post(name: Self.didDelete, object: nil, userInfo: info)
         } catch {
             errorText = error.localizedDescription
         }

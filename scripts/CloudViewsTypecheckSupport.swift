@@ -34,6 +34,14 @@ struct SelectableMarkdownView: View {
     var body: some View { Text(markdown) }
 }
 
+struct FloatingCircleButtonSurface: ViewModifier {
+    func body(content: Content) -> some View { content }
+}
+
+struct SearchBarSurface: ViewModifier {
+    func body(content: Content) -> some View { content }
+}
+
 /// 替身：真实实现在 Views/Chat/CloudStepBarHost.swift（复用本地模式的 FloatingToolBar）
 struct CloudStepBar: View {
  @ObservedObject var message: ChatMessage

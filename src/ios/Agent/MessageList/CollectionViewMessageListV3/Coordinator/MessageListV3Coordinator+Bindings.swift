@@ -367,6 +367,7 @@ extension CollectionViewMessageListV3.Coordinator {
                 .sink { [weak self] _ in
                     guard let self else { return }
                     self.vm?.invalidateAttributedStringCaches()
+                    self.attrStringHeightCache.removeAll()
                     self.reconfigureAllCells()
                 }
                 .store(in: &subscriptions)

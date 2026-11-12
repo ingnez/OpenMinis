@@ -182,6 +182,8 @@ struct CloudBotTemplate: Identifiable {
 
 @MainActor
 enum CloudBotService {
+    private(set) static var deletedSessions: Set<String> = []
+
     static func connected() async throws -> CloudConnection {
         let conn = CloudConnection.shared
         if !conn.isConnected { try await conn.connect() }
@@ -264,21 +266,32 @@ enum CloudBotService {
         return resp["routines"] as? [[String: Any]] ?? []
     }
 
-    static func newSession(_ bot: CloudBot) async throws -> String {
-        let title = bot.label + " · " + Date().formatted(date: .abbreviated, time: .shortened)
-        let resp = try await connected().request(method: "POST", path: "/v1/sessions", body: ["title": title, "persona_id": bot.id])
-        return resp["session_id"] as? String ?? ""
-    }
-
     /// 无痕对话：不出现在历史和搜索里、不写长期记忆，离开时删除（服务器 24 小时兜底清理）
-    static func newIncognitoSession(_ bot: CloudBot) async throws -> String {
+    static func newSession(_ bot: CloudBot, incognito: Bool = false) async throws -> String {
+        let title = bot.label + " · " + (incognito ? "无痕" : Date().formatted(date: .abbreviated, time: .shortened))
         let resp = try await connected().request(method: "POST", path: "/v1/sessions",
-                                                 body: ["title": bot.label + " · 无痕", "persona_id": bot.id, "incognito": true])
-        // 旧版服务器不认 incognito，会建成普通对话：这时不能当无痕用
-        guard resp["incognito"] as? Bool == true else {
+                                                 body: ["title": title, "persona_id": bot.id, "incognito": incognito])
+        if incognito, resp["incognito"] as? Bool != true {
             throw NSError(domain: "OpenMinisCloud", code: 1, userInfo: [NSLocalizedDescriptionKey: "云端版本太旧，不支持无痕对话；请先在设置里更新云端"])
         }
-        return resp["session_id"] as? String ?? ""
+        guard let id = resp["session_id"] as? String, !id.isEmpty else {
+            throw NSError(domain: "OpenMinisCloud", code: 1, userInfo: [NSLocalizedDescriptionKey: "云端没有返回新对话编号"])
+        }
+        return id
+    }
+
+    static func deleteSessions(_ ids: Set<String>, botId: String) async throws -> Set<String> {
+        let response = try await connected().request(method: "POST", path: "/v1/bots/\(botId)/sessions/delete",
+                                                      body: ["session_ids": ids.sorted()])
+        guard let deleted = response["deleted_session_ids"] as? [String], Set(deleted) == ids else {
+            throw NSError(domain: "OpenMinisCloud", code: 1, userInfo: [NSLocalizedDescriptionKey: "云端没有确认删除，请刷新历史对话"])
+        }
+        deletedSessions.formUnion(ids)
+        for id in deleted {
+            CloudChatCache.remove(id)
+        }
+        CloudOutbox.shared.removeSessions(ids)
+        return Set(deleted)
     }
 
     static func deleteIncognito(_ sid: String) async {
@@ -555,8 +568,7 @@ struct CloudBotAdvancedView: View {
                     let s = sessions[i]
                     let sid = s["session_id"] as? String ?? ""
                     let title = s["title"] as? String ?? sid
-                    NavigationLink(destination: CloudSessionView(sessionId: sid, sessionTitle: title, model: currentModel(),
-                                                                 selectedInstanceId: currentInstance())) {
+                    NavigationLink(destination: CloudBotChatView(botId: bot.id, sessionId: sid)) {
                         Text(title).lineLimit(1)
                     }
                 }
@@ -660,7 +672,6 @@ struct CloudBotAdvancedView: View {
         .refreshable { await refresh() }
     }
 
-    private func currentModel() -> String { UserDefaults.standard.string(forKey: "OpenMinisCloud_manualModel") ?? "" }
     private func currentInstance() -> String { UserDefaults.standard.string(forKey: "OpenMinisCloud_selectedInstanceId") ?? "" }
 
     private func refresh() async {

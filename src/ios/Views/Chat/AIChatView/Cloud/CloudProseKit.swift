@@ -51,6 +51,8 @@ struct CloudProseUser: View {
     let accent: Color
     /// 长按菜单只挂在文字气泡上：挂在整条上会盖住图片叠放卡片自己的「长按铺开」（42963481185 test10）
     var textMenu: (() -> AnyView)? = nil
+    @Environment(\.cloudChatTypography) private var typography
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         let shown = CloudMessageText.display(content)
@@ -63,7 +65,8 @@ struct CloudProseUser: View {
                 }
                 if !shown.text.isEmpty {
                     Text(shown.text).textSelection(.enabled)
-                        .font(.body)
+                        .font(.system(.body, design: typography?.design.swiftUI ?? .default))
+                        .dynamicTypeSize(typography?.messageTypeSize ?? typeSize)
                         .foregroundStyle(.white)
                         .padding(.horizontal, 16).padding(.vertical, 10)
                         .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(accent))

@@ -37,15 +37,49 @@ enum ChatFontDesign: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 把渲染好的正文换成所选字体；已经是等宽（代码）的部分不动
-    func apply(_ text: NSAttributedString) -> NSAttributedString {
-        guard let design = uiDesign, text.length > 0 else { return text }
+    func styled(_ font: UIFont, boldText: Bool) -> UIFont {
+        guard uiDesign != nil || boldText else { return font }
+        var descriptor = font.fontDescriptor
+        if let design = uiDesign, !descriptor.symbolicTraits.contains(.traitMonoSpace) {
+            descriptor = descriptor.withDesign(design) ?? descriptor
+        }
+        if boldText, !descriptor.symbolicTraits.contains(.traitBold) {
+            descriptor = descriptor.withSymbolicTraits(descriptor.symbolicTraits.union(.traitBold)) ?? descriptor
+        }
+        return UIFont(descriptor: descriptor, size: font.pointSize)
+    }
+
+    func apply(_ text: NSAttributedString, boldText: Bool = false) -> NSAttributedString {
+        guard (uiDesign != nil || boldText), text.length > 0 else { return text }
         let out = NSMutableAttributedString(attributedString: text)
         out.enumerateAttribute(.font, in: NSRange(location: 0, length: out.length)) { value, range, _ in
-            guard let font = value as? UIFont, !font.fontDescriptor.symbolicTraits.contains(.traitMonoSpace),
-                  let desc = font.fontDescriptor.withDesign(design) else { return }
-            out.addAttribute(.font, value: UIFont(descriptor: desc, size: font.pointSize), range: range)
+            guard let font = value as? UIFont else { return }
+            out.addAttribute(.font, value: styled(font, boldText: boldText), range: range)
         }
         return out
+    }
+}
+
+struct CloudChatTypography: Equatable {
+    let design: ChatFontDesign
+    let messageTypeSize: DynamicTypeSize
+    let inputTypeSize: DynamicTypeSize
+    let boldText: Bool
+
+    @MainActor var markdownSize: CGFloat {
+        UIFontMetrics(forTextStyle: .body).scaledValue(
+            for: 16.5, compatibleWith: UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(messageTypeSize))
+        )
+    }
+}
+
+private struct CloudChatTypographyKey: EnvironmentKey {
+    static let defaultValue: CloudChatTypography? = nil
+}
+
+extension EnvironmentValues {
+    var cloudChatTypography: CloudChatTypography? {
+        get { self[CloudChatTypographyKey.self] }
+        set { self[CloudChatTypographyKey.self] = newValue }
     }
 }

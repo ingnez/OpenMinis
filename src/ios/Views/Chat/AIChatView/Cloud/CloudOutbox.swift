@@ -53,6 +53,11 @@ final class CloudOutbox {
         save(load().filter { $0.nonce != nonce })
     }
 
+    func removeSessions(_ ids: Set<String>) {
+        lock.lock(); defer { lock.unlock() }
+        save(load().filter { !ids.contains($0.sessionId) })
+    }
+
     private func load() -> [CloudOutboxItem] {
         guard let d = defaults.data(forKey: Self.key) else { return [] }
         return (try? JSONDecoder().decode([CloudOutboxItem].self, from: d)) ?? []

@@ -14,6 +14,8 @@ CHECKS = [
     ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudBotRealtimeAvailability", IOS / "Realtime/CloudBotRealtimeCall.swift"),
     ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudBotRealtimeCallView", IOS / "Realtime/CloudBotRealtimeCall.swift"),
     ("scripts/CloudViewsTypecheckSupport.swift", "CloudStepBar", IOS.parent / "CloudStepBarHost.swift"),
+    ("scripts/CloudViewsTypecheckSupport.swift", "FloatingCircleButtonSurface", IOS / "Composer/ComposerSurface.swift"),
+    ("scripts/CloudViewsTypecheckSupport.swift", "SearchBarSurface", IOS.parent.parent / "ContentView/Sidebar/SidebarSurfaces.swift"),
     ("scripts/RealtimeTypecheckSupport.swift", "AgentLiveActivityManager", IOS.parents[2] / "Agent/Background/AgentLiveActivityManager.swift"),
     ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudBotCallController", IOS / "Realtime/CloudBotCallController.swift"),
     ("scripts/CloudRealtimeTypecheckSupport.swift", "CloudVoicePrecheck", IOS / "Realtime/CloudVoiceRouteSheet.swift"),
