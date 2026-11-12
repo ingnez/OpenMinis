@@ -50,6 +50,7 @@ struct CloudBotTopAvatar: View {
     var presence = CloudBotPresence(state: .idle, unread: 0, routine: .none, muted: false)
     let size: CGFloat
     let onTap: () -> Void
+    @ObservedObject private var link = CloudLinkSupervisor.shared
 
     var body: some View {
         Button(action: onTap) {
@@ -67,9 +68,9 @@ struct CloudBotTopAvatar: View {
                     }
                     .animation(.easeInOut(duration: 0.3), value: typing != nil)
                     .overlay(alignment: .bottomTrailing) { badge }
-                    // 状态圆点：主 Bot 的星标在右下，状态点放到左下，两个都看得见
-                    .overlay(alignment: bot.isPrimary ? .bottomLeading : .bottomTrailing) {
-                        CloudPresenceBadge(presence: presence, size: max(12, size * 0.16))
+                    // H2：主 Bot 不再在左下角另放状态点，状态体现在星标颜色上；其它 Bot 的状态点照旧在右下
+                    .overlay(alignment: .bottomTrailing) {
+                        if !bot.isPrimary { CloudPresenceBadge(presence: presence, size: max(12, size * 0.16)) }
                     }
                 HStack(spacing: 5) {
                     Text(bot.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
@@ -87,21 +88,42 @@ struct CloudBotTopAvatar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .background {
+            // 星标状态给 VoiceOver / XCUITest 读（只读，不可点；说明在长按菜单里）
+            if bot.isPrimary {
+                Color.clear.frame(width: 1, height: 1)
+                    .accessibilityElement()
+                    .accessibilityIdentifier("primaryStarBadge")
+                    .accessibilityLabel(star.text)
+                    .accessibilityValue(star.tone.rawValue)
+            }
+        }
         .accessibilityLabel("打开 \(bot.name)，\(presence.accessibilityText)")
         .accessibilityValue(presence.state == .error ? "皱眉" : (typing != nil ? "思考中眨眼" : "平静"))
     }
 
     private var typing: CloudTypingPhase? { CloudBotLock.shared.isLocked(bot.id) ? nil : bot.activity }
 
+    /// 主 Bot 星标颜色：绿 = 正常，黄 = 连接中 / 有事要处理，红 = 断开 / 出错（只变色，不可点，免得误点进聊天）
+    private var star: (tone: CloudHomeHeaderRules.StarTone, text: String) {
+        CloudHomeHeaderRules.star(link.headerLink, botError: presence.state == .error)
+    }
+
+    private var starColor: Color {
+        switch star.tone { case .green: return .green; case .yellow: return .yellow; case .red: return .red }
+    }
+
     @ViewBuilder
     private var badge: some View {
         if bot.isPrimary {
             ZStack {
                 Circle().fill(Color(.systemBackground)).frame(width: 28, height: 28)
-                Circle().fill(Color.orange).frame(width: 22, height: 22)
+                Circle().fill(starColor).frame(width: 22, height: 22)
                 Image(systemName: "star.fill").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
             }
             .offset(x: 4, y: 4)
+            .allowsHitTesting(false)
+            .animation(.easeInOut(duration: 0.3), value: star.tone)
         }
     }
 }
@@ -159,14 +181,13 @@ struct CloudBotSectionedList: View {
     }
 
     private func row(_ bot: CloudBot) -> some View {
+        // H3：点按交给 CloudSwipeRow 处理（以前行里是 Button，左滑抬手时也算一次点按，直接进了聊天）
         CloudSwipeRow(pinned: bot.pinned,
                       onPin: { model.setPrefs(bot.id, ["pinned": !bot.pinned]) },
-                      onHide: { model.setPrefs(bot.id, ["hidden": true]) }) {
-            Button { open(bot.id) } label: {
-                CloudBotHomeRow(bot: bot, unread: model.isUnread(bot), presence: model.presence(bot))
-            }
-            .buttonStyle(.plain)
-            .cloudBotMenu(bot, model: model, actions: actions)
+                      onHide: { model.setPrefs(bot.id, ["hidden": true]) },
+                      onTap: { open(bot.id) }) {
+            CloudBotHomeRow(bot: bot, unread: model.isUnread(bot), presence: model.presence(bot))
+                .cloudBotMenu(bot, model: model, actions: actions)
         }
         .padding(.horizontal, 20)
     }
@@ -198,14 +219,18 @@ struct CloudBotSectionedList: View {
     }
 }
 
-/// 行左滑：露出「置顶」（灰）和「隐藏」（红）两个圆按钮。横向拖动才算，竖向滚动和点按不受影响。
+/// 行左滑：露出「置顶」（灰）和「隐藏」（红）两个圆按钮。横向拖动才算，竖向滚动不受影响。
+/// 点按也在这里处理：横向拖过门槛就不算点按；行滑开时点一下只收起；两个圆按钮只做自己的事。
 struct CloudSwipeRow<Content: View>: View {
     let pinned: Bool
     let onPin: () -> Void
     let onHide: () -> Void
+    var onTap: (() -> Void)? = nil
     @ViewBuilder let content: () -> Content
     @State private var offset: CGFloat = 0
     @State private var open = false
+    /// 最近一次横向拖动的时间：抬手后紧跟着到的点按当作拖动的一部分丢掉
+    @State private var lastSwipe = Date.distantPast
     private let reveal: CGFloat = 124
 
     var body: some View {
@@ -219,26 +244,25 @@ struct CloudSwipeRow<Content: View>: View {
                 .opacity(min(1, Double(-offset / reveal)))
             }
             content()
+                .contentShape(Rectangle())
+                .onTapGesture { tapped() }
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { tapped() }
                 .offset(x: offset)
-                .allowsHitTesting(!open)
-                .overlay {
-                    if open {
-                        // 打开时点一下行收起
-                        Color.clear.contentShape(Rectangle()).onTapGesture { close() }
-                            .padding(.trailing, reveal)
-                    }
-                }
         }
         .clipped()
         .simultaneousGesture(
             DragGesture(minimumDistance: 24)
                 .onChanged { v in
                     guard abs(v.translation.width) > abs(v.translation.height) * 1.5 else { return }
+                    lastSwipe = Date()
                     let base: CGFloat = open ? -reveal : 0
                     offset = min(0, max(-reveal - 30, base + v.translation.width))
                 }
                 .onEnded { v in
                     guard abs(v.translation.width) > abs(v.translation.height) * 1.5 else { return }
+                    lastSwipe = Date()
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                         open = offset < -reveal / 2
                         offset = open ? -reveal : 0
@@ -249,6 +273,12 @@ struct CloudSwipeRow<Content: View>: View {
 
     private func close() {
         withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { open = false; offset = 0 }
+    }
+
+    private func tapped() {
+        if open || offset != 0 { close(); return }                       // 滑开时点一下只收起
+        guard Date().timeIntervalSince(lastSwipe) > 0.35 else { return }  // 刚拖完的抬手不算点按
+        onTap?()
     }
 
     private func circle(_ icon: String, color: Color, label: String, action: @escaping () -> Void) -> some View {

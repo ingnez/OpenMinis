@@ -35,6 +35,19 @@ struct CloudHomeHeaderRulesTests {
         check("斜体、删除线、链接", CloudPreviewText.plain("*注意* ~~旧的~~ 看[这里](https://example.com)") == "注意 旧的 看这里")
         check("乘号和 snake_case 不动", CloudPreviewText.plain("3*4 = 12，字段 shift_type") == "3*4 = 12，字段 shift_type")
         check("图片写成 [图片]", CloudPreviewText.plain("![图](https://example.com/a.png) 好了") == "[图片] 好了")
+        // H1：「今天有消息」小窗口多行显示，加粗成段，不露星号
+        let r = CloudPreviewText.rich("昨晚值班，今天你是**E2E下夜班**。\n\n\n- 第一条\n> 引用 `x`")
+        check("小窗口加粗成段", r == [.init(text: "昨晚值班，今天你是", bold: false), .init(text: "E2E下夜班", bold: true),
+                                .init(text: "。\n\n• 第一条\n引用 x", bold: false)])
+        check("落单星号不加粗也不露", CloudPreviewText.rich("表上你 **11/14 日").map(\.text).joined() == "表上你 11/14 日")
+        check("两格互斥、再点收回", CloudTodayPanel.toggle(nil, tapped: .running) == .running
+              && CloudTodayPanel.toggle(.running, tapped: .messages) == .messages
+              && CloudTodayPanel.toggle(.messages, tapped: .messages) == nil)
+        check("星标：在线绿", R.star(.online(needsAttention: false), botError: false).tone == .green)
+        check("星标：要处理黄", R.star(.online(needsAttention: true), botError: false).tone == .yellow)
+        check("星标：连接中黄", R.star(.connecting, botError: false) == (.yellow, "正在连接服务器…"))
+        check("星标：断开红且提示重连", R.star(.offline, botError: false).tone == .red && R.star(.offline, botError: false).text.contains("重连"))
+        check("星标：Bot 出错红", R.star(.online(needsAttention: false), botError: true).tone == .red)
         if failed > 0 { exit(1) }
         print("全部通过")
     }

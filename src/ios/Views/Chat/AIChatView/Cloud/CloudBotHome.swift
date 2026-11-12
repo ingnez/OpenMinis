@@ -593,7 +593,7 @@ struct CloudBotHomeScreen: View {
                     VStack(spacing: 0) {
                         CloudHomeScrollProbe()
                         if showToday && search.isEmpty {
-                            CloudTodayCard(model: model).transition(.move(edge: .top).combined(with: .opacity))
+                            CloudTodayCard(model: model, open: open).transition(.move(edge: .top).combined(with: .opacity))
                         }
                         CloudLinkBanner(onOpenSettings: openCloudSettings)
                             .padding(.horizontal, 16).padding(.bottom, 8)
@@ -631,9 +631,7 @@ struct CloudBotHomeScreen: View {
                         if search.isEmpty && !model.exams.isEmpty {
                             CloudExamBoard(exams: model.exams)
                         }
-                        if search.isEmpty && model.feed.contains(where: { !CloudBotLock.shared.isLocked($0.botId) }) {
-                            CloudTodayFeed(items: model.feed.filter { !CloudBotLock.shared.isLocked($0.botId) }, bots: model.bots)
-                        }
+                        // H1：大「今日」卡片去掉，主动消息 / 例行结果收进顶部「今天」统计栏的「今天有消息」小窗口
                         LazyVStack(spacing: 0) {
                             ForEach(groupsMatching) { g in
                                 Button { path = ["group:" + g.id] } label: {
@@ -1224,65 +1222,6 @@ struct CloudFeedItem: Identifiable, Equatable {
     }
 }
 
-/// 首页「今日」卡片：最近 24 小时 Bot 主动找你和例行任务的结果，默认显示 3 条
-struct CloudTodayFeed: View {
-    let items: [CloudFeedItem]
-    let bots: [CloudBot]
-    @State private var expanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("今日").font(.headline)
-                Spacer()
-                if items.count > 3 {
-                    Button(expanded ? "收起" : "全部 \(items.count) 条") { withAnimation { expanded.toggle() } }.font(.caption)
-                }
-            }
-            ForEach(expanded ? items : Array(items.prefix(3))) { item in
-                VStack(alignment: .leading, spacing: 4) {
-                    row(item)
-                    CloudFeedFeedbackBar(item: item).padding(.leading, 36)
-                }
-            }
-        }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.secondarySystemBackground)))
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
-    }
-
-    @ViewBuilder private func row(_ item: CloudFeedItem) -> some View {
-        let bot = bots.first { $0.id == item.botId }
-        let content = HStack(alignment: .top, spacing: 10) {
-            if let bot {
-                CloudBotAvatarView(spec: CloudBotAvatarSpec.of(bot), size: 26)
-            } else {
-                Image(systemName: "clock.arrow.circlepath").frame(width: 26, height: 26).foregroundStyle(.secondary)
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text(item.proactive ? "\(bot?.name ?? "Bot") 找你" : item.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Spacer()
-                    Text(item.at, style: .time).font(.caption2).foregroundStyle(.secondary)
-                }
-                Text(CloudPreviewText.plain(CloudMessageText.display(item.text).text)).font(.callout).foregroundStyle(.secondary).lineLimit(3)
-            }
-        }
-        .contentShape(Rectangle())
-        if item.sessionId.isEmpty {
-            content
-        } else {
-            NavigationLink {
-                CloudSessionView(sessionId: item.sessionId, sessionTitle: item.proactive ? (bot?.name ?? item.title) : item.title,
-                                 model: UserDefaults.standard.string(forKey: "OpenMinisCloud_manualModel") ?? "",
-                                 selectedInstanceId: UserDefaults.standard.string(forKey: "OpenMinisCloud_selectedInstanceId") ?? "",
-                                 botHasOwnModel: bot?.hasOwnModel ?? false, theme: bot.map { CloudBotChatTheme(bot: $0) })
-            } label: { content }
-            .buttonStyle(.plain)
-        }
-    }
-}
 
 /// 跟着 CloudBotChatView 的生命周期：视图真正离开（不是被别的页面盖住）时释放，顺手删掉还开着的无痕对话
 @MainActor

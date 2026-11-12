@@ -1196,14 +1196,124 @@ extension E2EFlowsUITests {
         shot(app, "27d-重新进对话仍是缩略图")
     }
 
-    /// 首页「今日」卡片：假 Bot 的主动消息正文带 **加粗**，预览里不露星号
+    /// 首页「今天」统计栏的「今天有消息」小窗口：假 Bot 的主动消息正文带 **加粗**，显示加粗、不露星号
     func test28_homeFeedPreviewNoMarkdown() throws {
         if let url = URL(string: "http://127.0.0.1:18799/_e2e/feed") { _ = try? Data(contentsOf: url) }
         let app = launch()
-        XCTAssertTrue(waitText(app, contains: "E2E下夜班", timeout: 60), "首页「今日」卡片没出现假主动消息")
-        XCTAssertFalse(anyElement(app, contains: "**"), "首页预览露出了 Markdown 星号")
+        XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 60), "首页没出现 Bot")
+        revealTodayBar(app)
+        let cell = app.buttons["todayCell.messages"]
+        XCTAssertTrue(cell.waitForExistence(timeout: 5), "「今天」统计栏没有「今天有消息」格")
+        cell.tap()
+        XCTAssertTrue(waitText(app, contains: "E2E下夜班", timeout: 15), "「今天有消息」小窗口里没有假主动消息")
+        XCTAssertFalse(anyElement(app, contains: "**"), "首页露出了 Markdown 星号")
         XCTAssertTrue(waitText(app, contains: "今天你是E2E下夜班", timeout: 3), "加粗去掉记号后文字不连贯")
-        shot(app, "28-今日卡片无星号")
+        shot(app, "28-今天有消息无星号")
+    }
+
+    /// H1：「今天」统计栏两格可展开（互斥、再点收回），消息小窗口能滑、点进聊天；大「今日」卡片不在了
+    func test29_todayBarPanels() throws {
+        executionTimeAllowance = 300
+        if let url = URL(string: "http://127.0.0.1:18799/_e2e/feed") { _ = try? Data(contentsOf: url) }
+        let app = launch()
+        openBot(app)
+        send(app, "慢任务")
+        XCTAssertTrue(waitText(app, contains: "sleep 40", timeout: 60) || waitText(app, contains: "正在", timeout: 5), "Bot 没开始干活")
+        goBack(app)
+        XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 20), "没回到首页")
+        XCTAssertFalse(anyElement(app, contains: "找你"), "大「今日」卡片还在首页上（没展开小窗口就看到了主动消息）")
+        revealTodayBar(app)
+        let running = app.buttons["todayCell.running"], messages = app.buttons["todayCell.messages"]
+        XCTAssertTrue(running.waitForExistence(timeout: 5) && messages.exists, "统计栏没有「在跑的 Bot」「今天有消息」两格")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "云电脑")).firstMatch.exists, "「云电脑」格不见了")
+        shot(app, "29a-统计栏收起")
+        // 在跑的 Bot
+        running.tap()
+        let runPanel = app.descendants(matching: .any)["todayRunningPanel"]
+        XCTAssertTrue(runPanel.waitForExistence(timeout: 5), "点「在跑的 Bot」没展开小窗口")
+        let runRow = app.descendants(matching: .any)["todayRunning-e2ebot"]
+        XCTAssertTrue(runRow.waitForExistence(timeout: 20), "在跑的 Bot 小窗口里没有正在干活的假 Bot")
+        XCTAssertTrue(waitLabel(running, valueEquals: "已展开", timeout: 3), "「在跑的 Bot」格没标成已展开")
+        shot(app, "29b-在跑的Bot展开")
+        // 互斥：点「今天有消息」，另一个自动收起
+        messages.tap()
+        let msgPanel = app.descendants(matching: .any)["todayMessagesPanel"]
+        XCTAssertTrue(msgPanel.waitForExistence(timeout: 5), "点「今天有消息」没展开小窗口")
+        XCTAssertTrue(waitGone(runPanel, timeout: 5), "打开「今天有消息」时「在跑的 Bot」没自动收起")
+        XCTAssertTrue(waitText(app, contains: "今天你是E2E下夜班", timeout: 10), "消息小窗口里没有完整的主动消息")
+        XCTAssertFalse(anyElement(app, contains: "**"), "消息小窗口露出了 Markdown 星号")
+        shot(app, "29c-今天有消息展开")
+        msgPanel.swipeUp()
+        msgPanel.swipeDown()
+        XCTAssertTrue(msgPanel.exists, "在消息小窗口里上下滑把它弄没了")
+        shot(app, "29d-消息小窗口滑动后")
+        // 再点同一格收回
+        messages.tap()
+        XCTAssertTrue(waitGone(msgPanel, timeout: 5), "再点「今天有消息」没收回")
+        shot(app, "29e-再点收回")
+        // 点条目进聊天
+        messages.tap()
+        let row = app.descendants(matching: .any)["todayMessage-chat:e2ebot"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "消息小窗口里没有假 Bot 的条目")
+        row.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 20), "点消息条目没进聊天")
+        shot(app, "29f-点条目进聊天")
+    }
+
+    /// H2：齿轮上没有状态点；主 Bot 星标按状态变色（在线 = 绿），星标不可点；长按头像看说明，点头像照常进聊天
+    func test30_primaryStarShowsStatus() throws {
+        if let url = URL(string: "http://127.0.0.1:18799/_e2e/primary") { _ = try? Data(contentsOf: url) }
+        let app = launch()
+        let badge = app.descendants(matching: .any)["primaryStarBadge"]
+        XCTAssertTrue(badge.waitForExistence(timeout: 60), "主 Bot 头像上没有星标状态")
+        XCTAssertTrue(poll(30) { (badge.value as? String) == "green" }, "云端在线时星标不是绿色（\(badge.value ?? "")）")
+        XCTAssertEqual(badge.label, "服务器已连接")
+        shot(app, "30a-主Bot星标绿色-齿轮无点")
+        let avatar = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "打开 \(Self.botName)")).firstMatch
+        XCTAssertTrue(avatar.waitForExistence(timeout: 10), "顶部没有主 Bot 大头像")
+        avatar.press(forDuration: 1.2)
+        let item = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "服务器已连接")).firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 5), "长按主 Bot 头像没有状态说明")
+        shot(app, "30b-长按头像状态说明")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)).tap()   // 关菜单
+        XCTAssertTrue(waitGone(item, timeout: 5), "长按菜单没关掉")
+        avatar.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 20), "点主 Bot 头像没进聊天")
+        shot(app, "30c-点头像进聊天")
+    }
+
+    /// H3：首页列表行左滑露出「置顶 / 隐藏」时不能进聊天；滑开时点行只收起；点「置顶」只置顶
+    func test31_swipeRowDoesNotOpenChat() throws {
+        let app = launch()
+        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 60), "首页没有假 Bot 的行")
+        let composer = app.descendants(matching: .any)["botComposerField"]
+        let pin = app.buttons["置顶"]
+        row.swipeLeft()
+        XCTAssertFalse(composer.waitForExistence(timeout: 3), "左滑把聊天打开了（滑动被当成点按）")
+        XCTAssertTrue(pin.waitForExistence(timeout: 5) && app.buttons["隐藏"].exists, "左滑没露出「置顶 / 隐藏」")
+        shot(app, "31a-左滑露出置顶隐藏")
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)).tap()
+        XCTAssertTrue(waitGone(pin, timeout: 5), "滑开时点行没收起")
+        XCTAssertFalse(composer.exists, "滑开时点行进了聊天（应只收起）")
+        shot(app, "31b-点行收起")
+        row.swipeLeft()
+        XCTAssertTrue(pin.waitForExistence(timeout: 5), "第二次左滑没露出按钮")
+        pin.tap()
+        XCTAssertFalse(composer.waitForExistence(timeout: 3), "点「置顶」进了聊天")
+        shot(app, "31c-点置顶只置顶")
+    }
+
+    private func revealTodayBar(_ app: XCUIApplication) {
+        let bar = app.descendants(matching: .any)["todayCard"]
+        if bar.exists { return }
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)))
+        XCTAssertTrue(bar.waitForExistence(timeout: 8), "下拉没露出「今天」统计栏")
+    }
+
+    private func waitLabel(_ el: XCUIElement, valueEquals v: String, timeout: TimeInterval) -> Bool {
+        poll(timeout) { (el.value as? String) == v }
     }
 
     private func assertNoAttachmentText(_ app: XCUIApplication) {

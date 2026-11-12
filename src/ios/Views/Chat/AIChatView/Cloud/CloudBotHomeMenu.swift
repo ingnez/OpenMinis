@@ -40,6 +40,18 @@ struct CloudBotMenuItems: View {
 
     var body: some View {
         let unread = model.isUnread(bot)
+        if bot.isPrimary {
+            // H2：长按主 Bot 头像看星标颜色是什么意思；断开时点这一行重连
+            let star = CloudHomeHeaderRules.star(CloudLinkSupervisor.shared.headerLink, botError: model.presence(bot).state == .error)
+            Section {
+                Button {
+                    if star.tone == .red, CloudLinkSupervisor.shared.state != .online { CloudLinkSupervisor.shared.userRetry() }
+                } label: {
+                    Label(star.text, systemImage: star.tone == .green ? "checkmark.circle" : (star.tone == .yellow ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle"))
+                }
+                .accessibilityIdentifier("primaryStatusItem")
+            }
+        }
         Button { model.markUnread(bot.id, !unread) } label: {
             Label(unread ? "标为已读" : "标为未读", systemImage: unread ? "envelope.open" : "envelope.badge")
         }
