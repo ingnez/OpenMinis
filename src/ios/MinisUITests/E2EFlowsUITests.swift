@@ -1371,6 +1371,23 @@ extension E2EFlowsUITests {
         shot(app, "32e-回复引用")
     }
 
+    /// H5：底部浮动栏：左边圆按钮（四宫格），右边胶囊搜索框「搜索」，两者同高；搜索能用
+    func test33_homeBottomSearchBar() throws {
+        let app = launch()
+        XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 60), "首页没出现 Bot")
+        let apps = app.buttons["homeAppsButton"]
+        let field = app.textFields["homeSearchField"]
+        XCTAssertTrue(apps.waitForExistence(timeout: 10) && field.exists, "底部没有圆按钮 + 搜索框")
+        XCTAssertEqual(field.placeholderValue, "搜索", "搜索框占位文字不是「搜索」")
+        XCTAssertEqual(apps.frame.height, 50, accuracy: 2, "圆按钮不是 50pt 高")
+        XCTAssertEqual(apps.frame.midY, field.frame.midY, accuracy: 3, "圆按钮和搜索框没对齐")
+        shot(app, "33a-底部浮动搜索栏")
+        field.tap()
+        field.typeText("E2E")
+        XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 10), "搜索 E2E 没找到假 Bot")
+        shot(app, "33b-搜索中")
+    }
+
     private func revealTodayBar(_ app: XCUIApplication) {
         let bar = app.descendants(matching: .any)["todayCard"]
         if bar.exists { return }

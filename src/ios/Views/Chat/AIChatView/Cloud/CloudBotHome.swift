@@ -839,6 +839,8 @@ struct CloudBotHomeScreen: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showHub = true }
     }
 
+    /// H5：底部浮在列表上的一条：左边白色圆按钮（深色四宫格线框图标），右边白色胶囊搜索框，都带柔和阴影；
+    /// 后面的列表在底部淡出（不是一整块挡板）
     private var bottomBar: some View {
         HStack(spacing: 12) {
             Menu {
@@ -850,31 +852,44 @@ struct CloudBotHomeScreen: View {
                 }
             } label: {
                 Image(systemName: "square.grid.2x2")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(.primary)
+                    .font(.system(size: 19, weight: .regular))
+                    .foregroundStyle(Color(.label))
                     .frame(width: 50, height: 50)
-                    .background(Circle().fill(.regularMaterial))
-                    .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+                    .background(Circle().fill(Color(.systemBackground)))
+                    .overlay(Circle().stroke(Color.black.opacity(0.05), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.10), radius: 10, y: 3)
             }
+            .tint(Color(.label))
             .accessibilityLabel("连接应用")
+            .accessibilityIdentifier("homeAppsButton")
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("搜索 Bot 与聊天记录", text: $search)
+                Image(systemName: "magnifyingglass").font(.system(size: 17, weight: .semibold)).foregroundStyle(Color(.label))
+                TextField("搜索", text: $search)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitLabel(.search)
                     .onChange(of: search) { q in searchModel.update(q) }
+                    .accessibilityIdentifier("homeSearchField")
                 if !search.isEmpty {
                     Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
                 }
             }
             .padding(.horizontal, 16)
             .frame(height: 50)
-            .background(Capsule().fill(.regularMaterial))
-            .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+            .background(Capsule().fill(Color(.systemBackground)))
+            .overlay(Capsule().stroke(Color.black.opacity(0.05), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.08), radius: 10, y: 3)
         }
         .padding(.horizontal, 16)
+        .padding(.top, 22)
         .padding(.bottom, 8)
+        .background(alignment: .bottom) {
+            // 列表在底部淡出
+            LinearGradient(colors: [Color(.systemBackground).opacity(0), Color(.systemBackground).opacity(0.92), Color(.systemBackground)],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
+        }
     }
 }
 
