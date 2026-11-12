@@ -353,6 +353,7 @@ class RealtimeTranscriptTests(CloudServerTestCase):
         self.assertEqual(body["saved"], 3)
         msgs = [(m["role"], m["content"]) for m in self._messages(sid)]
         self.assertEqual(msgs, [("user", "你好"), ("assistant", "在的（被打断）"), ("assistant", "好的")])
+
         # 同一个 nonce 重试不会重复写入
         st, body = self.request("POST", f"/v1/sessions/{sid}/transcript", {"lines": lines, "nonce": "n1"})
         self.assertEqual((st, body["saved"]), (200, 0))
@@ -363,6 +364,18 @@ class RealtimeTranscriptTests(CloudServerTestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM tasks WHERE session_id = ?", (sid,)).fetchone()[0], 0)
         finally:
             conn.close()
+
+    def test_01b_no_double_interrupt_mark(self):
+        # 真机 09:26：手机已标「（已打断）」，服务端又叠一个「（被打断）」
+        sid = self.request("POST", "/v1/sessions", {"title": "实时通话"})[1]["session_id"]
+        lines = [{"role": "assistant", "text": "我在呢。（已打断）", "interrupted": True},
+                 {"role": "assistant", "text": "好的(已打断)", "interrupted": True}]
+        st, body = self.request("POST", f"/v1/sessions/{sid}/transcript", {"lines": lines, "nonce": "n-dbl"})
+        self.assertEqual(st, 200)
+        msgs = [m["content"] for m in self._messages(sid)]
+        self.assertEqual(msgs, ["我在呢。（已打断）", "好的(已打断)"])
+        for m in msgs:
+            self.assertNotIn("被打断", m)
 
     def test_02_validation(self):
         sid = self.request("POST", "/v1/sessions", {"title": "x"})[1]["session_id"]

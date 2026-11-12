@@ -50,6 +50,9 @@ final class RealtimeVoiceAudio {
     private var fake = false
     private var fakeTask: Task<Void, Never>?
     private var fakePlayedFrames: Int64 = 0
+    /// 假播放：按 24 kHz 实时速度算「还在播」到什么时候，让回声门和插话逻辑在模拟器里也走真机的路径
+    private var fakePlayingUntil = Date.distantPast
+    private var fakeDrainTask: Task<Void, Never>?
     /// 一共收到并交给播放器的 Bot 声音字节数（胶囊和 E2E 用）
     private(set) var playedBytes = 0
 
@@ -125,11 +128,14 @@ final class RealtimeVoiceAudio {
             return frame
         }
         // 先「说」2 秒（响），之后是很轻的环境声：不会被当成一直在说话没人理
-        let loud = tone(9000), quiet = tone(300)
-        fakeTask = Task {
+        let loud = tone(9000), quiet = tone(300), echo = tone(7000)
+        let echoes = CloudE2E.fakeEcho
+        fakeTask = Task { [weak self] in
             var k = 0
             while !Task.isCancelled {
-                sink.yield(k < 20 ? loud : quiet); k += 1
+                // 假回声：Bot「播音」期间麦克风收到很响的声音（真机外放 + 回声消除没压住的情况）
+                let playing = echoes && (self?.hasPendingAudio ?? false)
+                sink.yield(k < 20 ? loud : (playing ? echo : quiet)); k += 1
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
         }
@@ -139,7 +145,18 @@ final class RealtimeVoiceAudio {
 
     func play(_ bytes: Data) throws {
         guard bytes.count % 2 == 0, bytes.count > 0 else { return }
-        if fake { playedBytes += bytes.count; fakePlayedFrames += Int64(bytes.count / 2); return }
+        if fake {
+            playedBytes += bytes.count; fakePlayedFrames += Int64(bytes.count / 2)
+            fakePlayingUntil = max(fakePlayingUntil, Date()).addingTimeInterval(Double(bytes.count / 2) / 24_000)
+            fakeDrainTask?.cancel()
+            let until = fakePlayingUntil, epoch = playbackEpoch
+            fakeDrainTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(max(0, until.timeIntervalSinceNow) * 1_000_000_000))
+                guard !Task.isCancelled, let self, epoch == self.playbackEpoch else { return }
+                self.onPlaybackDrained?()
+            }
+            return
+        }
         guard let player else { return }
         playedBytes += bytes.count
         guard pendingBuffers < 4000 else { throw AudioError.start("语音播放积压过多，通话已停止，请重试。") }
@@ -170,7 +187,7 @@ final class RealtimeVoiceAudio {
         }
         if !player.isPlaying { player.play() }
     }
-    var hasPendingAudio: Bool { pendingBuffers > 0 }
+    var hasPendingAudio: Bool { fake ? fakePlayingUntil > Date() : pendingBuffers > 0 }
     var playedFrames: Int64 {
         if fake { return fakePlayedFrames }
         guard let player, let time = player.lastRenderTime,
@@ -185,12 +202,14 @@ final class RealtimeVoiceAudio {
     }
     func interrupt() {
         playbackEpoch += 1; pendingBuffers = 0; playbackOrigin = 0; scheduledEnd = 0
+        fakePlayingUntil = .distantPast; fakeDrainTask?.cancel(); fakeDrainTask = nil
         player?.stop(); player?.play()
     }
     func stop() {
         if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
         configObserver = nil
         fakeTask?.cancel(); fakeTask = nil
+        fakePlayingUntil = .distantPast; fakeDrainTask?.cancel(); fakeDrainTask = nil
         if fake { fake = false; streamContinuation?.finish(); streamContinuation = nil; return }
         streamContinuation?.finish(); streamContinuation = nil
         playbackEpoch += 1; pendingBuffers = 0; scheduledEnd = 0; playbackOrigin = 0

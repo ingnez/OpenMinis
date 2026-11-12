@@ -206,7 +206,10 @@ struct RealtimeCallHealth {
 
 /// 插话门槛：Bot 正在播音或正在生成时，服务端 VAD 的一次 speech_started
 ///（扬声器回声、环境噪声、上一句尾音）不能立刻取消回复。
-/// 要等用户持续说话超过 VAD 静音窗口，或出现非空输入转写，才真正打断。
+/// 真机 09:26 的教训：外放回声能让服务端 VAD 一直「在说话」，还会把 Bot 自己的话转写成用户输入，
+/// 只靠服务端信号会每句都在一秒左右被掐掉。所以真打断必须同时满足：
+/// 1. 本地（回声消除之后的）麦克风真的听到用户持续说话（RealtimeEchoGate.userSpeaking）；
+/// 2. 服务端也确认：本次插话那一段的转写非空且不是 Bot 自己的话，或到期时仍在说。
 /// confirmMs 必须大于 session 里的 silence_duration_ms：短暂回声的 speech_stopped
 /// 会在静音窗口结束后到达，此时若定时器已到且仍把「未结束」当成真插话，就会误取消。
 enum RealtimeBargeIn {
@@ -219,14 +222,17 @@ enum RealtimeBargeIn {
         return .ignore
     }
 
-    static func onSpeechStopped(elapsedMs: Int, hasUserTranscript: Bool) -> Decision {
-        if hasUserTranscript { return .cancel }
+    static func onSpeechStopped(elapsedMs: Int, hasUserTranscript: Bool, localSpeech: Bool = true) -> Decision {
+        if hasUserTranscript && localSpeech { return .cancel }
         // 还没有转写：先等到时。短促回声在静音窗口结束后会停，到期时 speechStillActive 为 false。
         return .wait
     }
 
-    static func onConfirmDeadline(stillWaiting: Bool, hasUserTranscript: Bool, speechStillActive: Bool) -> Decision {
+    static func onConfirmDeadline(stillWaiting: Bool, hasUserTranscript: Bool, speechStillActive: Bool,
+                                  localSpeech: Bool = true) -> Decision {
         guard stillWaiting else { return .ignore }
+        // 本地麦克风没听到人声：服务端再怎么说「在说话」也只是回声 / 噪声
+        guard localSpeech else { return .ignore }
         if hasUserTranscript || speechStillActive { return .cancel }
         return .ignore
     }
@@ -234,6 +240,121 @@ enum RealtimeBargeIn {
     static func transcriptConfirmsBargeIn(_ text: String) -> Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    /// 转写能不能确认这次插话：必须是插话那一段（item 对得上；服务端没给 item 时放过），
+    /// 不能是上一句晚到的转写，也不能是 Bot 自己正在说的话被麦克风收回去
+    static func transcriptConfirms(_ text: String, itemID: String?, bargeInItemID: String?,
+                                   assistantText: String) -> Bool {
+        guard transcriptConfirmsBargeIn(text) else { return false }
+        if let bargeInItemID, let itemID, bargeInItemID != itemID { return false }
+        return !RealtimeEcho.isEcho(text, of: assistantText)
+    }
+}
+
+/// 回声识别：用户这一句转写是不是 Bot 最近说的话（外放被麦克风收回去再转写）
+enum RealtimeEcho {
+    static func normalized(_ s: String) -> String {
+        String(s.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map { Character($0) }).lowercased()
+    }
+
+    static func isEcho(_ transcript: String, of assistantText: String) -> Bool {
+        let t = normalized(transcript), a = normalized(assistantText)
+        guard t.count >= 2, !a.isEmpty else { return false }
+        if a.contains(t) { return true }
+        // 转写有错字：按字算，八成的字都出现在 Bot 的话里、且长度不超过 Bot 的话，也算回声
+        let pool = Set(a)
+        let hits = t.filter { pool.contains($0) }.count
+        return t.count <= a.count && Double(hits) / Double(t.count) >= 0.8 && t.count >= 4
+    }
+}
+
+/// 回声门：Bot 外放时，本地麦克风的声音先在手机上过一道，只有确定是人在说话才送给服务端，
+/// 其余时间送同长度的静音（服务端照样收到连续音频，不会当成断线）。
+/// - 播放开始后 echoGuardMs 内一律当回声（扬声器刚响时回声消除还没收敛）；
+/// - 之后要比回声底噪（播放中测到的峰值、慢慢衰减）高出 echoRatio 倍、且不低于 minSpeechLevel，
+///   并连续 speechHoldMs，才算用户真在说话，门打开直到这轮播放结束；
+/// - 播完后 tailMs 内还留着回声尾巴，继续关着。
+/// 电平用 RealtimeLevelMeter.level 的口径：说话约 0.3–0.6，安静房间约 0.01–0.1。
+struct RealtimeEchoGate {
+    static let echoGuardMs = 300
+    static let speechHoldMs = 250
+    static let tailMs = 300
+    static let minSpeechLevel: Float = 0.25
+    static let echoRatio: Float = 1.6
+
+    private(set) var isOpen = true
+    private var playbackStart: Date?
+    private var playbackEnd: Date?
+    private var echoFloor: Float = 0
+    private var loudSince: Date?
+    private var candidatePeak: Float = 0
+    /// 最近一次确认「用户在持续说话」的时刻（播放中靠回声门判，不播时按绝对门槛判）
+    private(set) var lastUserSpeechAt: Date?
+
+    init() {}
+
+    /// 喂一帧麦克风电平，返回这帧要不要把真声音发给服务端（false 就发静音）
+    mutating func feed(level: Float, botPlaying: Bool, at now: Date) -> Bool {
+        if botPlaying {
+            if playbackStart == nil {
+                playbackStart = now; playbackEnd = nil
+                isOpen = false; loudSince = nil; echoFloor = 0; candidatePeak = 0
+            }
+        } else {
+            if playbackStart != nil { playbackStart = nil; playbackEnd = now }
+            if !isOpen, let end = playbackEnd, Self.ms(now.timeIntervalSince(end)) < Self.tailMs {
+                echoFloor = max(level, echoFloor)
+                return false
+            }
+            isOpen = true
+            noteSustained(loud: level >= Self.minSpeechLevel, at: now)
+            return true
+        }
+        let elapsed = Self.ms(now.timeIntervalSince(playbackStart ?? now))
+        if isOpen {
+            noteSustained(loud: level >= max(Self.minSpeechLevel, echoFloor * Self.echoRatio), at: now)
+            return true
+        }
+        if elapsed < Self.echoGuardMs {
+            echoFloor = max(echoFloor, level)
+            return false
+        }
+        let threshold = max(Self.minSpeechLevel, echoFloor * Self.echoRatio)
+        if level >= threshold {
+            let since = loudSince ?? now
+            loudSince = since
+            candidatePeak = max(candidatePeak, level)
+            if Self.ms(now.timeIntervalSince(since)) >= Self.speechHoldMs {
+                isOpen = true; lastUserSpeechAt = now
+                return true
+            }
+            return false
+        }
+        // 冲过门槛又没撑够时长的一段（回声里的重音、敲桌子）：把它算进回声底噪，下次门槛跟着抬高
+        if loudSince != nil { echoFloor = max(echoFloor, candidatePeak) }
+        loudSince = nil; candidatePeak = 0
+        echoFloor = max(level, echoFloor * 0.99)   // 慢慢衰减（约 3 秒减半）：Bot 句间停顿后回声回来不至于冲开门
+        return false
+    }
+
+    /// 从 since 起本地有没有听到用户持续说话（给插话确认用；留 0.5 秒余量，门可能先于服务端 speech_started 打开）
+    func userSpoke(since: Date?) -> Bool {
+        guard let at = lastUserSpeechAt else { return false }
+        guard let since else { return true }
+        return at >= since.addingTimeInterval(-0.5)
+    }
+
+    private mutating func noteSustained(loud: Bool, at now: Date) {
+        if loud {
+            let since = loudSince ?? now
+            loudSince = since
+            if Self.ms(now.timeIntervalSince(since)) >= Self.speechHoldMs { lastUserSpeechAt = now }
+        } else {
+            loudSince = nil
+        }
+    }
+
+    private static func ms(_ t: TimeInterval) -> Int { Int((t * 1000).rounded()) }
 }
 
 /// 打断后的字幕：用户没真正说话时原样保留；真插话也保留已有字幕，只在末尾轻轻标「已打断」。
@@ -241,12 +362,28 @@ enum RealtimeInterruptText {
     static let legacyPlaceholder = "[这段语音被打断，未保存可能尚未播放的字幕]"
     static let subtleMark = "（已打断）"
 
-    static func apply(existing: String, userSpoke: Bool) -> (text: String, interrupted: Bool) {
-        if !userSpoke { return (existing, false) }
+    /// 所有「打断」标记（本地「已打断」、服务端旧版「被打断」、半角括号写法）
+    static let allMarks = ["（已打断）", "（被打断）", "(已打断)", "(被打断)"]
+
+    /// playedAudio：这条回复的声音真的播出去了一点。一个字都没播就被取消的回复不算「打断」，不加标记。
+    static func apply(existing: String, userSpoke: Bool, playedAudio: Bool = true) -> (text: String, interrupted: Bool) {
+        if !userSpoke || !playedAudio { return (stripMarks(existing), false) }
         let trimmed = existing.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return (subtleMark, true) }
         if trimmed == legacyPlaceholder { return (subtleMark, true) }
-        if trimmed.hasSuffix(subtleMark) { return (existing, true) }
-        return (existing + subtleMark, true)
+        let clean = stripMarks(existing)
+        if clean.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return (subtleMark, true) }
+        return (clean + subtleMark, true)
+    }
+
+    /// 去掉末尾所有打断标记（重复叠加的也一起去），最多只留一个由 apply 加回去
+    static func stripMarks(_ text: String) -> String {
+        var t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var stripped = false
+        while let m = allMarks.first(where: { t.hasSuffix($0) }) {
+            t = String(t.dropLast(m.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            stripped = true
+        }
+        return stripped ? t : text
     }
 }

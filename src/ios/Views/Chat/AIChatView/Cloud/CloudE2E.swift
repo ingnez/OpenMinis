@@ -50,6 +50,8 @@ enum CloudE2E {
     static let realtimeLabel = "E2E实时"
     /// 模拟器没有可靠的麦克风 / 扬声器：用生成的音调当收音、只数播放的字节
     static var fakeMic: Bool { token != nil && ProcessInfo.processInfo.environment["OPENMINIS_E2E_FAKE_MIC"] == "1" }
+    /// 实时语音 E2E：假收音在 Bot 播音时混进很响的「回声」（模拟真机外放被麦克风收回去、回声消除没压住）
+    static var fakeEcho: Bool { fakeMic && ProcessInfo.processInfo.environment["OPENMINIS_E2E_FAKE_ECHO"] == "1" }
     /// 听写 E2E：假音量 + 一句逐字出来的假文字（不碰麦克风和语音识别权限）
     static var fakeDictation: Bool { token != nil && ProcessInfo.processInfo.environment["OPENMINIS_E2E_FAKE_DICTATION"] == "1" }
     /// 云电脑 E2E：模拟器上没有 Xvfb / VNC，画面页换成假的 RFB（画格子、回报收到的指针），跳过桌面体检；
@@ -127,6 +129,7 @@ enum CloudE2E {
     static func applyLaunchDefaults() {}
     static var realtimeURL: String? { nil }
     static var fakeMic: Bool { false }
+    static var fakeEcho: Bool { false }
     static var fakeDictation: Bool { false }
     static var fakeDesktop: Bool { false }
     static func reapplyRealtimeProvider() {}

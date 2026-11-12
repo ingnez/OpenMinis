@@ -211,6 +211,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReconnectPolicy.swift scripts/CloudReconnectTests.swift -o /tmp/cloud-reconnect-tests
           /tmp/cloud-reconnect-tests
+      - name: 回复耗时只挂在产生它的任务上
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudLatency.swift scripts/CloudLatencyTests.swift -o /tmp/cloud-latency-tests
+          /tmp/cloud-latency-tests
       - name: Bot 对话步骤条模型测试
         run: |
           set -o pipefail

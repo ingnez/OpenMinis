@@ -76,6 +76,15 @@ final class RealtimeVoiceSession: ObservableObject {
     private var bargeInStartedAt: Date?
     private var bargeInSpeechActive = false
     private var bargeInTranscript = false
+    /// 插话那一段的 item（服务端 speech_started 带的）：只认这段的转写，不认上一句晚到的
+    private var bargeInItemID: String?
+    /// 外放回声门：Bot 播音时只把确定是人声的麦克风音频发给服务端，其余发静音
+    private var echoGate = RealtimeEchoGate()
+    private var gatePreroll: [Data] = []
+    /// 被认出是 Bot 自己声音回声的「用户」转写段，不显示、不存
+    private var echoItems: Set<String> = []
+    /// Bot 播音 / 生成期间才开始的语音段：只有这些段的转写可能是回声（用户先说、Bot 复述的不算）
+    private var itemsStartedWhileBotTalking: Set<String> = []
 
     init(host: RealtimeVoiceHost) { self.host = host }
     /// 等一个任务最多 seconds 秒；按时完成返回 true（超时不取消它，让它在后台自己跑完）
@@ -135,6 +144,7 @@ final class RealtimeVoiceSession: ObservableObject {
         let generation = UUID(); epoch = generation
         active = true; connected = false; error = nil; lines = []; elapsed = 0; muted = false
         ledger = RealtimePlaybackLedger(); ignoredResponses = []; transcriptIDs = []
+        echoGate = RealtimeEchoGate(); gatePreroll = []; echoItems = []; bargeInItemID = nil; itemsStartedWhileBotTalking = []
         seeded = false; configured = false; responseRunning = false; currentResponse = nil
         pendingResponseCreate = false
         oldIdleDisabled = UIApplication.shared.isIdleTimerDisabled
@@ -265,11 +275,11 @@ final class RealtimeVoiceSession: ObservableObject {
             guard active else { return }
             authorizeAndBeginAudio()
         case "input_audio_buffer.speech_started":
-            handleSpeechStarted()
+            handleSpeechStarted(itemID: event["item_id"] as? String)
         case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
             handleSpeechEnded()
             status = "正在回应"
-            if let id = event["item_id"] as? String, !lines.contains(where: { $0.id == id }) {
+            if let id = event["item_id"] as? String, !echoItems.contains(id), !lines.contains(where: { $0.id == id }) {
                 lines.append(Line(id: id, role: "user", text: ""))
             }
         case "conversation.item.created", "conversation.item.added":
@@ -282,9 +292,19 @@ final class RealtimeVoiceSession: ObservableObject {
             }
         case "conversation.item.input_audio_transcription.completed":
             if let id = event["item_id"] as? String, let text = event["transcript"] as? String {
-                if awaitingBargeIn, RealtimeBargeIn.transcriptConfirmsBargeIn(text) {
+                let recentBot = recentAssistantText()
+                if awaitingBargeIn, RealtimeBargeIn.transcriptConfirms(text, itemID: id, bargeInItemID: bargeInItemID,
+                                                                        assistantText: recentBot) {
                     bargeInTranscript = true
-                    confirmBargeIn()
+                    if echoGate.userSpoke(since: bargeInStartedAt) { confirmBargeIn() }
+                }
+                // Bot 自己的话被麦克风收回去转写成「用户」：不显示、不存（真机 09:26 出现过「我在呢。」）
+                if itemsStartedWhileBotTalking.contains(id),
+                   RealtimeEcho.normalized(text).count >= 4, RealtimeEcho.isEcho(text, of: recentBot),
+                   !echoGate.userSpoke(since: Date().addingTimeInterval(-4)) {
+                    echoItems.insert(id)
+                    lines.removeAll { $0.id == id && $0.role == "user" }
+                    return
                 }
                 updateLine(id: id, role: "user", text: text, append: false)
             }
@@ -567,10 +587,9 @@ final class RealtimeVoiceSession: ObservableObject {
             for await data in stream {
                 guard let self, self.active, self.epoch == generation else { return }
                 // 静音仍发送同长度的零音频，让服务端正确结束上一句话。
-                let bytes = self.muted ? Data(count: data.count) : data
                 let level = self.muted ? 0 : RealtimeLevelMeter.level(pcm16: data)
                 self.noteMicLevel(level)
-                self.emit(self.connectionProtocol.audio(bytes))
+                for bytes in self.gatedMicFrames(data, level: level) { self.emit(self.connectionProtocol.audio(bytes)) }
                 let ms = data.count * 500 / max(1, self.connectionProtocol.inputSampleRate)
                 self.health.sent(ms: ms, level: level, muted: self.muted, at: Date())
                 // 服务端确认了会话、麦克风也真的送出了第一帧，才算接通、开始计时
@@ -583,6 +602,22 @@ final class RealtimeVoiceSession: ObservableObject {
             guard let self, self.active, self.epoch == generation, !self.connected else { return }
             self.fail("麦克风没有声音进来：收音没启动（可能被听写、朗读或别的 App 占用），通话已停止。")
         }
+    }
+
+    /// 回声门：Bot 外放时扬声器的声音会被麦克风收回去，服务端 VAD 当成用户插话、还会把 Bot 的话转写成用户输入。
+    /// 播音时只把本地确认是人声的音频发出去（连同门打开前攒下的半秒，免得丢掉开头几个字），其余发同长度静音。
+    private func gatedMicFrames(_ data: Data, level: Float) -> [Data] {
+        // 静音仍发送同长度的零音频，让服务端正确结束上一句话。
+        if muted { gatePreroll.removeAll(); return [Data(count: data.count)] }
+        let playing = audio.hasPendingAudio
+        let pass = echoGate.feed(level: level, botPlaying: playing, at: Date())
+        if pass {
+            defer { gatePreroll.removeAll() }
+            return playing ? gatePreroll + [data] : [data]
+        }
+        gatePreroll.append(data)
+        if gatePreroll.count > 10 { gatePreroll.removeFirst(gatePreroll.count - 10) }
+        return [Data(count: data.count)]
     }
 
     private func markConnected(generation: UUID) {
@@ -618,12 +653,18 @@ final class RealtimeVoiceSession: ObservableObject {
         } else { lines.append(Line(id: id, role: role, text: text)) }
     }
 
-    private func handleSpeechStarted() {
+    /// 最近两句 Bot 的话（判断用户转写是不是回声）
+    private func recentAssistantText() -> String {
+        lines.filter { $0.role == "assistant" }.suffix(2).map(\.text).joined(separator: " ")
+    }
+
+    private func handleSpeechStarted(itemID: String? = nil) {
         if muted {
             status = "麦克风已静音"
             return
         }
         let botPlaying = responseRunning || audio.hasPendingAudio
+        if botPlaying, let itemID { itemsStartedWhileBotTalking.insert(itemID) }
         switch RealtimeBargeIn.onSpeechStarted(botPlaying: botPlaying, muted: muted) {
         case .ignore:
             if !botPlaying { status = "正在听你说" }
@@ -634,6 +675,7 @@ final class RealtimeVoiceSession: ObservableObject {
             bargeInStartedAt = Date()
             bargeInSpeechActive = true
             bargeInTranscript = false
+            bargeInItemID = itemID
             bargeInWait?.cancel()
             let generation = epoch
             bargeInWait = Task { [weak self] in
@@ -641,7 +683,8 @@ final class RealtimeVoiceSession: ObservableObject {
                 guard let self, self.active, self.epoch == generation, self.awaitingBargeIn else { return }
                 switch RealtimeBargeIn.onConfirmDeadline(stillWaiting: true,
                                                         hasUserTranscript: self.bargeInTranscript,
-                                                        speechStillActive: self.bargeInSpeechActive) {
+                                                        speechStillActive: self.bargeInSpeechActive,
+                                                        localSpeech: self.echoGate.userSpoke(since: self.bargeInStartedAt)) {
                 case .cancel: self.confirmBargeIn()
                 default: self.dismissBargeIn()
                 }
@@ -653,7 +696,8 @@ final class RealtimeVoiceSession: ObservableObject {
         bargeInSpeechActive = false
         guard awaitingBargeIn else { return }
         let elapsed = Int((bargeInStartedAt.map { Date().timeIntervalSince($0) } ?? 0) * 1000)
-        switch RealtimeBargeIn.onSpeechStopped(elapsedMs: elapsed, hasUserTranscript: bargeInTranscript) {
+        switch RealtimeBargeIn.onSpeechStopped(elapsedMs: elapsed, hasUserTranscript: bargeInTranscript,
+                                               localSpeech: echoGate.userSpoke(since: bargeInStartedAt)) {
         case .cancel: confirmBargeIn()
         case .wait: break
         case .ignore: dismissBargeIn()
@@ -673,16 +717,21 @@ final class RealtimeVoiceSession: ObservableObject {
         bargeInWait?.cancel(); bargeInWait = nil
         bargeInSpeechActive = false
         bargeInTranscript = false
+        bargeInItemID = nil
     }
+
+    /// 播出去超过 0.1 秒（24 kHz）才算「声音真的播了」
+    private static let audibleFrames: Int64 = 2_400
 
     func interrupt(sendCancel: Bool = true, userSpoke: Bool = true) {
         dismissBargeIn()
         if connectionProtocol.isGemini {
             let interruptedID = geminiPlaybackID
             let hadOutput = responseRunning || audio.hasPendingAudio
+            let playedAudio = audio.playedFrames > Self.audibleFrames
             audio.interrupt(); geminiPlaybackID = nil
             if hadOutput, let index = lines.firstIndex(where: { $0.id == interruptedID }) {
-                let applied = RealtimeInterruptText.apply(existing: lines[index].text, userSpoke: userSpoke)
+                let applied = RealtimeInterruptText.apply(existing: lines[index].text, userSpoke: userSpoke, playedAudio: playedAudio)
                 lines[index].text = applied.text
                 lines[index].interrupted = applied.interrupted
             }
@@ -700,12 +749,14 @@ final class RealtimeVoiceSession: ObservableObject {
             let ownsPlayback = ledger.responseID == currentResponse || audio.hasPendingAudio
             let item = ownsPlayback ? ledger.itemID : nil
             let truncation = ownsPlayback ? ledger.interrupt(playedFrames: audio.playedFrames) : nil
+            // 一个字都没播出去就被取消的回复，不标「已打断」
+            let playedAudio = ownsPlayback && audio.playedFrames > Self.audibleFrames
             audio.interrupt()
             // 百炼没有 conversation.item.truncate：只取消回复、丢掉没播的音频
             if let truncation, !connectionProtocol.isDashScope { emit(truncation) }
             if let item, let index = lines.firstIndex(where: { $0.id == item }) {
                 // 用户没真正插话时保留字幕；真插话也保留已有文字，只轻轻标「已打断」。
-                let applied = RealtimeInterruptText.apply(existing: lines[index].text, userSpoke: userSpoke)
+                let applied = RealtimeInterruptText.apply(existing: lines[index].text, userSpoke: userSpoke, playedAudio: playedAudio)
                 lines[index].text = applied.text
                 lines[index].interrupted = applied.interrupted
             }
