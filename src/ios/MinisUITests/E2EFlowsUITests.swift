@@ -637,10 +637,12 @@ final class E2EFlowsUITests: XCTestCase {
         return try? JSONDecoder().decode(RealtimeProbe.self, from: data)
     }
 
-    private func launch(attach: Int = 0, homeMode: String = "bots",
+    private func launch(attach: Int = 0, homeMode: String = "bots", primary: Bool = false,
                         extraEnv: [String: String] = [:], extraArgs: [String] = []) -> XCUIApplication {
         // 每个流程从空对话开始（历史太长时控件树取快照会超时）
         if let url = URL(string: "http://127.0.0.1:18799/_e2e/reset") { _ = try? Data(contentsOf: url) }
+        // 主 Bot 要在 reset 之后设（reset 会把假 Bot 改回普通 Bot；43145023039 test30 先设后 reset，星标没出来）
+        if primary, let url = URL(string: "http://127.0.0.1:18799/_e2e/primary") { _ = try? Data(contentsOf: url) }
         let app = XCUIApplication()
         // 首页模式不用 -OpenMinis_homeMode 启动参数（参数域盖住 App 里的切换），用环境变量让 App 启动时写进自己的设置
         app.launchEnvironment["OPENMINIS_E2E_HOMEMODE"] = homeMode
@@ -1216,10 +1218,17 @@ extension E2EFlowsUITests {
         executionTimeAllowance = 300
         if let url = URL(string: "http://127.0.0.1:18799/_e2e/feed") { _ = try? Data(contentsOf: url) }
         let app = launch()
+        // 43145023039 重试那次：上一次的 40 秒慢任务还在云端跑，这次的「慢任务」被当成插话，没有新的一步，
+        // 等的又是「sleep 40」（步骤行显示的是「运行命令」）。先等假 Bot 闲下来，再按云端真的收到请求来判断
+        XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 60), "首页没出现 Bot")
+        XCTAssertTrue(waitGone(app.descendants(matching: .any)["homeCenterStatus"], timeout: 60), "上一个流程的任务还没结束")
+        let before = (cloudProbe()?.requests ?? []).filter { $0.text.contains("慢任务") }.count
         openBot(app)
         send(app, "慢任务")
-        XCTAssertTrue(waitText(app, contains: "sleep 40", timeout: 60) || waitText(app, contains: "正在", timeout: 5), "Bot 没开始干活")
+        XCTAssertTrue(poll(60) { (cloudProbe()?.requests ?? []).filter { $0.text.contains("慢任务") }.count > before }, "云端没收到「慢任务」")
+        XCTAssertTrue(waitText(app, contains: "运行命令", timeout: 30), "Bot 没开始执行那一步")
         goBack(app)
+        XCTAssertTrue(app.descendants(matching: .any)["homeCenterStatus"].waitForExistence(timeout: 20), "首页没显示 Bot 在干活")
         XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 20), "没回到首页")
         XCTAssertFalse(anyElement(app, contains: "找你"), "大「今日」卡片还在首页上（没展开小窗口就看到了主动消息）")
         revealTodayBar(app)
@@ -1262,8 +1271,7 @@ extension E2EFlowsUITests {
 
     /// H2：齿轮上没有状态点；主 Bot 星标按状态变色（在线 = 绿），星标不可点；长按头像看说明，点头像照常进聊天
     func test30_primaryStarShowsStatus() throws {
-        if let url = URL(string: "http://127.0.0.1:18799/_e2e/primary") { _ = try? Data(contentsOf: url) }
-        let app = launch()
+        let app = launch(primary: true)
         let badge = app.descendants(matching: .any)["primaryStarBadge"]
         XCTAssertTrue(badge.waitForExistence(timeout: 60), "主 Bot 头像上没有星标状态")
         XCTAssertTrue(poll(30) { (badge.value as? String) == "green" }, "云端在线时星标不是绿色（\(badge.value ?? "")）")

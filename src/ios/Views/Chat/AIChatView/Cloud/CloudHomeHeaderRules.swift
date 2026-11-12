@@ -65,7 +65,9 @@ enum CloudHomeHeaderRules {
     /// 下拉多少显示「今天」卡片、往上滑多少收起
     static let revealPull: Double = 70
     static let hideScroll: Double = -40
-    static func todayVisible(was: Bool, scrollTop: Double) -> Bool {
+    /// panelOpen：「今天」下面有小窗口开着时不收起（在小窗口里上滑以前会把整条栏连同小窗口一起收掉，43145023039 test29）
+    static func todayVisible(was: Bool, scrollTop: Double, panelOpen: Bool = false) -> Bool {
+        if was && panelOpen { return true }
         if scrollTop >= revealPull { return true }
         if scrollTop <= hideScroll { return false }
         return was

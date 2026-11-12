@@ -555,6 +555,7 @@ struct CloudBotHomeScreen: View {
     @State private var showHub = false
     /// 下拉首页露出的「今天」卡片
     @State private var showToday = false
+    @State private var todayPanel: CloudTodayPanel?
     @State private var restScrollTop: CGFloat?
     @State private var showShiftCard = false
     @State private var showWorkbench = false
@@ -593,7 +594,7 @@ struct CloudBotHomeScreen: View {
                     VStack(spacing: 0) {
                         CloudHomeScrollProbe()
                         if showToday && search.isEmpty {
-                            CloudTodayCard(model: model, open: open).transition(.move(edge: .top).combined(with: .opacity))
+                            CloudTodayCard(model: model, open: open, panel: $todayPanel).transition(.move(edge: .top).combined(with: .opacity))
                         }
                         CloudLinkBanner(onOpenSettings: openCloudSettings)
                             .padding(.horizontal, 16).padding(.bottom, 8)
@@ -670,7 +671,7 @@ struct CloudBotHomeScreen: View {
                     guard let top = value else { return }
                     // 静止时内容顶部在导航栏下面（iOS 26 约 116pt），以第一次读到的位置为 0，下拉为正
                     if restScrollTop == nil { restScrollTop = top }
-                    let next = CloudHomeHeaderRules.todayVisible(was: showToday, scrollTop: Double(top - (restScrollTop ?? top)))
+                    let next = CloudHomeHeaderRules.todayVisible(was: showToday, scrollTop: Double(top - (restScrollTop ?? top)), panelOpen: todayPanel != nil)
                     if next != showToday { withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { showToday = next } }
                 }
                 .refreshable { await model.refresh() }

@@ -139,8 +139,9 @@ struct CloudHomeCenterStatus: View {
 struct CloudTodayCard: View {
     @ObservedObject var model: CloudBotHomeModel
     let open: (String) -> Void
+    /// 首页持有：小窗口开着时首页不因滚动收起这条栏
+    @Binding var panel: CloudTodayPanel?
     @ObservedObject private var link = CloudLinkSupervisor.shared
-    @State private var panel: CloudTodayPanel?
 
     /// 「今天有消息」小窗口的一条
     struct Entry: Identifiable {
@@ -269,8 +270,10 @@ struct CloudTodayCard: View {
             }
             .padding(12)
         }
+        // 自己的滚动区：条目多时在小窗口里滑，不带动首页；内容少时高度随内容
         .frame(maxHeight: 340)
         .fixedSize(horizontal: false, vertical: list.count <= 2)
+        .scrollBounceIfAvailable()
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(.secondarySystemBackground)))
         .accessibilityIdentifier("todayMessagesPanel")
     }
@@ -347,5 +350,12 @@ extension CloudLinkSupervisor {
         case .offline: return .offline
         case .idle: return .idle
         }
+    }
+}
+
+extension View {
+    /// iOS 16.4+：小窗口里的滑动始终由小窗口自己接住（内容不够高也回弹），不传给外面的首页列表
+    @ViewBuilder func scrollBounceIfAvailable() -> some View {
+        if #available(iOS 16.4, *) { self.scrollBounceBehavior(.always, axes: .vertical) } else { self }
     }
 }

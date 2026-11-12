@@ -48,6 +48,8 @@ struct CloudHomeHeaderRulesTests {
         check("星标：连接中黄", R.star(.connecting, botError: false) == (.yellow, "正在连接服务器…"))
         check("星标：断开红且提示重连", R.star(.offline, botError: false).tone == .red && R.star(.offline, botError: false).text.contains("重连"))
         check("星标：Bot 出错红", R.star(.online(needsAttention: false), botError: true).tone == .red)
+        check("小窗口开着时上滑不收起「今天」", R.todayVisible(was: true, scrollTop: -200, panelOpen: true))
+        check("小窗口关着照常收起", !R.todayVisible(was: true, scrollTop: -200, panelOpen: false))
         if failed > 0 { exit(1) }
         print("全部通过")
     }
