@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// 只在 Debug 构建、只给模拟器 XCUITest 用：环境变量 OPENMINIS_E2E_TOKEN 存在时直连 127.0.0.1 上的本地云端 Agent。
 /// 正式包（Release）里这些都编译不进去。
@@ -11,6 +12,18 @@ enum CloudE2E {
     static var port: Int { Int(ProcessInfo.processInfo.environment["OPENMINIS_E2E_PORT"] ?? "") ?? 18765 }
     /// 打开 Bot 对话时往附件托盘里放几张生成的测试图片（模拟器里点系统相册不稳定）
     static var fakeAttachments: Int { min(9, Int(ProcessInfo.processInfo.environment["OPENMINIS_E2E_ATTACH"] ?? "") ?? 0) }
+    @MainActor
+    static func attachmentPhoto(at index: Int) -> UIImage {
+        let colors: [UIColor] = [.systemRed, .systemBlue, .systemGreen, .systemOrange, .systemPurple, .systemTeal, .systemPink, .systemYellow, .systemIndigo]
+        return UIGraphicsImageRenderer(size: CGSize(width: 900, height: 1200)).image { context in
+            colors[index % colors.count].setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 900, height: 1200))
+            ("测试图 \(index + 1)" as NSString).draw(at: CGPoint(x: 60, y: 520), withAttributes: [
+                .font: UIFont.boldSystemFont(ofSize: 96), .foregroundColor: UIColor.white
+            ])
+        }
+    }
+
     /// 测「带图插话」：测试图等 Bot 开始干活（有了任务）才放进托盘，不跟第一条消息一起发
     static var attachWhenBusy: Bool { ProcessInfo.processInfo.environment["OPENMINIS_E2E_ATTACH_WHEN_BUSY"] == "1" }
     /// 首页模式这类偏好用环境变量写进 App 自己的 UserDefaults（不用 -key value 启动参数：

@@ -185,39 +185,7 @@ struct InputAttachmentGridView: View {
     @State private var editVersion: [UUID: Int] = [:]
 
     var body: some View {
-        FlowLayout(hSpacing: 8, vSpacing: 8) {
-            ForEach(attachments) { attachment in
-                AttachmentChip(attachment: attachment, onRemove: {
-                    onRemove(attachment)
-                }, onPreview: {
-                    previewTarget = AttachmentPreviewTarget(id: attachment.id)
-                })
-                .id("\(attachment.id)-\(editVersion[attachment.id] ?? 0)")
-                .contextMenu {
-                    if attachment.kind == .image, attachment.loadState == .ready {
-                        Button { markupTarget = AttachmentPreviewTarget(id: attachment.id) } label: {
-                            Label("裁剪和标注", systemImage: "pencil.tip.crop.circle")
-                        }
-                    }
-                    Button(role: .destructive) { onRemove(attachment) } label: { Label("移除", systemImage: "trash") }
-                }
-                .opacity(draggingID == attachment.id ? 0.4 : 1)
-                .onDrag {
-                    draggingID = attachment.id
-                    return NSItemProvider(object: attachment.id.uuidString as NSString)
-                }
-                .onDrop(of: [.text], delegate: AttachmentDropDelegate(
-                    targetID: attachment.id,
-                    draggingID: $draggingID,
-                    onMove: onMove
-                ))
-            }
-            ForEach(0..<loadingVideoCount, id: \.self) { _ in
-                VideoLoadingChip()
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 6)  // room for × button overhang (offset y: -4)
+        trayLayout
         .fullScreenCover(item: $markupTarget) { target in
             if let a = attachments.first(where: { $0.id == target.id }) {
                 ImageMarkupSheet(fileURL: a.cacheURL) { url in
@@ -236,6 +204,67 @@ struct InputAttachmentGridView: View {
                 onDone: { previewTarget = nil })
         }
     }
+
+    @ViewBuilder
+    private var trayLayout: some View {
+        if attachments.contains(where: { $0.kind == .image }) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) { chips }
+                    .padding(.horizontal, 14).padding(.top, 6)
+            }
+        } else {
+            FlowLayout(hSpacing: 8, vSpacing: 8) { chips }
+                .padding(.horizontal, 16).padding(.top, 6)
+        }
+    }
+
+    @ViewBuilder
+    private var chips: some View {
+        ForEach(attachments) { attachment in
+            AttachmentChip(attachment: attachment, onRemove: {
+                onRemove(attachment)
+            }, onPreview: {
+                previewTarget = AttachmentPreviewTarget(id: attachment.id)
+            })
+            .id("\(attachment.id)-\(editVersion[attachment.id] ?? 0)")
+            .contextMenu {
+                if attachment.kind == .image, attachment.loadState == .ready {
+                    Button { markupTarget = AttachmentPreviewTarget(id: attachment.id) } label: {
+                        Label("裁剪和标注", systemImage: "pencil.tip.crop.circle")
+                    }
+                }
+                if let onMove, let index = attachments.firstIndex(where: { $0.id == attachment.id }) {
+                    if index > 0 {
+                        Button { onMove(attachment.id, attachments[index - 1].id) } label: {
+                            Label("往前移", systemImage: "arrow.left")
+                        }
+                    }
+                    if index + 1 < attachments.count {
+                        Button { onMove(attachment.id, attachments[index + 1].id) } label: {
+                            Label("往后移", systemImage: "arrow.right")
+                        }
+                    }
+                }
+                Button(role: .destructive) { onRemove(attachment) } label: { Label("移除", systemImage: "trash") }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("trayCard")
+            .opacity(draggingID == attachment.id ? 0.4 : 1)
+            .onDrag {
+                draggingID = attachment.id
+                return NSItemProvider(object: attachment.id.uuidString as NSString)
+            }
+            .onDrop(of: [.text], delegate: AttachmentDropDelegate(
+                targetID: attachment.id,
+                draggingID: $draggingID,
+                onMove: onMove
+            ))
+        }
+        ForEach(0..<loadingVideoCount, id: \.self) { _ in
+            VideoLoadingChip()
+        }
+    }
+
 }
 
 /// [T-input-attachment-preview-index] Which attachment the preview opens on.
@@ -312,7 +341,13 @@ private struct AttachmentChip: View {
     private var readyChip: some View {
         Group {
             if attachment.kind == .image {
-                thumbnailChip(image: cachedImage)
+                AttachmentTrayTile(name: attachment.fileName, onRemove: onRemove) {
+                    if let cachedImage {
+                        Image(uiImage: cachedImage).resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "photo").font(.title3).foregroundStyle(.secondary)
+                    }
+                }
             } else if attachment.kind == .video {
                 thumbnailChip(image: cachedImage, isVideo: true)
             } else {
@@ -818,16 +853,17 @@ enum UserAttachmentTileMetrics {
         return stack + tiles + (imageCount > 0 && otherCount > 0 ? gap : 0) + vStackSpacing
     }
 
+    static func imageCount(in message: ChatMessage) -> Int {
+        if message.attachments.isEmpty {
+            return message.inputAttachments.filter { $0.kind == .image }.count
+        }
+        return message.attachments.filter { $0.isImage && $0.pastedId == nil }.count
+    }
+
     /// 一条用户消息的附件块高度：发出后读 `attachments`，排队时读 `inputAttachments`
     static func blockHeight(for message: ChatMessage, availableWidth: CGFloat) -> CGFloat {
-        let images: Int, total: Int
-        if message.attachments.isEmpty {
-            total = message.inputAttachments.count
-            images = message.inputAttachments.filter { $0.kind == .image }.count
-        } else {
-            total = message.attachments.count
-            images = message.attachments.filter { $0.isImage && $0.pastedId == nil }.count
-        }
+        let total = message.attachments.isEmpty ? message.inputAttachments.count : message.attachments.count
+        let images = imageCount(in: message)
         return blockHeight(imageCount: images, otherCount: total - images, availableWidth: availableWidth)
     }
 }
@@ -843,24 +879,17 @@ struct UserAttachmentList: View {
 
     private let tileSize: CGFloat = UserAttachmentTileMetrics.tile
 
-    /// 叠成一摞的图片（贴的文字引用不算）
-    private var stackImages: [AttachmentMeta] {
-        attachments.filter { $0.isImage && $0.pastedId == nil }
-    }
-
     var body: some View {
-        let images = stackImages
+        let images = attachments.filter { $0.isImage && $0.pastedId == nil }
         let others = attachments.filter { !($0.isImage && $0.pastedId == nil) }
         VStack(alignment: .trailing, spacing: UserAttachmentTileMetrics.gap) {
             if !images.isEmpty {
                 ImageCardStack(sources: images.map { meta in
-                    ImageStackSource(id: "\(meta.id):\(minisMediaCacheKey(for: meta.minisURL))",
-                                     load: { await Self.loadDisplay(meta, maxPixel: 640) })
-                }, onOpen: { openGallery(images, at: $0) })
+                    ImageStackSource(id: "\(meta.id):\(minisMediaCacheKey(for: meta.minisURL))", load: { await Self.loadDisplay(meta, maxPixel: 640) })
+                }, onOpen: { index in openGallery(images, at: index) })
             }
             if !others.isEmpty {
-                let fileTiles = tiles(others)
-                if let fileMenu { fileTiles.modifier(fileMenu) } else { fileTiles }
+                if let fileMenu { tiles(others).modifier(fileMenu) } else { tiles(others) }
             }
         }
     }
@@ -897,36 +926,12 @@ struct UserAttachmentList: View {
         }
     }
 
-    /// Open the same ordered set the stack is displaying.
     private func openGallery(_ images: [AttachmentMeta], at index: Int) {
         guard images.indices.contains(index) else { return }
-        let items: [GalleryItem] = images.map { meta in
-            // Fingerprint-keyed id so if the underlying file is rewritten
-            // between two opens of the gallery, TabView treats it as a
-            // different page and doesn't reuse the cached state/bitmap.
-            let fpKey = minisMediaCacheKey(for: meta.minisURL)
-            return GalleryItem(
-                id: "\(meta.id):\(fpKey)",
-                title: meta.fileName,
-                load: {
-                    // Route through the shared NSCache using the same
-                    // fingerprint key so repeated paging doesn't re-decode
-                    // an unchanged file.
-                    let cacheKey = "gallery:\(fpKey)"
-                    if let cached = NativeMediaImageCache.shared.image(for: cacheKey) {
-                        return cached
-                    }
-                    guard let url = URL(string: meta.minisURL),
-                          let fileURL = resolveMinisFileURLCached(url: url),
-                          let data = try? Data(contentsOf: fileURL),
-                          let img = downsampleImageData(data, maxPixelSize: 2048)
-                    else { return nil }
-                    NativeMediaImageCache.shared.set(img, for: cacheKey)
-                    return img
-                },
-                // [T-image-save-original] Save / Copy / Share read the file itself.
-                source: .markdown(meta.minisURL)
-            )
+        let items = images.map { meta in
+            GalleryItem(id: "\(meta.id):\(minisMediaCacheKey(for: meta.minisURL))", title: meta.fileName,
+                        load: { await Self.loadDisplay(meta, maxPixel: 2048) },
+                        source: .markdown(meta.minisURL))
         }
         openImageGallery(GalleryPresentation(items: items, startIndex: index))
     }
@@ -1065,30 +1070,33 @@ struct QueuedAttachmentPreview: View {
         VStack(alignment: .trailing, spacing: UserAttachmentTileMetrics.gap) {
             if !images.isEmpty {
                 // 排队中：和发出后同一摞卡片（行高不跳），上面转圈表示还没发出
-                ImageCardStack(sources: images.map { a in
-                    ImageStackSource(id: "\(a.id):\(a.cacheURL.absoluteString)",
-                                     load: { await Self.loadImage(a.cacheURL, maxPixel: 640) },
-                                     state: a.loadState == .failed ? .failed : .uploading(nil))
-                }, onOpen: { index in
-                    guard images.indices.contains(index), images[index].loadState == .ready else { return }
-                    let items = images.map { attachment in
-                        GalleryItem(id: attachment.id.uuidString, title: attachment.fileName,
-                                    load: { await Self.loadImage(attachment.cacheURL, maxPixel: 2048) },
-                                    source: .file(attachment.cacheURL))
-                    }
-                    openImageGallery(GalleryPresentation(items: items, startIndex: index))
-                })
+                ImageCardStack(sources: images.map { attachment in
+                    ImageStackSource(id: "\(attachment.id):\(attachment.cacheURL.absoluteString)", load: {
+                        await Self.loadCachedImage(attachment.cacheURL, maxPixel: 640)
+                    }, state: attachment.loadState == .failed ? .failed : .uploading(nil))
+                }, onOpen: { index in openGallery(images, at: index) })
                 .opacity(0.85)
             }
             if !others.isEmpty {
-                let fileTiles = queuedTiles(others)
-                if let fileMenu { fileTiles.modifier(fileMenu) } else { fileTiles }
+                if let fileMenu { queuedTiles(others).modifier(fileMenu) } else { queuedTiles(others) }
             }
         }
     }
 
-    private static func loadImage(_ url: URL, maxPixel: CGFloat) async -> UIImage? {
-        await Task.detached(priority: .userInitiated) { () -> UIImage? in
+    private func openGallery(_ images: [InputAttachment], at index: Int) {
+        let ready = images.filter { $0.loadState == .ready }
+        guard images.indices.contains(index),
+              let start = ready.firstIndex(where: { $0.id == images[index].id }) else { return }
+        let items = ready.map { attachment in
+            GalleryItem(id: attachment.id.uuidString, title: attachment.fileName,
+                        load: { await Self.loadCachedImage(attachment.cacheURL, maxPixel: 2048) },
+                        source: .file(attachment.cacheURL))
+        }
+        openImageGallery(GalleryPresentation(items: items, startIndex: start))
+    }
+
+    private static func loadCachedImage(_ url: URL, maxPixel: CGFloat) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) {
             guard let data = try? Data(contentsOf: url) else { return nil }
             return downsampleImageData(data, maxPixelSize: maxPixel)
         }.value

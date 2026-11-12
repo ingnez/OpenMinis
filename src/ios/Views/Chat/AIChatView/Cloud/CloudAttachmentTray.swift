@@ -6,7 +6,6 @@ struct CloudAttachmentTray: View {
     @Binding var attachments: [CloudPendingAttachment]
     let states: [UUID: ImageStackSource.Upload]
     let onRetry: () -> Void
-    @AppStorage(ImageSendPolicy.keepOriginalKey) private var keepOriginal = false
     @State private var markup: CloudMarkupTarget?
     @State private var dragging: UUID?
 
@@ -23,12 +22,7 @@ struct CloudAttachmentTray: View {
                 .padding(.horizontal, 14).padding(.top, 6)
             }
             if attachments.contains(where: \.isImage) {
-                Toggle(isOn: $keepOriginal) {
-                    Text(keepOriginal ? "保留原图（之后选的图不缩小）" : "自动压缩大图（长边 1600）").font(.caption)
-                }
-                .toggleStyle(.button).buttonStyle(.borderless).font(.caption)
-                .accessibilityIdentifier("keepOriginalToggle")
-                .padding(.horizontal, 14)
+                ImageKeepOriginalToggle()
             }
         }
         .sheet(item: $markup) { t in
@@ -39,9 +33,8 @@ struct CloudAttachmentTray: View {
 
     private func card(_ a: CloudPendingAttachment) -> some View {
         let state = states[a.id] ?? .done
-        return ZStack(alignment: .topTrailing) {
+        return AttachmentTrayTile(name: a.filename, onRemove: { attachments.removeAll { $0.id == a.id } }) {
             ZStack {
-                Color(.systemGray6)
                 if let thumb = a.thumbnail {
                     Image(uiImage: thumb).resizable().scaledToFill()
                 } else {
@@ -52,16 +45,8 @@ struct CloudAttachmentTray: View {
                 }
                 ImageUploadBadge(state: state, onRetry: onRetry).scaleEffect(0.8)
             }
-            .frame(width: 64, height: 64)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .opacity(dragging == a.id ? 0.4 : 1)
-            Button { attachments.removeAll { $0.id == a.id } } label: {
-                Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette)
-                    .foregroundStyle(.white, Color.black.opacity(0.6)).font(.system(size: 18))
-            }
-            .offset(x: 5, y: -5)
-            .accessibilityLabel("移除 \(a.filename)")
         }
+        .opacity(dragging == a.id ? 0.4 : 1)
         .contextMenu {
             if a.isImage {
                 Button { openMarkup(a) } label: { Label("裁剪和标注", systemImage: "pencil.tip.crop.circle") }
@@ -90,6 +75,30 @@ struct CloudAttachmentTray: View {
         guard let i = attachments.firstIndex(where: { $0.id == id }), let data = try? Data(contentsOf: url),
               let img = UIImage(data: data), let fresh = CloudAttachmentKit.image(img, name: attachments[i].filename) else { return }
         attachments[i] = fresh
+    }
+}
+
+/// Shared photo tray surface for cloud and local composers.
+struct AttachmentTrayTile<Content: View>: View {
+    let name: String
+    let onRemove: () -> Void
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            ZStack {
+                Color(.systemGray6)
+                content
+            }
+            .frame(width: 64, height: 64)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, Color.black.opacity(0.6)).font(.system(size: 18))
+            }
+            .offset(x: 5, y: -5)
+            .accessibilityLabel("移除 \(name)")
+        }
     }
 }
 

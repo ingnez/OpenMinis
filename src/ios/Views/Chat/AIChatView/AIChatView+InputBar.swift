@@ -103,8 +103,10 @@ extension AIChatView {
                         vm.removePastedText(id: id)
                     }
                 }
-                // Attachment preview chips — 3 per row
-                if !vm.attachments.isEmpty || vm.loadingVideoCount > 0 {
+                if vm.attachments.contains(where: { $0.kind == .image }) {
+                    inputAttachmentGrid
+                    ImageKeepOriginalToggle()
+                } else if !vm.attachments.isEmpty || vm.loadingVideoCount > 0 {
                     ScrollView(.vertical, showsIndicators: true) {
                         inputAttachmentGrid
                             .background(GeometryReader { geo in
@@ -115,10 +117,6 @@ extension AIChatView {
                     .onPreferenceChange(AttachmentGridHeightKey.self) { attachmentGridHeight = $0 }
                     .padding(.top, 8)
                 }
-                if vm.attachments.contains(where: { $0.kind == .image }) {
-                    LocalKeepOriginalToggle()
-                }
-
                 inputFieldOrWaveform
 
                 // 听写卡片自带停止和发送，听写时底下这一排先收起来

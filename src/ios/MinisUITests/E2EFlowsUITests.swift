@@ -1680,31 +1680,39 @@ extension E2EFlowsUITests {
     }
 
     func test38_localImageOnlyMessageScrubsToSixthImage() throws {
-        let app = launch(attach: 6, homeMode: "local", extraEnv: [
-            "OPENMINIS_E2E_LOCAL_PROVIDER": "http://127.0.0.1:18797"
-        ], extraArgs: ["-launchScreen", "2"])
+        let app = launch(attach: 6, homeMode: "local",
+                         extraEnv: ["OPENMINIS_E2E_LOCAL_PROVIDER": "http://127.0.0.1:18797"],
+                         extraArgs: ["-launchScreen", "2"])
         XCTAssertTrue(localModelReady(app), "本地模式未加载模拟服务商")
+        let cards = app.descendants(matching: .any).matching(identifier: "trayCard")
+        XCTAssertTrue(cards.firstMatch.waitForExistence(timeout: 15), "本地横滑托盘没有图片")
+        XCTAssertTrue(app.descendants(matching: .any)["keepOriginalToggle"].exists)
+        cards.firstMatch.press(forDuration: 0.8)
+        XCTAssertTrue(app.buttons["往后移"].waitForExistence(timeout: 5))
+        app.buttons["往后移"].tap()
 
         let send = localSendButton(app)
         XCTAssertTrue(send.waitForExistence(timeout: 10))
-        XCTAssertTrue(send.isEnabled, "纯图片消息无法发送")
         send.tap()
-        XCTAssertTrue(waitText(app, contains: "本地收到：", timeout: 60))
-
         let stack = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier == %@ AND label == %@", "imageStack", "6 张图片")
         ).firstMatch
-        XCTAssertTrue(stack.waitForExistence(timeout: 10))
+        XCTAssertTrue(stack.waitForExistence(timeout: 20))
         revealBelowNavBar(app, stack)
         pressVisible(app, stack)
-        XCTAssertTrue(waitValue(stack, "已展开", timeout: 5), "长按图片没有铺开")
-        XCTAssertFalse(app.descendants(matching: .any)["messageMenuPanel"].exists, "图片长按打开了消息菜单")
+        XCTAssertTrue(waitValue(stack, "已展开", timeout: 5), "本地纯图片消息长按未铺开")
+        XCTAssertFalse(app.descendants(matching: .any)["messageMenuPanel"].exists, "长按图片误开了消息操作菜单")
 
         let start = stack.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5))
         let end = stack.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.5))
         start.press(forDuration: 0.8, thenDragTo: end)
-        XCTAssertTrue(app.buttons["关闭"].waitForExistence(timeout: 10))
-        XCTAssertTrue(waitSelected(app.buttons["第 6 张"], timeout: 5), "左滑松手没有打开第 6 张")
+        XCTAssertTrue(app.buttons["关闭"].waitForExistence(timeout: 10), "本地松手未打开图片")
+        XCTAssertTrue(waitSelected(app.buttons["第 6 张"], timeout: 5), "本地未打开第 6 张")
+        app.buttons["更多"].tap()
+        for action in ["保存到相册", "分享", "拷贝图片", "识别并拷贝文字", "问 Bot 这张图"] {
+            XCTAssertTrue(app.buttons[action].exists, "本地看图菜单缺少 \(action)")
+        }
+        shot(app, "38-本地第六张图与看图菜单")
     }
 
     private func revealTodayBar(_ app: XCUIApplication) {

@@ -418,6 +418,9 @@ struct AIChatView: View {
     @State var shareRequest: ChatShareRequest?
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State var attachmentGridHeight: CGFloat = 0
+    #if DEBUG
+    @State private var seededE2EPhotos = false
+    #endif
     @State var transcriptHeight: CGFloat = 0
     /// Tracks how much of recognizedText has already been appended to inputText.
     @State var lastRecognizedLength: Int = 0
@@ -1524,6 +1527,14 @@ struct AIChatView: View {
                 }
             } else {
                 minisLogger.info("🔄SESSION AIChatView.onAppear nil sessionId — draft mode")
+                #if DEBUG
+                if !seededE2EPhotos, CloudE2E.token != nil, CloudE2E.fakeAttachments > 0, vm.attachments.isEmpty {
+                    seededE2EPhotos = true
+                    for index in 0..<CloudE2E.fakeAttachments {
+                        vm.addImageAttachment(CloudE2E.attachmentPhoto(at: index))
+                    }
+                }
+                #endif
                 // Draft session — auto-focus input for immediate typing
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                     guard !hasOverlayPresented, canRunDelayedComposerFocus("draft") else { return }
@@ -1533,20 +1544,6 @@ struct AIChatView: View {
             minisLogger.info("[Share] AIChatView.onAppear: sessionId=\(sessionId ?? "nil") bufferVersion=\(shareCoordinator.bufferVersion) hasBuffer=\(shareCoordinator.pendingShareBuffer != nil)")
             injectPendingShareIfNeeded()
             injectPendingTransferIfNeeded()
-            #if DEBUG
-            let testImageCount = CloudE2E.fakeAttachments
-            if CloudE2E.token != nil, testImageCount > 0, vm.messages.isEmpty, vm.attachments.isEmpty {
-                for index in 0..<testImageCount {
-                    let size = CGSize(width: 80, height: 80)
-                    let image = UIGraphicsImageRenderer(size: size).image { context in
-                        UIColor(hue: CGFloat(index) / CGFloat(testImageCount), saturation: 0.75,
-                                brightness: 0.9, alpha: 1).setFill()
-                        context.fill(CGRect(origin: .zero, size: size))
-                    }
-                    vm.addImageAttachment(image)
-                }
-            }
-            #endif
             isChatViewVisible = true
             pageLeaveLatch.markAppeared()
             // [T-crash-breadcrumbs] Which page is on screen - a hash, never the title.

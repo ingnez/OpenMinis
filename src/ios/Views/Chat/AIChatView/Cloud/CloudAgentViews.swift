@@ -1394,16 +1394,16 @@ struct CloudSessionView: View {
 
     /// 模拟器端到端测试：托盘里放 N 张生成的测试图（Debug + 环境变量才会有）
     private func injectE2EAttachments() {
-        let n = CloudE2E.fakeAttachments
-        guard n > 0, attachments.isEmpty else { return }
-        let colors: [UIColor] = [.systemRed, .systemBlue, .systemGreen, .systemOrange, .systemPurple, .systemTeal, .systemPink, .systemYellow, .systemIndigo]
-        for i in 0..<n {
-            let img = UIGraphicsImageRenderer(size: CGSize(width: 900, height: 1200)).image { ctx in
-                colors[i % colors.count].setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 900, height: 1200))
-                ("测试图 \(i + 1)" as NSString).draw(at: CGPoint(x: 60, y: 520), withAttributes: [.font: UIFont.boldSystemFont(ofSize: 96), .foregroundColor: UIColor.white])
+        #if DEBUG
+        let count = CloudE2E.fakeAttachments
+        guard count > 0, attachments.isEmpty else { return }
+        for index in 0..<count {
+            let image = CloudE2E.attachmentPhoto(at: index)
+            if let attachment = CloudAttachmentKit.image(image, name: "照片 \(index + 1).jpg") {
+                attachments.append(attachment)
             }
-            if let a = CloudAttachmentKit.image(img, name: "照片 \(i + 1).jpg") { attachments.append(a) }
         }
+        #endif
     }
 
     /// 运行中发消息：插话模式交给正在跑的任务（模型下一步就看到）；任务刚好结束或选了排队，就等它结束再普通发送

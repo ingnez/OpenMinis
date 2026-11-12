@@ -428,7 +428,9 @@ struct ChatMessageRow: View {
     }
 
     private var userRow: some View {
-        HStack {
+        let attachmentCount = message.attachments.isEmpty ? message.inputAttachments.count : message.attachments.count
+        let hasOnlyImages = attachmentCount > 0 && UserAttachmentTileMetrics.imageCount(in: message) == attachmentCount
+        return HStack {
             Spacer(minLength: 60)
 
             VStack(alignment: .trailing, spacing: 6) {
@@ -465,6 +467,17 @@ struct ChatMessageRow: View {
             }
             .modifier(MinisOpenURLHandler())
         }
+        .background(alignment: .leading) {
+            if userDisplayText.isEmpty, hasOnlyImages {
+                // Keep message actions on the empty side of the row. The photo
+                // stack owns all touches over the photos, as in cloud chat.
+                Color.clear.frame(width: 60)
+                    .contentShape(Rectangle())
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("消息操作")
+                    .modifier(MessageActionMenu(selectableText: { "" }, groups: userMessageActions))
+            }
+        }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
         // [T-ios-delete-from-message] Suffix deletion is irreversible and takes
@@ -482,7 +495,6 @@ struct ChatMessageRow: View {
 
     @ViewBuilder
     private var userAttachments: some View {
-        // 图片叠卡自己处理长按，只有非图片附件可以代替文字气泡打开消息菜单。
         let fileMenu = userDisplayText.isEmpty
             ? MessageActionMenu(selectableText: { "" }, groups: userMessageActions)
             : nil

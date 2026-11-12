@@ -33,8 +33,8 @@ enum ImageSendEncoder {
     }
 }
 
-/// 本地输入框附件下面的同一个开关（Bot 模式在 CloudAttachmentTray 里）
-struct LocalKeepOriginalToggle: View {
+/// 本地和云端的发图设置使用同一个开关和偏好。
+struct ImageKeepOriginalToggle: View {
     @AppStorage(ImageSendPolicy.keepOriginalKey) private var keepOriginal = false
 
     var body: some View {
