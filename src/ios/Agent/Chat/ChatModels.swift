@@ -57,6 +57,7 @@ final class ChatMessage: Identifiable, ObservableObject {
     let id = UUID()
     let role: ChatMessageRole
     @Published var content: String
+    @Published var localReaction: String?
     /// For assistant turns: ordered list of content blocks (text + tool calls)
     @Published var blocks: [AssistantBlock] = []
     /// Error that terminated this assistant turn (nil = no error).

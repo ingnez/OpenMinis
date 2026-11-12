@@ -1551,6 +1551,68 @@ extension E2EFlowsUITests {
         shot(app, "32e-回复引用")
     }
 
+    func test32b_cloudOwnMessageUsesBottomPanel() throws {
+        let app = launch()
+        openBot(app)
+        let prompt = "Own message long press"
+        send(app, prompt)
+        XCTAssertTrue(waitText(app, contains: "收到：" + prompt, timeout: 60))
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+
+        let bubble = app.staticTexts[prompt].firstMatch
+        XCTAssertTrue(bubble.waitForExistence(timeout: 5))
+        let originalFrame = bubble.frame
+        bubble.press(forDuration: 1)
+        let panel = app.descendants(matching: .any)["messageMenuPanel"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        for key in ["reply", "copy", "select", "speak", "pin", "zh", "en"] {
+            XCTAssertTrue(app.descendants(matching: .any)["messageMenuAction-\(key)"].exists)
+        }
+        shot(app, "32f-云端自己发的气泡")
+        app.buttons["messageMenuAction-copy"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5))
+        XCTAssertEqual(bubble.frame, originalFrame)
+        bubble.press(forDuration: 1)
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        app.buttons["messageMenuEmoji-👍"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5))
+        XCTAssertTrue(waitText(app, contains: "你的回应 👍", timeout: 10))
+        bubble.press(forDuration: 1)
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        app.buttons["messageMenuAction-reply"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5))
+    }
+
+    func test32c_localUserAndAssistantUseBottomPanel() throws {
+        let app = launch(homeMode: "local", extraEnv: ["OPENMINIS_E2E_LOCAL_PROVIDER": "http://127.0.0.1:18797"],
+                         extraArgs: ["-launchScreen", "2"])
+        XCTAssertTrue(localModelReady(app), "本地假模型未就绪")
+        let input = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 15))
+        input.tap()
+        dismissKeyboardIntro(app)
+        input.typeText("本地请加粗回复")
+        localSendButton(app).tap()
+        XCTAssertTrue(waitText(app, contains: "引用里的中文加粗", timeout: 45))
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+
+        let mine = app.staticTexts["本地请加粗回复"].firstMatch
+        let reply = app.descendants(matching: .any)["assistantTextBlock"].firstMatch
+        let panel = app.descendants(matching: .any)["messageMenuPanel"]
+        for (bubble, name) in [(mine, "用户"), (reply, "助手")] {
+            XCTAssertTrue(bubble.waitForExistence(timeout: 5))
+            bubble.press(forDuration: 1)
+            XCTAssertTrue(panel.waitForExistence(timeout: 5), "本地\(name)消息没打开底部面板")
+            XCTAssertTrue(app.buttons["messageMenuAction-reply"].exists)
+            XCTAssertTrue(app.buttons["messageMenuAction-speak"].exists)
+            shot(app, "32g-本地\(name)消息")
+            app.buttons["messageMenuAction-select"].tap()
+            XCTAssertTrue(app.descendants(matching: .any)["messageMenuSelectText"].waitForExistence(timeout: 5))
+            app.buttons["完成"].tap()
+            XCTAssertTrue(waitGone(panel, timeout: 5))
+        }
+    }
+
     /// H5：底部浮动栏：左边圆按钮（四宫格），右边胶囊搜索框「搜索」，两者同高；搜索能用
     func test33_homeBottomSearchBar() throws {
         let app = launch()

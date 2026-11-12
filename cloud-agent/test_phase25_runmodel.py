@@ -60,14 +60,18 @@ class RunModelTests(CloudServerTestCase):
         user = [m for m in msgs if m["role"] == "user"][-1]
         self.assertEqual(user["reactions"], [{"actor": "bot", "emoji": "👍"}])
         self.assertFalse([m for m in msgs if m["role"] == "assistant" and (m.get("content") or "").strip() and not m.get("tool_calls")])
-        # 用户给 Bot 的消息点表情；不能给自己的消息点
+        # 用户可回应 Bot 的消息，也可回应自己的消息，后者保留 Bot 已加的表情。
         FakeModelHandler.scripts["m-r1b"] = lambda d: {"role": "assistant", "content": "好的"}
         self._say(sid, "再说一句", "m-r1b")
         bot_msg = [m for m in self._msgs(sid) if m["role"] == "assistant" and m.get("content") == "好的"][-1]
         code, res = self.request("POST", f"/v1/sessions/{sid}/messages/{bot_msg['id']}/reaction", {"emoji": "❤️"})
         self.assertEqual(code, 200, res)
         self.assertEqual(res["reactions"], [{"actor": "user", "emoji": "❤️"}])
-        self.assertEqual(self.request("POST", f"/v1/sessions/{sid}/messages/{user['id']}/reaction", {"emoji": "❤️"})[0], 400)
+        own_path = f"/v1/sessions/{sid}/messages/{user['id']}/reaction"
+        code, own = self.request("POST", own_path, {"emoji": "❤️"})
+        self.assertEqual(code, 200, own)
+        self.assertEqual(own["reactions"], [{"actor": "bot", "emoji": "👍"}, {"actor": "user", "emoji": "❤️"}])
+        self.assertEqual(self.request("POST", own_path, {"emoji": None})[1]["reactions"], [{"actor": "bot", "emoji": "👍"}])
         self.assertEqual(self.request("POST", f"/v1/sessions/{sid}/messages/{bot_msg['id']}/reaction", {"emoji": "hello"})[0], 400)
         self.assertEqual(self.request("POST", f"/v1/sessions/{sid}/messages/{bot_msg['id']}/reaction", {"emoji": ""})[1]["reactions"], [])
 

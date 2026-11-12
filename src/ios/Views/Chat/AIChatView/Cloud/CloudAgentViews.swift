@@ -1610,7 +1610,7 @@ struct CloudSessionView: View {
                                 CloudWorkerOutcomeRow(outcome: outcome)
                                     .id(turn.presentationID)
                             } else if msg.role == .user {
-                                cloudUserTurn(turn, accent: theme.accent)
+                                cloudUserTurn(turn, theme: theme)
                                     .id(turn.presentationID)
                                 anchoredReplies(after: turn, theme: theme)
                             } else {
@@ -1621,7 +1621,7 @@ struct CloudSessionView: View {
                                     CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
                                                            showHeader: !prevAssistant, collapsible: true)
                                         .modifier(CloudAssistantLongPress(text: msg.content, extras: extras,
-                                                                          onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 },
+                                                                          onReact: reactToBot, onReply: { replyTarget = $0 },
                                                                           botId: theme.botId, onAsk: quickSend)),
                                     footer:
                                     CloudAssistantFooter(text: msg.content, latency: CloudLatency.line(for: turn.raw, tasks: tasks),
@@ -1838,14 +1838,15 @@ struct CloudSessionView: View {
         return out
     }
 
-    private func cloudUserTurn(_ turn: CloudHistoryAdapter.Turn, accent: Color) -> some View {
+    private func cloudUserTurn(_ turn: CloudHistoryAdapter.Turn, theme: CloudBotChatTheme) -> some View {
         let nonce = CloudHistoryPager.pendingNonce(turn.raw)
         let queued = nonce.flatMap { delivery.canWithdraw($0) ? $0 : nil }
         let label = nonce != nil && nonce == delivery.uploadingNonce
             ? "正在上传附件"
             : queued.map { delivery.remoteQueue[$0] == nil ? "待发送" : "等待回复" }
-        return CloudUserTurnRow(message: turn.message, accent: accent, extras: CloudMessageExtras(turn.raw),
-                                onReply: { replyTarget = $0 }, onRetry: { retryUserSend(turn.message) },
+        return CloudUserTurnRow(message: turn.message, accent: theme.accent, extras: reactionExtras(CloudMessageExtras(turn.raw)),
+                                onReply: { replyTarget = $0 }, onReact: reactToBot, botId: theme.botId, onAsk: quickSend,
+                                onRetry: { retryUserSend(turn.message) },
                                 pendingLabel: label, onWithdraw: queued.map { id in { withdrawQueuedSend(id) } })
     }
 

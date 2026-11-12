@@ -43,8 +43,6 @@ def set_reaction(conn, session_id, message_id, actor, emoji):
         raise RunModelError("没有这条消息")
     if actor == "bot" and row[0] != "user":
         raise RunModelError("Bot 只能回应用户的消息")
-    if actor == "user" and row[0] != "assistant":
-        raise RunModelError("只能回应 Bot 的消息")
     if emoji in (None, ""):
         conn.execute("DELETE FROM message_reactions WHERE message_id = ? AND actor = ?", (message_id, actor))
     else:

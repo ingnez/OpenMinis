@@ -94,6 +94,16 @@ extension CollectionViewMessageListV3.Coordinator {
             // selection menu — speaks the selected snippet via the Minis TTS
             // stack (sanitizer + provider voices + fail-over).
             bridge.onSpeakText = { [weak vm] text in vm?.speakText(text) }
+            bridge.onAppendMessageDraft = vm.remoteDeviceId == nil && !message.isCompactedHistory
+                ? { [weak vm] text in
+                    guard let vm else { return }
+                    if text.hasSuffix("\n\n") {
+                        vm.inputText = text + vm.inputText
+                    } else {
+                        vm.appendToInputText(text)
+                    }
+                }
+                : nil
             // [T-multi-select-share] Replaces "Copy Screenshot" (which stitched a
             // live-scrolled screenshot of one question + answer): open the share
             // picker with this message's unit already selected.

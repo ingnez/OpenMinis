@@ -122,6 +122,9 @@ struct CloudUserTurnRow: View {
     let accent: Color
     let extras: CloudMessageExtras
     let onReply: (CloudReplyTarget) -> Void
+    let onReact: (Int, String?) -> Void
+    let botId: String
+    let onAsk: (String) -> Void
     var onRetry: (() -> Void)? = nil
     var pendingLabel: String? = nil
     var onWithdraw: (() -> Void)? = nil
@@ -132,29 +135,36 @@ struct CloudUserTurnRow: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
             if let q = extras.replyExcerpt { CloudReplyQuote(excerpt: q, role: extras.replyRole) }
-            CloudProseUser(content: content, accent: accent, textMenu: {
-                AnyView(Group {
-                    Button { UIPasteboard.general.string = CloudMessageText.display(content).text } label: { Label("复制", systemImage: "doc.on.doc") }
-                    if let id = extras.id {
-                        Button { onReply(CloudReplyTarget(id: id, excerpt: CloudMessageText.display(content).text)) } label: {
-                            Label("回复", systemImage: "arrowshape.turn.up.left")
-                        }
-                    }
-                    if let onWithdraw {
-                        Button(role: .destructive, action: onWithdraw) {
-                            Label("撤回待处理消息", systemImage: "arrow.uturn.backward")
-                        }
-                    }
-                })
-            })
+            CloudProseUser(content: content, accent: accent, longPress: longPress)
             MessageSendStatusRow(failed: sendFailed, adopted: message.adoptedMark,
                                  pendingLabel: pendingLabel, onRetry: onRetry)
-            if let e = extras.botReaction {
-                // Bot 用表情回应了这条（代替文字回复）
-                CloudReactionPill(emoji: e).padding(.trailing, 14).offset(y: -12).padding(.bottom, -12)
+            if extras.botReaction != nil || extras.userReaction != nil {
+                HStack(spacing: 4) {
+                    if let emoji = extras.botReaction { CloudReactionPill(emoji: emoji) }
+                    if let emoji = extras.userReaction { CloudReactionPill(emoji: emoji, mine: true) }
+                }
+                .padding(.trailing, 14).offset(y: -12).padding(.bottom, -12)
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    private var longPress: CloudMessageLongPress {
+        let shown = CloudMessageText.display(content).text
+        let id = extras.id
+        let reply: (() -> Void)? = id.map { messageId in
+            { onReply(CloudReplyTarget(id: messageId, excerpt: shown)) }
+        }
+        let react: ((String?) -> Void)? = id.map { messageId in
+            { emoji in onReact(messageId, emoji) }
+        }
+        let withdraw = onWithdraw.map {
+            CloudMessageAction(title: "撤回待处理消息", symbol: "arrow.uturn.backward",
+                               key: "withdraw", role: .destructive, run: $0)
+        }
+        return CloudMessageLongPress(text: shown, current: extras.userReaction, onReact: react,
+                                     onReply: reply, botId: botId, onAsk: onAsk,
+                                     extraGroups: withdraw.map { [[$0]] } ?? [])
     }
 }
 
@@ -192,64 +202,106 @@ struct CloudAssistantFooter: View {
     }
 }
 
-/// 长按 Bot 的回复：底部升起的面板（H4）——背景模糊变暗、消息原地不动；两排表情（再点同一个取消）+ 自定义，
-/// 下面分组：回复 / 复制、选择文本、朗读、钉到要点板 / 翻译。以前用系统 contextMenu，抬起的预览把下面的消息挤得重叠
 struct CloudAssistantLongPress: ViewModifier {
     let text: String
     let extras: CloudMessageExtras
     let onReact: (Int, String?) -> Void
     let onReply: (CloudReplyTarget) -> Void
     var botId: String? = nil
-    /// 「翻译」等需要让 Bot 处理的：把一句话交给对话页发出去
     var onAsk: ((String) -> Void)? = nil
-    @State private var systemTranslate = false
-    @State private var menuShown = false
 
     func body(content: Content) -> some View {
         if let id = extras.id {
-            content
-                .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in
-                    CloudHaptics.tap()
-                    CloudMessageMenu.present($menuShown)
-                })
-                .fullScreenCover(isPresented: $menuShown) {
-                    CloudMessageActionSheet(emojis: CloudMessageActionSheet.allEmojis, current: extras.userReaction,
-                                            onEmoji: { onReact(id, CloudReactionLogic.next(current: extras.userReaction, picked: $0)) },
-                                            groups: groups(id), selectableText: CloudMessageText.display(text).text,
-                                            onClose: { CloudMessageMenu.dismiss($menuShown) })
-                }
-                .modifier(CloudSystemTranslate(isPresented: $systemTranslate, text: String(CloudMessageText.display(text).text.prefix(4000))))
+            content.modifier(CloudMessageLongPress(
+                text: CloudMessageText.display(text).text, copyText: text, current: extras.userReaction,
+                onReact: { onReact(id, $0) }, onReply: { onReply(CloudReplyTarget(id: id, excerpt: text)) },
+                botId: botId, onAsk: onAsk))
         } else {
             content
         }
     }
+}
 
-    private func groups(_ id: Int) -> [[CloudMessageAction]] {
-        let shown = CloudMessageText.display(text).text
-        var first = [CloudMessageAction(title: "回复", symbol: "arrowshape.turn.up.left", key: "reply") { onReply(CloudReplyTarget(id: id, excerpt: text)) }]
-        if extras.userReaction != nil {
-            first.append(CloudMessageAction(title: "取消表情回应", symbol: "face.dashed", key: "unreact") { onReact(id, nil) })
+/// 云端与本地聊天共用的底部消息面板。调用者提供当前消息允许的操作。
+struct CloudMessageLongPress: ViewModifier {
+    let text: String
+    var copyText: String? = nil
+    var current: String? = nil
+    var onReact: ((String?) -> Void)? = nil
+    var onReply: (() -> Void)? = nil
+    var botId: String? = nil
+    var onSpeak: (() -> Void)? = nil
+    var onAsk: ((String) -> Void)? = nil
+    var extraGroups: [[CloudMessageAction]] = []
+    @State private var systemTranslate = false
+    @State private var menuShown = false
+    @State private var pendingAction: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        content
+            .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in open() })
+            .accessibilityAction(named: Text("消息操作")) { open() }
+            .fullScreenCover(isPresented: $menuShown, onDismiss: runPendingAction) {
+                CloudMessageActionSheet(emojis: CloudMessageActionSheet.allEmojis, current: current,
+                                        onEmoji: emojiAction, groups: groups, selectableText: text,
+                                        onClose: { CloudMessageMenu.dismiss($menuShown) },
+                                        onAction: { pendingAction = $0 })
+            }
+            .modifier(CloudSystemTranslate(isPresented: $systemTranslate, text: String(text.prefix(4000))))
+    }
+
+    private func open() {
+        CloudHaptics.tap()
+        CloudMessageMenu.present($menuShown)
+    }
+
+    private func runPendingAction() {
+        let action = pendingAction
+        pendingAction = nil
+        action?()
+    }
+
+    private var emojiAction: ((String) -> Void)? {
+        guard let onReact else { return nil }
+        return { onReact(CloudReactionLogic.next(current: current, picked: $0)) }
+    }
+
+    private var groups: [[CloudMessageAction]] {
+        var first: [CloudMessageAction] = []
+        if let onReply {
+            first.append(CloudMessageAction(title: "回复", symbol: "arrowshape.turn.up.left", key: "reply", run: onReply))
         }
-        var second = [CloudMessageAction(title: "复制", symbol: "doc.on.doc", key: "copy") { UIPasteboard.general.string = text; CloudHaptics.success() },
-                      CloudMessageAction(title: "选择文本", symbol: "character.cursor.ibeam", key: "select", keepsOpen: true) {}]
-        if let botId {
+        if let onReact, current != nil {
+            first.append(CloudMessageAction(title: "取消表情回应", symbol: "face.dashed", key: "unreact") { onReact(nil) })
+        }
+        var second = [CloudMessageAction(title: "复制", symbol: "doc.on.doc", key: "copy") {
+            UIPasteboard.general.string = copyText ?? text
+            CloudHaptics.success()
+        }, CloudMessageAction(title: "选择文本", symbol: "character.cursor.ibeam", key: "select") {}]
+        if let onSpeak {
+            second.append(CloudMessageAction(title: "朗读", symbol: "speaker.wave.2", key: "speak", run: onSpeak))
+        } else if let botId {
             second.append(CloudMessageAction(title: "朗读", symbol: "speaker.wave.2", key: "speak") {
-                CloudTips.markUsed("longpress-reply"); CloudBotSpeaker.speak(shown, botId: botId)
+                CloudTips.markUsed("longpress-reply")
+                CloudBotSpeaker.speak(text, botId: botId)
             })
+        }
+        if let botId {
             second.append(CloudMessageAction(title: "钉到要点板", symbol: "pin", key: "pin") {
-                CloudTips.markUsed("longpress-reply"); if CloudPins.add(botId, text: shown) { CloudHaptics.success() }
+                CloudTips.markUsed("longpress-reply")
+                if CloudPins.add(botId, text: text) { CloudHaptics.success() }
             })
         }
         var third: [CloudMessageAction] = []
         if let onAsk {
-            let excerpt = String(shown.prefix(1500))
+            let excerpt = String(text.prefix(1500))
             third.append(CloudMessageAction(title: "翻译成中文", symbol: "character.bubble", key: "zh") { onAsk("把下面这段翻译成中文（只给译文）：\n\(excerpt)") })
             third.append(CloudMessageAction(title: "翻译成英文", symbol: "character.bubble", key: "en") { onAsk("把下面这段翻译成英文（只给译文）：\n\(excerpt)") })
         }
         if CloudSystemTranslateSupport.available {
             third.append(CloudMessageAction(title: "系统翻译（本机，不耗 Bot）", symbol: "translate", key: "systranslate") { systemTranslate = true })
         }
-        return [first, second, third].filter { !$0.isEmpty }
+        return ([first, second, third] + extraGroups).filter { !$0.isEmpty }
     }
 }
 
@@ -258,12 +310,12 @@ struct CloudMessageAction: Identifiable {
     let title: String
     let symbol: String
     let key: String
-    var keepsOpen = false
+    var role: ButtonRole? = nil
     let run: () -> Void
     var id: String { key }
 
-    init(title: String, symbol: String, key: String, keepsOpen: Bool = false, run: @escaping () -> Void) {
-        self.title = title; self.symbol = symbol; self.key = key; self.keepsOpen = keepsOpen; self.run = run
+    init(title: String, symbol: String, key: String, role: ButtonRole? = nil, run: @escaping () -> Void) {
+        self.title = title; self.symbol = symbol; self.key = key; self.role = role; self.run = run
     }
 }
 
@@ -301,6 +353,7 @@ struct CloudMessageActionSheet: View {
     let groups: [[CloudMessageAction]]
     let selectableText: String
     let onClose: () -> Void
+    let onAction: (@escaping () -> Void) -> Void
     @State private var shown = false
     @State private var drag: CGFloat = 0
     @State private var selecting = false
@@ -356,52 +409,9 @@ struct CloudMessageActionSheet: View {
                 .accessibilityIdentifier("messageMenuSelectText")
                 Button("完成") { close() }.font(.body.weight(.semibold)).frame(maxWidth: .infinity).padding(.vertical, 6)
             } else {
-                if let onEmoji, !emojis.isEmpty {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6), spacing: 10) {
-                        ForEach(emojis, id: \.self) { e in
-                            Button { onEmoji(e); close() } label: {
-                                Text(e).font(.system(size: 24))
-                                    .frame(width: 46, height: 46)
-                                    .background(Circle().fill(current == e ? Color.accentColor.opacity(0.28) : Color(.tertiarySystemFill)))
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(e + (current == e ? "（已选，再点取消）" : ""))
-                            .accessibilityIdentifier("messageMenuEmoji-\(e)")
-                        }
-                        Button { askingCustom = true } label: {
-                            Image(systemName: "face.smiling").font(.system(size: 20))
-                                .overlay(alignment: .bottomTrailing) { Image(systemName: "plus").font(.system(size: 9, weight: .bold)).offset(x: 4, y: 3) }
-                                .foregroundStyle(.secondary)
-                                .frame(width: 46, height: 46)
-                                .background(Circle().fill(Color(.tertiarySystemFill)))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("自定义表情")
-                        .accessibilityIdentifier("messageMenuEmojiCustom")
-                    }
-                }
-                ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
-                    VStack(spacing: 0) {
-                        ForEach(Array(group.enumerated()), id: \.element.id) { i, a in
-                            if i > 0 { Divider().padding(.leading, 52) }
-                            Button {
-                                if a.key == "select" { withAnimation(.easeInOut(duration: 0.2)) { selecting = true }; return }
-                                a.run()
-                                if !a.keepsOpen { close() }
-                            } label: {
-                                HStack(spacing: 14) {
-                                    Image(systemName: a.symbol).font(.system(size: 17)).frame(width: 22)
-                                    Text(a.title).font(.body)
-                                    Spacer(minLength: 0)
-                                }
-                                .padding(.horizontal, 16).padding(.vertical, 13)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("messageMenuAction-\(a.key)")
-                        }
-                    }
-                    .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color(.secondarySystemBackground).opacity(0.9)))
+                ViewThatFits(in: .vertical) {
+                    actions
+                    ScrollView { actions }
                 }
             }
         }
@@ -411,6 +421,58 @@ struct CloudMessageActionSheet: View {
         .padding(.horizontal, 6)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("messageMenuPanel")
+    }
+
+    private var actions: some View {
+        VStack(spacing: 14) {
+            if let onEmoji, !emojis.isEmpty {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6), spacing: 10) {
+                    ForEach(emojis, id: \.self) { e in
+                        Button { onEmoji(e); close() } label: {
+                            Text(e).font(.system(size: 24))
+                                .frame(width: 46, height: 46)
+                                .background(Circle().fill(current == e ? Color.accentColor.opacity(0.28) : Color(.tertiarySystemFill)))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(e + (current == e ? "（已选，再点取消）" : ""))
+                        .accessibilityIdentifier("messageMenuEmoji-\(e)")
+                    }
+                    Button { askingCustom = true } label: {
+                        Image(systemName: "face.smiling").font(.system(size: 20))
+                            .overlay(alignment: .bottomTrailing) { Image(systemName: "plus").font(.system(size: 9, weight: .bold)).offset(x: 4, y: 3) }
+                            .foregroundStyle(.secondary)
+                            .frame(width: 46, height: 46)
+                            .background(Circle().fill(Color(.tertiarySystemFill)))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("自定义表情")
+                    .accessibilityIdentifier("messageMenuEmojiCustom")
+                }
+            }
+            ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                VStack(spacing: 0) {
+                    ForEach(Array(group.enumerated()), id: \.element.id) { i, a in
+                        if i > 0 { Divider().padding(.leading, 52) }
+                        Button(role: a.role) {
+                            if a.key == "select" { withAnimation(.easeInOut(duration: 0.2)) { selecting = true }; return }
+                            onAction(a.run)
+                            close()
+                        } label: {
+                            HStack(spacing: 14) {
+                                Image(systemName: a.symbol).font(.system(size: 17)).frame(width: 22)
+                                Text(a.title).font(.body)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 16).padding(.vertical, 13)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("messageMenuAction-\(a.key)")
+                    }
+                }
+                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color(.secondarySystemBackground).opacity(0.9)))
+            }
+        }
     }
 
     private func close() {

@@ -37,6 +37,8 @@ struct BridgedWholeMessageV3: View {
             onResume: nil,
             onCompact: bridge.onCompact,
             onShareMessages: bridge.onShareMessages,
+            onSpeakText: bridge.onSpeakText,
+            onAppendMessageDraft: bridge.onAppendMessageDraft,
             onShowCompactSummary: bridge.onShowCompactSummary,
             browserPool: nil,
             toolSnapshots: []
