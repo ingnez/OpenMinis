@@ -1304,6 +1304,73 @@ extension E2EFlowsUITests {
         shot(app, "31c-点置顶只置顶")
     }
 
+    /// H4：长按 Bot 回复弹出底部面板（背景模糊），后面的消息原地不动；表情、各动作可点；下拉 / 点空白收起
+    func test32_longPressMenuSheet() throws {
+        executionTimeAllowance = 300
+        let app = launch()
+        openBot(app)
+        send(app, "你好E2E长按")
+        XCTAssertTrue(waitText(app, contains: "收到：你好E2E长按", timeout: 60), "Bot 回复没出现")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()   // 收键盘
+        let reply = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "收到：你好E2E长按", "收到：你好E2E长按")).firstMatch
+        let mine = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@ OR value == %@", "你好E2E长按", "你好E2E长按")).firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 5) && mine.exists)
+        let panel = app.descendants(matching: .any)["messageMenuPanel"]
+
+        func openMenu(_ step: String) {
+            reply.press(forDuration: 1.0)
+            if !panel.waitForExistence(timeout: 5) {
+                shot(app, "32-长按没出面板-\(step)")
+                XCTFail("长按 Bot 回复没弹出底部面板（\(step)）")
+            }
+        }
+
+        let mineBefore = mine.frame, replyBefore = reply.frame
+        openMenu("首次")
+        XCTAssertTrue(app.descendants(matching: .any)["messageMenuBackdrop"].exists, "没有模糊背景")
+        // 全屏层盖住时，后面的控件不一定还在无障碍树里；在的话位置必须不变（看截图 32a），收起后再严格比一次
+        if mine.exists { XCTAssertEqual(mine.frame, mineBefore, "弹出面板后我的消息位置变了（被挤压）") }
+        if reply.exists { XCTAssertEqual(reply.frame, replyBefore, "弹出面板后 Bot 回复位置变了（被挤压）") }
+        for key in ["reply", "copy", "select", "speak", "pin", "zh", "en"] {
+            XCTAssertTrue(app.descendants(matching: .any)["messageMenuAction-\(key)"].exists, "面板里缺动作 \(key)")
+        }
+        XCTAssertTrue(app.descendants(matching: .any)["messageMenuEmoji-👍"].exists && app.descendants(matching: .any)["messageMenuEmojiCustom"].exists, "面板里没有表情行")
+        shot(app, "32a-长按底部面板")
+        // 复制：执行后收起
+        app.descendants(matching: .any)["messageMenuAction-copy"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5), "点「复制」后面板没收起")
+        XCTAssertTrue(mine.waitForExistence(timeout: 3), "面板收起后我的消息不见了")
+        XCTAssertEqual(mine.frame, mineBefore, "面板收起后消息位置变了")
+        XCTAssertEqual(reply.frame, replyBefore, "面板收起后 Bot 回复位置变了")
+        // 下拉收起
+        openMenu("下拉")
+        panel.swipeDown()
+        XCTAssertTrue(waitGone(panel, timeout: 5), "下拉面板没收起")
+        shot(app, "32b-下拉收起")
+        // 点空白收起
+        openMenu("点空白")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5), "点空白没收起")
+        // 选择文本
+        openMenu("选择文本")
+        app.descendants(matching: .any)["messageMenuAction-select"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["messageMenuSelectText"].waitForExistence(timeout: 5), "「选择文本」没显示可选文字")
+        shot(app, "32c-选择文本")
+        app.buttons["完成"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5), "选择文本点「完成」没收起")
+        // 表情回应
+        openMenu("表情")
+        app.descendants(matching: .any)["messageMenuEmoji-👍"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5), "点表情后面板没收起")
+        XCTAssertTrue(waitText(app, contains: "👍", timeout: 10), "点表情后回复下面没出现 👍")
+        shot(app, "32d-表情回应")
+        // 回复
+        openMenu("回复")
+        app.descendants(matching: .any)["messageMenuAction-reply"].tap()
+        XCTAssertTrue(waitGone(panel, timeout: 5), "点「回复」后面板没收起")
+        shot(app, "32e-回复引用")
+    }
+
     private func revealTodayBar(_ app: XCUIApplication) {
         let bar = app.descendants(matching: .any)["todayCard"]
         if bar.exists { return }
