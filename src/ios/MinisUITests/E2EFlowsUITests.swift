@@ -1283,7 +1283,13 @@ extension E2EFlowsUITests {
         let item = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "服务器已连接")).firstMatch
         XCTAssertTrue(item.waitForExistence(timeout: 5), "长按主 Bot 头像没有状态说明")
         shot(app, "30b-长按头像状态说明")
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)).tap()   // 关菜单
+        // 像用户一样点菜单下方的灰色空白处关菜单。不能点屏幕最上方：y≈46pt 正好落在灵动岛上，
+        // 点击被 SpringBoard 吃掉，菜单不会关（43156708556 两次都是这样）。
+        let menuBottom = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "更多")).firstMatch
+        let window = app.windows.firstMatch.frame
+        var blankY = window.height * 0.8
+        if menuBottom.exists { blankY = min(menuBottom.frame.maxY + 60, window.height * 0.85) }
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: window.midX, dy: blankY)).tap()
         XCTAssertTrue(waitGone(item, timeout: 5), "长按菜单没关掉")
         avatar.tap()
         XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 20), "点主 Bot 头像没进聊天")
