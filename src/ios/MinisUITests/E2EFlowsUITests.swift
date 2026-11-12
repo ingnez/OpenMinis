@@ -109,17 +109,31 @@ final class E2EFlowsUITests: XCTestCase {
             XCTFail("插件目录里没有「E2E 回声」的安装按钮")
         }
         tapPoint(app, install)
+        // 装好后目录里这一行变成「已安装 / 打开」（目录在上，下面「已安装」分区里的行常在屏幕外、List 不渲染，不能只等它）
         let installed = app.descendants(matching: .any)["pluginInstalled-e2e-echo"]
-        if !poll(30, { installed.exists }) {
+        let catalogInstalled = app.descendants(matching: .any)["pluginCatalogInstalled-e2e-echo"]
+        let openLink = app.descendants(matching: .any)["pluginOpen-e2e-echo"]
+        if !poll(30, { catalogInstalled.exists || openLink.exists || installed.exists }) {
             dumpUI(app, "07b-安装后没有已安装")
             XCTFail("安装后没有出现在「已安装」")
         }
         // 已安装的条目留在目录里应显示「已安装」，不能再出现「安装」
         XCTAssertFalse(app.descendants(matching: .any)["pluginInstall-e2e-echo"].exists, "已安装插件仍留在插件目录并显示「安装」")
-        let marked = app.descendants(matching: .any)["pluginCatalogInstalled-e2e-echo"]
-        XCTAssertTrue(marked.waitForExistence(timeout: 5) || waitText(app, contains: "已安装", timeout: 5) || waitText(app, contains: "安装成功", timeout: 5) || waitText(app, contains: "已经安装", timeout: 2),
+        XCTAssertTrue(catalogInstalled.waitForExistence(timeout: 5) || waitText(app, contains: "已安装", timeout: 5) || waitText(app, contains: "安装成功", timeout: 5) || waitText(app, contains: "已经安装", timeout: 2),
                       "安装后没有可见的成功/已安装提示")
         shot(app, "07b-插件目录安装")
+        // 真机问题：退出插件市场再进来（重新从服务器拉目录），装过的仍显示「已安装」而不是「安装」
+        let back = app.navigationBars["插件市场"].buttons.element(boundBy: 0)
+        XCTAssertTrue(back.waitForExistence(timeout: 5), "插件市场页没有返回键")
+        back.tap()
+        let market = app.descendants(matching: .any)["pluginMarketRow"]
+        let marketName = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "插件市场")).firstMatch
+        XCTAssertTrue(market.waitForExistence(timeout: 8) || marketName.waitForExistence(timeout: 3), "返回后没回到 Bot 设置")
+        tapPoint(app, market.exists ? market : marketName)
+        XCTAssertTrue(waitText(app, contains: "E2E 回声", timeout: 30), "重新进插件市场目录没加载")
+        XCTAssertTrue(catalogInstalled.waitForExistence(timeout: 10), "重新进插件市场后，装过的插件不显示「已安装」")
+        XCTAssertFalse(app.descendants(matching: .any)["pluginInstall-e2e-echo"].exists, "重新进插件市场后，装过的插件又显示「安装」")
+        shot(app, "07b-重新进入仍已安装")
     }
 
     func test08_botStepPanelUsesCloudNames() throws {
