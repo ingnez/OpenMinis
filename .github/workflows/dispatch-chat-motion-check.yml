@@ -16,17 +16,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_BRANCH: grokbot-phase2-message-menu
-          EXPECTED_SHA: 280d369e859b581b90ef0ead552d9bfa70ae954b
-          TESTS: MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply
+          EXPECTED_SHA: 8cd9cd806c0e174b94a7829862be07d748ecd5a5
+          TESTS: MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply
         run: |
           set -euo pipefail
           repo="repos/$GITHUB_REPOSITORY"
           ref="$repo/git/ref/heads/$TARGET_BRANCH"
           test "$(gh api "$ref" --jq '.object.sha')" = "$EXPECTED_SHA"
-          old="$repo/actions/runs/43318170255"
-          if [ "$(gh api "$old" --jq .head_sha)" = a08eba3b24ff4e7ef90a2cd0e90973522e07b6bd ] && [ "$(gh api "$old" --jq .status)" != completed ]; then
-            gh api --method POST "$old/cancel" || test "$(gh api "$old" --jq .status)" = completed
-          fi
+          cancel_previous() {
+            local old="$repo/actions/runs/$1"
+            if [ "$(gh api "$old" --jq .head_sha)" = "$2" ] && [ "$(gh api "$old" --jq .status)" != completed ]; then
+              gh api --method POST "$old/cancel" || test "$(gh api "$old" --jq .status)" = completed
+            fi
+          }
+          cancel_previous 43319966293 6947f6157c9b1efb0a51545ebc9393a9820ce790
+          cancel_previous 43319980518 280d369e859b581b90ef0ead552d9bfa70ae954b
           gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$TARGET_BRANCH" -f ui_tests=true -f mac_runner=macos-26 -f only_testing="$TESTS"
           runs="$repo/actions/workflows/build-ios.yml/runs?branch=$TARGET_BRANCH&head_sha=$EXPECTED_SHA&event=workflow_dispatch&per_page=10"
           last_id=
