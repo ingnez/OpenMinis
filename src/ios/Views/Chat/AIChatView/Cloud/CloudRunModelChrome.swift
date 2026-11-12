@@ -267,6 +267,7 @@ struct CloudMessageAction: Identifiable {
         self.run = run
     }
 
+    @MainActor
     static func textActions(_ text: String, copyText: String? = nil) -> [Self] {
         guard !text.isEmpty else { return [] }
         return [
