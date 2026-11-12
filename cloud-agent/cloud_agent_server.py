@@ -6180,6 +6180,9 @@ _transcript_nonces = collections.OrderedDict()
 _transcript_lock = threading.Lock()
 
 
+INTERRUPT_MARKS = ("（已打断）", "（被打断）", "(已打断)", "(被打断)")
+
+
 def session_append_transcript(sid, lines, nonce=None):
     """把实时语音通话的文字记录追加到会话（不触发 Agent 运行）。
     返回写入条数；会话不存在返回 None；格式不对抛 ValueError。"""
@@ -6198,7 +6201,8 @@ def session_append_transcript(sid, lines, nonce=None):
         text = text.strip()[:TRANSCRIPT_MAX_CHARS]
         if not text:
             continue
-        if item.get("interrupted") is True:
+        # 手机端已经在字幕末尾标了「（已打断）」：服务端不再叠加第二个（真机 09:26 出现过「(已打断) (被打断)」）
+        if item.get("interrupted") is True and not any(text.endswith(m) for m in INTERRUPT_MARKS):
             text += "（被打断）"
         rows.append((role, text))
     key = (sid, nonce) if isinstance(nonce, str) and nonce else None
@@ -7030,7 +7034,7 @@ class Handler(BaseHTTPRequestHandler):
                 for tid_, pl in timing_rows:
                     try:
                         p = json.loads(pl)
-                        tmap[tid_] = {k: p.get(k) for k in ("first_text_ms", "ttft_ms", "total_ms", "queued_ms", "llm_calls", "prompt_tokens", "completion_tokens", "streamed")}
+                        tmap[tid_] = {k: p.get(k) for k in ("first_text_ms", "ttft_ms", "total_ms", "queued_ms", "llm_calls", "prompt_tokens", "completion_tokens", "streamed", "finished_at")}
                     except ValueError:
                         pass
                 for t_ in tasks:

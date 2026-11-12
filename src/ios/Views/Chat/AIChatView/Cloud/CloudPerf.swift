@@ -1,36 +1,5 @@
 import SwiftUI
 
-/// 每条回复的耗时：服务器在会话详情的 tasks[].timings 里返回（首字、总时长、token）
-enum CloudLatency {
-    static func ms(_ v: Any?) -> Double? {
-        if let d = v as? Double { return d }
-        if let i = v as? Int { return Double(i) }
-        return nil
-    }
-
-    static func format(_ ms: Double) -> String {
-        ms >= 1000 ? String(format: "%.1f 秒", ms / 1000) : "\(Int(ms)) 毫秒"
-    }
-
-    /// 找到产生这条回复的任务（创建时间不晚于消息时间的最近一个任务）
-    static func timings(for message: [String: Any], tasks: [[String: Any]]) -> [String: Any]? {
-        guard let ts = ms(message["timestamp"]) else { return nil }
-        let candidates = tasks.filter { (ms($0["created_at"]) ?? .infinity) <= ts + 0.001 }
-        let best = candidates.max { (ms($0["created_at"]) ?? 0) < (ms($1["created_at"]) ?? 0) }
-        return best?["timings"] as? [String: Any]
-    }
-
-    static func line(for message: [String: Any], tasks: [[String: Any]]) -> String? {
-        guard let t = timings(for: message, tasks: tasks) else { return nil }
-        var parts: [String] = []
-        if let f = ms(t["first_text_ms"]) { parts.append("首字 \(format(f))") }
-        if let total = ms(t["total_ms"]) { parts.append("总 \(format(total))") }
-        let tokens = Int(ms(t["prompt_tokens"]) ?? 0) + Int(ms(t["completion_tokens"]) ?? 0)
-        if tokens > 0 { parts.append("\(tokens) tokens") }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-}
-
 /// 设置 > 云电脑资源设置 > 性能：最近任务的耗时、连接复用情况和提速开关
 struct CloudPerfView: View {
     @State private var data: [String: Any] = [:]

@@ -78,6 +78,70 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         let legacy = RealtimeInterruptText.apply(existing: RealtimeInterruptText.legacyPlaceholder, userSpoke: true)
         check(legacy.text == RealtimeInterruptText.subtleMark, "旧占位句换成轻标")
 
+        // —— 真机 09:26：外放回声把每句回复都掐掉、标「(已打断) (被打断)」——
+        // 打断标记最多一个；没播出声音的回复不标
+        let twice = RealtimeInterruptText.apply(existing: "我在呢。（已打断）（被打断）", userSpoke: true)
+        check(twice.text == "我在呢。（已打断）", "重复的打断标记合并成一个：\(twice.text)")
+        let half = RealtimeInterruptText.apply(existing: "我在呢。(已打断) (被打断)", userSpoke: true)
+        check(half.text == "我在呢。（已打断）", "半角写法也合并：\(half.text)")
+        let silent = RealtimeInterruptText.apply(existing: "我在呢。", userSpoke: true, playedAudio: false)
+        check(silent.text == "我在呢。" && !silent.interrupted, "一个字都没播出去就取消的回复不标已打断")
+        let silentMarked = RealtimeInterruptText.apply(existing: "我在呢。（已打断）", userSpoke: true, playedAudio: false)
+        check(silentMarked.text == "我在呢。" && !silentMarked.interrupted, "没播出声音时连旧标记也去掉")
+        check(RealtimeInterruptText.stripMarks("正常的话") == "正常的话", "没标记的原样返回")
+
+        // 本地没听到人声：服务端说「还在说」、转写也有字，都不取消
+        check(RealtimeBargeIn.onConfirmDeadline(stillWaiting: true, hasUserTranscript: true, speechStillActive: true, localSpeech: false) == .ignore,
+              "本地麦克风没听到人声时，服务端的持续语音只是回声，不取消")
+        check(RealtimeBargeIn.onConfirmDeadline(stillWaiting: true, hasUserTranscript: false, speechStillActive: true, localSpeech: true) == .cancel,
+              "本地确认人声 + 到期仍在说 → 真插话")
+        check(RealtimeBargeIn.onSpeechStopped(elapsedMs: 300, hasUserTranscript: true, localSpeech: false) == .wait,
+              "有转写但本地没人声：先等，不立刻取消")
+        // 转写只认插话那一段，且不能是 Bot 自己的话
+        let bot = "我在呢。刚把血管活性药物课件的修正版放好了，你那边能看到下载列表吗？"
+        check(!RealtimeBargeIn.transcriptConfirms("我在呢。", itemID: "e1", bargeInItemID: "e1", assistantText: bot),
+              "麦克风收回 Bot 自己的「我在呢」不算插话")
+        check(!RealtimeBargeIn.transcriptConfirms("嗯你怎么不说话", itemID: "u0", bargeInItemID: "e1", assistantText: bot),
+              "上一句晚到的转写（item 对不上）不算这次插话")
+        check(RealtimeBargeIn.transcriptConfirms("等一下先别说", itemID: "e1", bargeInItemID: "e1", assistantText: bot),
+              "插话那一段、不是回声的转写才确认插话")
+        check(RealtimeBargeIn.transcriptConfirms("等一下", itemID: "e1", bargeInItemID: nil, assistantText: bot),
+              "服务端没给 item 时不因 item 拒绝")
+        check(RealtimeEcho.isEcho("刚把血管活性药物课件的修正版放好", of: bot), "回声：子串")
+        check(RealtimeEcho.isEcho("刚把血管活性药物课见的修正版放好", of: bot), "回声：转写有错字也认")
+        check(!RealtimeEcho.isEcho("等一下先别说了", of: bot), "用户自己的话不是回声")
+        check(!RealtimeEcho.isEcho("好", of: "好的"), "太短不判回声")
+
+        // 回声门：播放开头 300ms 一律当回声；之后只有明显高过回声底噪并持续 250ms 才放行
+        var g = RealtimeEchoGate()
+        var tt = 0.0
+        func step(_ level: Float, _ playing: Bool, _ dt: Double = 0.05) -> Bool { tt += dt; return g.feed(level: level, botPlaying: playing, at: at(tt)) }
+        check(step(0.1, false), "没在播：照常放行")
+        check(!step(0.9, true) && !step(0.9, true), "播放开头 300ms 内哪怕很响也不放行（回声）")
+        var leaked = false
+        for i in 0..<80 { if step(i % 4 == 0 ? 0.35 : 0.5, true) { leaked = true } }   // 4 秒外放回声，电平 0.35–0.5
+        check(!leaked, "持续 4 秒的外放回声一帧都不放行")
+        check(!g.userSpoke(since: at(0)), "回声不算用户说话")
+        // 回声底噪约 0.5：用户凑近说话 0.95 持续 300ms → 放行
+        var opened = false
+        for _ in 0..<7 { if step(0.95, true) { opened = true } }
+        check(opened && g.isOpen, "用户明显高过回声、持续 250ms 以上才放行")
+        check(g.userSpoke(since: at(tt - 1)), "放行后记作用户真说话")
+        check(step(0.1, true), "门开后这轮播放内一直放行（用户在说）")
+        // 播完：300ms 尾巴后恢复
+        var g2 = RealtimeEchoGate(); tt = 100
+        func step2(_ level: Float, _ playing: Bool) -> Bool { tt += 0.05; return g2.feed(level: level, botPlaying: playing, at: at(tt)) }
+        for _ in 0..<20 { _ = step2(0.4, true) }
+        check(!step2(0.4, false), "刚播完的回声尾巴不放行")
+        for _ in 0..<6 { _ = step2(0.05, false) }
+        check(step2(0.05, false), "尾巴过了恢复正常收音")
+        // 短促尖峰（敲桌子、回声爆音）不算说话
+        var g3 = RealtimeEchoGate(); tt = 200
+        func step3(_ level: Float) -> Bool { tt += 0.05; return g3.feed(level: level, botPlaying: true, at: at(tt)) }
+        for _ in 0..<10 { _ = step3(0.2) }
+        check(!step3(0.9) && !step3(0.9) && !step3(0.2), "100ms 尖峰不放行")
+        check(!g3.userSpoke(since: nil), "尖峰不记作说话")
+
         print("PASS：实时通话健康检查（上行没人理、哑麦、下行播不出来、按住说话、插话门槛）")
     }
 }

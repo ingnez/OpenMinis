@@ -165,18 +165,24 @@ def set_reply(mode):
 
 REALTIME_PORT = 18796
 # 假实时服务（OpenAI Realtime 协议，标准库手写 WebSocket）：App 发 input_audio_buffer.append，够 1 秒后回一段字幕 + 声音
-REALTIME = {"connections": 0, "session_updates": 0, "appends": 0, "audio_bytes_in": 0, "replies": 0, "events": []}
+REALTIME = {"connections": 0, "session_updates": 0, "appends": 0, "audio_bytes_in": 0, "replies": 0, "events": [],
+            # echo 场景：模拟真机外放回声（服务端 VAD 持续「在说话」、把 Bot 自己的话转写成用户输入、上一句转写晚到）
+            "scenario": "", "cancels": 0, "loud_appends_in_reply": 0, "echo_done": False}
+REALTIME_ECHO_TEXT = "我听到了"
 REALTIME_REPLY = "e2e-realtime-ok 我听到了"
 
 
 def start_fake_realtime():
     import base64, hashlib, math, socketserver, struct
 
+    send_lock = threading.Lock()   # echo 场景另起线程发事件，和主循环的 pong / session.updated 不能交错
+
     def send(sock, obj):
         data = json.dumps(obj, ensure_ascii=False).encode()
         n = len(data)
         head = bytes([0x81]) + (bytes([n]) if n < 126 else (bytes([126]) + struct.pack(">H", n) if n < 65536 else bytes([127]) + struct.pack(">Q", n)))
-        sock.sendall(head + data)
+        with send_lock:
+            sock.sendall(head + data)
 
     def recv_exact(f, n):
         b = f.read(n)
@@ -216,13 +222,44 @@ def start_fake_realtime():
             sock = self.request
             send(sock, {"type": "session.created", "session": {"id": "sess_e2e"}})
             appends, replied = 0, False
+            in_reply = False
+
+            def echo_reply(sock):
+                # 真机 09:26 的事件顺序：回复开始播 → 外放回声让 VAD 持续「在说话」→ 上一句的转写晚到 →
+                # 回声被转写成 Bot 自己的话 → 1.5 秒后才 speech_stopped。手机不该取消回复、不该标「打断」、声音要全部播完。
+                nonlocal in_reply
+                send(sock, {"type": "input_audio_buffer.speech_started", "item_id": "u1"})
+                send(sock, {"type": "input_audio_buffer.committed", "item_id": "u1"})
+                send(sock, {"type": "response.created", "response": {"id": "r1"}})
+                in_reply = True
+                send(sock, {"type": "response.output_audio_transcript.delta", "response_id": "r1", "item_id": "a1", "delta": REALTIME_REPLY})
+                long_tone = tone * 8   # 4 秒
+                for n, i in enumerate(range(0, len(long_tone), 4800)):
+                    send(sock, {"type": "response.output_audio.delta", "response_id": "r1", "item_id": "a1",
+                                "content_index": 0, "delta": base64.b64encode(long_tone[i:i + 4800]).decode()})
+                    if n == 3:
+                        send(sock, {"type": "input_audio_buffer.speech_started", "item_id": "echo1"})
+                    if n == 5:
+                        send(sock, {"type": "conversation.item.input_audio_transcription.completed", "item_id": "u1", "transcript": "（假）用户说话"})
+                    if n == 7:
+                        send(sock, {"type": "conversation.item.input_audio_transcription.completed", "item_id": "echo1",
+                                    "transcript": REALTIME_ECHO_TEXT})
+                    if n == 35:   # 回声让 VAD「说」了 1.6 秒，超过手机的插话确认时长
+                        send(sock, {"type": "input_audio_buffer.speech_stopped", "item_id": "echo1"})
+                    time.sleep(0.05)   # 比实时快一倍发：手机端始终有没播完的声音
+                send(sock, {"type": "response.output_audio_transcript.done", "response_id": "r1", "item_id": "a1", "transcript": REALTIME_REPLY})
+                time.sleep(2.5)   # 让手机按实时速度把剩下约 2 秒声音「播」完，期间的麦克风上行都算在回复里
+                in_reply = False
+                send(sock, {"type": "response.done", "response": {"id": "r1", "status": "completed"}})
+                REALTIME["echo_done"] = True
             try:
                 while True:
                     op, data = recv(self.rfile)
                     if op == 8:
                         return
                     if op == 9:
-                        sock.sendall(bytes([0x8A, len(data)]) + data)
+                        with send_lock:
+                            sock.sendall(bytes([0x8A, len(data)]) + data)
                         continue
                     if op != 1:
                         continue
@@ -233,11 +270,20 @@ def start_fake_realtime():
                     if ty == "session.update":
                         REALTIME["session_updates"] += 1
                         send(sock, {"type": "session.updated", "session": ev.get("session", {})})
+                    elif ty == "response.cancel":
+                        REALTIME["cancels"] += 1
                     elif ty == "input_audio_buffer.append":
                         appends += 1
                         REALTIME["appends"] += 1
-                        REALTIME["audio_bytes_in"] += len(base64.b64decode(ev.get("audio", "")))
-                        if appends >= 10 and not replied:
+                        pcm = base64.b64decode(ev.get("audio", ""))
+                        REALTIME["audio_bytes_in"] += len(pcm)
+                        if in_reply and pcm and max(abs(v) for (v,) in struct.iter_unpack("<h", pcm[:len(pcm) // 2 * 2])) > 1500:
+                            REALTIME["loud_appends_in_reply"] += 1
+                        if REALTIME["scenario"] == "echo" and appends >= 30 and not replied:
+                            replied = True
+                            REALTIME["replies"] += 1
+                            threading.Thread(target=echo_reply, args=(sock,), daemon=True).start()
+                        elif REALTIME["scenario"] != "echo" and appends >= 10 and not replied:
                             replied = True
                             REALTIME["replies"] += 1
                             send(sock, {"type": "input_audio_buffer.speech_started", "item_id": "u1"})
@@ -449,6 +495,9 @@ def main():
                 self.wfile.write(body)
                 return
             if urlparse(self.path).path == "/_e2e/realtime":
+                sc = parse_qs(urlparse(self.path).query).get("scenario")
+                if sc is not None:
+                    REALTIME.update(scenario=sc[0], cancels=0, loud_appends_in_reply=0, echo_done=False)
                 body = json.dumps(REALTIME, ensure_ascii=False).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")

@@ -561,6 +561,60 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(waitGone(capsule, timeout: 10), "挂断后胶囊没收起")
     }
 
+    /// 真机 09:26（iPhone 16 Pro Max，phase2f）：外放回声被麦克风收回去，服务端 VAD 一直「在说话」、
+    /// 把 Bot 自己的话转写成用户输入、上一句转写晚到 → 每句回复一秒左右被掐掉、没声音、标「(已打断) (被打断)」。
+    /// 这里用假收音在 Bot 播音时混进很响的回声，假服务端按真机的事件顺序发回声事件：
+    /// 回复不能被取消、不能出现任何「打断」、声音要全部交给播放器、回声不能当成用户的话显示、也不能发给服务端。
+    func test21c_realtimeEchoDoesNotInterrupt() throws {
+        executionTimeAllowance = 180
+        let app = launch(extraEnv: ["OPENMINIS_E2E_REALTIME": "ws://127.0.0.1:18796", "OPENMINIS_E2E_FAKE_MIC": "1",
+                                    "OPENMINIS_E2E_FAKE_ECHO": "1"])
+        XCTAssertNotNil(echoProbe(scenario: "echo"), "假实时服务没切到回声场景")
+        defer { _ = echoProbe(scenario: "") }
+        openBot(app)
+        let voice = app.buttons["composerVoiceButton"]
+        XCTAssertTrue(voice.waitForExistence(timeout: 20), "输入栏没有声波按钮")
+        if app.keyboards.firstMatch.exists {
+            app.swipeDown()
+            _ = waitGone(app.keyboards.firstMatch, timeout: 5)
+        }
+        XCTAssertTrue(poll(5) { voice.exists && voice.isHittable }, "声波按钮点不到")
+        voice.tap()
+        let capsule = app.descendants(matching: .any)["callCapsule"]
+        if !capsule.waitForExistence(timeout: 8) {
+            let turnsPage = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "切到实时双向通话")).firstMatch
+            if turnsPage.exists { goBack(app) }
+            if voice.waitForExistence(timeout: 5), voice.isHittable { voice.tap() }
+        }
+        XCTAssertTrue(capsule.waitForExistence(timeout: 20), "点声波没出现通话胶囊")
+        XCTAssertTrue(waitText(app, contains: "e2e-realtime-ok", timeout: 30), "回复字幕没出现在对话里")
+        shot(app, "21c-回声中播放")
+        XCTAssertTrue(poll(30) { self.echoProbe()?.echo_done == true }, "假服务端的回声场景没跑完")
+        let probe = try XCTUnwrap(echoProbe())
+        XCTAssertEqual(probe.cancels, 0, "回声把正在播的回复取消了（手机发了 response.cancel）")
+        XCTAssertEqual(probe.loud_appends_in_reply, 0, "Bot 播音时把回声原样发给了服务端（回声门没关）")
+        XCTAssertFalse(anyElement(app, contains: "打断"), "回声让回复字幕标上了「打断」")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label == %@", "我听到了")).firstMatch.exists,
+                       "Bot 自己的话被当成用户的话显示了")
+        XCTAssertTrue(poll(15) {
+            let v = capsule.value as? String ?? ""
+            guard let r = v.range(of: "收到声音 "), let kb = Int(v[r.upperBound...].prefix { $0.isNumber }) else { return false }
+            return kb >= 150
+        }, "回复的声音没有全部交给播放器（应约 187 KB）：\(capsule.value as? String ?? "")")
+        shot(app, "21c-回声没打断-声音播完")
+        let hang = app.buttons["挂断"]
+        XCTAssertTrue(hang.waitForExistence(timeout: 5))
+        hang.tap()
+        XCTAssertTrue(waitGone(capsule, timeout: 10), "挂断后胶囊没收起")
+    }
+
+    private struct EchoProbe: Decodable { let cancels: Int; let loud_appends_in_reply: Int; let echo_done: Bool }
+    private func echoProbe(scenario: String? = nil) -> EchoProbe? {
+        let q = scenario.map { "?scenario=\($0)" } ?? ""
+        guard let url = URL(string: "http://127.0.0.1:18799/_e2e/realtime" + q), let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(EchoProbe.self, from: data)
+    }
+
     // MARK: - 听写卡片（照 Grok：实时文字 + 停止 + 滚动波形 + 发送）
 
     /// 听写卡片的共同检查：波形、文字、停止、发送都在，点发送后返回
