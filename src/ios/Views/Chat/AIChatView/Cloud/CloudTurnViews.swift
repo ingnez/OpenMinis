@@ -220,12 +220,14 @@ struct CloudBotBubble<Content: View>: View {
 
     var body: some View {
         CloudBotBubbleLayout {
-            content
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.systemGray6)))
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("botReplyBubble")
+            VStack(alignment: .leading, spacing: 8) {
+                content
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.systemGray6)))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("botReplyBubble")
         }
     }
 }

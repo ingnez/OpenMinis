@@ -34,6 +34,7 @@ FRONT_INSTANT_NOTE = (
 
 ETA_MIN_SAMPLES = 3
 FRONT_TURN_TIMEOUT = 35.0
+FRONT_FAST_ATTEMPT_TIMEOUT = 12.0
 PROGRESS_QUERY = re.compile(
     r"(?:进度(?:呢|如何|怎么样|怎样|咋样|到哪了|到哪一步)(?:了|啦|吗)?|"
     r"(?:有没有|是否)(?:完成|做完|弄好|搞定)(?:了|了吗|了吗呀|了吧|吗)?|"

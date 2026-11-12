@@ -23,9 +23,9 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
 
         // 长按铺开
         let fan = ImageStackLayout.cards(count: 9, fanned: true)
-        check(fan.count == ImageStackLayout.maxFanned, "铺开最多 5 张")
+        check(fan.count == 9, "长按铺开全部 9 张")
         let xs = fan.sorted { $0.index < $1.index }.map(\.offset.width)
-        check(zip(xs, xs.dropFirst()).allSatisfy { $0 < $1 }, "铺开后从左到右是第 1…5 张")
+        check(zip(xs, xs.dropFirst()).allSatisfy { $0 < $1 }, "铺开后从左到右是第 1…9 张")
         check(abs(xs.first! + xs.last!) < 0.001, "铺开左右对称")
         check(ImageStackLayout.cards(count: 1, fanned: true).count == 1, "一张不铺开")
 
@@ -72,6 +72,18 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
         check(!ImageStackLayout.shouldOpenOnRelease(horizontal: 4, vertical: 1), "几乎没滑不打开")
         check(!ImageStackLayout.shouldOpenOnRelease(horizontal: 4, vertical: -40), "竖滑不打开")
         check(!ImageStackLayout.shouldOpenOnRelease(horizontal: 16, vertical: 16), "方向不明确不打开")
+
+        for count in [6, 7, 9, 20] {
+            let cards = ImageStackLayout.cards(count: count, fanned: true, fansLeft: true)
+            let width = ImageStackLayout.stackSize(count: count).width
+            for card in cards {
+                let x = width / 2 + card.offset.width
+                check(x > 0 && x < width, "每张图的中心都在手指可达范围")
+                check(ImageStackLayout.focusedIndex(atX: x, count: count, fansLeft: true) == card.index,
+                      "左滑可以选中第 \(card.index + 1) / \(count) 张")
+            }
+            check(ImageStackLayout.focusedIndex(atX: 0, count: count, fansLeft: true) == count - 1, "滑到左边选择最后一张")
+        }
 
         // 看图页页码
         check(ImageViewerIndex.clamp(5, count: 3) == 2 && ImageViewerIndex.clamp(-1, count: 3) == 0 && ImageViewerIndex.clamp(2, count: 0) == 0, "起始页夹在范围内")

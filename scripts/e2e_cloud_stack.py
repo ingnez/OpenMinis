@@ -150,6 +150,11 @@ def front_script(data):
     """秒回前台：「查一下」→ 先回一句再派后台；后台在跑时「插话」→ 先回再转给后台；其余直接秒回。"""
     import re
     text = last_user_text(data)
+    if "E2E引用卡布局" in text:
+        return {"role": "assistant", "content": (
+            "一句话：E2E结论正文\n\n这里是展开后的细节。\n\n"
+            "依据：这是一段模拟出处。它有较长的标题、期刊名和出版信息，用来验证大字体下的分行。"
+            "｜把握度：中（这里是较长的说明，需要正常换行。）")}
     step = _front_memory_step(data, text)
     if step:
         return step

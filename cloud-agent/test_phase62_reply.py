@@ -424,6 +424,63 @@ class ReplyModeTests(CloudServerTestCase):
         self.assertEqual(code, 202)
         self.wait_status(retried["task_id"], {"completed"}, timeout=5)
 
+    def test_04g_fast_timeout_falls_back_without_changing_the_next_turn_model(self):
+        self._install()
+        sid = self._session()
+        started = threading.Event()
+
+        def front(d):
+            text = last_user(d).split("\n\n[", 1)[0]
+            if text == "首条慢回复":
+                started.set()
+                return {"_chunks": [{"reasoning_content": "思考"}] * 30, "_delay": 0.05}
+            return {"role": "assistant", "content": "前台回答：" + text}
+
+        FakeModelHandler.scripts[FRONT] = front
+        with mock.patch.object(cloud_reply, "FRONT_FAST_ATTEMPT_TIMEOUT", 0.4), \
+                mock.patch.object(cloud_reply, "FRONT_TURN_TIMEOUT", 3):
+            tid = self.submit(sid, "首条慢回复", MAIN)[1]["task_id"]
+            self.assertTrue(started.wait(5))
+            code, _ = self.request("POST", f"/v1/tasks/{tid}/messages", {"content": "下一条", "nonce": "fast-reset"})
+            self.assertEqual(code, 202)
+            self.assertEqual(self.wait_status(tid, {"completed", "failed"}, timeout=8)["status"], "completed")
+
+        messages = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
+        replies = [m["content"] for m in messages if m.get("front_task_id") == tid and m["role"] == "assistant"]
+        self.assertEqual(replies, ["主模型直接回答：首条慢回复", "前台回答：下一条"])
+
+    def test_04h_successful_tool_only_handoff_gets_a_receipt_and_releases_the_queue(self):
+        self._install(slow=True)
+        sid = self._session()
+        entered, release = threading.Event(), threading.Event()
+        second_call = threading.Event()
+
+        def front(d):
+            text = last_user(d).split("\n\n[", 1)[0]
+            if text != "处理附件":
+                return {"role": "assistant", "content": "答：" + text}
+            if fresh_tools(d):
+                second_call.set()
+                return {"_chunks": [{"reasoning_content": "仍在思考"}] * 30, "_delay": 0.1}
+            entered.set()
+            release.wait(5)
+            return tool_call("handoff", "spawn_task", {"goal": text, "title": "核对附件"})
+
+        FakeModelHandler.scripts[FRONT] = front
+        tid = self.submit(sid, "处理附件", MAIN)[1]["task_id"]
+        try:
+            self.assertTrue(entered.wait(5))
+            code, _ = self.request("POST", f"/v1/tasks/{tid}/messages", {"content": "我再问一条", "nonce": "after-handoff"})
+            self.assertEqual(code, 202)
+        finally:
+            release.set()
+        self.assertEqual(self.wait_status(tid, {"completed", "failed"}, timeout=6)["status"], "completed")
+        self.assertFalse(second_call.is_set(), "后台已接单，前台仍然要求补一句话")
+        messages = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
+        replies = [m["content"] for m in messages if m.get("front_task_id") == tid and m["role"] == "assistant" and m["content"]]
+        self.assertEqual(replies, ["「核对附件」已在后台开始处理，有结果会发到这里。", "答：我再问一条"])
+        self.assertEqual(len(self._workers(sid)), 1)
+
     def test_05_front_cannot_run_work_tools(self):
         def front(d):
             if fresh_tools(d):

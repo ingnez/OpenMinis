@@ -650,7 +650,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.51.1"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.51.2"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -4958,10 +4958,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     perf["queued_ms"] = round((perf["started_at"] - perf["created_at"]) * 1000, 1)
     front_deadline = None
 
-    def model_should_abort():
+    def model_should_abort(deadline):
         if is_task_cancelled(task_id):
             return True
-        if front_deadline is not None and time.monotonic() >= front_deadline:
+        if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError("前台模型响应超时")
         return not instant and inbox_pending(task_id)
 
@@ -5077,12 +5077,15 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         nonlocal model
         retried = False
         while True:
+            deadline = front_deadline
+            if deadline is not None and route["model"] == reply["front_model"] and route["model"] != main_model:
+                deadline = min(deadline, time.monotonic() + cloud_reply.FRONT_FAST_ATTEMPT_TIMEOUT)
             try:
                 return call_chat(route["url"], {"Content-Type": "application/json", "Authorization": f"Bearer {route['key']}"}, {
                     "model": route["model"], "messages": send_msgs, "tools": tools, "tool_choice": "auto"
                 }, effort, stream=rs_perf.get("stream", True), on_text=on_text, cache_key=perf["bot_id"] or session_id,
                    on_reasoning=on_reasoning,
-                   should_abort=model_should_abort, deadline=front_deadline)
+                   should_abort=lambda: model_should_abort(deadline), deadline=deadline)
             except cloud_llm.Aborted:
                 raise
             except Exception as e:
@@ -5105,6 +5108,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     # 快速模型不行（不存在 / 出错）：本任务直接换回主模型，不算失败
                     log_event(task_id, "status", {"message": f"快速模型不可用（{sanitize_err(e)[:60]}），改用 {main_model}"})
                     route["model"] = model = main_model
+                    if instant:
+                        live_clear(task_id)
                     perf["auto_model_fallback"] = True
                     continue
                 if not eff.is_failover_error(e):
@@ -5127,6 +5132,25 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 retried = False
 
     try:
+        front_handoffs = []
+
+        def write_handoff_ack():
+            nonlocal answered
+            lines = []
+            for handoff in front_handoffs:
+                title = handoff["title"]
+                if handoff["status"] == "queued":
+                    lines.append(f"「{title}」已排入后台队列，轮到后开始。")
+                else:
+                    lines.append(f"「{title}」已在后台开始处理，有结果会发到这里。")
+            text = "\n".join(lines)
+            on_text(text)
+            live_clear(task_id)
+            log_event(task_id, "thought", {"content": text})
+            messages.append({"role": "assistant", "content": text})
+            insert_message(session_id, "assistant", text, meta={"front_task_id": task_id})
+            answered = True
+
         def take_injected(limit=None):
             nonlocal current_user_content, mention_hint
             items = inbox_take(task_id, session_id, instant, limit)
@@ -5146,7 +5170,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             return bool(items)
 
         def advance_after_reply():
-            nonlocal answered, turns, loop_guard, front_deadline
+            nonlocal answered, turns, loop_guard, front_deadline, model
             if not instant:
                 return inbox_close(task_id)
             while inbox_close(task_id):
@@ -5154,7 +5178,11 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 if not take_injected(limit=1):
                     continue
                 answered = False
+                front_handoffs.clear()
                 front_deadline = None
+                route.update(url=chat_url, key=api_key, model=reply["front_model"] or main_model,
+                             chain=list(rs_perf.get("failover") or []))
+                model = route["model"]
                 turns = 0
                 loop_guard = cloud_runmodel.LoopGuard()
                 with INSTANT_HANDOFF_LOCK:
@@ -5171,6 +5199,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 return False
             live_clear(task_id)
             err = scrub_text(sanitize_err(error))[:400]
+            if not answered and front_handoffs:
+                write_handoff_ack()
             if answered:
                 log_event(task_id, "status", {"message": "回答已给出；后续模型调用失败，已跳过：" + err[:200]})
                 final_status = "completed"
@@ -5285,7 +5315,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 row_meta = dict(row_meta or {}, front_task_id=task_id)
 
             if not (content and (not isinstance(content, str) or content.strip())) and not tool_calls:
-                if answered:
+                if answered or front_handoffs:
+                    if not answered:
+                        write_handoff_ack()
                     if advance_after_reply():
                         continue
                     break               # 工具做完后模型没再说话：前面的回答就是最终回答
@@ -5293,7 +5325,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     continue
                 break
             content = _take_ack(task_id, content, tool_calls)   # 快速确认：并进第一条工具调用消息，已经有文字就不要了
-            if content:
+            if content and (not isinstance(content, str) or content.strip()):
                 answered = True
 
             if content and not tool_calls:
@@ -5410,6 +5442,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     return (tc_id, fn_name, res, int((time.time() - started_at) * 1000))
 
                 def post_tool(tc_id, fn_name, res, duration_ms=None):
+                    if (instant and (fn_name == "spawn_task" or cloud_reply.front_blocked(fn_name))
+                            and isinstance(res, dict) and res.get("id") and res.get("title")
+                            and res.get("status") in ("running", "queued")):
+                        front_handoffs.append(res)
                     if fn_name == "request_tools" and isinstance(res, dict) and res.get("enabled"):
                         extra_tools.update(res["enabled"])
                     live_update(task_id, tool=None)
@@ -5450,6 +5486,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                         tool_meta["front_task_id"] = task_id
                     insert_message(session_id, "tool", tool_content_str, tool_call_id=tc_id, meta=tool_meta)
 
+                handoffs_before = len(front_handoffs)
                 parallel = (len(tool_calls) > 1 and resource_settings().get("parallel_tools", True)
                             and all(((tc.get("function") or {}).get("name")) in PARALLEL_SAFE_TOOLS for tc in tool_calls))
                 if parallel:
@@ -5476,6 +5513,12 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 tf = TURN_FLAGS.get(task_id) or {}
                 if tf.get("answered"):
                     answered = True
+                if len(front_handoffs) - handoffs_before == len(tool_calls):
+                    if not answered:
+                        write_handoff_ack()
+                    if advance_after_reply():
+                        continue
+                    break
                 if tf.get("end"):
                     if instant:
                         _post_turn_card(task_id, session_id)

@@ -44,6 +44,17 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertEqual(lastProbe(containing: "看六张图")?.images, 6, "假模型收到的 image_url 不是 6 张")
         XCTAssertFalse(anyElement(app, contains: "→ 工作区"), "气泡里还露着附件说明行")
         shot(app, "03b-六张图叠放")
+
+        let stack = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@ AND label == %@", "imageStack", "6 张图片")
+        ).firstMatch
+        XCTAssertTrue(stack.waitForExistence(timeout: 10))
+        revealBelowNavBar(app, stack)
+        let start = stack.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5))
+        let end = stack.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.5))
+        start.press(forDuration: 0.8, thenDragTo: end)
+        XCTAssertTrue(app.buttons["关闭"].waitForExistence(timeout: 10), "松手后没有打开全屏图片")
+        XCTAssertTrue(waitSelected(app.buttons["第 6 张"], timeout: 5), "向左滑没有打开第 6 张")
     }
 
     func test04_markdownBoldInQuoteCJK() throws {
@@ -1631,6 +1642,21 @@ extension E2EFlowsUITests {
         XCTAssertTrue(app.descendants(matching: .any)["messageMenuSelectText"].waitForExistence(timeout: 5))
         app.buttons["完成"].tap()
         XCTAssertTrue(waitGone(panel, timeout: 5))
+    }
+
+    func test36_sourceChipDoesNotCoverReply() throws {
+        let app = launch(extraArgs: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryXXXL"])
+        if let url = URL(string: "http://127.0.0.1:18799/_e2e/reply?mode=instant") {
+            _ = try? Data(contentsOf: url)
+        }
+        openBot(app)
+        send(app, "E2E引用卡布局")
+        let headline = app.staticTexts["E2E结论正文"]
+        let source = app.descendants(matching: .any)["cloudSourceChip"]
+        XCTAssertTrue(headline.waitForExistence(timeout: 30))
+        XCTAssertTrue(source.waitForExistence(timeout: 10))
+        XCTAssertGreaterThanOrEqual(source.frame.minY, headline.frame.maxY, "出处卡盖住了结论")
+        shot(app, "36-正文与出处卡")
     }
 
     private func revealTodayBar(_ app: XCUIApplication) {

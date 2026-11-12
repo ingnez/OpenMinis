@@ -20,7 +20,7 @@ struct ImageCardStack: View {
     var body: some View {
         let count = sources.count
         VStack(alignment: alignment, spacing: ImageStackLayout.captionSpacing) {
-            ImageStackScrubHost(sources: sources, onOpen: onOpen, onRetry: onRetry)
+            ImageStackScrubHost(sources: sources, fansLeft: alignment == .trailing, onOpen: onOpen, onRetry: onRetry)
                 .frame(width: ImageStackLayout.stackSize(count: count).width,
                        height: ImageStackLayout.stackSize(count: count).height)
             if let caption = ImageStackLayout.caption(count) {
@@ -36,11 +36,13 @@ struct ImageCardStack: View {
 /// UIKit 宿主：长按 / 滑动由 UILongPress 处理，位置与缩放用 CADisplayLink 跟到 120Hz。
 struct ImageStackScrubHost: UIViewRepresentable {
     let sources: [ImageStackSource]
+    let fansLeft: Bool
     let onOpen: (Int) -> Void
     var onRetry: (() -> Void)?
 
     func makeUIView(context: Context) -> ImageStackScrubView {
         let v = ImageStackScrubView()
+        v.fansLeft = fansLeft
         v.onOpen = onOpen
         v.onRetry = onRetry
         v.apply(sources: sources)
@@ -48,6 +50,7 @@ struct ImageStackScrubHost: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: ImageStackScrubView, context: Context) {
+        uiView.fansLeft = fansLeft
         uiView.onOpen = onOpen
         uiView.onRetry = onRetry
         uiView.apply(sources: sources)
@@ -55,6 +58,7 @@ struct ImageStackScrubHost: UIViewRepresentable {
 }
 
 final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
+    var fansLeft = false
     var onOpen: (Int) -> Void = { _ in }
     var onRetry: (() -> Void)?
 
@@ -123,11 +127,11 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
         let changed = ids != old
         if changed {
             stopLink()
-            let visibleIDs = Set(ids.prefix(ImageStackLayout.maxFanned))
+            let visibleIDs = Set(ids)
             images = images.filter { visibleIDs.contains($0.key) }
             loadIDs = loadIDs.filter { visibleIDs.contains($0.key) }
             if sources.count < 2 { fanned = false }
-            selectedIndex = min(selectedIndex, max(0, min(sources.count, ImageStackLayout.maxFanned) - 1))
+            selectedIndex = ImageViewerIndex.clamp(selectedIndex, count: sources.count)
             rebuildCards()
             updateCardLayout()
             applyLayout(animated: false)
@@ -148,7 +152,7 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
         currentRotation = []
         let count = sources.count
         let size = count == 1 ? ImageStackLayout.singleSize : ImageStackLayout.cardSize
-        for _ in 0..<min(count, ImageStackLayout.maxFanned) {
+        for _ in sources {
             let iv = UIImageView()
             iv.isUserInteractionEnabled = true
             iv.contentMode = .scaleAspectFill
@@ -175,7 +179,7 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
     }
 
     private func loadMissingImages() {
-        for i in cardViews.indices {
+        for i in layoutCards.indices {
             let src = sources[i]
             if let img = images[src.id] {
                 if cardViews[i].image !== img { cardViews[i].image = img }
@@ -270,7 +274,7 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
             startLocation = p
             startedFanned = fanned
             startedFocus = selectedIndex
-            selectedIndex = ImageStackLayout.focusedIndex(atX: p.x, count: count)
+            selectedIndex = ImageStackLayout.focusedIndex(atX: p.x, count: count, fansLeft: fansLeft)
             selection.prepare()
             if !fanned {
                 fanned = true
@@ -278,9 +282,10 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
                 impact.impactOccurred()
             }
             animateLayout()
+            loadMissingImages()
         case .changed:
             guard abs(p.x - startLocation.x) > abs(p.y - startLocation.y) else { return }
-            let next = ImageStackLayout.focusedIndex(atX: p.x, count: count, keeping: selectedIndex)
+            let next = ImageStackLayout.focusedIndex(atX: p.x, count: count, keeping: selectedIndex, fansLeft: fansLeft)
             if next != selectedIndex {
                 selectedIndex = next
                 selection.selectionChanged()
@@ -290,7 +295,7 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
         case .ended:
             if ImageStackLayout.shouldOpenOnRelease(horizontal: p.x - startLocation.x,
                                                     vertical: p.y - startLocation.y) {
-                let idx = ImageStackLayout.focusedIndex(atX: p.x, count: count, keeping: selectedIndex)
+                let idx = ImageStackLayout.focusedIndex(atX: p.x, count: count, keeping: selectedIndex, fansLeft: fansLeft)
                 fanned = false
                 selectedIndex = 0
                 animateLayout()
@@ -327,14 +332,14 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
     }
 
     private func updateCardLayout() {
-        layoutCards = Array(ImageStackLayout.cards(count: sources.count, fanned: fanned).reversed())
+        layoutCards = Array(ImageStackLayout.cards(count: sources.count, fanned: fanned, fansLeft: fansLeft).reversed())
         let normalBorder = UIColor.label.withAlphaComponent(0.08).cgColor
         let focusedBorder = UIColor.white.withAlphaComponent(0.9).cgColor
         for (i, view) in cardViews.enumerated() {
             view.isHidden = i >= layoutCards.count
             guard !view.isHidden else { continue }
             let selected = fanned && i == selectedIndex
-            view.layer.zPosition = layoutCards[i].zIndex + (selected ? 10 : 0)
+            view.layer.zPosition = layoutCards[i].zIndex + (selected ? Double(layoutCards.count) : 0)
             view.layer.borderWidth = selected ? 2 : 0.5
             view.layer.borderColor = selected ? focusedBorder : normalBorder
         }

@@ -11,14 +11,16 @@ struct CloudOneLineView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                RoundedRectangle(cornerRadius: 2).fill(accent).frame(width: 4)
-                Text(head)
-                    .font(.system(.body, design: typography?.design.swiftUI ?? .default).weight(.semibold))
-                    .dynamicTypeSize(typography?.messageTypeSize ?? typeSize)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(head)
+                .font(.system(.body, design: typography?.design.swiftUI ?? .default).weight(.semibold))
+                .dynamicTypeSize(typography?.messageTypeSize ?? typeSize)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 12)
+                .overlay(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2).fill(accent).frame(width: 4)
+                        .allowsHitTesting(false)
+                }
             if !detail.isEmpty {
                 if open {
                     SelectableMarkdownView(markdown: detail)
@@ -44,15 +46,19 @@ struct CloudSourceChip: View {
         let tint: Color = parsed.lowConfidence ? .orange : (parsed.confidence == "高" ? .green : .blue)
         return HStack(alignment: .top, spacing: 6) {
             Image(systemName: parsed.lowConfidence ? "exclamationmark.triangle" : "books.vertical")
-            Text(parsed.source).lineLimit(3)
-            if let c = parsed.confidence {
-                Text("把握度 \(c)").fontWeight(.semibold)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(parsed.source)
+                if let c = parsed.confidence {
+                    Text("把握度 \(c)").fontWeight(.semibold)
+                }
             }
+            .fixedSize(horizontal: false, vertical: true)
         }
         .font(.caption)
         .foregroundStyle(tint)
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(tint.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
         .textSelection(.enabled)
+        .accessibilityIdentifier("cloudSourceChip")
     }
 }
