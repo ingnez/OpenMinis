@@ -347,7 +347,7 @@ struct CloudBotsView: View {
                 ForEach(bots) { bot in
                     NavigationLink(destination: CloudBotDetailView(bot: bot, onChanged: { await reload() })) {
                         HStack(spacing: 12) {
-                            Text(bot.avatar).font(.title2)
+                            CloudBotAvatarView(spec: CloudBotAvatarSpec.of(bot), size: 30)
                             VStack(alignment: .leading, spacing: 3) {
                                 HStack(spacing: 6) {
                                     Text(bot.name).font(.headline)
@@ -547,7 +547,7 @@ struct CloudBotAdvancedView: View {
         List {
             Section {
                 HStack(spacing: 14) {
-                    Text(bot.avatar).font(.system(size: 44))
+                    CloudBotAvatarView(spec: CloudBotAvatarSpec.of(bot), size: 44)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(bot.name).font(.title3.bold())
                         if !bot.summary.isEmpty { Text(bot.summary).font(.subheadline).foregroundStyle(.secondary) }

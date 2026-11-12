@@ -1,6 +1,6 @@
 //
 //  CloudBotAvatar.swift
-//  Minis - Bot 头像：13 种形状 × 12 种颜色，带白色“眼睛”；保存在 Bot 的 emoji 字段（"av:s<形状>c<颜色>"）。
+//  Minis - Bot 头像及其保存在 emoji 字段中的形状和颜色选择。
 //
 
 import SwiftUI
@@ -17,8 +17,10 @@ struct CloudBotAvatarSpec: Hashable {
     /// 刚在手机上选的照片（还没上传）：保存 Bot 后上传
     var pendingPhoto: Data? = nil
 
-    static let shapeCount = 13
-    /// 颜色随外观变化：深色模式下黑色换成石墨灰（见 CloudAvatarPalette），身体不会融进背景
+    var accentOverride: Int? = nil
+
+    static var shapeCount: Int { GrokBotAvatarAssets.shapeCount }
+    /// 聊天主题和自定义表情头像使用 OpenMinis 原有的配色。
     static let colors: [Color] = (0..<CloudAvatarPalette.count).map { i in
         Color(UIColor { trait in
             let c = CloudAvatarPalette.rgb(i, dark: trait.userInterfaceStyle == .dark)
@@ -31,7 +33,7 @@ struct CloudBotAvatarSpec: Hashable {
         if let emoji, !emoji.isEmpty { return "av:e\(emoji)c\(color)" }
         return "av:s\(shape)c\(color)"
     }
-    var fill: Color { Self.colors[min(max(color, 0), Self.colors.count - 1)] }
+    var fill: Color { Self.colors[min(max(accentOverride ?? color, 0), Self.colors.count - 1)] }
 
     static func parse(_ text: String) -> CloudBotAvatarSpec? {
         if text.hasPrefix("av:e") || text.hasPrefix("av:p"), let cIdx = text.lastIndex(of: "c"), cIdx > text.index(text.startIndex, offsetBy: 4) {
@@ -52,11 +54,11 @@ struct CloudBotAvatarSpec: Hashable {
 
     /// 没有保存头像时按 Bot ID 生成稳定的默认值；主 Bot 默认黑色圆形
     static func `default`(for id: String, primary: Bool) -> CloudBotAvatarSpec {
-        // 主 Bot 默认用靛蓝（以前是黑色，小尺寸下像一团黑影）；用户自己选了黑色照样尊重
-        if primary { return CloudBotAvatarSpec(shape: 0, color: 10) }
+        if primary { return CloudBotAvatarSpec(shape: 0, color: 0, accentOverride: 10) }
         var h: UInt32 = 5381
         for b in id.utf8 { h = (h &* 33) &+ UInt32(b) }
-        return CloudBotAvatarSpec(shape: Int(h % 13), color: 1 + Int((h / 13) % 11))
+        let shapeCount = UInt32(GrokBotAvatarAssets.legacyShapeCount)
+        return CloudBotAvatarSpec(shape: Int(h % shapeCount), color: 1 + Int((h / shapeCount) % 11))
     }
 
     static func of(_ bot: CloudBot) -> CloudBotAvatarSpec {
@@ -73,92 +75,53 @@ struct CloudBotAvatarSpec: Hashable {
     var isShape: Bool { emoji == nil && photo == nil }
 }
 
-/// 13 种头像形状（单位方框内绘制后缩放）
 struct CloudBotShape: Shape {
     let kind: Int
-    /// 并集轮廓的采样点数：头像最大 150pt × 3 倍屏 = 450px，720 点时相邻点不到 3px
-    static let outlineSamples = 720
+    var showsFace = false
+    var gaze: CGSize = .zero
+    var eyeOpen: CGFloat = 1
+    var mood: CloudBotMood = .calm
+
+    var animatableData: AnimatablePair<CGFloat, AnimatablePair<CGFloat, CGFloat>> {
+        get { AnimatablePair(eyeOpen, AnimatablePair(gaze.width, gaze.height)) }
+        set {
+            eyeOpen = newValue.first
+            gaze = CGSize(width: newValue.second.first, height: newValue.second.second)
+        }
+    }
 
     func path(in rect: CGRect) -> Path {
-        let s = min(rect.width, rect.height)
-        let o = CGPoint(x: rect.midX - s / 2, y: rect.midY - s / 2)
-        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: o.x + x * s, y: o.y + y * s) }
-        // 多个圆拼的形状：画成一条并集外轮廓（一个填充、没有重叠的子形状），里面不会有接缝
-        func outline(_ discs: [CloudShapeOutline.Disc]) -> Path {
-            var p = Path()
-            let pts = CloudShapeOutline.union(discs, samples: Self.outlineSamples)
-            guard let first = pts.first else { return p }
-            p.move(to: pt(CGFloat(first.x), CGFloat(first.y)))
-            for q in pts.dropFirst() { p.addLine(to: pt(CGFloat(q.x), CGFloat(q.y))) }
-            p.closeSubpath()
-            return p
-        }
-        func rounded(_ points: [CGPoint], radius: CGFloat) -> Path {
-            var p = Path()
-            let n = points.count
-            let mid = { (a: CGPoint, b: CGPoint) in CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2) }
-            p.move(to: mid(points[n - 1], points[0]))
-            for i in 0..<n {
-                p.addArc(tangent1End: points[i], tangent2End: points[(i + 1) % n], radius: radius * s)
-            }
-            p.closeSubpath()
-            return p
-        }
-        func polygon(_ count: Int, rotation: Double, radius: CGFloat = 0.48) -> [CGPoint] {
-            (0..<count).map { i in
-                let a = rotation + Double(i) * 2 * .pi / Double(count)
-                return pt(0.5 + radius * CGFloat(cos(a)), 0.5 + radius * CGFloat(sin(a)))
+        let asset = GrokBotAvatarAssets.shape(at: kind)
+        var mark = asset.body
+        if showsFace {
+            for eye in asset.eyes {
+                mark.addPath(expression(eye))
             }
         }
-        func star(_ points: Int, inner: CGFloat, rotation: Double) -> Path {
-            var verts: [CGPoint] = []
-            for i in 0..<(points * 2) {
-                let r: CGFloat = i % 2 == 0 ? 0.5 : inner
-                let a = rotation + Double(i) * .pi / Double(points)
-                verts.append(pt(0.5 + r * CGFloat(cos(a)), 0.5 + r * CGFloat(sin(a))))
-            }
-            return rounded(verts, radius: 0.06)
-        }
-        switch kind {
-        case 1:  // 四叶草
-            return outline(CloudShapeOutline.clover)
-        case 2:  // 倾斜圆角方
-            let r = s * 0.2
-            let box = CGRect(x: o.x + s * 0.14, y: o.y + s * 0.14, width: s * 0.72, height: s * 0.72)
-            return RoundedRectangle(cornerRadius: r, style: .continuous).path(in: box)
-                .applying(CGAffineTransform(translationX: -rect.midX, y: -rect.midY)
-                    .concatenating(CGAffineTransform(rotationAngle: .pi / 9))
-                    .concatenating(CGAffineTransform(translationX: rect.midX, y: rect.midY)))
-        case 3:  // 四角星
-            return star(4, inner: 0.24, rotation: -.pi / 2)
-        case 4:  // 蓬松云
-            return outline(CloudShapeOutline.cloud)
-        case 5:  // 豆子
-            var p = Path()
-            p.addEllipse(in: CGRect(x: o.x + s * 0.08, y: o.y + s * 0.2, width: s * 0.84, height: s * 0.6))
-            return p.applying(CGAffineTransform(translationX: -rect.midX, y: -rect.midY).concatenating(CGAffineTransform(rotationAngle: -.pi / 10)).concatenating(CGAffineTransform(translationX: rect.midX, y: rect.midY)))
-        case 6:  // 花
-            return outline(CloudShapeOutline.flower)
-        case 7:  // 水滴
-            var p = Path()
-            p.move(to: pt(0.5, 0.04))
-            p.addCurve(to: pt(0.9, 0.62), control1: pt(0.62, 0.22), control2: pt(0.9, 0.38))
-            p.addArc(center: pt(0.5, 0.62), radius: 0.4 * s, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
-            p.addCurve(to: pt(0.5, 0.04), control1: pt(0.1, 0.38), control2: pt(0.38, 0.22))
-            p.closeSubpath()
-            return p
-        case 8:  // 胶囊
-            return Capsule().path(in: CGRect(x: o.x + s * 0.04, y: o.y + s * 0.22, width: s * 0.92, height: s * 0.56))
-        case 9:  // 三角
-            return rounded([pt(0.12, 0.12), pt(0.95, 0.5), pt(0.12, 0.88)], radius: 0.14)
-        case 10: // 六边形宝石
-            return rounded(polygon(6, rotation: .pi / 6), radius: 0.12)
-        case 11: // 八角星
-            return star(8, inner: 0.34, rotation: 0)
-        case 12: // 五边形
-            return rounded(polygon(5, rotation: -.pi / 2), radius: 0.12)
-        default: // 圆
-            return Circle().path(in: CGRect(x: o.x, y: o.y, width: s, height: s))
+        return GrokBotAvatarAssets.fitted(mark, in: rect)
+    }
+
+    private func expression(_ eye: Path) -> Path {
+        let bounds = eye.boundingRect
+        let open = min(max(eyeOpen, 0.1), 1)
+        let dx = 3 * min(max(gaze.width, -1), 1)
+        let dy = 3 * min(max(gaze.height, -1), 1)
+        switch mood {
+        case .happy where open > 0.5, .frown where open > 0.5, .shy where open > 0.5:
+            let stroke = bounds.width * 0.28
+            let direction: CGFloat = mood == .happy ? -1 : 1
+            var curve = Path()
+            curve.move(to: CGPoint(x: bounds.minX + stroke, y: bounds.midY))
+            curve.addQuadCurve(to: CGPoint(x: bounds.maxX - stroke, y: bounds.midY),
+                               control: CGPoint(x: bounds.midX, y: bounds.midY + direction * bounds.height * 0.45))
+            return curve.strokedPath(StrokeStyle(lineWidth: stroke, lineCap: .round))
+                .applying(CGAffineTransform(translationX: dx, y: dy))
+        default:
+            let openness = mood == .dozing ? 0.11 : mood == .focused ? open * 0.64 : open
+            return eye.applying(CGAffineTransform(
+                a: 1, b: 0, c: 0, d: openness,
+                tx: dx, ty: bounds.midY * (1 - openness) + dy
+            ))
         }
     }
 }
@@ -195,63 +158,42 @@ struct CloudBotAvatarView: View {
 
     private var shapeBody: some View {
         ZStack {
-            // 身体只有一个填充，不描边（描边会把拼接处的弧线也描出来，就是里面那些细缝）。
-            // 深色模式下黑色头像（主 Bot 默认）会融进背景：在外面加一圈淡光，只在形状外侧
-            CloudBotShape(kind: spec.shape).fill(spec.fill)
-                .shadow(color: colorScheme == .dark ? Color.white.opacity(0.28) : .clear, radius: max(0.5, size * 0.02))
+            CloudBotShape(kind: spec.shape, showsFace: showsFace, gaze: gaze, eyeOpen: eyeOpen, mood: mood)
+                .fill(GrokBotAvatarAssets.color(at: spec.color, scheme: colorScheme), style: FillStyle(eoFill: true))
             if showsFace {
-            HStack(spacing: size * 0.13) {
-                eye
-                eye
-            }
-            .rotationEffect(.degrees(mood == .curious ? -4 : -14))
-            .offset(x: size * (0.06 + 0.08 * gaze.width), y: size * (-0.08 + 0.07 * gaze.height))
-            if mood == .shy {
-                HStack(spacing: size * 0.3) {
-                    Ellipse().fill(Color.pink.opacity(0.75))
-                    Ellipse().fill(Color.pink.opacity(0.75))
-                }
-                .frame(width: size * 0.55, height: size * 0.08)
-                .blur(radius: size * 0.015)
-                .offset(x: size * 0.06, y: size * 0.08)
-                .accessibilityHidden(true)
-            }
-            if mood == .dozing {
-                Text("z").font(.system(size: size * 0.22, weight: .heavy, design: .rounded)).foregroundStyle(.white.opacity(0.9))
-                    .offset(x: size * 0.3, y: -size * 0.3)
+                paintedDetails
+                if mood == .shy {
+                    HStack(spacing: size * 0.3) {
+                        Ellipse().fill(Color.pink.opacity(0.75))
+                        Ellipse().fill(Color.pink.opacity(0.75))
+                    }
+                    .frame(width: size * 0.55, height: size * 0.08)
+                    .blur(radius: size * 0.015)
+                    .offset(x: size * 0.06, y: size * 0.08)
                     .accessibilityHidden(true)
-            }
+                }
+                if mood == .dozing {
+                    Text("z").font(.system(size: size * 0.22, weight: .heavy, design: .rounded))
+                        .foregroundStyle(.primary.opacity(0.9))
+                        .offset(x: size * 0.3, y: -size * 0.3)
+                        .accessibilityHidden(true)
+                }
             }
         }
         .frame(width: size, height: size)
     }
-}
 
-extension CloudBotAvatarView {
-    @ViewBuilder fileprivate var eye: some View {
-        let open = max(eyeOpen, 0.12)
-        switch mood {
-        case .happy where eyeOpen > 0.5:
-            // 笑眼：向上弯的弧
-            CloudHappyEye().stroke(Color.white, style: StrokeStyle(lineWidth: size * 0.07, lineCap: .round))
-                .frame(width: size * 0.14, height: size * 0.09)
-        case .focused:
-            Capsule().fill(Color.white).frame(width: size * 0.11, height: size * 0.12 * open)
-        case .curious:
-            Capsule().fill(Color.white).frame(width: size * 0.12, height: size * 0.27 * open)
-        case .frown:
-            // 出错：向下弯的眼，像皱着眉
-            CloudHappyEye().stroke(Color.white, style: StrokeStyle(lineWidth: size * 0.07, lineCap: .round))
-                .frame(width: size * 0.14, height: size * 0.07).rotationEffect(.degrees(180))
-        case .shy:
-            // 害羞：眯成向下弯的笑眼
-            CloudHappyEye().stroke(Color.white, style: StrokeStyle(lineWidth: size * 0.06, lineCap: .round))
-                .frame(width: size * 0.13, height: size * 0.06).rotationEffect(.degrees(180))
-        case .dozing:
-            // 闲太久：闭眼成一条线
-            Capsule().fill(Color.white).frame(width: size * 0.13, height: max(1.5, size * 0.035))
-        default:
-            Capsule().fill(Color.white).frame(width: size * 0.1, height: size * 0.22 * open)
+    @ViewBuilder private var paintedDetails: some View {
+        let paint = GrokBotAvatarAssets.shape(at: spec.shape).paint
+        if !paint.isEmpty {
+            GeometryReader { proxy in
+                let bounds = CGRect(origin: .zero, size: proxy.size)
+                ForEach(paint.indices, id: \.self) { index in
+                    let layer = paint[index]
+                    GrokBotAvatarAssets.fitted(layer.path, in: bounds).fill(layer.color)
+                }
+            }
+            .accessibilityHidden(true)
         }
     }
 }
@@ -268,19 +210,11 @@ extension CloudBotMood {
     }
 }
 
-struct CloudHappyEye: Shape {
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: rect.minX, y: rect.maxY))
-        p.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.maxY), control: CGPoint(x: rect.midX, y: rect.minY - rect.height * 0.6))
-        return p
-    }
-}
-
 /// 形状网格 + 颜色点；创建页与编辑页共用
 struct CloudBotAvatarPicker: View {
     @Binding var spec: CloudBotAvatarSpec
     @State private var mode = 0
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(spacing: 22) {
@@ -302,31 +236,53 @@ struct CloudBotAvatarPicker: View {
     }
 
     private var shapeGrid: some View {
-            LazyVGrid(columns: Array(repeating: GridItem(.fixed(52), spacing: 10), count: 5), spacing: 12) {
-                ForEach(0..<CloudBotAvatarSpec.shapeCount, id: \.self) { k in
-                    Button { CloudHaptics.selection(); spec.shape = k; spec.emoji = nil; spec.photo = nil; spec.pendingPhoto = nil } label: {
-                        CloudBotBlinkingIcon(spec: CloudBotAvatarSpec(shape: k, color: spec.color), size: 38)
-                            .frame(width: 50, height: 50)
-                            .overlay(Circle().stroke(Color.gray.opacity(spec.isShape && spec.shape == k ? 0.45 : 0), lineWidth: 2))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("形状 \(k + 1)")
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 46), spacing: 10)], spacing: 12) {
+            ForEach(GrokBotAvatarAssets.pickerIndices, id: \.self) { shape in
+                let selected = spec.isShape && spec.shape == shape
+                Button {
+                    CloudHaptics.selection()
+                    spec.shape = shape
+                    spec.emoji = nil
+                    spec.photo = nil
+                    spec.pendingPhoto = nil
+                } label: {
+                    CloudBotAvatarView(spec: CloudBotAvatarSpec(shape: shape, color: spec.color), size: 40)
+                        .frame(width: 46, height: 46)
+                        .background { if selected { Circle().fill(.primary.opacity(0.08)) } }
+                        .overlay { if selected { Circle().strokeBorder(.primary.opacity(0.3), lineWidth: 1.5) } }
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(GrokBotAvatarAssets.shape(at: shape).name))
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
+        }
+        .padding(.horizontal, 24)
     }
 
     private var colorGrid: some View {
-            LazyVGrid(columns: Array(repeating: GridItem(.fixed(44), spacing: 14), count: 6), spacing: 14) {
-                ForEach(0..<CloudBotAvatarSpec.colors.count, id: \.self) { c in
-                    Button { CloudHaptics.selection(); spec.color = c } label: {
-                        Circle().fill(CloudBotAvatarSpec.colors[c]).frame(width: 28, height: 28)
-                            .padding(5)
-                            .overlay(Circle().stroke(Color.gray.opacity(spec.color == c ? 0.5 : 0), lineWidth: 2))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("颜色 \(c + 1)")
+        let indices = spec.isShape ? GrokBotAvatarAssets.colorIndices : Array(CloudBotAvatarSpec.colors.indices)
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 44), spacing: 8)], spacing: 10) {
+            ForEach(indices, id: \.self) { color in
+                let selected = (spec.isShape ? GrokBotAvatarAssets.swatchIndex(spec.color) : spec.color) == color
+                Button {
+                    CloudHaptics.selection()
+                    spec.color = color
+                    spec.accentOverride = nil
+                } label: {
+                    Circle()
+                        .fill(spec.isShape ? GrokBotAvatarAssets.color(at: color, scheme: colorScheme) : CloudBotAvatarSpec.colors[color])
+                        .frame(width: 27, height: 27)
+                        .frame(width: 44, height: 44)
+                        .overlay { if selected { Circle().strokeBorder(.primary.opacity(0.3), lineWidth: 1.5) } }
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("颜色 \(color + 1)")
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
+        }
+        .padding(.horizontal, 24)
     }
 }
 
@@ -463,7 +419,12 @@ struct CloudBotAliveAvatar: View {
             let tilt = CloudBotMood.tilt(gaze: (Double(gaze.width), Double(gaze.height)), shy: shy)
             CloudBotAvatarView(spec: spec, size: size, gaze: shy ? CGSize(width: tilt.yaw > 0 ? 0.8 : -0.8, height: 0.6) : gaze,
                                eyeOpen: eyeOpen, mood: shy ? .shy : mood)
-                .overlay(CloudAvatarSheen(yaw: reduceMotion ? 0 : tilt.yaw, pitch: reduceMotion ? 0 : tilt.pitch).allowsHitTesting(false))
+                .overlay {
+                    if !spec.isShape {
+                        CloudAvatarSheen(yaw: reduceMotion ? 0 : tilt.yaw, pitch: reduceMotion ? 0 : tilt.pitch)
+                            .allowsHitTesting(false)
+                    }
+                }
                 .rotation3DEffect(.degrees(reduceMotion ? 0 : tilt.yaw), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
                 .rotation3DEffect(.degrees(reduceMotion ? 0 : tilt.pitch), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
                 .scaleEffect(x: (1 + 0.015 * breath) * bounce, y: (1 - 0.02 * breath) * (2 - bounce), anchor: .bottom)
@@ -534,28 +495,6 @@ struct CloudBotAliveAvatar: View {
                 withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) { gaze = looks.randomElement() ?? .zero }
             }
         }
-    }
-}
-
-/// 形状网格里的小图标：偶尔眨一下眼（各自错开，开销很小）
-struct CloudBotBlinkingIcon: View {
-    let spec: CloudBotAvatarSpec
-    var size: CGFloat = 38
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var eyeOpen: CGFloat = 1
-
-    var body: some View {
-        CloudBotAvatarView(spec: spec, size: size, eyeOpen: eyeOpen)
-            .task(id: reduceMotion) {
-                guard !reduceMotion else { return }
-                try? await Task.sleep(nanoseconds: UInt64.random(in: 300_000_000...4_000_000_000))
-                while !Task.isCancelled {
-                    withAnimation(.easeInOut(duration: 0.07)) { eyeOpen = 0.1 }
-                    try? await Task.sleep(nanoseconds: 120_000_000)
-                    withAnimation(.easeInOut(duration: 0.1)) { eyeOpen = 1 }
-                    try? await Task.sleep(nanoseconds: UInt64.random(in: 4_000_000_000...11_000_000_000))
-                }
-            }
     }
 }
 

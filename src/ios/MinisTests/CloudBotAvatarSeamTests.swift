@@ -8,6 +8,34 @@ import SwiftUI
 final class CloudBotAvatarSeamTests: XCTestCase {
     private let size: CGFloat = 64
 
+    func testOriginalAvatarPickerPreservesSavedShapeIDs() throws {
+        let picker = GrokBotAvatarAssets.pickerIndices
+        XCTAssertEqual(picker.count, 26)
+        XCTAssertEqual(Set(picker), Set(0..<26))
+        XCTAssertEqual(picker.prefix(3).map { GrokBotAvatarAssets.shape(at: $0).name }, ["Blob", "Pebble", "Bean"])
+        let saved = try XCTUnwrap(CloudBotAvatarSpec.parse("av:s6c10"))
+        XCTAssertEqual(saved.encoded, "av:s6c10")
+        XCTAssertEqual(GrokBotAvatarAssets.shape(at: saved.shape).name, "Flower")
+        XCTAssertEqual(GrokBotAvatarAssets.swatchIndex(saved.color), 8)
+        XCTAssertEqual(CloudBotAvatarSpec.parse("av:s25c11")?.encoded, "av:s25c11")
+    }
+
+    func testDefaultAvatarReversesWithAppearanceAndCutsOutEyes() {
+        let spec = CloudBotAvatarSpec.default(for: "main", primary: true)
+        XCTAssertEqual(GrokBotAvatarAssets.color(at: spec.color, scheme: .light), Color.black)
+        XCTAssertEqual(GrokBotAvatarAssets.color(at: spec.color, scheme: .dark), Color.white)
+
+        let rect = CGRect(x: 0, y: 0, width: size, height: size)
+        let body = CloudBotShape(kind: spec.shape).path(in: rect)
+        let mark = CloudBotShape(kind: spec.shape, showsFace: true).path(in: rect)
+        for eye in GrokBotAvatarAssets.shape(at: spec.shape).eyes {
+            let bounds = GrokBotAvatarAssets.fitted(eye, in: rect).boundingRect
+            let center = CGPoint(x: bounds.midX, y: bounds.midY)
+            XCTAssertTrue(body.contains(center))
+            XCTAssertFalse(mark.contains(center, eoFill: true))
+        }
+    }
+
     func testNoInteriorSeamsAtEveryScale() throws {
         for scale in [2.0, 3.0] {
             for scheme in [ColorScheme.light, .dark] {
