@@ -1145,3 +1145,56 @@ extension E2EFlowsUITests {
         shot(app, "26c-回到首页无未连接横幅")
     }
 }
+
+// MARK: - 09:25 真机问题：带图插话露出附件路径、图片顺序乱；首页「今日」预览露出 Markdown 星号
+
+extension E2EFlowsUITests {
+    /// Bot 正在干活时只发 3 张图（不写字）：插话气泡里是按顺序的缩略图，看不到「请查看附件。」「[附件]」「attachments/」；
+    /// 模型照样收到 3 张图；退出再进来（从服务器重新拉历史）还是缩略图
+    func test27_steerImagesShowThumbnailsInOrder() throws {
+        executionTimeAllowance = 330
+        let app = launch(attach: 3, extraEnv: ["OPENMINIS_E2E_ATTACH_WHEN_BUSY": "1"])
+        openBot(app)
+        send(app, "慢任务")
+        let cards = app.descendants(matching: .any).matching(identifier: "trayCard")
+        XCTAssertTrue(cards.firstMatch.waitForExistence(timeout: 60), "Bot 开始干活后托盘里没出现测试图")
+        XCTAssertTrue(waitCount(cards, 3, timeout: 10), "托盘里不是 3 张")
+        let button = app.buttons["composerVoiceButton"]
+        XCTAssertTrue(waitLabel(button, equals: "插话", timeout: 10), "干活时带图没变成插话（\(button.label)）")
+        shot(app, "27a-干活时托盘三张图")
+        button.tap()
+        let order = app.descendants(matching: .any)["messageImageOrder"]
+        XCTAssertTrue(order.waitForExistence(timeout: 90), "插话气泡里没有缩略图")
+        XCTAssertEqual(order.label, "照片 1.jpg,照片 2.jpg,照片 3.jpg", "缩略图顺序不是选图顺序")
+        let stack = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ AND label == %@", "imageStack", "3 张图片")).firstMatch
+        XCTAssertTrue(stack.waitForExistence(timeout: 10), "插话气泡里没有「3 张图片」的缩略图")
+        assertNoAttachmentText(app)
+        shot(app, "27b-插话气泡三张缩略图")
+        XCTAssertTrue(waitText(app, contains: "收到 3 张图片", timeout: 120), "模型没收到插话里的 3 张图片")
+        assertNoAttachmentText(app)
+        shot(app, "27c-模型回复后")
+        goBack(app)
+        openBot(app)
+        let order2 = app.descendants(matching: .any)["messageImageOrder"]
+        XCTAssertTrue(order2.waitForExistence(timeout: 30), "重新进对话后插话气泡没有缩略图")
+        XCTAssertEqual(order2.label, "照片 1.jpg,照片 2.jpg,照片 3.jpg", "重新进对话后缩略图顺序变了")
+        assertNoAttachmentText(app)
+        shot(app, "27d-重新进对话仍是缩略图")
+    }
+
+    /// 首页「今日」卡片：假 Bot 的主动消息正文带 **加粗**，预览里不露星号
+    func test28_homeFeedPreviewNoMarkdown() throws {
+        if let url = URL(string: "http://127.0.0.1:18799/_e2e/feed") { _ = try? Data(contentsOf: url) }
+        let app = launch()
+        XCTAssertTrue(waitText(app, contains: "E2E下夜班", timeout: 60), "首页「今日」卡片没出现假主动消息")
+        XCTAssertFalse(anyElement(app, contains: "**"), "首页预览露出了 Markdown 星号")
+        XCTAssertTrue(waitText(app, contains: "今天你是E2E下夜班", timeout: 3), "加粗去掉记号后文字不连贯")
+        shot(app, "28-今日卡片无星号")
+    }
+
+    private func assertNoAttachmentText(_ app: XCUIApplication) {
+        XCTAssertFalse(anyElement(app, contains: "[附件]"), "气泡里露出了「[附件]」说明行")
+        XCTAssertFalse(anyElement(app, contains: "attachments/"), "气泡里露出了工作区路径")
+        XCTAssertFalse(anyElement(app, contains: "请查看附件"), "只发图时露出了占位文字「请查看附件。」")
+    }
+}

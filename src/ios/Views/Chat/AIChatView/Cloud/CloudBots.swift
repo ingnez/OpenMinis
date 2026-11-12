@@ -118,7 +118,7 @@ struct CloudBot: Identifiable, Hashable {
         activity = CloudTypingPhase(json: d["activity"])
         unreadCount = d["unread_count"] as? Int ?? 0
         if let tp = d["thread_preview"] as? [String: Any] {
-            threadPreview = tp["text"] as? String
+            threadPreview = (tp["text"] as? String).map(CloudPreviewText.plain)
             threadAt = (tp["at"] as? NSNumber)?.doubleValue ?? 0
             threadOutgoing = tp["outgoing"] as? Bool ?? false
             threadPriority = (tp["priority"] as? String) == "high"

@@ -396,6 +396,25 @@ def main():
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if urlparse(self.path).path == "/_e2e/feed":
+                # 首页「今日」卡片：塞一条假 Bot 的「主动消息」结果，正文带 Markdown 加粗（测预览不露星号）
+                import sqlite3
+                now = time.time()
+                db = sqlite3.connect(os.environ["OPENMINIS_DB"])
+                db.execute("INSERT OR REPLACE INTO routines (routine_id, name, prompt, schedule, enabled, persona_id) "
+                           "VALUES ('e2e-proactive', '主动消息', '假的', 'daily 09:00', 0, ?)", (BOT_ID,))
+                db.execute("INSERT OR REPLACE INTO routine_runs (run_id, routine_id, session_id, trigger, status, result, started_at, finished_at) "
+                           "VALUES ('e2e-proactive-run', 'e2e-proactive', '', 'schedule', 'completed', ?, ?, ?)",
+                           ("昨晚值班辛苦，今天你是**E2E下夜班**，先补觉。\n\n顺手确认：表上你 **11/14–16 日（假数据）**", now - 5, now))
+                db.commit()
+                db.close()
+                body = b'{"ok": true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if urlparse(self.path).path == "/_e2e/realtime":
                 body = json.dumps(REALTIME, ensure_ascii=False).encode()
                 self.send_response(200)

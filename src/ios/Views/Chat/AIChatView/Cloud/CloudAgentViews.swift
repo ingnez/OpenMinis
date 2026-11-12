@@ -824,8 +824,9 @@ struct CloudSessionView: View {
                                      onAppear: resumeOutbox, onDisappear: pauseOutbox))
         .onAppear {
             callDividers = CloudCallDivider.load(sessionId)
-            injectE2EAttachments()
+            if !CloudE2E.attachWhenBusy { injectE2EAttachments() }
         }
+        .onChange(of: activeTaskId) { tid in if tid != nil, CloudE2E.attachWhenBusy { injectE2EAttachments() } }
         .modifier(CloudDraftKeeper(sessionId: sessionId, text: $inputPrompt))
         .modifier(CloudReplyChatChrome(sessionId: sessionId, instant: replyPlan?.isInstant == true, status: replyStatus,
                                        onPlan: { applyReplyPlan($0) }))

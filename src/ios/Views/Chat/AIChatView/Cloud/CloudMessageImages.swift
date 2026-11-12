@@ -76,6 +76,17 @@ enum CloudMessageImageData {
         return CloudAttachmentLines.split(text).items.filter(\.isImage).map { attachmentScheme + (sessionId ?? "") + "|" + $0.serverName }
     }
 
+    /// 气泡里各张图的附件文件名，按显示顺序（E2E 核对顺序用）；内嵌图片没有文件名时写「图片 N」
+    static func orderLabel(_ content: String) -> String {
+        var text = content
+        if content.hasPrefix("["), let data = content.data(using: .utf8),
+           let parts = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            text = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: "\n")
+        }
+        let names = CloudAttachmentLines.split(text).items.filter(\.isImage).map(\.filename)
+        return names.isEmpty ? urls(content).indices.map { "图片 \($0 + 1)" }.joined(separator: ",") : names.joined(separator: ",")
+    }
+
     private static func attachmentData(_ url: String) async -> Data? {
         let rest = url.dropFirst(attachmentScheme.count)
         guard let bar = rest.firstIndex(of: "|") else { return nil }
@@ -121,6 +132,15 @@ struct CloudMessageImages: View {
             ImageCardStack(sources: urls.enumerated().map { i, u in
                 ImageStackSource(id: "\(i):\(u.count):\(u.suffix(32))", load: { await CloudMessageImageData.load(u, maxPixel: 640) })
             }, alignment: alignment, onOpen: { open(urls, at: $0) })
+            .background {
+                // 只在模拟器 E2E 里：把气泡里图片的先后（附件文件名）给 XCUITest 核对顺序
+                if CloudE2E.token != nil {
+                    Color.clear.frame(width: 1, height: 1)
+                        .accessibilityElement()
+                        .accessibilityIdentifier("messageImageOrder")
+                        .accessibilityLabel(CloudMessageImageData.orderLabel(content))
+                }
+            }
             .fullScreenCover(item: $gallery) { p in
                 MessageImageGallery(items: p.items, startIndex: p.startIndex,
                                     onAsk: askImage.map { ask in { img, _ in ask(img) } })

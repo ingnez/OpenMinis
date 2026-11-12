@@ -11,6 +11,8 @@ enum CloudE2E {
     static var port: Int { Int(ProcessInfo.processInfo.environment["OPENMINIS_E2E_PORT"] ?? "") ?? 18765 }
     /// 打开 Bot 对话时往附件托盘里放几张生成的测试图片（模拟器里点系统相册不稳定）
     static var fakeAttachments: Int { min(9, Int(ProcessInfo.processInfo.environment["OPENMINIS_E2E_ATTACH"] ?? "") ?? 0) }
+    /// 测「带图插话」：测试图等 Bot 开始干活（有了任务）才放进托盘，不跟第一条消息一起发
+    static var attachWhenBusy: Bool { ProcessInfo.processInfo.environment["OPENMINIS_E2E_ATTACH_WHEN_BUSY"] == "1" }
     /// 首页模式这类偏好用环境变量写进 App 自己的 UserDefaults（不用 -key value 启动参数：
     /// 参数域优先级最高，App 里切换模式写进去的值会被它盖住，测不了「切过去再切回来」）
     static func applyLaunchDefaults() {
@@ -131,6 +133,7 @@ enum CloudE2E {
     static let realtimeLabel = ""
     static var token: String? { nil }
     static var fakeAttachments: Int { 0 }
+    static var attachWhenBusy: Bool { false }
     #endif
 
     /// E2E（有 OPENMINIS_E2E_TOKEN）时停掉循环动画 / TimelineView，否则 XCUITest 等不到主线程空闲。

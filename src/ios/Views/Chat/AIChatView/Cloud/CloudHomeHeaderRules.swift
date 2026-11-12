@@ -65,18 +65,37 @@ enum CloudHomeHeaderRules {
 /// 首页列表 / 小组件的最后一条预览：去掉 Markdown 记号（引用「> 」、标题「#」、加粗 / 斜体星号、行内代码反引号），
 /// 以前列表里直接露出「> 这是**结论：**…」（11-11 E2E 截图）
 enum CloudPreviewText {
+    /// 一行 / 几行预览（首页「今日」卡片、列表行、小组件）：去掉 Markdown 记号，只留字。
+    /// 先整段去记号再交给 lineLimit 截断，不会截在「**」中间露出半个记号。
     static func plain(_ s: String) -> String {
         var lines: [String] = []
         for raw in s.split(separator: "\n", omittingEmptySubsequences: true) {
             var line = raw.trimmingCharacters(in: .whitespaces)
             while line.hasPrefix(">") { line = String(line.dropFirst()).trimmingCharacters(in: .whitespaces) }
             while line.hasPrefix("#") { line = String(line.dropFirst()) }
-            if line.hasPrefix("- ") || line.hasPrefix("* ") { line = String(line.dropFirst(2)) }
-            line = line.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "__", with: "")
-                .replacingOccurrences(of: "`", with: "")
-            line = line.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") { line = String(line.dropFirst(2)) }
+            if line.hasPrefix("[ ] ") || line.hasPrefix("[x] ") || line.hasPrefix("[X] ") { line = String(line.dropFirst(4)) }
+            if line.range(of: #"^[-*_]{3,}$"#, options: .regularExpression) != nil { continue }   // 分隔线
+            line = inline(line).trimmingCharacters(in: .whitespaces)
             if !line.isEmpty { lines.append(line) }
         }
         return lines.joined(separator: " ")
+    }
+
+    /// 行内记号：图片 / 链接只留文字，加粗、斜体、删除线、行内代码去掉符号
+    static func inline(_ s: String) -> String {
+        var t = s
+        let rules: [(String, String)] = [
+            (#"!\[([^\]]*)\]\([^)]*\)"#, "[图片]"),
+            (#"\[([^\]]+)\]\([^)]*\)"#, "$1"),
+            (#"\*\*|__|~~"#, ""),
+            (#"(^|[^\w*])\*(?=\S)([^*\n]*?\S)\*(?=[^\w*]|$)"#, "$1$2"),   // *斜体*（不碰 3*4 这类）
+            (#"(^|[^\w])_(?=\S)([^_\n]*?\S)_(?=[^\w]|$)"#, "$1$2"),         // _斜体_（不碰 snake_case）
+            ("`", ""),
+        ]
+        for (pattern, template) in rules {
+            t = t.replacingOccurrences(of: pattern, with: template, options: .regularExpression)
+        }
+        return t
     }
 }

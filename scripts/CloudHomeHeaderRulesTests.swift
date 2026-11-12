@@ -29,6 +29,12 @@ struct CloudHomeHeaderRulesTests {
         check("预览去掉引用和加粗", CloudPreviewText.plain("> 这是**结论：**引用里的中文加粗\n\n正文第二段。") == "这是结论：引用里的中文加粗 正文第二段。")
         check("预览去掉标题和代码", CloudPreviewText.plain("## 标题\n用 `ls` 看") == "标题 用 ls 看")
         check("普通文字不变", CloudPreviewText.plain("收到：你好") == "收到：你好")
+        // 09:25 真机首页「今日」卡片露出星号（文字是假的）
+        check("今日卡片加粗不露星号", CloudPreviewText.plain("昨晚值夜班，今天你是**下夜班**，先补觉。\n\n顺手确认一件事：表上你 **11/14–16 日（主 / 副）**") == "昨晚值夜班，今天你是下夜班，先补觉。 顺手确认一件事：表上你 11/14–16 日（主 / 副）")
+        check("被截断的半个加粗也不露", !CloudPreviewText.plain("表上你 **11/14–16 日 (主 /").contains("*"))
+        check("斜体、删除线、链接", CloudPreviewText.plain("*注意* ~~旧的~~ 看[这里](https://example.com)") == "注意 旧的 看这里")
+        check("乘号和 snake_case 不动", CloudPreviewText.plain("3*4 = 12，字段 shift_type") == "3*4 = 12，字段 shift_type")
+        check("图片写成 [图片]", CloudPreviewText.plain("![图](https://example.com/a.png) 好了") == "[图片] 好了")
         if failed > 0 { exit(1) }
         print("全部通过")
     }

@@ -153,7 +153,7 @@ final class CloudBotHomeModel: ObservableObject {
         guard let shared = UserDefaults(suiteName: "group.com.openminis.app") else { return }
         let list: [[String: Any]] = feed.filter { !CloudBotLock.isLockedStored($0.botId) }.prefix(5).map { f in
             let name = bot(f.botId)?.name ?? "Bot"
-            return ["title": f.proactive ? name + " 找你" : f.title, "text": CloudMessageText.display(f.text).text,
+            return ["title": f.proactive ? name + " 找你" : f.title, "text": CloudPreviewText.plain(CloudMessageText.display(f.text).text),
                     "at": f.at.timeIntervalSince1970, "bot_id": f.botId]
         }
         if (shared.array(forKey: "OpenMinisCloud_widgetFeed") as NSArray?) != (list as NSArray) {
@@ -1266,7 +1266,7 @@ struct CloudTodayFeed: View {
                     Spacer()
                     Text(item.at, style: .time).font(.caption2).foregroundStyle(.secondary)
                 }
-                Text(CloudMessageText.display(item.text).text).font(.callout).foregroundStyle(.secondary).lineLimit(3)
+                Text(CloudPreviewText.plain(CloudMessageText.display(item.text).text)).font(.callout).foregroundStyle(.secondary).lineLimit(3)
             }
         }
         .contentShape(Rectangle())

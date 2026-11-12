@@ -26,6 +26,8 @@ struct CloudAttachmentLinesTests {
         check(CloudAttachmentLines.split(plain).text == plain && CloudAttachmentLines.split(plain).items.isEmpty, "不像附件行的不动")
         check(CloudAttachmentLines.preview("第一行\n第二行") == "第一行 第二行", "多行预览合成一行")
 
+        // 相册多选按点选顺序，不按加载完成先后（真机上出现过 1、3、2、6、4、5）
+        check(CloudPickOrder.sorted([(0, "1"), (2, "3"), (1, "2"), (5, "6"), (3, "4"), (4, "5")]) == ["1", "2", "3", "4", "5", "6"], "相册多选顺序")
         if failed > 0 { print("\(failed) 项失败"); exit(1) }
         print("附件说明行解析测试全部通过")
     }

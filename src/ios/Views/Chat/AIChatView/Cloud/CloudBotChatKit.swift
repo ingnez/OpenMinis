@@ -61,7 +61,7 @@ enum CloudMessageText {
     /// 一行预览（主页、列表）：图片写成「[图片]」
     static func preview(_ content: String) -> String {
         let shown = display(content)
-        let line = shown.text.split(whereSeparator: \.isNewline).joined(separator: " ").replacingOccurrences(of: "📎 ", with: "[文件] ")
+        let line = CloudPreviewText.plain(shown.text).replacingOccurrences(of: "📎 ", with: "[文件] ")
         return ([line] + Array(repeating: "[图片]", count: shown.images)).filter { !$0.isEmpty }.joined(separator: " ")
     }
 }
@@ -466,14 +466,14 @@ struct CloudPhotoPicker: UIViewControllerRepresentable {
                 if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
                     provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _ in
                         if let url, let data = try? Data(contentsOf: url), data.count < 24_000_000 {
-                            box.add(CloudPendingAttachment(filename: "视频\(i + 1).\(url.pathExtension.isEmpty ? "mov" : url.pathExtension)", data: data, isImage: false))
+                            box.add(i, CloudPendingAttachment(filename: "视频\(i + 1).\(url.pathExtension.isEmpty ? "mov" : url.pathExtension)", data: data, isImage: false))
                         }
                         group.leave()
                     }
                 } else if provider.canLoadObject(ofClass: UIImage.self) {
                     provider.loadObject(ofClass: UIImage.self) { obj, _ in
                         if let img = obj as? UIImage, let a = CloudAttachmentKit.image(img, name: "照片\(i + 1).jpg") {
-                            box.add(a)
+                            box.add(i, a)
                         }
                         group.leave()
                     }
@@ -484,10 +484,12 @@ struct CloudPhotoPicker: UIViewControllerRepresentable {
             group.notify(queue: .main) { self.onPicked(box.items) }
         }
 
+        /// 各张图异步加载、谁先好谁先到：按相册里点选的顺序（下标）排回去，不按加载完成的先后
         private final class Box: @unchecked Sendable {
             private let lock = NSLock()
-            private(set) var items: [CloudPendingAttachment] = []
-            func add(_ item: CloudPendingAttachment) { lock.lock(); items.append(item); lock.unlock() }
+            private var slots: [(Int, CloudPendingAttachment)] = []
+            var items: [CloudPendingAttachment] { lock.lock(); defer { lock.unlock() }; return CloudPickOrder.sorted(slots) }
+            func add(_ index: Int, _ item: CloudPendingAttachment) { lock.lock(); slots.append((index, item)); lock.unlock() }
         }
     }
 }

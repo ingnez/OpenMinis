@@ -45,3 +45,10 @@ enum CloudAttachmentLines {
         return ([body] + marks).filter { !$0.isEmpty }.joined(separator: " ")
     }
 }
+
+/// 相册多选：异步加载完成的先后不定，按点选下标排回原顺序
+enum CloudPickOrder {
+    static func sorted<T>(_ slots: [(Int, T)]) -> [T] {
+        slots.enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }.map(\.element.1)
+    }
+}

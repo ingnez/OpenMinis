@@ -381,13 +381,21 @@ struct CloudInjectedNote: View {
     var body: some View {
         HStack {
             Spacer(minLength: 40)
+            // 带图插话的内容是「请查看附件。\n\n[附件] … → 工作区 attachments/…」：附件行只给模型看，
+            // 这里和普通气泡一样换成缩略图（按发送顺序），不把路径露给用户
+            let shown = CloudMessageText.display(text)
             VStack(alignment: .trailing, spacing: 3) {
                 Label("插话", systemImage: "arrow.turn.down.right").font(.caption2).foregroundStyle(.secondary)
-                Text(text)
-                    .font(.subheadline)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Color.accentColor.opacity(0.12)))
-                    .textSelection(.enabled)
+                if shown.images > 0 {
+                    CloudMessageImages(content: text, alignment: .trailing)
+                }
+                if !shown.text.isEmpty {
+                    Text(shown.text)
+                        .font(.subheadline)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Color.accentColor.opacity(0.12)))
+                        .textSelection(.enabled)
+                }
             }
         }
     }
