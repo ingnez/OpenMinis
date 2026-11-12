@@ -52,6 +52,28 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         var playing = RealtimeCallHealth()
         for s in 0..<10 { check(playing.verdict(now: at(Double(s)), playedFrames: Int64(s * 2400), pendingPlayback: true, label: "x") == .ok, "在播就不报") }
 
+        var resumed = RealtimeCallHealth()
+        _ = resumed.verdict(now: at(0), playedFrames: 0, pendingPlayback: false, label: "x")
+        resumed.received(bytes: 4_800, at: at(12))
+        check(resumed.verdict(now: at(12), playedFrames: 0, pendingPlayback: true, label: "x") == .ok,
+              "刚收到下一轮声音时，上一轮的空闲时间不算卡住")
+        check(RealtimePlaybackLedger.playedFrames(position: 500, start: 1_000, end: 1_500) == 0, "还没到播放起点")
+        check(RealtimePlaybackLedger.playedFrames(position: 1_250, start: 1_000, end: 1_500) == 250, "只算已经播放的部分")
+        check(RealtimePlaybackLedger.playedFrames(position: 8_000, start: 1_000, end: 1_500) == 500, "排空后的空闲帧不算播放")
+
+        var captionOnly = RealtimeCallHealth()
+        captionOnly.received(bytes: 4_800, at: at(1))
+        captionOnly.completedWithoutAudio()
+        check(captionOnly.verdict(now: at(2), playedFrames: 2_400, pendingPlayback: false, label: "x")
+              == .warn(RealtimeCallHealth.missingReplyAudioNotice), "以前收到过音频也要提示本轮只有字幕")
+        captionOnly.received(bytes: 4_800, at: at(3))
+        check(captionOnly.verdict(now: at(3), playedFrames: 0, pendingPlayback: true, label: "x") == .ok,
+              "下一轮收到声音后恢复")
+
+        let shanghai = TimeZone(identifier: "Asia/Shanghai")!
+        check(RealtimeVoiceProtocol.localTime(at: Date(timeIntervalSince1970: 0), in: shanghai)
+              == "1970-01-01 08:00:00 +08:00 (Asia/Shanghai)", "报时使用传入的设备时区")
+
         check(RealtimeCallHealth.isServerHeard("input_audio_buffer.speech_started")
               && RealtimeCallHealth.isServerHeard("conversation.item.input_audio_transcription.delta")
               && RealtimeCallHealth.isServerHeard("response.created")
@@ -141,6 +163,12 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         for _ in 0..<10 { _ = step3(0.2) }
         check(!step3(0.9) && !step3(0.9) && !step3(0.2), "100ms 尖峰不放行")
         check(!g3.userSpoke(since: nil), "尖峰不记作说话")
+
+        var previousSpeech = RealtimeEchoGate()
+        for i in 0..<6 { _ = previousSpeech.feed(level: 0.6, botPlaying: false, at: at(Double(i) * 0.1)) }
+        check(previousSpeech.userSpoke(since: at(0.55)), "同一段真实人声允许服务端 VAD 稍晚到")
+        previousSpeech.beginPlayback(at: at(0.56))
+        check(!previousSpeech.userSpoke(since: at(0.58)), "播音前的人声不能确认播放中到达的插话事件")
 
         print("PASS：实时通话健康检查（上行没人理、哑麦、下行播不出来、按住说话、插话门槛）")
     }

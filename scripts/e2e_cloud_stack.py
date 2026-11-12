@@ -291,6 +291,10 @@ def start_fake_realtime():
                             send(sock, {"type": "conversation.item.input_audio_transcription.completed", "item_id": "u1", "transcript": "（假）用户说话"})
                             send(sock, {"type": "response.created", "response": {"id": "r1"}})
                             send(sock, {"type": "response.output_audio_transcript.delta", "response_id": "r1", "item_id": "a1", "delta": REALTIME_REPLY})
+                            if REALTIME["scenario"] == "caption_only":
+                                send(sock, {"type": "response.output_audio_transcript.done", "response_id": "r1", "item_id": "a1", "transcript": REALTIME_REPLY})
+                                send(sock, {"type": "response.done", "response": {"id": "r1", "status": "completed"}})
+                                continue
                             mid = False
                             for i in range(0, len(tone), 4800):
                                 send(sock, {"type": "response.output_audio.delta", "response_id": "r1", "item_id": "a1",
@@ -495,7 +499,7 @@ def main():
                 self.wfile.write(body)
                 return
             if urlparse(self.path).path == "/_e2e/realtime":
-                sc = parse_qs(urlparse(self.path).query).get("scenario")
+                sc = parse_qs(urlparse(self.path).query, keep_blank_values=True).get("scenario")
                 if sc is not None:
                     REALTIME.update(scenario=sc[0], cancels=0, loud_appends_in_reply=0, echo_done=False)
                 body = json.dumps(REALTIME, ensure_ascii=False).encode()

@@ -35,7 +35,8 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
         check(D.voice("alloy", model: "qwen3.5-omni-plus-realtime", languageHint: "我在北京工作") == "Tina", "地名不算方言")
         check(P.dashScope.normalizedVoice("Serena", model: "qwen3.5-omni-flash-realtime") == "Serena", "列表内音色原样保留")
         // 会话配置
-        let s35 = (D.session(model: "qwen3.5-omni-flash-realtime", voice: "Tina", instructions: "x", tools: RealtimeVoiceProtocol.cloudTools)["session"] as? [String: Any]) ?? [:]
+        let tools = [RealtimeVoiceProtocol.localTimeTool] + RealtimeVoiceProtocol.cloudTools
+        let s35 = (D.session(model: "qwen3.5-omni-flash-realtime", voice: "Tina", instructions: "x", tools: tools)["session"] as? [String: Any]) ?? [:]
         let input = ((s35["audio"] as? [String: Any])?["input"] as? [String: Any])?["format"] as? [String: Any]
         check(input?["sample_rate"] as? Int == 16_000 && input?["type"] as? String == "pcm", "3.5 输入 16k pcm")
         let td = (s35["turn_detection"] as? [String: Any]) ?? [:]
@@ -44,7 +45,10 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
         check(threshold == 0.7, "VAD 阈值抬高，减轻回声误触发")
         check(td["interrupt_response"] as? Bool == false, "服务端不自动打断，由客户端门控")
         check((s35["modalities"] as? [String]) == ["text", "audio"], "会话要同时出文字和声音")
-        check(s35["tools"] != nil, "3.5 带工具")
+        let dashTools = s35["tools"] as? [[String: Any]] ?? []
+        let function = dashTools.first?["function"] as? [String: Any]
+        check(dashTools.count == tools.count && dashTools.first?["type"] as? String == "function"
+              && function?["name"] as? String == RealtimeVoiceProtocol.localTimeToolName, "百炼工具定义必须用嵌套 function 对象")
         let s3 = (D.session(model: "qwen3-omni-flash-realtime", voice: "Cherry", instructions: "x", tools: RealtimeVoiceProtocol.cloudTools)["session"] as? [String: Any]) ?? [:]
         check(s3["input_audio_format"] as? String == "pcm16" && s3["tools"] == nil && s3["audio"] == nil, "旧型号用历史字段、不发工具")
         let folded = D.instructions("角色", history: [(role: "user", text: "你好"), (role: "assistant", text: "在")])

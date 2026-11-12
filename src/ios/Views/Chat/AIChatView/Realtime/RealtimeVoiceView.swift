@@ -34,6 +34,9 @@ struct RealtimeVoiceView: View {
                     .font(.system(size: 92)).foregroundStyle(session.connected ? Color.cyan : Color.secondary)
                     .accessibilityHidden(true)
                 Text(session.status).font(.headline).multilineTextAlignment(.center)
+                if let notice = session.notice {
+                    Text(notice).font(.callout).foregroundStyle(.orange).multilineTextAlignment(.center)
+                }
                 if session.active {
                     Text(String(format: "%02d:%02d", session.elapsed / 60, session.elapsed % 60))
                         .monospacedDigit().foregroundStyle(.secondary)

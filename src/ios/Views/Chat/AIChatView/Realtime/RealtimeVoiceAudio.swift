@@ -95,7 +95,7 @@ final class RealtimeVoiceAudio {
                 }
             }
             tapped = true
-            engine.prepare(); try engine.start(); player.play()
+            engine.prepare(); try engine.start()
             // 系统改了音频配置（别的功能切了会话类别、插拔耳机、蓝牙）时 AVAudioEngine 会自己停掉，
             // 以前没人管：通话计时照走，两边都没声音。先试着重启，重启不了就挂断并说原因
             configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
@@ -107,7 +107,10 @@ final class RealtimeVoiceAudio {
 
     private func recoverEngine() {
         guard let engine, !engine.isRunning else { return }
-        do { try engine.start(); player?.play() }
+        do {
+            try engine.start()
+            if hasPendingAudio { player?.play() }
+        }
         catch { onEngineStopped?("音频设备被切换或被别的功能占用，收音和播放都停了，通话已结束。请重新拨打。") }
     }
 
@@ -144,7 +147,9 @@ final class RealtimeVoiceAudio {
     #endif
 
     func play(_ bytes: Data) throws {
-        guard bytes.count % 2 == 0, bytes.count > 0 else { return }
+        guard bytes.count % 2 == 0, bytes.count > 0 else {
+            throw AudioError.start("实时服务返回了无效的音频数据。")
+        }
         if fake {
             playedBytes += bytes.count; fakePlayedFrames += Int64(bytes.count / 2)
             fakePlayingUntil = max(fakePlayingUntil, Date()).addingTimeInterval(Double(bytes.count / 2) / 24_000)
@@ -157,12 +162,17 @@ final class RealtimeVoiceAudio {
             }
             return
         }
-        guard let player else { return }
-        playedBytes += bytes.count
+        guard let engine, let player else { throw AudioError.start("语音播放器尚未启动。") }
+        if !engine.isRunning {
+            do { try engine.start() }
+            catch { throw AudioError.start("音频设备停止后无法重新启动，请重新拨打。") }
+        }
         guard pendingBuffers < 4000 else { throw AudioError.start("语音播放积压过多，通话已停止，请重试。") }
         let frames = bytes.count / 2
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
-              let samples = buffer.floatChannelData?[0] else { return }
+              let samples = buffer.floatChannelData?[0] else {
+            throw AudioError.start("无法为实时语音分配播放缓冲。")
+        }
         buffer.frameLength = AVAudioFrameCount(frames)
         bytes.withUnsafeBytes { raw in
             for i in 0..<frames {
@@ -171,8 +181,11 @@ final class RealtimeVoiceAudio {
             }
         }
         let startFrame = max(scheduledEnd, totalPlayedFrames)
+        // 播放器时间轴在两段音频之间也会走，空闲帧不计入这条回复。
+        playbackOrigin += startFrame - scheduledEnd
         scheduledEnd = startFrame + Int64(frames)
         pendingBuffers += 1
+        playedBytes += bytes.count
         let epoch = playbackEpoch
         // 按顺序排队（at: nil），不按算出来的采样时刻排：lastRenderTime 落后一个渲染周期、
         // 播放器重启后时间轴归零、真机上 playerTime 偶尔取不到（当成 0）时，算出来的时刻会落在「过去」，
@@ -189,12 +202,16 @@ final class RealtimeVoiceAudio {
     }
     var hasPendingAudio: Bool { fake ? fakePlayingUntil > Date() : pendingBuffers > 0 }
     var playedFrames: Int64 {
-        if fake { return fakePlayedFrames }
-        guard let player, let time = player.lastRenderTime,
-              let position = player.playerTime(forNodeTime: time) else { return 0 }
-        return max(0, position.sampleTime - playbackOrigin)
+        if fake {
+            let queued = Int64((max(0, fakePlayingUntil.timeIntervalSinceNow) * 24_000).rounded(.up))
+            return max(0, fakePlayedFrames - queued)
+        }
+        return RealtimePlaybackLedger.playedFrames(position: totalPlayedFrames, start: playbackOrigin, end: scheduledEnd)
     }
-    func markItemStart() { playbackOrigin = max(scheduledEnd, totalPlayedFrames) }
+    func markItemStart() {
+        if fake { fakePlayedFrames = 0 }
+        playbackOrigin = scheduledEnd
+    }
     private var totalPlayedFrames: Int64 {
         guard let player, let time = player.lastRenderTime,
               let position = player.playerTime(forNodeTime: time) else { return 0 }
@@ -202,8 +219,9 @@ final class RealtimeVoiceAudio {
     }
     func interrupt() {
         playbackEpoch += 1; pendingBuffers = 0; playbackOrigin = 0; scheduledEnd = 0
-        fakePlayingUntil = .distantPast; fakeDrainTask?.cancel(); fakeDrainTask = nil
-        player?.stop(); player?.play()
+        fakePlayingUntil = .distantPast; fakePlayedFrames = 0
+        fakeDrainTask?.cancel(); fakeDrainTask = nil
+        player?.stop()
     }
     func stop() {
         if let configObserver { NotificationCenter.default.removeObserver(configObserver) }

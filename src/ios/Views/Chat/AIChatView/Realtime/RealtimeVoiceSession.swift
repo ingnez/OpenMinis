@@ -41,6 +41,7 @@ final class RealtimeVoiceSession: ObservableObject {
     private var epoch = UUID()
     private var responseRunning = false
     private var currentResponse: String?
+    private var captionedResponse: String?
     private var ignoredResponses = Set<String>()
     private var transcriptIDs = Set<String>()
     private var seeded = false
@@ -49,6 +50,7 @@ final class RealtimeVoiceSession: ObservableObject {
     private var oldIdleDisabled = false
     private var saveTask: Task<Void, Never>?
     private var connectionProtocol: RealtimeConnectionProtocol = .openAI
+    private var toolsSupported = false
     private var validationOnly = false
     /// 快速测试：握手之后再发一句文字、等模型回一句（不开麦、不播放）
     private var validationRoundTrip = false
@@ -137,6 +139,7 @@ final class RealtimeVoiceSession: ObservableObject {
         validationResult = nil; error = nil; notice = nil; receivedAudioKB = 0; health = RealtimeCallHealth()
         do { connectionProtocol = try RealtimeConnectionProtocol.resolve(protocolMode, model: model) }
         catch { self.error = error.localizedDescription; return }
+        toolsSupported = !validateOnly && (!connectionProtocol.isDashScope || RealtimeDashScope.supportsTools(model: model))
         connectionLabel = "\(provider.label) · \(model)"; geminiPlaybackID = nil
         // Gemini Live 的内容事件要等开麦后才处理，一来一回只对 OpenAI / 百炼协议做
         validationOnly = validateOnly; validationRoundTrip = validateOnly && roundTrip && !connectionProtocol.isGemini; roundTripAudioBytes = 0; diagnosticKey = key; diagnosing = false; audioStarted = false
@@ -145,7 +148,7 @@ final class RealtimeVoiceSession: ObservableObject {
         active = true; connected = false; error = nil; lines = []; elapsed = 0; muted = false
         ledger = RealtimePlaybackLedger(); ignoredResponses = []; transcriptIDs = []
         echoGate = RealtimeEchoGate(); gatePreroll = []; echoItems = []; bargeInItemID = nil; itemsStartedWhileBotTalking = []
-        seeded = false; configured = false; responseRunning = false; currentResponse = nil
+        seeded = false; configured = false; responseRunning = false; currentResponse = nil; captionedResponse = nil
         pendingResponseCreate = false
         oldIdleDisabled = UIApplication.shared.isIdleTimerDisabled
         status = "正在验证实时接口"
@@ -205,6 +208,9 @@ final class RealtimeVoiceSession: ObservableObject {
                         if self.connectionProtocol.isGemini { try self.handleGemini(event) }
                         else { try self.handle(event, model: model, voice: voice, preview: preview) }
                     }
+                } catch let error as RealtimeVoiceAudio.AudioError {
+                    guard let self, self.epoch == generation, self.active else { return }
+                    self.fail(error.localizedDescription)
                 } catch {
                     guard let self, self.epoch == generation, self.active else { return }
                     await self.diagnose(socket: socket, request: request, generation: generation)
@@ -277,7 +283,7 @@ final class RealtimeVoiceSession: ObservableObject {
         case "input_audio_buffer.speech_started":
             handleSpeechStarted(itemID: event["item_id"] as? String)
         case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
-            handleSpeechEnded()
+            handleSpeechEnded(itemID: event["item_id"] as? String)
             status = "正在回应"
             if let id = event["item_id"] as? String, !echoItems.contains(id), !lines.contains(where: { $0.id == id }) {
                 lines.append(Line(id: id, role: "user", text: ""))
@@ -313,7 +319,12 @@ final class RealtimeVoiceSession: ObservableObject {
                 updateLine(id: id, role: "user", text: "[本轮语音转写失败]", append: false)
             }
         case "response.created":
-            if let response = event["response"] as? [String: Any] { currentResponse = response["id"] as? String }
+            if let response = event["response"] as? [String: Any], let id = response["id"] as? String, id != currentResponse {
+                // 上一轮留下的 VAD / 转写确认不能取消新回复。
+                dismissBargeIn()
+                currentResponse = id
+                captionedResponse = nil
+            }
             responseRunning = true; status = "正在回应"
         case "response.audio.delta", "response.output_audio.delta":
             guard let response = event["response_id"] as? String,
@@ -321,20 +332,21 @@ final class RealtimeVoiceSession: ObservableObject {
                   let item = event["item_id"] as? String,
                   let encoded = event["delta"] as? String, let bytes = Data(base64Encoded: encoded) else { return }
             if validationOnly { roundTripAudioBytes += bytes.count; return }   // 测试时只数字节，不播放
-            let newItem = ledger.itemID != item
+            let newItem = ledger.itemID != item || ledger.responseID != response
             guard ledger.accept(response: response, item: item, index: event["content_index"] as? Int ?? 0, byteCount: bytes.count) else { return }
             if newItem { audio.markItemStart() }
-            try audio.play(bytes); noteSpeakLevel(bytes); status = "AI 正在说 · 可以直接插话"
-            health.received(bytes: bytes.count, at: Date()); receivedAudioKB = audio.playedBytes / 1024
+            try playReplyAudio(bytes)
         case "response.audio_transcript.delta", "response.output_audio_transcript.delta":
             guard let id = event["item_id"] as? String,
                   let response = event["response_id"] as? String, !ignoredResponses.contains(response),
                   let delta = event["delta"] as? String else { return }
+            if response == currentResponse, !delta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { captionedResponse = response }
             updateLine(id: id, role: "assistant", text: delta, append: true)
         case "response.audio_transcript.done", "response.output_audio_transcript.done":
             guard let id = event["item_id"] as? String,
                   let response = event["response_id"] as? String, !ignoredResponses.contains(response),
                   let text = event["transcript"] as? String else { return }
+            if response == currentResponse, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { captionedResponse = response }
             updateLine(id: id, role: "assistant", text: text, append: false)
         case "response.done":
             let response = event["response"] as? [String: Any] ?? [:]
@@ -354,14 +366,23 @@ final class RealtimeVoiceSession: ObservableObject {
                 }
             }
             if validationRoundTrip { _ = completeValidation(); return }
-            if !audio.hasPendingAudio { status = muted ? "麦克风已静音" : "正在听你说" }
+            if ["completed", "cancelled", "incomplete"].contains(responseStatus),
+               let id = currentResponse, !ignoredResponses.contains(id),
+               captionedResponse == id, ledger.responseID != id {
+                health.completedWithoutAudio()
+                notice = RealtimeCallHealth.missingReplyAudioNotice
+            }
+            if !audio.hasPendingAudio {
+                dismissBargeIn()
+                status = muted ? "麦克风已静音" : "正在听你说"
+            }
             if pendingResponseCreate {
                 pendingResponseCreate = false
                 requestResponse()
             }
         case "response.function_call_arguments.done":
             guard let callId = event["call_id"] as? String, let name = event["name"] as? String else { return }
-            runCloudTool(callId: callId, name: name, args: Self.parseArguments(event["arguments"] as? String))
+            runVoiceTool(callId: callId, name: name, args: Self.parseArguments(event["arguments"] as? String))
         case "error":
             let detail = event["error"] as? [String: Any] ?? [:]
             let code = detail["code"] as? String ?? "unknown"
@@ -378,17 +399,27 @@ final class RealtimeVoiceSession: ObservableObject {
     private var instructions: String {
         if validationRoundTrip { return "这是连接测试。不管收到什么，只用一个字回答：好。" }
         if validationOnly { return "Connection validation only. Do not generate a response." }
-        return host.instructions(toolsEnabled: !voiceTools.isEmpty)
+        let base = host.instructions(toolsEnabled: toolsSupported && host.toolsAvailable)
+        if toolsSupported {
+            return base + "\n用户问当前日期或时间时，先调用 \(RealtimeVoiceProtocol.localTimeToolName)，用手机实际时间回答。"
+        }
+        return base + "\n通话开始时的手机时间：\(RealtimeVoiceProtocol.localTime())。"
+            + "如果需要精确的当前时间，请说明你只能看到通话开始时间，不要猜测。"
     }
     private var voiceTools: [[String: Any]] {
-        (validationOnly || !host.toolsAvailable) ? [] : RealtimeVoiceProtocol.cloudTools
+        guard toolsSupported else { return [] }
+        return [RealtimeVoiceProtocol.localTimeTool] + (host.toolsAvailable ? RealtimeVoiceProtocol.cloudTools : [])
     }
     private static func parseArguments(_ text: String?) -> [String: Any] {
         guard let text, let data = text.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
         return object
     }
-    private func runCloudTool(callId: String, name: String, args: [String: Any]) {
+    private func runVoiceTool(callId: String, name: String, args: [String: Any]) {
+        if name == RealtimeVoiceProtocol.localTimeToolName, toolsSupported {
+            deliverToolOutput(callId: callId, name: name, output: RealtimeVoiceProtocol.localTime())
+            return
+        }
         let generation = epoch
         let lineID = "tool-" + callId
         updateLine(id: lineID, role: "assistant", text: "[已调用云电脑：\(name)]", append: false)
@@ -411,11 +442,8 @@ final class RealtimeVoiceSession: ObservableObject {
         }
     }
     private func requestResponse() {
-        var create: [String: Any] = ["type": "response.create"]
-        if !connectionProtocol.isGemini {
-            // 明确要求带声音，避免只回文字、通话里听不到
-            create["response"] = ["modalities": ["text", "audio"]]
-        }
+        // 各协议已在会话配置中选择音频。沿用默认配置，避免给 GA 接口发送旧版 modalities 字段。
+        let create = ["type": "response.create"]
         if responseRunning { pendingResponseCreate = true } else { emit(create) }
     }
     private func watchCloudTask(_ taskId: String, generation: UUID) {
@@ -455,8 +483,11 @@ final class RealtimeVoiceSession: ObservableObject {
         guard validationOnly else { return false }
         if validationRoundTrip {
             let reply = lines.last(where: { $0.role == "assistant" })?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            validationResult = "\(connectionLabel)\n\(connectionProtocol.title) 握手通过，一来一回通过："
-                + (reply.isEmpty ? "" : "回复「\(String(reply.prefix(40)))」，") + "收到音频 \(roundTripAudioBytes / 1024) KB。未录音、未发送聊天历史。"
+            let result = roundTripAudioBytes > 0
+                ? "一来一回通过，收到音频 \(roundTripAudioBytes / 1024) KB。"
+                : "一来一回没通过，实时服务没有送来声音。"
+            validationResult = "\(connectionLabel)\n\(connectionProtocol.title) 握手通过。"
+                + (reply.isEmpty ? "" : "回复「\(String(reply.prefix(40)))」。") + result + "未录音、未发送聊天历史。"
         } else {
             validationResult = "\(connectionLabel)\n\(connectionProtocol.title) 会话握手通过；未录音、未发送聊天历史，实际音频尚未测试。"
         }
@@ -531,7 +562,7 @@ final class RealtimeVoiceSession: ObservableObject {
             for call in calls {
                 guard let name = call["name"] as? String else { continue }
                 let callId = call["id"] as? String ?? UUID().uuidString
-                runCloudTool(callId: callId, name: name, args: call["args"] as? [String: Any] ?? [:])
+                runVoiceTool(callId: callId, name: name, args: call["args"] as? [String: Any] ?? [:])
             }
             return
         }
@@ -559,9 +590,10 @@ final class RealtimeVoiceSession: ObservableObject {
                     guard !mime.contains("rate=") || mime.contains("rate=24000") else {
                         throw RealtimeConnectionProtocol.ConnectionError.message("Gemini 返回不支持的采样率：\(mime)")
                     }
+                    if geminiPlaybackID != geminiAssistantID { audio.markItemStart() }
                     geminiPlaybackID = geminiAssistantID
-                    responseRunning = true; try audio.play(data); noteSpeakLevel(data); status = "AI 正在说 · 可以直接插话"
-                    health.received(bytes: data.count, at: Date()); receivedAudioKB = audio.playedBytes / 1024
+                    responseRunning = true
+                    try playReplyAudio(data)
                 }
             }
         }
@@ -572,11 +604,23 @@ final class RealtimeVoiceSession: ObservableObject {
         }
     }
 
+    private func playReplyAudio(_ bytes: Data) throws {
+        let now = Date()
+        if !audio.hasPendingAudio { echoGate.beginPlayback(at: now) }
+        try audio.play(bytes)
+        noteSpeakLevel(bytes)
+        status = "AI 正在说 · 可以直接插话"
+        health.received(bytes: bytes.count, at: now)
+        receivedAudioKB = audio.playedBytes / 1024
+        if notice == RealtimeCallHealth.missingReplyAudioNotice { notice = nil }
+    }
+
     private func beginAudio() throws {
         let generation = epoch
         audio.onOverflow = { [weak self] in self?.fail("网络延迟过大，音频发送队列已满，通话已停止。") }
         audio.onPlaybackDrained = { [weak self] in
             guard let self, self.active, !self.responseRunning else { return }
+            self.dismissBargeIn()
             self.status = self.muted ? "麦克风已静音" : "正在听你说"
         }
         audio.onEngineStopped = { [weak self] reason in self?.fail(reason) }
@@ -692,7 +736,8 @@ final class RealtimeVoiceSession: ObservableObject {
         }
     }
 
-    private func handleSpeechEnded() {
+    private func handleSpeechEnded(itemID: String?) {
+        if let bargeInItemID, let itemID, bargeInItemID != itemID { return }
         bargeInSpeechActive = false
         guard awaitingBargeIn else { return }
         let elapsed = Int((bargeInStartedAt.map { Date().timeIntervalSince($0) } ?? 0) * 1000)
@@ -705,10 +750,13 @@ final class RealtimeVoiceSession: ObservableObject {
     }
 
     private func confirmBargeIn() {
-        guard awaitingBargeIn || responseRunning || audio.hasPendingAudio else { return }
+        guard responseRunning || audio.hasPendingAudio else {
+            dismissBargeIn()
+            return
+        }
         awaitingBargeIn = false
         bargeInWait?.cancel(); bargeInWait = nil
-        interrupt(sendCancel: connectionProtocol.isDashScope, userSpoke: true)
+        interrupt(userSpoke: true)
         status = muted ? "麦克风已静音" : "正在听你说"
     }
 

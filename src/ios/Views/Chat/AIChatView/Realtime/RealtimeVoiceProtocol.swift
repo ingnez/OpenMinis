@@ -3,6 +3,21 @@ import Foundation
 /// 实时音频会话的纯协议层，供真机连接与独立回归测试共用。
 enum RealtimeVoiceProtocol {
     static let sampleRate = 24_000
+    static let localTimeToolName = "device_local_time"
+    static let localTimeTool: [String: Any] = [
+        "type": "function", "name": localTimeToolName,
+        "description": "从用户手机读取当前日期、时间和时区。用户问现在几点、今天几号或本地时间时调用。",
+        "parameters": ["type": "object", "properties": [String: Any]()]
+    ]
+
+    static func localTime(at date: Date = Date(), in timeZone: TimeZone = .autoupdatingCurrent) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss XXXXX"
+        return "\(formatter.string(from: date)) (\(timeZone.identifier))"
+    }
     static func endpoint(base: String, appendV1: Bool, model: String) throws -> URL {
         guard var c = URLComponents(string: base), let scheme = c.scheme,
               ["http", "https", "ws", "wss"].contains(scheme), c.host != nil,
@@ -107,6 +122,11 @@ struct RealtimePlaybackLedger {
     var receivedFrames: Int64 = 0
     var generation = 0
     var discardedResponses = Set<String>()
+
+    static func playedFrames(position: Int64, start: Int64, end: Int64) -> Int64 {
+        max(0, min(position, end) - start)
+    }
+
     mutating func accept(response: String, item: String, index: Int, byteCount: Int) -> Bool {
         guard !discardedResponses.contains(response), byteCount > 0, byteCount % 2 == 0 else { return false }
         if responseID != response || itemID != item {
@@ -131,6 +151,7 @@ struct RealtimePlaybackLedger {
 /// - 下行：收到了 Bot 的声音但播放进度不动 → 提示，再挂断
 struct RealtimeCallHealth {
     static let deafPrefix = "Bot 没听到你"
+    static let missingReplyAudioNotice = "这条回复只有字幕，实时服务没有送来声音"
     /// RealtimeLevelMeter.level 是均方根再开方（×1.4）：说话约 0.3–0.6，安静房间约 0.01–0.1，数字静音 0
     static let loudLevel: Float = 0.15
     static let quietLevel: Float = 0.003
@@ -155,6 +176,8 @@ struct RealtimeCallHealth {
     private(set) var lastReceivedAt: Date?
     private var lastPlayedFrames: Int64 = -1
     private var playedChangedAt: Date?
+    private var wasPlaybackPending = false
+    private var missingReplyAudio = false
     private(set) var hasProblem = false
 
     static func isServerHeard(_ type: String) -> Bool {
@@ -177,12 +200,23 @@ struct RealtimeCallHealth {
         }
     }
 
-    mutating func received(bytes: Int, at t: Date) { receivedBytes += bytes; lastReceivedAt = t }
+    mutating func received(bytes: Int, at t: Date) {
+        guard bytes > 0 else { return }
+        receivedBytes += bytes
+        lastReceivedAt = t
+        missingReplyAudio = false
+    }
+
+    mutating func completedWithoutAudio() { missingReplyAudio = true }
 
     mutating func verdict(now: Date, playedFrames: Int64, pendingPlayback: Bool, label: String) -> Verdict {
         hasProblem = false
         // 下行：有待播的声音，播放进度却不动
-        if playedFrames != lastPlayedFrames { lastPlayedFrames = playedFrames; playedChangedAt = now }
+        if playedFrames != lastPlayedFrames || (pendingPlayback && !wasPlaybackPending) {
+            lastPlayedFrames = playedFrames
+            playedChangedAt = now
+        }
+        wasPlaybackPending = pendingPlayback
         if pendingPlayback, let changed = playedChangedAt {
             let stuck = now.timeIntervalSince(changed)
             if stuck >= Self.stuckFailSeconds { return .fail("收到了 Bot 的声音却播放不出来（扬声器被别的功能占用），通话已结束。请重新拨打。") }
@@ -199,6 +233,10 @@ struct RealtimeCallHealth {
         // 收音：开麦以来一点声音都没收进来（连环境噪声都没有，说明麦克风是哑的）
         if !lastFrameMuted, lastLoudAt == nil, let start = startedAt, now.timeIntervalSince(start) >= Self.silentWarnSeconds {
             hasProblem = true; return .warn("听不到你的声音：麦克风没收进声音（检查是否被别的 App 占用）")
+        }
+        if missingReplyAudio {
+            hasProblem = true
+            return .warn(Self.missingReplyAudioNotice)
         }
         return .ok
     }
@@ -293,13 +331,22 @@ struct RealtimeEchoGate {
 
     init() {}
 
+    mutating func beginPlayback(at now: Date) {
+        guard playbackStart == nil else { return }
+        playbackStart = now
+        playbackEnd = nil
+        isOpen = false
+        loudSince = nil
+        echoFloor = 0
+        candidatePeak = 0
+        // 本轮播音之前的用户发言，不能用来确认播音期间的插话。
+        lastUserSpeechAt = nil
+    }
+
     /// 喂一帧麦克风电平，返回这帧要不要把真声音发给服务端（false 就发静音）
     mutating func feed(level: Float, botPlaying: Bool, at now: Date) -> Bool {
         if botPlaying {
-            if playbackStart == nil {
-                playbackStart = now; playbackEnd = nil
-                isOpen = false; loudSince = nil; echoFloor = 0; candidatePeak = 0
-            }
+            beginPlayback(at: now)
         } else {
             if playbackStart != nil { playbackStart = nil; playbackEnd = now }
             if !isOpen, let end = playbackEnd, Self.ms(now.timeIntervalSince(end)) < Self.tailMs {

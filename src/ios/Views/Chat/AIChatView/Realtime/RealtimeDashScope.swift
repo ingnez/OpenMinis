@@ -47,6 +47,8 @@ enum RealtimeDashScope {
         return h.contains("intl") || h.contains("ap-southeast-1") ? .singapore : .beijing
     }
 
+    static func supportsTools(model: String) -> Bool { family(model) != "3" }
+
     private static func family(_ model: String) -> String {
         let s = model.lowercased()
         if s.contains("qwen3.8") { return "3.8" }
@@ -141,8 +143,13 @@ enum RealtimeDashScope {
         } else {
             session["audio"] = ["input": ["format": ["type": "pcm", "sample_rate": inputSampleRate]],
                                 "output": ["format": ["type": "pcm", "sample_rate": outputSampleRate], "voice": voice]]
-            // 文档：3.8 / 3.5 支持 Function Calling；旧型号不发工具
-            if !tools.isEmpty { session["tools"] = tools; session["tool_choice"] = "auto" }
+            // 百炼用 Chat Completions 风格的 function 对象，OpenAI Realtime 用平铺格式。
+            if !tools.isEmpty {
+                session["tools"] = tools.map { tool in
+                    ["type": "function", "function": tool.filter { $0.key != "type" }]
+                }
+                session["tool_choice"] = "auto"
+            }
         }
         return ["type": "session.update", "session": session]
     }

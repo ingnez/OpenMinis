@@ -608,6 +608,35 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(waitGone(capsule, timeout: 10), "挂断后胶囊没收起")
     }
 
+    func test21d_realtimeCaptionWithoutAudioShowsNotice() throws {
+        executionTimeAllowance = 180
+        let app = launch(extraEnv: ["OPENMINIS_E2E_REALTIME": "ws://127.0.0.1:18796", "OPENMINIS_E2E_FAKE_MIC": "1"])
+        XCTAssertNotNil(echoProbe(scenario: "caption_only"))
+        defer { _ = echoProbe(scenario: "") }
+        openBot(app)
+        let voice = app.buttons["composerVoiceButton"]
+        XCTAssertTrue(voice.waitForExistence(timeout: 20))
+        if app.keyboards.firstMatch.exists {
+            app.swipeDown()
+            _ = waitGone(app.keyboards.firstMatch, timeout: 5)
+        }
+        XCTAssertTrue(poll(5) { voice.isHittable })
+        voice.tap()
+        let capsule = app.descendants(matching: .any)["callCapsule"]
+        XCTAssertTrue(capsule.waitForExistence(timeout: 20))
+        XCTAssertTrue(waitText(app, contains: "e2e-realtime-ok", timeout: 30))
+        let notice = app.staticTexts["callCapsuleStatus"]
+        XCTAssertTrue(notice.waitForExistence(timeout: 10))
+        XCTAssertTrue(notice.label.contains("实时服务没有送来声音"), notice.label)
+        XCTAssertTrue((capsule.value as? String ?? "").contains("收到声音 0 KB"))
+        XCTAssertFalse(anyElement(app, contains: "已打断"))
+        shot(app, "21d-只有字幕提示")
+        let hang = app.buttons["挂断"]
+        XCTAssertTrue(hang.waitForExistence(timeout: 5))
+        hang.tap()
+        XCTAssertTrue(waitGone(capsule, timeout: 10))
+    }
+
     private struct EchoProbe: Decodable { let cancels: Int; let loud_appends_in_reply: Int; let echo_done: Bool }
     private func echoProbe(scenario: String? = nil) -> EchoProbe? {
         let q = scenario.map { "?scenario=\($0)" } ?? ""
