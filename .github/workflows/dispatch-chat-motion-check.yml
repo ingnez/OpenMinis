@@ -16,8 +16,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_BRANCH: grokbot-phase2-message-menu
-          EXPECTED_SHA: 8f3d4578a12029e8f0e9aa03bbc7fd6b3cee8c17
-          TESTS: MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsToSixthImage
+          EXPECTED_SHA: 14144458c1459bd12f78098eb8ab9ba8a0ec0228
+          TESTS: MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsToSixthImage
         run: |
           set -euo pipefail
           repo="repos/$GITHUB_REPOSITORY"
@@ -29,8 +29,8 @@ jobs:
               gh api --method POST "$old/cancel" || test "$(gh api "$old" --jq .status)" = completed
             fi
           }
-          cancel_previous 43322033252 ae7c54981b316758dfb720f77917a6d1fcaf0d42
-          cancel_previous 43322051305 8ea09229cfb6acf10c116edceb31955d083ec95b
+          cancel_previous 43323861473 ec49ba416738327606e505e79622f743aaf49146
+          cancel_previous 43323879877 8f3d4578a12029e8f0e9aa03bbc7fd6b3cee8c17
           gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$TARGET_BRANCH" -f ui_tests=true -f mac_runner=macos-26 -f only_testing="$TESTS"
           runs="$repo/actions/workflows/build-ios.yml/runs?branch=$TARGET_BRANCH&head_sha=$EXPECTED_SHA&event=workflow_dispatch&per_page=10"
           last_id=
