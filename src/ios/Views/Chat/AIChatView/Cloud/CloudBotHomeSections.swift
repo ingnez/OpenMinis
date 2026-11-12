@@ -20,7 +20,7 @@ struct CloudBotSection: Identifiable, Equatable {
     }
 }
 
-/// 顶部一排：主 Bot（橙色星标）和置顶的 Bot，大头像，横向滚动
+/// 顶部一排：主 Bot（状态星标）和置顶的 Bot，大头像，横向滚动
 struct CloudBotTopRow: View {
     @ObservedObject var model: CloudBotHomeModel
     let actions: CloudBotMenuActions
@@ -74,9 +74,9 @@ struct CloudBotTopAvatar: View {
                 CloudBotAliveAvatar(spec: CloudBotAvatarSpec.of(bot), size: size, interactive: false,
                                     mood: presence.state == .error ? .frown : .calm, working: typing != nil)
                     .allowsHitTesting(false)
-                    // 正在回复：外面一圈 Bot 颜色的光环（多个 Bot 同时在干活一眼看得出）
+                    // 主 Bot 用星标和下方的状态文字；其他置顶 Bot 正在回复时显示光环。
                     .overlay {
-                        if typing != nil {
+                        if !bot.isPrimary, typing != nil {
                             CloudWorkingRing(color: CloudBotAvatarSpec.of(bot).fill)
                                 .padding(-6)
                                 .transition(.opacity)
