@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import cloud_workers
 from test_phase1_support import CloudServerTestCase, FakeModelHandler, tool_call, tool_turns
@@ -128,6 +129,64 @@ class WorkerTests(CloudServerTestCase):
         wreq = [r for r in FakeModelHandler.requests if is_worker(r)][-1]
         self.assertFalse(tool_names(wreq) & self.srv.WORKER_FRONT_TOOLS)
         self.assertNotIn("[前台对话]", system_of(wreq))
+
+    def test_01b_worker_waits_for_front_and_notifies_once(self):
+        front_entered, front_release = threading.Event(), threading.Event()
+
+        def worker(_):
+            self.gate.wait(10)
+            return {"role": "assistant", "content": "后台交付样例"}
+
+        def extra(d):
+            if last_user(d).startswith("前台还在回复"):
+                front_entered.set()
+                front_release.wait(10)
+                return {"role": "assistant", "content": "前台这条先答完"}
+            return None
+
+        FakeModelHandler.scripts["m-roles"] = self._front_script(worker, extra=extra)
+        sid = self.request("POST", "/v1/sessions", {"title": "t", "persona_id": "boss"})[1]["session_id"]
+        with patch.object(self.srv, "user_notify") as notify:
+            self._say(sid, "查一下价格", "m-roles")
+            w = self._workers(sid)[0]
+            tid = self.submit(sid, "前台还在回复", "m-roles")[1]["task_id"]
+            try:
+                self.assertTrue(front_entered.wait(5))
+                self.srv.on_background_done({
+                    "session_id": w["worker_session"], "job_id": "command-test",
+                    "exit_code": 0, "command": "echo test",
+                }, "test")
+                self.gate.set()
+                self._wait_worker(w["worker_id"], {"completed"}, timeout=5)
+                conn = self.srv.get_db_connection()
+                try:
+                    self.assertIsNone(cloud_workers.post_result(
+                        conn, cloud_workers.get(conn, w["worker_id"]), defer_while_front_active=True
+                    ))
+                finally:
+                    conn.close()
+                self.assertEqual(self._results(sid), [])
+            finally:
+                front_release.set()
+            self.wait_status(tid, {"completed"}, timeout=10)
+            result = self._wait_results(sid)[0]["content"]
+            deadline = time.monotonic() + 3
+            result_notifications = []
+            while time.monotonic() < deadline:
+                result_notifications = [
+                    c for c in notify.call_args_list
+                    if c.kwargs.get("session_id") == sid and c.args[2].startswith("后台任务：")
+                ]
+                if result_notifications:
+                    break
+                time.sleep(0.03)
+            self.assertEqual(len(result_notifications), 1)
+            self.assertEqual(result_notifications[0].kwargs["session_id"], sid)
+            self.assertFalse(any(c.kwargs.get("session_id") == w["worker_session"] for c in notify.call_args_list))
+
+        messages = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
+        self.assertEqual([m["content"] for m in messages[-2:]], ["前台这条先答完", result])
+        self.assertIn("后台交付样例", result)
 
     def test_02_task_message_reaches_worker(self):
         def worker(d):

@@ -110,12 +110,6 @@ def set_status(conn, worker_id, status, **extra):
     conn.commit()
 
 
-def claim_report(conn, worker_id):
-    cur = conn.execute("UPDATE bot_workers SET reported = 1 WHERE worker_id = ? AND reported = 0", (worker_id,))
-    conn.commit()
-    return cur.rowcount == 1
-
-
 def summary_note(workers, limit=6):
     """前台上下文里的任务摘要：每个任务一行，不带 worker 的完整过程。"""
     rows = [w for w in workers if w["status"] in ACTIVE or (time.time() - (w["finished_at"] or 0)) < 6 * 3600][:limit]
@@ -150,15 +144,23 @@ def last_answer(conn, session_id, since=0):
     return (r[0] if r else "")[:20000]
 
 
-def post_result(conn, w):
-    """把结果作为 Bot 的一条消息写进前台对话（只写一次）。返回是否写了。"""
-    if not claim_report(conn, w["worker_id"]):
-        return False
-    conn.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'assistant', ?, ?, ?)",
-                 (w["front_session"], result_text(w), time.time(),
-                  json.dumps({"worker_id": w["worker_id"], "worker_status": w["status"]}, ensure_ascii=False)))
-    conn.commit()
-    return True
+def post_result(conn, w, defer_while_front_active=False):
+    """原子交付一条结果。None 表示前台还在回话，稍后再试。"""
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current = get(conn, w["worker_id"])
+        if (not current or current["reported"] or current["status"] in ACTIVE
+                or current["finished_at"] != w["finished_at"]):
+            return False
+        if defer_while_front_active and conn.execute(
+                "SELECT 1 FROM tasks WHERE session_id = ? AND status IN ('queued', 'running', 'waiting_user')",
+                (current["front_session"],)).fetchone():
+            return None
+        conn.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'assistant', ?, ?, ?)",
+                     (current["front_session"], result_text(current), time.time(),
+                      json.dumps({"worker_id": current["worker_id"], "worker_status": current["status"]}, ensure_ascii=False)))
+        conn.execute("UPDATE bot_workers SET reported = 1 WHERE worker_id = ?", (current["worker_id"],))
+        return True
 
 
 def recover(conn):
@@ -169,7 +171,10 @@ def recover(conn):
         status = "completed" if st and st[0] == "completed" else "interrupted"
         result = last_answer(conn, w["worker_session"], w["started_at"] or 0) if status == "completed" else None
         set_status(conn, w["worker_id"], status, result=result, finished_at=time.time())
-        w.update(status=status, result=result)
-        post_result(conn, w)
         out.append(w["worker_id"])
+    # 已完成但在等前台回话的结果也会在重启后补交。
+    pending = conn.execute(f"SELECT {', '.join(COLS)} FROM bot_workers WHERE reported = 0 "
+                           "AND status NOT IN ('queued', 'running') ORDER BY finished_at, created_at").fetchall()
+    for row in pending:
+        post_result(conn, _row(row))
     return out

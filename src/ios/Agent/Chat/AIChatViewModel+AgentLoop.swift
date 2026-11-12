@@ -2062,11 +2062,19 @@ extension AIChatViewModel {
             currentBatchAssistantRaw = deferredAssistantRaw
             currentBatchToolUseIds = toolEntries.map(\.id)
             var outcomesByIndex: [Int: ToolExecOutcome] = [:]
+            let toolNames = toolEntries.map(\.name)
+            let explicitHandoffs = isInstantFrontTurn ? toolEntries.indices.filter { toolNames[$0] == "spawn_task" } : []
+            let blockedTools = explicitHandoffs.isEmpty ? [] : toolEntries.indices.filter {
+                !LocalReplyStore.isHandoffTool(toolNames[$0])
+            }
+            // Run explicit dispatches before a blocked tool can fall back to creating a duplicate job.
+            let dispatchOrder = toolEntries.indices.filter { !blockedTools.contains($0) } + blockedTools
             await withTaskGroup(of: (Int, ToolExecOutcome).self) { group in
                 var added = 0
                 var harvested = 0
                 var regularInFlight: Set<Int> = []
-                for (idx, tu) in toolEntries.enumerated() {
+                for idx in dispatchOrder {
+                    let tu = toolEntries[idx]
                     // 子代理委派不占普通工具槽位，包括 wait=true 的委派。
                     let isSubAgentCall = tu.name == SubAgentDefinition.toolName
                     while !isSubAgentCall && regularInFlight.count >= Self.maxConcurrentTools {
@@ -2089,16 +2097,17 @@ extension AIChatViewModel {
                     // an image cache and worked around by renaming files.
                     // Only reader-after-writer pairs are ordered; everything
                     // else in the batch still runs concurrently.
-                    let earlierWriters = BatchToolOrder.writersBefore(index: idx, in: toolEntries.map(\.name))
-                    if !earlierWriters.isEmpty {
+                    let earlierWriters = BatchToolOrder.writersBefore(index: idx, in: toolNames)
+                    let prerequisites = blockedTools.contains(idx) ? earlierWriters + explicitHandoffs : earlierWriters
+                    if !prerequisites.isEmpty {
                         let waitStart = Date()
-                        while earlierWriters.contains(where: { outcomesByIndex[$0] == nil }),
+                        while prerequisites.contains(where: { outcomesByIndex[$0] == nil }),
                               let pair = await group.next() {
                             outcomesByIndex[pair.0] = pair.1
                             regularInFlight.remove(pair.0)
                             harvested += 1
                         }
-                        logger.info("[BatchOrder] \(tu.name) [\(idx)] waited \(String(format: "%.2f", Date().timeIntervalSince(waitStart)))s for writer(s) \(earlierWriters) in the same batch")
+                        logger.info("[BatchOrder] \(tu.name) [\(idx)] waited \(String(format: "%.2f", Date().timeIntervalSince(waitStart)))s for tool(s) \(prerequisites) in the same batch")
                     }
                     logger.info("[ToolLifecycle] DISPATCHED toolId=\(tu.id.prefix(20)) tool=\(tu.name) sid=\(self.sessionId?.prefix(8) ?? "nil") appState=\(UIApplication.shared.applicationState == .active ? "fg" : "bg") suspended=\(self.streamingUIUpdatesSuspended) isProcessing=\(self.isProcessing)")
                     group.addTask { [weak self] in

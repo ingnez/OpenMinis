@@ -404,11 +404,17 @@ class TaskGate:
         lane_running = {}
         for lane, _slot, _t in self.running.values():
             lane_running[lane] = lane_running.get(lane, 0) + 1
+        worker_running = sum(n for lane, n in lane_running.items() if lane.startswith("worker:"))
+        # 有并发余量时，后台最多占到总上限减一，留一个位置给前台对话。
+        worker_cap = max(1, total_cap - 1)
         free = total_cap - len(self.running)
         out = set()
         for tid, lane, bot_id, _t in self.queue:
             if free <= 0:
                 break
+            worker = lane.startswith("worker:")
+            if worker and worker_running >= worker_cap:
+                continue
             if lane_running.get(lane, 0) >= self._lane_limit(s, bot_id, lane):
                 continue
             owners = {ln.split(":", 1)[-1] for ln in lane_running}     # 同一个 Bot 的前台和后台任务算一个 Bot
@@ -416,6 +422,8 @@ class TaskGate:
                 continue
             out.add(tid)
             lane_running[lane] = lane_running.get(lane, 0) + 1
+            if worker:
+                worker_running += 1
             free -= 1
         return out
 

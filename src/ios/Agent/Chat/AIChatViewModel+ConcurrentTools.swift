@@ -1036,6 +1036,7 @@ extension AIChatViewModel {
                                                              msgIdx: msgIdx, blockIdx: blockIdx)
                 toolOutput = helperResult.output
                 toolSuccess = helperResult.success
+                if isInstantFrontTurn && toolSuccess { localReplyHandedOff = true }
             } else {
                 let statusResult = executeAgentStatus(args: mapped)
                 if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {

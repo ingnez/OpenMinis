@@ -972,7 +972,8 @@ def on_task_finished(task_id, session_id, final_status):
         return None
     conn = get_db_connection()
     try:
-        if conn.execute("SELECT 1 FROM routine_runs WHERE task_id = ?", (task_id,)).fetchone():
+        if (cloud_workers.is_worker_session(conn, session_id)
+                or conn.execute("SELECT 1 FROM routine_runs WHERE task_id = ?", (task_id,)).fetchone()):
             return None
         row = conn.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
     finally:
@@ -1538,9 +1539,9 @@ def on_background_done(job, log_tail):
             conn.commit()
     finally:
         conn.close()
-    cfg = current_notify_config()
-    if not _bot_muted(sid):
-        user_notify(cfg, "task_completed", f"后台命令完成：{_session_title(sid)}"[:120], text[:600], session_id=sid)
+    if not session_is_worker(sid) and not _bot_muted(sid):
+        user_notify(current_notify_config(), "task_completed",
+                    f"后台命令完成：{_session_title(sid)}"[:120], text[:600], session_id=sid)
 
 def tool_background_jobs(task_id, session_id, args):
     action = (args or {}).get("action", "list")
@@ -2718,11 +2719,17 @@ def _post_when_idle(session_id, text, timeout=1800):
 WORKER_RUNTIME = {}          # worker_id -> (model, provider)：排队的任务开跑时用；重启后丢失（中断的任务由前台 task_resume 带上新的）
 WORKER_LOCK = threading.Lock()
 
+def _worker_display_state(w):
+    if w["status"] == "running" and w.get("task_id") and GATE.position(w["task_id"]) > 0:
+        return dict(w, status="queued")
+    return w
+
+
 def worker_view(w):
     """给前台 / App 看的任务状态：进行中的任务补上最近一步（取 worker 会话最后一个工具调用的标题）。"""
     if not w:
         return None
-    w = dict(w)
+    w = dict(_worker_display_state(w))
     if w["status"] == "running" and w.get("task_id"):
         conn = get_db_connection()
         try:
@@ -2790,12 +2797,12 @@ def session_reply_view(conn, sid, bot_id):
     return {k: plan[k] for k in ("mode", "source", "bot_mode", "override", "front_model", "back_model")}
 
 REPLY_BACK_MODEL = {}        # task_id -> 秒回前台这一轮派出去的后台任务用的模型
-INSTANT_HANDED = set()       # 已经为这个前台任务自动 spawn_task 过（模型没照提示、直接调了干活的工具）
+INSTANT_HANDED = set()       # 前台当前用户回合已经成功派活，禁止自动兜底重复派发
 INSTANT_HANDOFF_LOCK = threading.Lock()
 
 
 def instant_auto_handoff(task_id, session_id, fn_name, goal, model, provider_config):
-    """秒回前台误调用了干活的工具：不在前台执行，把用户原要求自动 spawn_task 给后台（每个前台任务只派一次）。
+    """秒回前台误调用了干活的工具：只在本条用户消息尚未成功派活时，兜底派给后台。
 
     前台常用快模型，经常不理会「你没有这些工具、请用 spawn_task」。只回一句错误的话，后台不会启动，
     截图回灌、命令、文件这些活也就丢了。这里补上这一步。"""
@@ -2882,18 +2889,16 @@ def _worker_post(_conn, w):
     threading.Thread(target=_worker_post_wait, args=(w,), daemon=True).start()
 
 def _worker_post_wait(w):
-    deadline = time.time() + 600
     while True:
         conn = get_db_connection()
         try:
-            busy = conn.execute("SELECT 1 FROM tasks WHERE session_id = ? AND status IN ('running', 'waiting_user')", (w["front_session"],)).fetchone()
-            if not busy or time.time() > deadline:
-                posted = cloud_workers.post_result(conn, w)
-                break
+            posted = cloud_workers.post_result(conn, w, defer_while_front_active=True)
         finally:
             conn.close()
+        if posted is not None:
+            break
         time.sleep(0.5)
-    if posted:
+    if posted and not _bot_muted(w["front_session"]):
         try:
             user_notify(current_notify_config(), "task_completed", f"后台任务：{w['title']}"[:120],
                         cloud_workers.result_text(w)[:600], session_id=w["front_session"])
@@ -3141,8 +3146,9 @@ def tool_worker(task_id, session_id, name, args, model, provider_config):
         WORKER_RUNTIME[w["worker_id"]] = (model, provider_config, "")
         started = _worker_launch(w["worker_id"])
         log_event(task_id, "worker_spawned", {"worker_id": w["worker_id"], "title": w["title"], "status": "running" if started else "queued"})
+        note = "后台已接收，按可用名额执行。" if started else "已加入后台队列，空闲后开始。"
         return {"id": w["worker_id"], "title": w["title"], "status": "running" if started else "queued",
-                "note": "已在后台开始。现在只回用户一句简短确认，结果做完会自动发到这个对话。"}
+                "note": note + "如实告诉用户派发状态。任务完成后会自动交付结果。"}
     wid = args.get("id")
     conn = get_db_connection()
     try:
@@ -3682,7 +3688,8 @@ def _front_worker_note(session_id):
     """当前对话里后台任务的一行摘要。每轮现查：同一条前台任务里刚 spawn 的 worker、用户插话注入后，都要能看见。"""
     conn = get_db_connection()
     try:
-        return cloud_workers.summary_note(cloud_workers.list_for(conn, front_session=session_id, limit=10))
+        workers = cloud_workers.list_for(conn, front_session=session_id, limit=10)
+        return cloud_workers.summary_note([_worker_display_state(w) for w in workers])
     finally:
         conn.close()
 
@@ -4409,7 +4416,8 @@ RUNMODEL_TOOLS = {"react", "ask_choice", "report_progress", "routine_create", "r
 TURN_FLAGS = {}              # task_id -> {"answered", "end", "pages"}：表情 / 选项卡算回答；选项卡结束本轮；本轮写的页面挂在最终回复上
 WORKER_INSTRUCTIONS = (
     "\n\n[后台任务] 你是这个 Bot 的后台工作者，独立完成下面的任务（看不到前台聊天）。用户发来的补充要求会作为新消息出现，照着调整。"
-    "不要逐步汇报；做完后最后一条消息写清楚结果（结论在前，必要的链接 / 路径 / 数字），它会原样发给用户。")
+    "只执行当前委托，保留可核验的结果。需要用户批准时使用审批流程。结尾交付一次，写清结论、必要链接和未完成的部分；"
+    "执行过程留在任务详情，任务结果由系统交给前台对话。")
 FRONT_NOTE = (
     "\n\n[前台对话] 先回话：每条消息先马上给一句简短回应或直接答案；要调用工具时，在同一条回复的文字里先写这句回应再调工具。"
     "简单的问题和闲聊直接回答。需要多步操作、大量工具调用、耗时超过一分钟的事，用 spawn_task 交给后台任务，"
@@ -4911,6 +4919,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 answered = False
                 turns = 0
                 loop_guard = cloud_runmodel.LoopGuard()
+                with INSTANT_HANDOFF_LOCK:
+                    INSTANT_HANDED.discard(task_id)
                 with TURN_LOCK:
                     TURN_FLAGS.pop(task_id, None)
             return True
@@ -4990,6 +5000,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             msg = choices[0].get("message", {})
             content = msg.get("content")
             tool_calls = normalize_tool_call_ids(msg.get("tool_calls"), seen_tool_ids)
+            if instant and tool_calls and any(tc.get("function", {}).get("name") == "spawn_task" for tc in tool_calls):
+                # 先处理合法派发，再决定误调的工具是否需要兜底。
+                tool_calls = sorted(tool_calls, key=lambda tc: tc.get("function", {}).get("name") not in cloud_reply.FRONT_TOOLS)
             reasoning_text = msg.get("reasoning_content") or (msg.get("reasoning") if isinstance(msg.get("reasoning"), str) else None)
             if reasoning_text:
                 # 思考过程：先于这一轮的文字和工具写入，手机按顺序画「深度思考」气泡
@@ -5100,6 +5113,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     elif fn_name in WORKER_FRONT_TOOLS:
                         res = tool_worker(task_id, session_id, fn_name, fn_args, REPLY_BACK_MODEL.get(task_id) or main_model, provider_config) \
                             if depth == 0 and session_is_front(session_id) else {"error": "这里不能派后台任务，直接完成"}
+                        if instant and fn_name == "spawn_task" and isinstance(res, dict) and res.get("id"):
+                            with INSTANT_HANDOFF_LOCK:
+                                INSTANT_HANDED.add(task_id)
                     elif fn_name in ADMIN_TOOLS:
                         res = tool_admin(task_id, session_id, fn_name, fn_args) if is_admin_session(session_id, depth) \
                             else {"error": "只有主 Bot 能管理 Bot 和系统设置；请让用户在主 Bot 里操作"}
@@ -5224,7 +5240,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             print(f"choice card post failed: {type(e).__name__}", flush=True)
         TURN_FLAGS.pop(task_id, None)
         REPLY_BACK_MODEL.pop(task_id, None)
-        INSTANT_HANDED.discard(task_id)
+        with INSTANT_HANDOFF_LOCK:
+            INSTANT_HANDED.discard(task_id)
         conn = get_db_connection()
         c = conn.cursor()
         c.execute("UPDATE tasks SET status = ? WHERE task_id = ? AND status IN ('running', 'waiting_user')", (final_status, task_id))

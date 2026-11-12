@@ -381,7 +381,10 @@ extension AIChatViewModel {
     }
 
     func localReplyLastUserText() -> String {
-        messages.reversed().first { $0.role == .user }?.content
+        let pending = Set(promptQueue.map(\.id))
+        return messages.last { message in
+            message.role == .user && !(message.queuedPromptId.map { pending.contains($0) } ?? false)
+        }?.content
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 

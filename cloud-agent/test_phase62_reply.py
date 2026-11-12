@@ -337,6 +337,84 @@ class ReplyModeTests(CloudServerTestCase):
         self._wait(lambda: any("后台结论：42" in (m.get("content") or "") for m in
                                self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]), what="结果回到前台")
 
+    def test_05c_same_model_fans_out_without_taking_front_slot(self):
+        self.addCleanup(self.srv.update_resource_settings, {"max_tasks_total": self.srv.resource_settings()["max_tasks_total"]})
+        self.srv.update_resource_settings({"max_tasks_total": 3})
+        self.request("PUT", "/v1/bots/rb/reply", {"front_model": MAIN, "back_model": MAIN})
+        sid = self._session()
+        front_entered, release_front = threading.Event(), threading.Event()
+        first, second = threading.Event(), threading.Event()
+        extra = "单独查第三件"
+
+        def same_model(request):
+            current = last_user(request).split("\n\n[", 1)[0]
+            if "[后台任务]" in request["messages"][0]["content"]:
+                if "查甲" in current:
+                    first.set()
+                if "查乙" in current:
+                    second.set()
+                self.gate.wait(20)
+                return {"role": "assistant", "content": "后台结果"}
+            if fresh_tools(request):
+                return {"role": "assistant", "content": "已经交给后台。"}
+            if current == "同时派两件":
+                front_entered.set()
+                release_front.wait(10)
+                calls = [tool_call("dup", "shell_execute", {"command": "echo should-not-run"}),
+                         tool_call("a", "spawn_task", {"goal": "查甲", "title": "查甲"}),
+                         tool_call("b", "spawn_task", {"goal": "查乙", "title": "查乙"})]
+                return {"role": "assistant", "content": None, "tool_calls": [c["tool_calls"][0] for c in calls]}
+            if current == extra:
+                return tool_call("next", "shell_execute", {"command": "echo hand-off-only"})
+            return {"role": "assistant", "content": "前台直接回答：" + current}
+
+        FakeModelHandler.scripts[MAIN] = same_model
+        tid = self.submit(sid, "同时派两件", MAIN)[1]["task_id"]
+        try:
+            self.assertTrue(front_entered.wait(5))
+            self.assertEqual(self.request("POST", f"/v1/tasks/{tid}/messages", {"content": extra, "nonce": "fan-out-3"})[0], 202)
+        finally:
+            release_front.set()
+        self.assertTrue(first.wait(5) and second.wait(5), "同一个模型的两个后台任务没有并行运行")
+        self.assertEqual(self.wait_status(tid, {"completed", "failed"}, timeout=8)["status"], "completed")
+        self.assertCountEqual([w["title"] for w in self._workers(sid)], ["查甲", "查乙", extra])
+        third = next(w for w in self._workers(sid) if w["title"] == extra)
+        self._wait(lambda: self._worker(third["worker_id"])["status"] == "queued", what="第三个后台任务排队")
+        _, chat = self._say(sid, "聊聊今天", timeout=5)
+        self.assertEqual(chat["status"], "completed", "后台并发占满时前台没有立即取得名额")
+        self.assertFalse(self.gate.is_set(), "前台不应该等待后台结束")
+        self.gate.set()
+        self._wait(lambda: all(w["status"] == "completed" for w in self._workers(sid)), what="三个后台任务完成")
+
+    def test_05d_same_model_runs_independent_front_chats_concurrently(self):
+        original = self.srv.resource_settings()
+        self.addCleanup(self.srv.update_resource_settings, {
+            "max_tasks_total": original["max_tasks_total"],
+            "bot_defaults": {"max_tasks_per_bot": original["bot_defaults"]["max_tasks_per_bot"]},
+        })
+        self.srv.update_resource_settings({"max_tasks_total": 3, "bot_defaults": {"max_tasks_per_bot": 2}})
+        self.request("PUT", "/v1/bots/rb/reply", {"front_model": MAIN, "back_model": MAIN})
+        first, second = self._session(), self._session()
+        entered = {text: threading.Event() for text in ("会话甲", "会话乙")}
+
+        def same_model(request):
+            current = last_user(request).split("\n\n[", 1)[0]
+            entered[current].set()
+            self.gate.wait(8)
+            return {"role": "assistant", "content": "已回复：" + current}
+
+        FakeModelHandler.scripts[MAIN] = same_model
+        a = self.submit(first, "会话甲", MAIN)[1]["task_id"]
+        b = self.submit(second, "会话乙", MAIN)[1]["task_id"]
+        try:
+            self.assertTrue(all(event.wait(5) for event in entered.values()))
+        finally:
+            self.gate.set()
+        for sid, tid, current in ((first, a, "会话甲"), (second, b, "会话乙")):
+            self.assertEqual(self.wait_status(tid, {"completed", "failed"}, timeout=5)["status"], "completed")
+            messages = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
+            self.assertEqual([m["content"] for m in messages], [current, "已回复：" + current])
+
     def test_06_stop_worker_and_eta_from_history(self):
         self._install(worker_steps=1, step_sleep=0.1)
         # 单独的 Bot：前面测试里很快完成的后台任务不要进这个用时中位数
