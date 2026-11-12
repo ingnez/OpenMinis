@@ -2937,6 +2937,17 @@ def _worker_finish(wid, tid, started):
         w = cloud_workers.get(conn, wid)
         if w and w["status"] == "running":
             result = cloud_workers.last_answer(conn, w["worker_session"], started) if status != "cancelled" else None
+            if status == "failed":
+                error_row = conn.execute("SELECT payload FROM task_events WHERE task_id = ? AND event_type = 'error' "
+                                         "ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+                if error_row:
+                    try:
+                        failure = json.loads(error_row[0]).get("error")
+                    except (ValueError, AttributeError):
+                        failure = None
+                    if isinstance(failure, str) and failure.strip():
+                        failure = scrub_text(sanitize_err(failure))[:600]
+                        result = failure + ("\n\n已产生的内容\n" + result if result else "")
             cloud_workers.set_status(conn, wid, status, result=result, finished_at=time.time())
             w = cloud_workers.get(conn, wid)
             _worker_post(conn, w)
@@ -3797,6 +3808,36 @@ def _front_worker_note(session_id):
     finally:
         conn.close()
 
+def _front_progress_answer(session_id, question):
+    """纯进度追问直接读本会话任务记录，正文提问、改任务仍由前台模型处理。"""
+    if not cloud_reply.is_progress_question(question):
+        return None
+    conn = get_db_connection()
+    try:
+        workers = cloud_workers.list_for(conn, front_session=session_id, limit=6)
+    finally:
+        conn.close()
+    now = time.time()
+    recent = [w for w in workers if w["status"] in cloud_workers.ACTIVE or now - (w["finished_at"] or 0) < 6 * 3600]
+    lines = []
+    for entry in recent:
+        w = worker_view(entry)
+        status = w["status"]
+        title = w["title"]
+        if status == "running":
+            step = w.get("last_step")
+            text = f"「{title}」还在进行。" + (f"最近记录的步骤是{step}。" if step else "")
+            if w.get("needs_decision"):
+                text += "任务正在等你确认。"
+        elif status == "queued":
+            text = f"「{title}」正在排队，等待后台名额。"
+        else:
+            phrase = w["status_phrase"]
+            result = " ".join((w.get("result") or "").split())[:240]
+            text = f"「{title}」{phrase}。" + (f"\n{result}" if result else "")
+        lines.append(text)
+    return "\n\n".join(lines) or None
+
 def _append_note(msgs, note):
     """把本轮才有的提示接在最后一条用户消息后面（不改动稳定的系统提示）。"""
     out = list(msgs)
@@ -3830,17 +3871,21 @@ def _err_text(e):
     except Exception:
         return ""
 
-def call_chat(url, headers, body, effort, stream=True, on_text=None, cache_key=None, on_reasoning=None, should_abort=None):
+def call_chat(url, headers, body, effort, stream=True, on_text=None, cache_key=None, on_reasoning=None, should_abort=None,
+              deadline=None):
     """主循环的模型调用：复用连接、流式；服务商不支持流式 / 思考参数 / 缓存标记时各降级一次并记住。返回 (resp, timing)。"""
     model = body.get("model")
     use_stream = bool(stream) and (url, model) not in _STREAM_UNSUPPORTED
     use_cache = True
     for _attempt in range(7):
+        timeout = 120 if deadline is None else deadline - time.monotonic()
+        if timeout <= 0:
+            raise TimeoutError("前台模型响应超时")
         payload = apply_reasoning(body, model, effort, url)
         cached = _with_prompt_cache(payload, url, cache_key=cache_key, stream=use_stream) if use_cache else payload
         try:
             return cloud_llm.chat_completion(url, headers, cached, stream=use_stream, on_text=on_text,
-                                             on_reasoning=on_reasoning, should_abort=should_abort)
+                                             timeout=timeout, on_reasoning=on_reasoning, should_abort=should_abort)
         except urllib.error.HTTPError as e:
             if e.code not in (400, 422):
                 raise
@@ -4717,6 +4762,34 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
             timer.daemon = True
             timer.start()
         return _run_agent_task_inner(task_id, session_id, initial_content, model, provider_config, instructions, depth)
+    except Exception as e:
+        # 模型循环前的准备异常也要关闭任务，否则客户端一直等，后台结果也无法交付。
+        note_server_error("agent_task", e)
+        state = "cancelled" if is_task_cancelled(task_id) else "failed"
+        live_clear(task_id)
+        try:
+            inbox_reject_pending(task_id)
+            if state == "failed":
+                log_event(task_id, "error", {"error": scrub_text(sanitize_err(e))[:400]})
+        except sqlite3.Error as db_error:
+            note_server_error("agent_task_event", db_error)
+        conn = get_db_connection()
+        try:
+            with conn:
+                changed = conn.execute("UPDATE tasks SET status = ? WHERE task_id = ? AND status IN ('queued', 'running', 'waiting_user')",
+                                       (state, task_id)).rowcount
+        finally:
+            conn.close()
+            inbox_drop(task_id)
+            with active_tasks_lock:
+                active_tasks.pop(task_id, None)
+        if changed:
+            with EVENT_COND:
+                EVENT_COND.notify_all()
+            try:
+                on_task_finished(task_id, session_id, state)
+            except Exception as notify_error:
+                note_server_error("agent_task_notify", notify_error)
     finally:
         if timer:
             timer.cancel()
@@ -4835,6 +4908,14 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     except Exception:
         perf["created_at"] = perf["started_at"]
     perf["queued_ms"] = round((perf["started_at"] - perf["created_at"]) * 1000, 1)
+    front_deadline = None
+
+    def model_should_abort():
+        if is_task_cancelled(task_id):
+            return True
+        if front_deadline is not None and time.monotonic() >= front_deadline:
+            raise TimeoutError("前台模型响应超时")
+        return not instant and inbox_pending(task_id)
 
     def on_text(text):
         if perf["first_text_ms"] is None:
@@ -4953,12 +5034,14 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     "model": route["model"], "messages": send_msgs, "tools": tools, "tool_choice": "auto"
                 }, effort, stream=rs_perf.get("stream", True), on_text=on_text, cache_key=perf["bot_id"] or session_id,
                    on_reasoning=on_reasoning,
-                   should_abort=lambda: is_task_cancelled(task_id) or (not instant and inbox_pending(task_id)))
+                   should_abort=model_should_abort, deadline=front_deadline)
             except cloud_llm.Aborted:
                 raise
             except Exception as e:
                 if is_task_cancelled(task_id):
                     raise
+                if front_deadline is not None and time.monotonic() >= front_deadline:
+                    raise TimeoutError("前台模型响应超时") from e
                 if cloud_vision.has_images(send_msgs) and cloud_vision.is_unsupported_error(
                         _err_text(e) if isinstance(e, urllib.error.HTTPError) else str(e)):
                     # 服务商明确说这个模型不收图片：记下来（以后直接走看图模型），这次转给看图模型读图后重来
@@ -4998,7 +5081,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     try:
         def take_injected(limit=None):
             nonlocal current_user_content, mention_hint
-            for item in inbox_take(task_id, session_id, instant, limit):
+            items = inbox_take(task_id, session_id, instant, limit)
+            for item in items:
                 # 插话：作为一条用户消息放进上下文和历史（位置就是模型看到它的地方）
                 messages.append({"role": "user", "content": item["content"]})
                 if instant:
@@ -5011,22 +5095,48 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     except Exception as e:
                         print(f"injected images failed: {type(e).__name__}", flush=True)
                 log_event(task_id, "user_message_applied", {"nonce": item["nonce"], "separate_reply": instant})
+            return bool(items)
 
         def advance_after_reply():
-            nonlocal answered, turns, loop_guard
-            if not inbox_close(task_id):
-                return False
-            if instant:
-                # 一条用户消息完成前台回复后，再取下一条。后台工人有自己的生命周期。
-                take_injected(limit=1)
+            nonlocal answered, turns, loop_guard, front_deadline
+            if not instant:
+                return inbox_close(task_id)
+            while inbox_close(task_id):
+                # 检查队列后，用户可能恰好撤回。只有真正取到下一条才开启新回合。
+                if not take_injected(limit=1):
+                    continue
                 answered = False
+                front_deadline = None
                 turns = 0
                 loop_guard = cloud_runmodel.LoopGuard()
                 with INSTANT_HANDOFF_LOCK:
                     INSTANT_HANDED.discard(task_id)
                 with TURN_LOCK:
                     TURN_FLAGS.pop(task_id, None)
-            return True
+                return True
+            return False
+
+        def finish_reply_error(error):
+            nonlocal final_status
+            if is_task_cancelled(task_id):
+                final_status = "cancelled"
+                return False
+            live_clear(task_id)
+            err = scrub_text(sanitize_err(error))[:400]
+            if answered:
+                log_event(task_id, "status", {"message": "回答已给出；后续模型调用失败，已跳过：" + err[:200]})
+                final_status = "completed"
+            else:
+                log_event(task_id, "error", {"error": err})
+                final_status = "failed"
+                if instant:
+                    text = "这条消息没能生成回复。" + err
+                    insert_message(session_id, "assistant", text, meta={"front_task_id": task_id})
+                    messages.append({"role": "assistant", "content": text})
+            if instant and advance_after_reply():
+                final_status = "completed"
+                return True
+            return False
 
         turns = 0
         while turns < MAX_TURNS:
@@ -5044,6 +5154,18 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             if not instant:
                 take_injected()
             try:
+                if instant and turns == 1:
+                    progress = _front_progress_answer(session_id, current_user_content)
+                    if progress:
+                        on_text(progress)
+                        live_clear(task_id)
+                        log_event(task_id, "thought", {"content": progress})
+                        messages.append({"role": "assistant", "content": progress})
+                        insert_message(session_id, "assistant", progress, meta={"front_task_id": task_id})
+                        answered = True
+                        if advance_after_reply():
+                            continue
+                        break
                 send_msgs, trim_note = cloud_llm.trim_messages(messages, rs_perf.get("context_trim_tokens", 0))
                 if trim_note and not perf["trimmed"]:
                     perf["trimmed"] = True
@@ -5062,6 +5184,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                                                               always_all=not rs_perf.get("lazy_tools", True))
                 perf["tool_defs"] = max(perf["tool_defs"], len(tools))
                 live_update(task_id, "", reasoning="", tool=None)
+                if instant and front_deadline is None:
+                    front_deadline = time.monotonic() + cloud_reply.FRONT_TURN_TIMEOUT
                 try:
                     resp, timing = call_with_failover(send_msgs, tools)
                 except VisionRetry:
@@ -5083,19 +5207,17 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 perf["completion_tokens"] += int(u.get("completion_tokens") or 0)
                 perf["cached_tokens"] += eff.cached_tokens(u)
             except Exception as e:
-                err = sanitize_err(e)
-                if answered:
-                    # 已经给出过回答，后续步骤（如回答后顺手记忆）调用失败：保留回答，任务算完成，只记一条提醒
-                    log_event(task_id, "status", {"message": "回答已给出；后续步骤调用模型失败，已跳过：" + str(err)[:200]})
-                    final_status = "completed"
-                else:
-                    log_event(task_id, "error", {"error": err})
-                    final_status = "failed"
+                if finish_reply_error(e):
+                    continue
                 break
 
             note_usage(session_persona_id(session_id), model, resp, messages)
             choices = resp.get("choices", [])
             if not choices:
+                if instant:
+                    if finish_reply_error("模型服务没有返回有效回复"):
+                        continue
+                    break
                 log_event(task_id, "error", {"error": "Missing choices"})
                 final_status = "failed"
                 break
@@ -5114,13 +5236,13 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             if instant:
                 row_meta = dict(row_meta or {}, front_task_id=task_id)
 
-            if not content and not tool_calls:
+            if not (content and (not isinstance(content, str) or content.strip())) and not tool_calls:
                 if answered:
                     if advance_after_reply():
                         continue
                     break               # 工具做完后模型没再说话：前面的回答就是最终回答
-                log_event(task_id, "error", {"error": "模型返回了空回复（没有文字也没有工具调用）"})
-                final_status = "failed"
+                if finish_reply_error("模型返回了空回复（没有文字也没有工具调用）"):
+                    continue
                 break
             content = _take_ack(task_id, content, tool_calls)   # 快速确认：并进第一条工具调用消息，已经有文字就不要了
             if content:

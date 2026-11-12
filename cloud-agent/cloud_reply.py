@@ -33,6 +33,20 @@ FRONT_INSTANT_NOTE = (
     "问进度就看任务摘要或 task_status。按任务分别报告，区分已经完成和仍在进行的事。")
 
 ETA_MIN_SAMPLES = 3
+FRONT_TURN_TIMEOUT = 35.0
+PROGRESS_QUERY = re.compile(
+    r"(?:进度(?:呢|如何|怎么样|怎样|咋样|到哪了|到哪一步)(?:了|啦|吗)?|"
+    r"(?:有没有|是否)(?:完成|做完|弄好|搞定)(?:了|了吗|了吗呀|了吧|吗)?|"
+    r"(?:已经|应该)(?:完成|做完|弄好|搞定)(?:了吗|了吧|吗)|"
+    r"(?:完成|做完|弄好|搞定)(?:了吗|了没|了吧|了吗呀|了没有|没有|没)|"
+    r"有结果了吗|还有多久|还要多久)"
+)
+
+
+def is_progress_question(text):
+    if not isinstance(text, str):
+        return False
+    return PROGRESS_QUERY.fullmatch(text.strip().rstrip("？?！!。")) is not None
 
 
 class ReplyError(ValueError):

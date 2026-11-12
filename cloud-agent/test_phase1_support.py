@@ -68,7 +68,8 @@ class FakeModelHandler(BaseHTTPRequestHandler):
                     time.sleep(delay)
                 delta = piece if isinstance(piece, dict) else {"content": piece}     # dict = 原样的 delta（reasoning_content / tool_calls）
                 try:
-                    self.wfile.write(b"data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}).encode() + b"\n\n")
+                    event = delta if "error" in delta else {"choices": [{"index": 0, "delta": delta}]}
+                    self.wfile.write(b"data: " + json.dumps(event).encode() + b"\n\n")
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
                     return          # 客户端中途不要了（插话中止）

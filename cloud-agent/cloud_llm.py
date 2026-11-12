@@ -121,6 +121,7 @@ class HTTPPool:
                 if ok and not resp.will_close:
                     self._put(key, conn)
                 else:
+                    resp.close()
                     conn.close()
             return resp, release
         raise OSError("unreachable")
@@ -151,6 +152,13 @@ def _reasoning_of(d):
     return v or None
 
 
+def _check_completion_error(payload):
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if error:
+        detail = (error.get("message") or error.get("code")) if isinstance(error, dict) else error
+        raise RuntimeError(f"模型服务返回错误 {detail or '未知原因'}")
+
+
 def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120, pool=POOL, on_reasoning=None, should_abort=None):
     """返回 (response_dict, timing)。timing: ttft_ms（首个内容块）、total_ms、streamed。"""
     t0 = time.perf_counter()
@@ -159,6 +167,7 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
         req = urllib.request.Request(url, data=json.dumps(dict(body, stream=False)).encode("utf-8"), headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=timeout) as r:
             out = json.loads(r.read().decode("utf-8"))
+        _check_completion_error(out)
         ms = (time.perf_counter() - t0) * 1000
         return out, {"ttft_ms": round(ms, 1), "total_ms": round(ms, 1), "streamed": False}
     payload = dict(body, stream=bool(stream))
@@ -174,6 +183,7 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
             data = resp.read()
             ok = True
             out = json.loads(data.decode("utf-8"))
+            _check_completion_error(out)
             ms = (time.perf_counter() - t0) * 1000
             m0 = ((out.get("choices") or [{}])[0].get("message") or {}) if isinstance(out, dict) else {}
             text = m0.get("content")
@@ -207,6 +217,7 @@ def chat_completion(url, headers, body, stream=False, on_text=None, timeout=120,
                 chunk = json.loads(data.decode("utf-8"))
             except ValueError:
                 continue
+            _check_completion_error(chunk)
             if chunk.get("usage"):
                 usage = chunk["usage"]
             if chunk.get("model"):

@@ -64,7 +64,7 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
     private var images: [String: UIImage] = [:]
     private var loadIDs: [String: UUID] = [:]
     private var fanned = false
-    private var focused = 0
+    private var selectedIndex = 0
     private var startedFanned = false
     private var startedFocus = 0
     private var startLocation: CGPoint = .zero
@@ -127,7 +127,7 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
             images = images.filter { visibleIDs.contains($0.key) }
             loadIDs = loadIDs.filter { visibleIDs.contains($0.key) }
             if sources.count < 2 { fanned = false }
-            focused = min(focused, max(0, min(sources.count, ImageStackLayout.maxFanned) - 1))
+            selectedIndex = min(selectedIndex, max(0, min(sources.count, ImageStackLayout.maxFanned) - 1))
             rebuildCards()
             updateCardLayout()
             applyLayout(animated: false)
@@ -222,7 +222,8 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
                 host.addSubview(dim)
                 host.addSubview(spinner)
                 if let p {
-                    let ring = ImageStackProgressRing(progress: p)
+                    let ring = ImageStackProgressRing(frame: .zero)
+                    ring.progress = p
                     ring.bounds = CGRect(x: 0, y: 0, width: 44, height: 44)
                     ring.center = spinner.center
                     host.addSubview(ring)
@@ -268,8 +269,8 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
         case .began:
             startLocation = p
             startedFanned = fanned
-            startedFocus = focused
-            focused = ImageStackLayout.focusedIndex(atX: p.x, count: count)
+            startedFocus = selectedIndex
+            selectedIndex = ImageStackLayout.focusedIndex(atX: p.x, count: count)
             selection.prepare()
             if !fanned {
                 fanned = true
@@ -279,9 +280,9 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
             animateLayout()
         case .changed:
             guard abs(p.x - startLocation.x) > abs(p.y - startLocation.y) else { return }
-            let next = ImageStackLayout.focusedIndex(atX: p.x, count: count, keeping: focused)
-            if next != focused {
-                focused = next
+            let next = ImageStackLayout.focusedIndex(atX: p.x, count: count, keeping: selectedIndex)
+            if next != selectedIndex {
+                selectedIndex = next
                 selection.selectionChanged()
                 selection.prepare()
                 animateLayout()
@@ -289,20 +290,20 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
         case .ended:
             if ImageStackLayout.shouldOpenOnRelease(horizontal: p.x - startLocation.x,
                                                     vertical: p.y - startLocation.y) {
-                let idx = ImageStackLayout.focusedIndex(atX: p.x, count: count, keeping: focused)
+                let idx = ImageStackLayout.focusedIndex(atX: p.x, count: count, keeping: selectedIndex)
                 fanned = false
-                focused = 0
+                selectedIndex = 0
                 animateLayout()
                 onOpen(idx)
             } else if startedFanned {
                 fanned = false
-                focused = 0
+                selectedIndex = 0
                 animateLayout()
             }
             // 刚展开、几乎没滑：保持展开，等下一次长按收回，或轻点打开
         case .cancelled:
             fanned = startedFanned
-            focused = startedFocus
+            selectedIndex = startedFocus
             animateLayout()
         default:
             break
@@ -332,7 +333,7 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
         for (i, view) in cardViews.enumerated() {
             view.isHidden = i >= layoutCards.count
             guard !view.isHidden else { continue }
-            let selected = fanned && i == focused
+            let selected = fanned && i == selectedIndex
             view.layer.zPosition = layoutCards[i].zIndex + (selected ? 10 : 0)
             view.layer.borderWidth = selected ? 2 : 0.5
             view.layer.borderColor = selected ? focusedBorder : normalBorder
@@ -355,7 +356,7 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
         for (i, card) in layoutCards.enumerated() {
             let targetCenter = CGPoint(x: box.width / 2 + card.offset.width,
                                        y: box.height / 2 + card.offset.height)
-            let targetScale = ImageStackLayout.scale(index: i, focused: focused, fanned: fanned)
+            let targetScale = ImageStackLayout.scale(index: i, focused: selectedIndex, fanned: fanned)
             let targetRot = CGFloat(card.rotation) * .pi / 180
             currentCenter[i].x += (targetCenter.x - currentCenter[i].x) * k
             currentCenter[i].y += (targetCenter.y - currentCenter[i].y) * k

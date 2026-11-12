@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import unittest
+from unittest import mock
 
 import cloud_reply
 from test_phase1_support import CloudServerTestCase, FakeModelHandler, tool_call
@@ -69,6 +70,12 @@ class ReplySummarizerTests(unittest.TestCase):
         self.assertEqual(cloud_reply.status_phrase("running", [("ask_choice", {}, False)]), "等你决定")
         self.assertEqual(cloud_reply.status_phrase("completed", many), "已完成")
         self.assertEqual(cloud_reply.status_phrase("cancelled", []), "已停止")
+
+    def test_progress_questions_do_not_match_edits_or_statements(self):
+        for text in ("进度咋样啦", "有没有完成？", "应该完成了吧", "做完了没"):
+            self.assertTrue(cloud_reply.is_progress_question(text), text)
+        for text in ("已经完成", "应该完成", "你觉得呢", "有没有完成第17页？", "进度咋样啦，改成十页"):
+            self.assertFalse(cloud_reply.is_progress_question(text), text)
 
     def test_eta_only_from_real_data(self):
         self.assertIsNone(cloud_reply.eta_seconds([], 3))
@@ -331,7 +338,7 @@ class ReplyModeTests(CloudServerTestCase):
         self.assertEqual([m["content"] for m in messages if m["role"] in ("user", "assistant")],
                          ["第一条", "答：第一条", "第二条", "答：第二条", "第四条", "答：第四条"])
 
-    def test_04d_unapplied_followup_can_be_retried_after_front_fails(self):
+    def test_04d_thinking_only_front_reply_does_not_block_followups(self):
         sid = self._session()
         entered, release = threading.Event(), threading.Event()
 
@@ -339,25 +346,83 @@ class ReplyModeTests(CloudServerTestCase):
             if last_user(d).startswith("先失败"):
                 entered.set()
                 release.wait(10)
-                return {"role": "assistant", "content": ""}
-            return {"role": "assistant", "content": "这条已回答"}
+                return {"_chunks": [{"reasoning_content": "只有思考，没有回答"}], "_delay": 0}
+            return {"role": "assistant", "content": "答：" + last_user(d).split("\n\n[", 1)[0]}
 
         FakeModelHandler.scripts[MAIN] = front
         tid = self.submit(sid, "先失败", MAIN)[1]["task_id"]
         try:
             self.assertTrue(entered.wait(5))
-            code, _ = self.request("POST", f"/v1/tasks/{tid}/messages", {"content": "再问一次", "nonce": "recover-1"})
-            self.assertEqual(code, 202)
+            for index, question in enumerate(("有没有完成", "你觉得呢"), 1):
+                code, _ = self.request("POST", f"/v1/tasks/{tid}/messages", {"content": question, "nonce": f"recover-{index}"})
+                self.assertEqual(code, 202)
         finally:
             release.set()
-        self.wait_status(tid, {"failed"}, timeout=10)
+        self.assertEqual(self.wait_status(tid, {"completed", "failed"}, timeout=10)["status"], "completed")
         events = self.request("GET", f"/v1/tasks/{tid}")[1]["events"]
-        self.assertTrue(any(e["type"] == "user_message_rejected" and e["payload"]["nonce"] == "recover-1" for e in events))
-        code, retried = self.submit(sid, "再问一次", MAIN, client_nonce="recover-1")
-        self.assertEqual(code, 202)
-        self.wait_status(retried["task_id"], {"completed"}, timeout=10)
+        self.assertTrue(any(e["type"] == "error" and "空回复" in e["payload"]["error"] for e in events))
+        self.assertEqual([e["payload"]["nonce"] for e in events if e["type"] == "user_message_applied"],
+                         ["recover-1", "recover-2"])
         messages = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
-        self.assertEqual(sum(m["content"] == "再问一次" for m in messages), 1)
+        replies = [m["content"] for m in messages if m.get("front_task_id") == tid and m["role"] == "assistant"]
+        self.assertIn("空回复", replies[0])
+        self.assertEqual(replies[1:], ["答：有没有完成", "答：你觉得呢"])
+
+    def test_04e_slow_thinking_stream_has_a_per_reply_deadline(self):
+        self._install(worker_steps=1, slow=True)
+        sid = self._session()
+        self._say(sid, "查一下要很久的事")
+        worker = self._wait(lambda: (self._workers(sid) or [None])[0], what="后台任务")
+        self.assertEqual(worker["status"], "running")
+        entered = threading.Event()
+
+        def front(d):
+            question = last_user(d).split("\n\n[", 1)[0]
+            if question == "第17页还要复核什么":
+                entered.set()
+                return {"_chunks": [{"reasoning_content": "思考"}] * 60, "_delay": 0.07}
+            return {"role": "assistant", "content": "答：" + question}
+
+        FakeModelHandler.scripts[FRONT] = front
+        with mock.patch.object(cloud_reply, "FRONT_TURN_TIMEOUT", 0.65):
+            tid = self.submit(sid, "第17页还要复核什么", MAIN)[1]["task_id"]
+            self.assertTrue(entered.wait(5))
+            for index, question in enumerate(("有没有完成", "你觉得呢"), 1):
+                self.assertEqual(self.request("POST", f"/v1/tasks/{tid}/messages",
+                                              {"content": question, "nonce": f"timeout-{index}"})[0], 202)
+            self.assertEqual(self.wait_status(tid, {"completed", "failed"}, timeout=4)["status"], "completed")
+        self.assertEqual(self._worker(worker["worker_id"])["status"], "running")
+        history = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
+        answers = [m["content"] for m in history if m.get("front_task_id") == tid and m["role"] == "assistant"]
+        self.assertIn("超时", answers[0])
+        self.assertIn("还在进行", answers[1])
+        self.assertIn(worker["title"], answers[1])
+        self.assertEqual(answers[2], "答：你觉得呢")
+
+    def test_04f_setup_error_closes_front_and_releases_pending_messages(self):
+        sid = self._session()
+        entered, release = threading.Event(), threading.Event()
+
+        def crash(*_args):
+            entered.set()
+            release.wait(5)
+            raise RuntimeError("准备对话失败")
+
+        with mock.patch.object(self.srv, "plugin_tools_for_session", side_effect=crash):
+            tid = self.submit(sid, "先失败", MAIN)[1]["task_id"]
+            try:
+                self.assertTrue(entered.wait(5))
+                self.assertEqual(self.request("POST", f"/v1/tasks/{tid}/messages",
+                                              {"content": "再问一次", "nonce": "setup-retry"})[0], 202)
+            finally:
+                release.set()
+            self.wait_status(tid, {"failed"}, timeout=5)
+        events = self.request("GET", f"/v1/tasks/{tid}")[1]["events"]
+        self.assertTrue(any(e["type"] == "user_message_rejected" and e["payload"]["nonce"] == "setup-retry" for e in events))
+        FakeModelHandler.scripts[MAIN] = lambda _d: {"role": "assistant", "content": "这条已回答"}
+        code, retried = self.submit(sid, "再问一次", MAIN, client_nonce="setup-retry")
+        self.assertEqual(code, 202)
+        self.wait_status(retried["task_id"], {"completed"}, timeout=5)
 
     def test_05_front_cannot_run_work_tools(self):
         def front(d):

@@ -86,6 +86,17 @@ class WorkerTests(CloudServerTestCase):
             time.sleep(0.1)
         self.fail("结果没有发回前台")
 
+    def test_stream_failure_shows_worker_error_in_chat(self):
+        FakeModelHandler.scripts["worker-stream-error"] = self._front_script(
+            lambda _req: {"_chunks": [{"error": {"message": "后台模型服务暂不可用"}}], "_delay": 0})
+        sid = self.request("POST", "/v1/sessions", {"title": "t", "persona_id": "boss"})[1]["session_id"]
+        self._say(sid, "查一下资料", "worker-stream-error")
+        worker = self._workers(sid)[0]
+        failed = self._wait_worker(worker["worker_id"], {"failed"}, timeout=10)
+        self.assertIn("后台模型服务暂不可用", failed["result"])
+        delivered = self._wait_results(sid, timeout=10)
+        self.assertTrue(any("后台任务失败" in m["content"] and "后台模型服务暂不可用" in m["content"] for m in delivered))
+
     def test_voice_dispatch_executes_tools_and_replayed_receipt_keeps_one_worker(self):
         def executor(req):
             if not is_worker(req):

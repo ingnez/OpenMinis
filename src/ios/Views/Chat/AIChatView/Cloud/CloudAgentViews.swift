@@ -1029,7 +1029,7 @@ struct CloudSessionView: View {
                 }
             }
             if type == "user_message_applied", payload["separate_reply"] as? Bool == true {
-                if !liveMessage.blocks.isEmpty {
+                if !liveMessage.blocks.isEmpty || liveMessage.error != nil {
                     completedLiveReplies.append(.init(nonce: liveReplyNonce, message: liveMessage))
                 }
                 liveReplyNonce = payload["nonce"] as? String
@@ -1173,8 +1173,12 @@ struct CloudSessionView: View {
         }
         let running = activeTaskStatus == "running" || activeTaskStatus == "waiting_user" || activeTaskStatus == "queued" || isSubmitting
         // 进行中，或刚结束、历史还没重新加载（这次任务的几轮还没出现在历史里）：由实时那一份显示
-        let hasLiveReply = !liveMessage.blocks.isEmpty || !liveText.isEmpty || !liveReasoning.isEmpty
-        let detached = completedLiveReplies.filter { !hasReplyAnchor($0.nonce) }
+        let instant = replyPlan?.isInstant == true
+        let hasLiveReply = instant ? CloudAssistantTurnView.hasVisibleInstantContent(liveMessage, liveText: liveText)
+            : !liveMessage.blocks.isEmpty || liveMessage.error != nil || !liveText.isEmpty || !liveReasoning.isEmpty
+        let detached = completedLiveReplies.filter {
+            !hasReplyAnchor($0.nonce) && (!instant || CloudAssistantTurnView.hasVisibleInstantContent($0.message))
+        }
         let detachedLive = hasLiveReply && !hasReplyAnchor(liveReplyNonce)
         if (running || historyHidesTask) && (!detached.isEmpty || detachedLive) {
             VStack(alignment: .leading, spacing: 8) {
@@ -1851,7 +1855,7 @@ struct CloudSessionView: View {
             ForEach(completedLiveReplies.filter { $0.nonce == nonce }) { reply in
                 CloudAssistantTurnView(message: reply.message, spec: theme.spec, name: theme.name, accent: theme.accent)
             }
-            if liveReplyNonce == nonce, !liveMessage.blocks.isEmpty || !liveText.isEmpty || !liveReasoning.isEmpty {
+            if liveReplyNonce == nonce, !liveMessage.blocks.isEmpty || liveMessage.error != nil || !liveText.isEmpty || !liveReasoning.isEmpty {
                 CloudAssistantTurnView(message: liveMessage, spec: theme.spec, name: theme.name, accent: theme.accent,
                                        liveText: liveText, liveReasoning: liveReasoning)
             }
@@ -2409,8 +2413,8 @@ struct CloudSessionView: View {
                             self.showComputer = true
                         }
                         // 一段话写进了事件或模型开始调用工具：正在生成的那段文字已经结束
-                        if fresh.contains(where: { ["tool_call", "thought", "final"].contains($0["type"] as? String ?? "") }) { self.liveText = "" }
-                        if fresh.contains(where: { ["reasoning", "tool_call", "thought", "final"].contains($0["type"] as? String ?? "") }) { self.liveReasoning = "" }
+                        if fresh.contains(where: { ["tool_call", "thought", "final", "error"].contains($0["type"] as? String ?? "") }) { self.liveText = "" }
+                        if fresh.contains(where: { ["reasoning", "tool_call", "thought", "final", "error"].contains($0["type"] as? String ?? "") }) { self.liveReasoning = "" }
                     }
                     if let live = batch.live, let t = live["text"] as? String, let s = live["seq"] as? Int {
                         self.liveText = t

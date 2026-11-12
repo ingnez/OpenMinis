@@ -42,6 +42,16 @@ struct CloudAssistantTurnView: View {
         case notice(String)
     }
 
+    static func hasVisibleInstantContent(_ message: ChatMessage, liveText: String = "") -> Bool {
+        if message.error?.isEmpty == false || !liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        return message.blocks.contains { block in
+            if block.kind == .text { return !block.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            guard block.kind == .info, let id = block.toolUseId else { return false }
+            return id.hasPrefix(CloudEventApplier.injectPrefix) || id.hasPrefix(CloudEventApplier.resetPrefix)
+                || id.hasPrefix(CloudEventApplier.visionPrefix) || CloudCards.decode(block) != nil
+        }
+    }
+
     private var segments: [Segment] {
         var out: [Segment] = []
         var run: [AssistantBlock] = []
@@ -84,6 +94,12 @@ struct CloudAssistantTurnView: View {
     }
 
     var body: some View {
+        if !replyInstant || Self.hasVisibleInstantContent(message, liveText: liveText) {
+            turnBody
+        }
+    }
+
+    private var turnBody: some View {
         VStack(alignment: .leading, spacing: 8) {
             if showHeader && !isResetNote {
                 HStack(spacing: 8) {
