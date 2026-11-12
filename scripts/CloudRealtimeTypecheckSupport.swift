@@ -70,5 +70,6 @@ struct RealtimeCallSignal: View {
     let connected: Bool
     let micLevel: Float
     let speakLevel: Float
+    var compact = false
     var body: some View { EmptyView() }
 }

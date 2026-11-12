@@ -45,10 +45,36 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         var stuck = RealtimeCallHealth()
         stuck.received(bytes: 4800, at: at(0))
         check(stuck.verdict(now: at(0), playedFrames: 0, pendingPlayback: true, label: "x") == .ok, "刚收到不报")
-        if case .warn = stuck.verdict(now: at(4), playedFrames: 0, pendingPlayback: true, label: "x") {} else { check(false, "3 秒不动要提示") }
-        if case .fail(let f) = stuck.verdict(now: at(9), playedFrames: 0, pendingPlayback: true, label: "x") {
-            check(f.contains("播放不出来"), "下行挂断原因：\(f)")
-        } else { check(false, "8 秒不动要挂断") }
+        check(stuck.verdict(now: at(4), playedFrames: 0, pendingPlayback: true, label: "x")
+              == .warn(RealtimeCallHealth.stalledPlaybackNotice), "3 秒不动提示卡住")
+        check(stuck.takePlaybackRecovery() && !stuck.takePlaybackRecovery(), "同一次卡住只尝试恢复一次")
+        check(stuck.verdict(now: at(9), playedFrames: 0, pendingPlayback: true, label: "x")
+              == .fail(RealtimeCallHealth.playbackFailure), "恢复失败才结束通话")
+        check(stuck.verdict(now: at(10), playedFrames: 2_400, pendingPlayback: true, label: "x") == .ok, "播出后清掉卡住提示")
+        check(stuck.verdict(now: at(14), playedFrames: 2_400, pendingPlayback: true, label: "x")
+              == .warn(RealtimeCallHealth.stalledPlaybackNotice) && stuck.takePlaybackRecovery(), "新的卡顿可以重新恢复")
+
+        var responses = RealtimeResponseGate()
+        check(responses.beginTool("lookup") && !responses.beginTool("lookup"), "同一个工具调用只派一次")
+        check(responses.beginTool("details"), "独立工具可以同时执行")
+        responses.finishTool("lookup", speakIfSilent: "turn-1")
+        check(!responses.takeRequest(responseRunning: false), "要等整批工具返回")
+        responses.receivedAudio(for: "turn-1")
+        responses.finishTool("details", speakIfSilent: "turn-1")
+        check(!responses.takeRequest(responseRunning: false), "已经有语音的派单回合不再次确认")
+        check(responses.beginTool("silent"), "另一条工具调用独立处理")
+        responses.finishTool("silent", speakIfSilent: "turn-2")
+        check(!responses.takeRequest(responseRunning: true), "当前回复还在生成时不抢话")
+        check(responses.takeRequest(responseRunning: false), "无声派单回合补一次答复")
+        responses.request()
+        check(!responses.takeRequest(responseRunning: false), "已发 response.create 等服务端确认，不重复发")
+        responses.responseStarted()
+        check(!responses.takeRequest(responseRunning: true) && responses.takeRequest(responseRunning: false), "新的输入在上一轮结束后接着答")
+        check(RealtimeCloudLookup.goal("请用云电脑去百度查爱他美四段的价格") != nil, "不支持函数的语音模型也能执行明确的云电脑查询")
+        check(RealtimeCloudLookup.goal("帮我上云电脑搜一下医院地址") != nil, "允许常见口语")
+        for speech in ["行，我这就用云电脑查价格", "不要用云电脑搜", "用云电脑查一下", "用云电脑删除文件", "我刚才说用云电脑查价格", "好。"] {
+            check(RealtimeCloudLookup.goal(speech) == nil, "回声、闲聊、无查询目标和非查询动作不能自动派单：\(speech)")
+        }
         var playing = RealtimeCallHealth()
         for s in 0..<10 { check(playing.verdict(now: at(Double(s)), playedFrames: Int64(s * 2400), pendingPlayback: true, label: "x") == .ok, "在播就不报") }
 

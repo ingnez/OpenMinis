@@ -3247,6 +3247,44 @@ def tool_worker(task_id, session_id, name, args, model, provider_config):
         return {"id": wid, "status": "running" if started else "queued"}
     return {"error": "unknown tool"}
 
+def start_voice_worker(session_id, body):
+    """语音任务直接交给后台执行，不经过文字输入框或前台模型二次派单。"""
+    if not isinstance(body, dict):
+        return 400, {"error": "语音任务格式无效"}
+    goal, nonce = body.get("goal"), body.get("client_nonce")
+    if not isinstance(goal, str) or not goal.strip() or len(goal) > 20000:
+        return 400, {"error": "语音任务需要明确的目标"}
+    if not isinstance(nonce, str) or not 0 < len(nonce) <= 80:
+        return 400, {"error": "语音任务缺少消息标识"}
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT persona_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+        if not row or cloud_workers.is_worker_session(conn, session_id):
+            return 404, {"error": "没有可接收语音任务的对话"}
+        bot_id = row[0]
+        bot = get_persona(bot_id) if bot_id else None
+        model, provider_req = body.get("model") or "gpt-4o", body.get("provider") or {}
+        if bot and bot.get("model") and bot.get("credential"):
+            model = bot["model"]
+            provider_req = {"protocol": "chat", "credential": bot["credential"]}
+        provider, status, error = resolve_provider(provider_req)
+        if error:
+            return status, {"error": error}
+        if blocked := usage_blocked():
+            return 429, {"error": blocked}
+        plan = cloud_reply.resolve(conn, bot_id, session_id, model, resource_settings().get("fast_model") or None)
+        worker = cloud_workers.create(conn, bot_id, session_id, goal,
+                                      context="这是实时语音通话交给你的任务。需要搜索、查网页或操作云电脑时，实际使用工具完成。"
+                                              "只能根据真实执行结果回答；无法执行时说清失败原因。", client_nonce=nonce)
+        wid = worker["worker_id"]
+        if worker["status"] == "queued":
+            WORKER_RUNTIME.setdefault(wid, (plan["back_model"] or model, provider, ""))
+            _worker_launch(wid)
+            worker = cloud_workers.get(conn, wid)
+        return 202, {"worker": worker_view(worker)}
+    finally:
+        conn.close()
+
 def _handoff_session(bot_id, title):
     """交接进 Bot 那条连续对话（空闲时）；它正忙就另开一个会话，免得插进正在做的事。"""
     conn = get_db_connection()
@@ -8130,6 +8168,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.startswith("/v1/workers/"):
             self._workers("POST", path, {}, req_json)
+            return
+        m_voice_worker = re.fullmatch(r"/v1/sessions/(sess_[a-f0-9]{12})/voice-tasks", path)
+        if m_voice_worker:
+            self._send(*start_voice_worker(m_voice_worker.group(1), req_json))
             return
         if path == "/v1/handoff":
             try:

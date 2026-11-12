@@ -723,6 +723,11 @@ struct CloudSessionView: View {
                 .background(Color.red.opacity(0.1))
             }
 
+            if let theme, call.active {
+                CloudCallCapsule(call: call, name: theme.name)
+                    .padding(.vertical, 4)
+            }
+
             // Messages & Event Log area
             messagesArea
 
@@ -809,13 +814,6 @@ struct CloudSessionView: View {
                         }
                     }
                 }
-            }
-        }
-        .overlay(alignment: .top) {
-            if let theme, call.active {
-                CloudCallCapsule(call: call, name: theme.name, tint: theme.accent,
-                                 avatar: CloudBotAvatarView(spec: theme.spec, size: 34, mood: call.speakLevel > 0.05 ? .happy : .calm))
-                    .padding(.top, 4)
             }
         }
         .animation(.spring(response: 0.45, dampingFraction: 0.78), value: call.active)
@@ -1505,20 +1503,17 @@ struct CloudSessionView: View {
         else if on { CloudHaptics.selection(); showRealtimeSettings = true }
     }
 
-    /// 实时通话里 Bot 要真正动手：走和输入框一样的发送流程，返回新任务 ID（交不出去返回 nil）
+    /// 实时通话的派单和通话中的文字输入走不同入口。
     private func delegateFromRealtime(_ prompt: String) async -> String? {
-        let before = activeTaskId
-        let draft = inputPrompt
-        errorMessage = nil
-        inputPrompt = prompt
-        sendTask()
-        defer { if inputPrompt.isEmpty || inputPrompt == prompt { inputPrompt = draft } }
-        for _ in 0..<150 {
-            if let tid = activeTaskId, tid != before { return tid }
-            if !isSubmitting && errorMessage != nil { return nil }
-            try? await Task.sleep(nanoseconds: 200_000_000)
+        do {
+            let id = try await CloudVoiceBridge.startBotTask(sessionId: sessionId, prompt: prompt, model: model,
+                                                            providerID: botHasOwnModel ? nil : selectedInstanceId)
+            replyStatus.kick()
+            return id
+        } catch {
+            voiceProblem = "云电脑未确认接收任务：\(error.localizedDescription)"
+            return nil
         }
-        return nil
     }
 
     /// 实时通话开场带上的对话历史（只要可见文字）
@@ -2396,12 +2391,6 @@ struct CloudSessionView: View {
         if plan?.isInstant == true {
             replyStatus.botName = theme.name
             replyStatus.locked = CloudBotLock.isLockedStored(theme.botId)
-            replyStatus.inRealtimeCall = {
-                #if DEBUG
-                if CloudE2E.replySpeak { return true }
-                #endif
-                return showVoiceCall && voiceMode == "realtime"
-            }
             replyStatus.onWorkerFinished = { loadSessionDetail() }
             replyStatus.start(sessionId: sessionId)
         } else {

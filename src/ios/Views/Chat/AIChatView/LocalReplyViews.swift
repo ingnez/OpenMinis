@@ -309,7 +309,6 @@ struct LocalReplyChatChrome: ViewModifier {
             if !LocalReplyHub.message(w.id, t) { throw NSError(domain: "LocalReply", code: 1, userInfo: [NSLocalizedDescriptionKey: "没送到后台"]) }
         }
         #if DEBUG
-        if CloudE2E.replySpeak { status.inRealtimeCall = { true } }
         #endif
         let status = status
         viewModel.onReplyFrontDecision = { [weak status] line, action in

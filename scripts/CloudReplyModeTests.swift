@@ -1,6 +1,6 @@
 import Foundation
 
-// 回复方式（秒回 / 详细）的纯逻辑：解析、状态行文字、预计剩余、提示音时机、语音播报节流、首字时间（假数据）
+// 回复方式（秒回 / 详细）的纯逻辑：解析、状态行文字、预计剩余、提示音时机、首字时间（假数据）
 func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
 
 @main struct CloudReplyModeTests {
@@ -95,16 +95,6 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(CloudReplyRow.current([done]) == nil, "没记结束时间不显示")
         check(CloudReplyRow.shouldStop(translation: -120) && !CloudReplyRow.shouldStop(translation: -40) && !CloudReplyRow.shouldStop(translation: 200), "横滑停止阈值")
 
-        // 语音播报节流
-        let s1 = CloudReplySpoken.next(previous: nil, current: w, lastSpokenAt: nil, now: now)
-        check(s1 == "后台正在分析工作方案。", s1 ?? "nil")
-        check(CloudReplySpoken.next(previous: s1, current: w, lastSpokenAt: now, now: now.addingTimeInterval(30)) == nil, "没变不念")
-        let browsing = CloudReplyWorker(id: w.id, status: "running", phrase: "打开网页")
-        check(CloudReplySpoken.next(previous: s1, current: browsing, lastSpokenAt: now, now: now.addingTimeInterval(5)) == nil, "20 秒内不念")
-        check(CloudReplySpoken.next(previous: s1, current: browsing, lastSpokenAt: now, now: now.addingTimeInterval(25)) == "后台正在打开网页。", "隔够了念")
-        check(CloudReplySpoken.next(previous: s1, current: done, lastSpokenAt: now, now: now.addingTimeInterval(1)) == "后台的事做完了，结果发在对话里。", "完成立刻念")
-        check(CloudReplySpoken.next(previous: s1, current: dec, lastSpokenAt: now, now: now.addingTimeInterval(1)) == "后台有件事需要你决定。", "要决定立刻念")
-
         // 首字时间
         var l = CloudReplyLatency()
         l.sawText(at: now)
@@ -138,7 +128,7 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         } else { check(false, "stop 应有决定") }
         check(CloudReplyFrontAction.note(tool: "shell_execute", args: ["command": "ls"]) == nil, "普通工具不是前台决定")
 
-        print("PASS：回复方式解析、状态行文字、预计剩余只用真实数据、提示音只响一次、状态行选任务、语音播报节流、首字时间、多任务胶囊、前台插话决定")
+        print("PASS：回复方式解析、状态行文字、预计剩余只用真实数据、提示音只响一次、状态行选任务、首字时间、多任务胶囊、前台插话决定")
 
 
     }

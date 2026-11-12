@@ -117,6 +117,15 @@ final class RealtimeVoiceAudio {
         catch { onEngineStopped?("音频设备被切换或被别的功能占用，收音和播放都停了，通话已结束。请重新拨打。") }
     }
 
+    /// 暂停后恢复仍排队的缓冲。stop 会清空缓冲并重置时间轴，不能用来续播。
+    func resumeStalledPlayback() throws {
+        guard !fake, hasPendingAudio, let engine, let player else { return }
+        player.pause()
+        engine.pause()
+        try engine.start()
+        player.play()
+    }
+
     #if DEBUG
     private func startFake(rate: Double) -> AsyncStream<Data> {
         fake = true; fakePlayedFrames = 0

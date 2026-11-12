@@ -673,12 +673,10 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertEqual(probe.cancels, 0, "接通音不能触发插话取消")
         shot(app, "21e-已接通")
 
-        app.buttons["收起通话"].tap()
-        let collapsed = app.buttons["callCapsuleCollapsed"]
-        XCTAssertTrue(collapsed.waitForExistence(timeout: 5))
-        shot(app, "21e-收起")
-        collapsed.tap()
-        XCTAssertTrue(waveform.waitForExistence(timeout: 5))
+        let strip = elements["callStrip"]
+        XCTAssertTrue(strip.exists)
+        XCTAssertLessThanOrEqual(strip.frame.height, 52, "通话条应保持紧凑")
+        XCTAssertTrue(app.buttons["挂断"].isHittable, "挂断不需要先展开面板")
         app.buttons["静音"].tap()
         XCTAssertTrue(app.buttons["取消静音"].waitForExistence(timeout: 5))
         app.buttons["取消静音"].tap()

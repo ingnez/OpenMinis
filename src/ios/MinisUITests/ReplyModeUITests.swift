@@ -48,7 +48,6 @@ final class ReplyModeUITests: XCTestCase {
         XCTAssertTrue(poll(10) { row.label.contains(Self.botName) && row.label.contains("正在") }, "状态行文字不对：\(row.label)")
         XCTAssertTrue(row.label.contains("秒"), "状态行没有用时：\(row.label)")
         XCTAssertTrue(app.descendants(matching: .any)["replyLiveActivity"].waitForExistence(timeout: 10), "灵动岛没同步开始")
-        XCTAssertTrue(app.descendants(matching: .any)["replySpokenLine"].waitForExistence(timeout: 10), "通话中没有进度播报")
         shot(app, "reply-02a-后台状态行")
         send(app, "插话：只要上海的")
         XCTAssertTrue(waitText(app, contains: "你想", timeout: 20) && waitText(app, contains: "上海", timeout: 2) && waitText(app, contains: "我让后台", timeout: 2), "插话没被前台按原意马上答复")
@@ -305,7 +304,6 @@ final class ReplyModeUITests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 20), "本地底部没出现后台状态行")
         XCTAssertTrue(poll(10) { row.label.contains("正在") && row.label.contains("秒") }, "本地状态行文字不对：\(row.label)")
         XCTAssertTrue(app.descendants(matching: .any)["replyLiveActivity"].waitForExistence(timeout: 10), "本地灵动岛没同步")
-        XCTAssertTrue(app.descendants(matching: .any)["replySpokenLine"].waitForExistence(timeout: 10), "本地没有进度播报")
         shot(app, "local-reply-02a-后台状态行")
         sendLocal(app, "插话：只要上海的")
         XCTAssertTrue(waitText(app, contains: "你想", timeout: 20) && waitText(app, contains: "上海", timeout: 2) && waitText(app, contains: "我让后台", timeout: 2), "本地插话没被前台按原意马上答复")
@@ -502,7 +500,6 @@ final class ReplyModeUITests: XCTestCase {
         app.launchEnvironment["OPENMINIS_E2E_PORT"] = "18765"
         app.launchEnvironment["OPENMINIS_E2E_LOCAL_PROVIDER"] = "http://127.0.0.1:18797"
         app.launchEnvironment["OPENMINIS_E2E_LOCAL_REPLY"] = mode
-        app.launchEnvironment["OPENMINIS_E2E_REPLY_SPEAK"] = "1"
         app.launchArguments += ["-launchScreen", "2"]
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 60))
@@ -582,7 +579,6 @@ final class ReplyModeUITests: XCTestCase {
         app.launchArguments += ["-OpenMinisCloud_lockDefaultsDecided", "(e2ebot)", "-OpenMinisCloud_lockedBots", "()"]
         app.launchEnvironment["OPENMINIS_E2E_TOKEN"] = Self.token
         app.launchEnvironment["OPENMINIS_E2E_PORT"] = "18765"
-        app.launchEnvironment["OPENMINIS_E2E_REPLY_SPEAK"] = "1"
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 60))
         dismissKeyboardIntro(app)

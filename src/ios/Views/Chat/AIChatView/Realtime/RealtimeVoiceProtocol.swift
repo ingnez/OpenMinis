@@ -183,6 +183,60 @@ struct RealtimePlaybackLedger {
     }
 }
 
+/// 实时工具结果与文字共用一个回复入口。同一调用只执行一次，整批工具都返回后才续答。
+struct RealtimeResponseGate {
+    private var seenTools: Set<String> = []
+    private var runningTools: Set<String> = []
+    private var audioResponses: Set<String> = []
+    private var silentResponses: Set<String> = []
+    private var requested = false
+    private(set) var awaitingStart = false
+
+    mutating func beginTool(_ id: String) -> Bool {
+        guard seenTools.insert(id).inserted else { return false }
+        runningTools.insert(id)
+        return true
+    }
+
+    mutating func finishTool(_ id: String, speakIfSilent response: String? = nil, needsReply: Bool = true) {
+        runningTools.remove(id)
+        guard needsReply else { return }
+        if let response {
+            if !audioResponses.contains(response) { silentResponses.insert(response) }
+        } else {
+            requested = true
+        }
+    }
+
+    mutating func receivedAudio(for response: String) {
+        audioResponses.insert(response)
+        silentResponses.remove(response)
+    }
+
+    mutating func request() { requested = true }
+    mutating func responseStarted() { awaitingStart = false }
+
+    mutating func takeRequest(responseRunning: Bool) -> Bool {
+        guard !responseRunning, !awaitingStart, runningTools.isEmpty,
+              requested || !silentResponses.isEmpty else { return false }
+        requested = false
+        silentResponses.removeAll()
+        awaitingStart = true
+        return true
+    }
+}
+
+/// 不具备函数调用的实时模型，只接管用户明确要求在云电脑上搜索的指令。
+enum RealtimeCloudLookup {
+    static func goal(_ text: String) -> String? {
+        let goal = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = #"^(?:(?:请|麻烦|你|帮我|给我|能不能|可以|现在|先|直接)|[，,\s])*(?:用|去|到|在|通过|上|打开)(?:我的)?云电脑(?:上|里)?(?:(?:帮我|给我|去|再|先|在|上|到|用|打开|百度|谷歌)|[，,\s])*(?>搜索|查询|查一下|查一查|搜一下|搜一搜|搜|查|浏览)[\s，,:：]*[\p{L}\p{N}]"#
+        guard goal.range(of: pattern, options: .regularExpression) != nil,
+              goal.range(of: #"不要|别去|不用|不必|停止|取消"#, options: .regularExpression) == nil else { return nil }
+        return goal
+    }
+}
+
 /// 通话两个方向是不是真的通了（纯逻辑，单测可跑）：
 /// - 上行：你说了话（本地音量够大）却一直没有服务端的反应（开始说话 / 转写 / 回复）→ 先提示，再挂断说原因
 /// - 收音：一直是静音 → 提示麦克风没收进声音
@@ -190,6 +244,8 @@ struct RealtimePlaybackLedger {
 struct RealtimeCallHealth {
     static let deafPrefix = "Bot 没听到你"
     static let missingReplyAudioNotice = "这条回复只有字幕，实时服务没有送来声音"
+    static let stalledPlaybackNotice = "收到了 Bot 的声音，但播放卡住了"
+    static let playbackFailure = "通话中收到了 Bot 的声音，但手机播放未恢复。请重新拨打。"
     /// RealtimeLevelMeter.level 是均方根再开方（×1.4）：说话约 0.3–0.6，安静房间约 0.01–0.1，数字静音 0
     static let loudLevel: Float = 0.15
     static let quietLevel: Float = 0.003
@@ -215,6 +271,7 @@ struct RealtimeCallHealth {
     private var lastPlayedFrames: Int64 = -1
     private var playedChangedAt: Date?
     private var wasPlaybackPending = false
+    private var triedPlaybackRecovery = false
     private var missingReplyAudio = false
     private(set) var hasProblem = false
 
@@ -247,18 +304,25 @@ struct RealtimeCallHealth {
 
     mutating func completedWithoutAudio() { missingReplyAudio = true }
 
+    mutating func takePlaybackRecovery() -> Bool {
+        guard wasPlaybackPending, !triedPlaybackRecovery else { return false }
+        triedPlaybackRecovery = true
+        return true
+    }
+
     mutating func verdict(now: Date, playedFrames: Int64, pendingPlayback: Bool, label: String) -> Verdict {
         hasProblem = false
         // 下行：有待播的声音，播放进度却不动
         if playedFrames != lastPlayedFrames || (pendingPlayback && !wasPlaybackPending) {
             lastPlayedFrames = playedFrames
             playedChangedAt = now
+            triedPlaybackRecovery = false
         }
         wasPlaybackPending = pendingPlayback
         if pendingPlayback, let changed = playedChangedAt {
             let stuck = now.timeIntervalSince(changed)
-            if stuck >= Self.stuckFailSeconds { return .fail("收到了 Bot 的声音却播放不出来（扬声器被别的功能占用），通话已结束。请重新拨打。") }
-            if stuck >= Self.stuckWarnSeconds { hasProblem = true; return .warn("收到了 Bot 的声音，但播放卡住了") }
+            if stuck >= Self.stuckFailSeconds { return .fail(Self.playbackFailure) }
+            if stuck >= Self.stuckWarnSeconds { hasProblem = true; return .warn(Self.stalledPlaybackNotice) }
         }
         // 上行：说了话服务端没反应
         if let since = unheardSince {

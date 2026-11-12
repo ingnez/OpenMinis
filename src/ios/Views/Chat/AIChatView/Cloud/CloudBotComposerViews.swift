@@ -76,135 +76,64 @@ struct CloudMorphButton: View {
     }
 }
 
-/// 浮动通话面板：上滑收起，点小胶囊或下拉恢复。
-struct CloudCallCapsule<Avatar: View>: View {
+/// 占一行布局的通话控制条，不叠在聊天内容上。
+struct CloudCallCapsule: View {
     @ObservedObject var call: CloudBotCallController
     let name: String
-    let tint: Color
-    let avatar: Avatar
-    @State private var minimized = false
-    @State private var drag: CGFloat = 0
     @State private var showSettings = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private let panelColor = Color(white: 0.10)
-    private let controlFill = Color.white.opacity(0.13)
 
     var body: some View {
-        Group {
-            if minimized { pill } else { full }
-        }
-        .offset(y: drag / (1 + abs(drag) / 54))
-        .gesture(
-            DragGesture(minimumDistance: 8)
-                .onChanged { drag = $0.translation.height }
-                .onEnded { v in
-                    withAnimation(panelAnimation) {
-                        if v.translation.height < -24 { minimized = true }
-                        if v.translation.height > 24 { minimized = false }
-                        drag = 0
-                    }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 4) {
+                Text(headerStatus)
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .lineLimit(1)
+                    .accessibilityLabel("与 \(name) 的通话，\(headerStatus)")
+                    .accessibilityIdentifier("callCapsule")
+                    .accessibilityValue(CloudCallCapsuleText.value(connected: call.connected, receivedKB: call.receivedAudioKB, lines: call.lines.count))
+                Spacer(minLength: 4)
+                RealtimeCallSignal(connected: call.connected, micLevel: call.muted || call.isEnding ? 0 : call.micLevel,
+                                   speakLevel: call.isEnding ? 0 : call.speakLevel, compact: true)
+                    .frame(width: 64, height: 18)
+                    .padding(.trailing, 4)
+                control("gearshape", label: "通话设置") { showSettings = true }
+                    .disabled(call.isEnding)
+                control(call.muted ? "mic.slash.fill" : "mic.fill", label: call.muted ? "取消静音" : "静音") {
+                    call.toggleMute()
                 }
-        )
-        .transition(.move(edge: .top).combined(with: .opacity))
+                .disabled(!call.connected || call.isEnding)
+                control("phone.down.fill", label: "挂断", tint: .red) { call.hangUp() }
+                    .disabled(call.isEnding)
+            }
+            if let notice = call.notice {
+                Text(notice).font(.caption2).foregroundStyle(.orange).lineLimit(2)
+                    .padding(.bottom, 5)
+                    .accessibilityIdentifier("callCapsuleStatus")
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.leading, 12).padding(.trailing, 2)
+        .background(Color(white: 0.10), in: RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal, 12)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("callStrip")
+        .transition(.opacity)
         .sheet(isPresented: $showSettings) { CloudBotCallSettingsSheet(call: call) }
-    }
-
-    private var panelAnimation: Animation? {
-        reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.82)
     }
 
     private var headerStatus: String {
         if call.isEnding { return "正在挂断" }
         if !call.connected { return "正在连接" }
-        return call.muted ? "麦克风已静音" : "已接通"
+        return CloudBotCallText.clock(call.elapsed)
     }
 
-    private var full: some View {
-        VStack(spacing: 9) {
-            Capsule().fill(.white.opacity(0.24)).frame(width: 30, height: 3)
-                .accessibilityHidden(true)
-            HStack(spacing: 10) {
-                avatar
-                    .frame(width: 36, height: 36)
-                    .shadow(color: tint.opacity(Double(call.speakLevel) * 0.55), radius: 9)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text(headerStatus).font(.caption).foregroundStyle(.white.opacity(0.62))
-                }
-                Spacer(minLength: 4)
-                if call.connected {
-                    Text(CloudBotCallText.clock(call.elapsed))
-                        .font(.subheadline.monospacedDigit()).foregroundStyle(.white.opacity(0.8))
-                }
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("callCapsule")
-            .accessibilityValue(CloudCallCapsuleText.value(connected: call.connected, receivedKB: call.receivedAudioKB, lines: call.lines.count))
-            RealtimeCallSignal(connected: call.connected, micLevel: call.muted || call.isEnding ? 0 : call.micLevel,
-                               speakLevel: call.isEnding ? 0 : call.speakLevel)
-                .frame(height: 37)
-            if let line = CloudCallCapsuleText.line(connected: call.connected, notice: call.notice, status: call.status) {
-                Text(line).font(.caption2)
-                    .foregroundStyle(call.notice == nil ? Color.white.opacity(0.68) : Color.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("callCapsuleStatus")
-            }
-            HStack(spacing: 13) {
-                capsuleButton("gearshape", label: "通话设置", fill: controlFill) { showSettings = true }
-                    .disabled(call.isEnding)
-                capsuleButton(call.muted ? "mic.slash.fill" : "mic.fill", label: call.muted ? "取消静音" : "静音",
-                              fill: call.muted ? .white : controlFill, glyph: call.muted ? .black : .white) {
-                    call.toggleMute()
-                }
-                .disabled(!call.connected || call.isEnding)
-                Spacer(minLength: 4)
-                capsuleButton("chevron.up", label: "收起通话", fill: controlFill) {
-                    withAnimation(panelAnimation) { minimized = true }
-                }
-                capsuleButton("phone.down.fill", label: "挂断", fill: .red) { call.hangUp() }
-                    .disabled(call.isEnding)
-            }
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 15).padding(.vertical, 11)
-        .background(panelColor, in: RoundedRectangle(cornerRadius: 26))
-        .overlay(RoundedRectangle(cornerRadius: 26).strokeBorder(.white.opacity(0.12)))
-        .shadow(color: .black.opacity(0.24), radius: 16, y: 6)
-        .padding(.horizontal, 12)
-    }
-
-    private var pill: some View {
-        Button {
-            withAnimation(panelAnimation) { minimized = false }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: call.notice == nil ? (call.muted ? "mic.slash.fill" : "waveform") : "exclamationmark.triangle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(call.notice == nil ? Color.white : Color.orange)
-                Text(call.connected && !call.isEnding ? CloudBotCallText.clock(call.elapsed) : headerStatus)
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.58))
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14).frame(minHeight: 44)
-            .background(panelColor, in: Capsule())
-            .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
-            .shadow(color: .black.opacity(0.22), radius: 9, y: 4)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("展开与 \(name) 的通话")
-        .accessibilityIdentifier("callCapsuleCollapsed")
-    }
-
-    private func capsuleButton(_ icon: String, label: String, fill: Color, glyph: Color = .white,
-                               action: @escaping () -> Void) -> some View {
+    private func control(_ icon: String, label: String, tint: Color = .white.opacity(0.15),
+                         action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon).font(.system(size: 15, weight: .semibold)).foregroundStyle(glyph)
-                .frame(width: 44, height: 44).background(Circle().fill(fill))
+            Image(systemName: icon).font(.system(size: 13, weight: .semibold))
+                .frame(width: 30, height: 30).background(tint, in: Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
@@ -278,13 +207,7 @@ struct CloudTypingStatusRow<Avatar: View>: View {
 }
 
 
-/// 胶囊上的一行字：有问题写问题；没接通写在做什么；正常接通显示音量条（nil）
 enum CloudCallCapsuleText {
-    static func line(connected: Bool, notice: String?, status: String) -> String? {
-        if let notice, !notice.isEmpty { return notice }
-        if !connected { return status.isEmpty ? "正在连接实时语音" : status }
-        return nil
-    }
     static func value(connected: Bool, receivedKB: Int, lines: Int) -> String {
         connected ? "已接通 · 收到声音 \(receivedKB) KB · 字幕 \(lines) 条" : "未接通"
     }

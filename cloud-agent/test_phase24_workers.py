@@ -86,6 +86,32 @@ class WorkerTests(CloudServerTestCase):
             time.sleep(0.1)
         self.fail("结果没有发回前台")
 
+    def test_voice_dispatch_executes_tools_and_replayed_receipt_keeps_one_worker(self):
+        def executor(req):
+            if not is_worker(req):
+                return {"role": "assistant", "content": "错误：语音任务绕到前台"}
+            if not fresh_tools(req):
+                return tool_call("actual-voice-tool", "shell_execute", {"command": "echo voice-work-proof"})
+            return {"role": "assistant", "content": "已核验语音任务的工具输出"}
+
+        FakeModelHandler.scripts["voice-work"] = executor
+        self.request("PUT", "/v1/bots/boss/reply", {"front_model": "unneeded-front", "back_model": "voice-work"})
+        sid = self.request("POST", "/v1/sessions", {"title": "语音对话", "persona_id": "boss"})[1]["session_id"]
+        body = {"goal": "用云电脑核验工具输出", "model": "unneeded-front",
+                "provider": {"base_url": self.model_base, "api_key": "sk-inline-test-key-000000000000"},
+                "client_nonce": "voice-execution-test"}
+        first_status, first = self.request("POST", f"/v1/sessions/{sid}/voice-tasks", body)
+        second_status, second = self.request("POST", f"/v1/sessions/{sid}/voice-tasks", body)
+        self.assertEqual((first_status, second_status), (202, 202))
+        wid = first["worker"]["worker_id"]
+        self.assertEqual(second["worker"]["worker_id"], wid)
+        worker = self._wait_worker(wid, {"completed"}, timeout=10)
+        events = self.request("GET", f"/v1/tasks/{worker['task_id']}")[1]["events"]
+        results = [e for e in events if e["type"] == "tool_result"]
+        self.assertTrue(any("voice-work-proof" in json.dumps(e["payload"]) for e in results))
+        self.assertEqual(len(self._workers(sid)), 1)
+        self.assertIn("已核验语音任务的工具输出", self._wait_results(sid)[0]["content"])
+
     def test_01_spawn_ack_chat_isolated_and_result_posted_once(self):
         def worker(d):
             self.gate.wait(20)

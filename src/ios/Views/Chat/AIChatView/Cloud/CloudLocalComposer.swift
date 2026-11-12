@@ -40,7 +40,7 @@ struct LocalMorphTrailing<Fallback: View>: View {
     }
 }
 
-/// 本地对话页顶部：通话中显示浮动胶囊和实时字幕（挂断后字幕存进对话）
+/// 本地对话的通话条和实时字幕，由顶部安全区为它们留出空间。
 struct LocalCallOverlay: View {
     @ObservedObject var call: CloudBotCallController
     let name: String
@@ -48,28 +48,14 @@ struct LocalCallOverlay: View {
 
     var body: some View {
         if call.active {
-            VStack(spacing: 6) {
-                CloudCallCapsule(call: call, name: name, tint: tint,
-                                 avatar: LocalCallAvatar(tint: tint, level: call.speakLevel))
-                CloudCallLiveLines(lines: Array(call.lines.suffix(2)), tint: tint)
+            VStack(spacing: 4) {
+                CloudCallCapsule(call: call, name: name)
+                CloudCallLiveLines(lines: Array(call.lines.suffix(1)), tint: tint)
+                    .lineLimit(2)
                     .padding(.horizontal, 12)
             }
-            .padding(.top, 4)
-            .transition(.move(edge: .top).combined(with: .opacity))
+            .padding(.vertical, 4)
+            .transition(.opacity)
         }
-    }
-}
-
-/// 本地助手没有 Bot 头像：用本地主题色的圆，说话时跟着跳
-struct LocalCallAvatar: View {
-    let tint: Color
-    let level: Float
-
-    var body: some View {
-        Circle().fill(tint)
-            .overlay(Image(systemName: "sparkles").font(.system(size: 15, weight: .semibold)).foregroundStyle(tint.cloudGlyph))
-            .frame(width: 34, height: 34)
-            .scaleEffect(1 + CGFloat(min(max(level, 0), 1)) * 0.18)
-            .animation(.spring(response: 0.18, dampingFraction: 0.6), value: level)
     }
 }

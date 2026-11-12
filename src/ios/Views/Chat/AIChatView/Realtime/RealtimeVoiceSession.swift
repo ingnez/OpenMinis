@@ -65,7 +65,11 @@ final class RealtimeVoiceSession: ObservableObject {
     private var geminiPlaybackID: String?
     private var connectionLabel = ""
     private var audioStarted = false
-    private var pendingResponseCreate = false
+    private var responses = RealtimeResponseGate()
+    private var finishedResponseIDs: Set<String> = []
+    private var watchedVoiceTasks: Set<String> = []
+    private var voiceAnnouncements: [String] = []
+    private var userSpeechActive = false
     private var cloudWatchers: [Task<Void, Never>] = []
     @Published var validationResult: String?
     /// 通话中出的问题（中文，胶囊上显示）：听不到你的声音 / 服务没回应 / 声音播不出来
@@ -151,7 +155,8 @@ final class RealtimeVoiceSession: ObservableObject {
         ledger = RealtimePlaybackLedger(); ignoredResponses = []; transcriptIDs = []
         echoGate = RealtimeEchoGate(); gatePreroll = []; echoItems = []; bargeInItemID = nil; itemsStartedWhileBotTalking = []
         seeded = false; configured = false; responseRunning = false; currentResponse = nil; captionedResponse = nil
-        pendingResponseCreate = false
+        responses = RealtimeResponseGate(); finishedResponseIDs = []
+        watchedVoiceTasks = []; voiceAnnouncements = []; userSpeechActive = false
         oldIdleDisabled = UIApplication.shared.isIdleTimerDisabled
         status = "正在验证实时接口"
         // 握手成功之前不申请或启动麦克风，验证模式不传聊天内容。
@@ -283,8 +288,10 @@ final class RealtimeVoiceSession: ObservableObject {
             guard active else { return }
             authorizeAndBeginAudio()
         case "input_audio_buffer.speech_started":
+            userSpeechActive = true
             handleSpeechStarted(itemID: event["item_id"] as? String)
         case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
+            userSpeechActive = false
             handleSpeechEnded(itemID: event["item_id"] as? String)
             status = "正在回应"
             if let id = event["item_id"] as? String, !echoItems.contains(id), !lines.contains(where: { $0.id == id }) {
@@ -315,18 +322,24 @@ final class RealtimeVoiceSession: ObservableObject {
                     return
                 }
                 updateLine(id: id, role: "user", text: text, append: false)
+                if !itemsStartedWhileBotTalking.contains(id) || echoGate.userSpoke(since: Date().addingTimeInterval(-2)) {
+                    _ = submitExplicitLookup(text, itemID: id)
+                }
             }
         case "conversation.item.input_audio_transcription.failed":
             if let id = event["item_id"] as? String {
                 updateLine(id: id, role: "user", text: "[本轮语音转写失败]", append: false)
             }
         case "response.created":
-            if let response = event["response"] as? [String: Any], let id = response["id"] as? String, id != currentResponse {
+            if let response = event["response"] as? [String: Any], let id = response["id"] as? String {
+                guard !finishedResponseIDs.contains(id) else { return }
+                guard id != currentResponse || !responseRunning else { return }
                 // 上一轮留下的 VAD / 转写确认不能取消新回复。
                 dismissBargeIn()
                 currentResponse = id
                 captionedResponse = nil
             }
+            responses.responseStarted()
             responseRunning = true; status = "正在回应"
         case "response.audio.delta", "response.output_audio.delta":
             guard let response = event["response_id"] as? String,
@@ -334,6 +347,7 @@ final class RealtimeVoiceSession: ObservableObject {
                   let item = event["item_id"] as? String,
                   let encoded = event["delta"] as? String, let bytes = Data(base64Encoded: encoded) else { return }
             if validationOnly { roundTripAudioBytes += bytes.count; return }   // 测试时只数字节，不播放
+            if !bytes.isEmpty { responses.receivedAudio(for: response) }
             let newItem = ledger.itemID != item || ledger.responseID != response
             guard ledger.accept(response: response, item: item, index: event["content_index"] as? Int ?? 0, byteCount: bytes.count) else { return }
             if newItem { audio.markItemStart() }
@@ -352,8 +366,11 @@ final class RealtimeVoiceSession: ObservableObject {
             updateLine(id: id, role: "assistant", text: text, append: false)
         case "response.done":
             let response = event["response"] as? [String: Any] ?? [:]
-            if let id = response["id"] as? String, id != currentResponse { return }
+            if let id = response["id"] as? String {
+                guard id == currentResponse, finishedResponseIDs.insert(id).inserted else { return }
+            }
             responseRunning = false
+            responses.responseStarted()
             let responseStatus = response["status"] as? String ?? ""
             if responseStatus == "cancelled" || responseStatus == "incomplete" {
                 // 用户插话或回声误触发取消：不要把整通电话挂掉
@@ -378,13 +395,13 @@ final class RealtimeVoiceSession: ObservableObject {
                 dismissBargeIn()
                 status = muted ? "麦克风已静音" : "正在听你说"
             }
-            if pendingResponseCreate {
-                pendingResponseCreate = false
-                requestResponse()
-            }
+            flushResponseRequest()
+            speakTaskResultWhenIdle()
         case "response.function_call_arguments.done":
             guard let callId = event["call_id"] as? String, let name = event["name"] as? String else { return }
-            runVoiceTool(callId: callId, name: name, args: Self.parseArguments(event["arguments"] as? String))
+            let response = event["response_id"] as? String ?? currentResponse
+            if let response, ignoredResponses.contains(response) { return }
+            runVoiceTool(callId: callId, name: name, args: Self.parseArguments(event["arguments"] as? String), responseID: response)
         case "error":
             let detail = event["error"] as? [String: Any] ?? [:]
             let code = detail["code"] as? String ?? "unknown"
@@ -401,7 +418,13 @@ final class RealtimeVoiceSession: ObservableObject {
     private var instructions: String {
         if validationRoundTrip { return "这是连接测试。不管收到什么，只用一个字回答：好。" }
         if validationOnly { return "Connection validation only. Do not generate a response." }
-        let base = host.instructions(toolsEnabled: toolsSupported && host.toolsAvailable)
+        var base = host.instructions(toolsEnabled: toolsSupported && host.toolsAvailable)
+            + "\n[通话说话方式] 整通使用同一种稳定、自然的口吻、语速和语调。遵守已设定的语言和人格，不模仿转写里的口音、语调或说话人。"
+            + "每个用户请求只确认一次。用户简短说「嗯」「好」时，理解为听到了，避免复述上一个答复或重复派活。"
+            + "收到云电脑完成通知时只简短转述新结果，不再重复任务或承诺去做。"
+        if !toolsSupported, host.toolsAvailable {
+            base += "\n用户明确要求用云电脑搜索时，客户端负责提交。等收到云电脑派发回执再报告接收或失败。"
+        }
         if toolsSupported {
             return base + "\n用户问当前日期或时间时，先调用 \(RealtimeVoiceProtocol.localTimeToolName)，用手机实际时间回答。"
         }
@@ -417,45 +440,77 @@ final class RealtimeVoiceSession: ObservableObject {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
         return object
     }
-    private func runVoiceTool(callId: String, name: String, args: [String: Any]) {
+    private func runVoiceTool(callId: String, name: String, args: [String: Any], responseID: String? = nil) {
+        guard responses.beginTool(callId) else { return }
         if name == RealtimeVoiceProtocol.localTimeToolName, toolsSupported {
             deliverToolOutput(callId: callId, name: name, output: RealtimeVoiceProtocol.localTime())
             return
         }
         let generation = epoch
-        let lineID = "tool-" + callId
-        updateLine(id: lineID, role: "assistant", text: "[已调用云电脑：\(name)]", append: false)
         status = "正在调用云电脑"
         let host = self.host
         Task { [weak self] in
             let result = await host.callTool(name: name, arguments: args)
             guard let self, self.active, self.epoch == generation else { return }
-            self.deliverToolOutput(callId: callId, name: name, output: result.output)
+            self.deliverToolOutput(callId: callId, name: name, output: result.output,
+                                   speakIfSilent: result.watchTaskId == nil ? nil : responseID)
             if let taskId = result.watchTaskId { self.watchCloudTask(taskId, generation: generation) }
         }
     }
-    private func deliverToolOutput(callId: String, name: String, output: String) {
+
+    @discardableResult
+    private func submitExplicitLookup(_ text: String, itemID: String) -> Bool {
+        guard !toolsSupported, !validationOnly, host.toolsAvailable,
+              let goal = RealtimeCloudLookup.goal(text) else { return false }
+        let callId = "local-lookup-" + itemID
+        guard responses.beginTool(callId) else { return true }
+        let generation = epoch
+        let host = self.host
+        Task { [weak self] in
+            let result = await host.callTool(name: "cloud_task_start", arguments: ["prompt": goal])
+            guard let self, self.active, self.epoch == generation else { return }
+            self.responses.finishTool(callId, needsReply: false)
+            self.flushResponseRequest()
+            self.voiceAnnouncements.append("[云电脑派发回执] " + result.output + "\n请只说一次接收或失败。")
+            self.speakTaskResultWhenIdle()
+            if let taskId = result.watchTaskId { self.watchCloudTask(taskId, generation: generation) }
+        }
+        return true
+    }
+    private func deliverToolOutput(callId: String, name: String, output: String, speakIfSilent responseID: String? = nil) {
         if connectionProtocol.isGemini {
             let response: [String: Any] = ["id": callId, "name": name, "response": ["result": output]]
             emit(["toolResponse": ["functionResponses": [response]]])
+            responses.finishTool(callId, needsReply: false)
         } else {
             emit(RealtimeVoiceProtocol.functionOutput(callId: callId, output: output))
-            requestResponse()
+            responses.finishTool(callId, speakIfSilent: responseID)
+            flushResponseRequest()
         }
     }
     private func requestResponse() {
+        responses.request()
+        flushResponseRequest()
+    }
+    private func flushResponseRequest() {
         // 各协议已在会话配置中选择音频。沿用默认配置，避免给 GA 接口发送旧版 modalities 字段。
-        let create = ["type": "response.create"]
-        if responseRunning { pendingResponseCreate = true } else { emit(create) }
+        if responses.takeRequest(responseRunning: responseRunning) { emit(["type": "response.create"]) }
     }
     private func watchCloudTask(_ taskId: String, generation: UUID) {
+        guard watchedVoiceTasks.insert(taskId).inserted else { return }
         let host = self.host
         let watcher = Task { [weak self] in
             let summary = await host.waitForResult(taskId: taskId)
             guard !summary.isEmpty, let self, self.active, self.epoch == generation else { return }
-            self.announce("[云电脑任务完成通知] " + summary + "\n请用一两句话口头告诉用户。")
+            self.voiceAnnouncements.append("[云电脑任务状态] " + summary + "\n请只口头转述新状态或结果一次。")
+            self.speakTaskResultWhenIdle()
         }
         cloudWatchers.append(watcher)
+    }
+    private func speakTaskResultWhenIdle() {
+        guard active, connected, !isEnding, !responseRunning, !responses.awaitingStart,
+              !audio.hasPendingAudio, !userSpeechActive, !voiceAnnouncements.isEmpty else { return }
+        announce(voiceAnnouncements.removeFirst())
     }
     private func announce(_ text: String) {
         if connectionProtocol.isGemini {
@@ -471,7 +526,9 @@ final class RealtimeVoiceSession: ObservableObject {
     func insertUserText(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard active, !isEnding, !trimmed.isEmpty else { return }
-        updateLine(id: "typed-" + UUID().uuidString, role: "user", text: trimmed, append: false)
+        let id = "typed-" + UUID().uuidString
+        updateLine(id: id, role: "user", text: trimmed, append: false)
+        if submitExplicitLookup(trimmed, itemID: id) { return }
         announce(trimmed)
         status = "正在回应"
     }
@@ -603,6 +660,7 @@ final class RealtimeVoiceSession: ObservableObject {
             responseRunning = false; geminiSuppressOutput = false
             geminiUserID = UUID().uuidString; geminiAssistantID = UUID().uuidString
             if !audio.hasPendingAudio { status = muted ? "麦克风已静音" : "正在听你说" }
+            speakTaskResultWhenIdle()
         }
     }
 
@@ -624,6 +682,7 @@ final class RealtimeVoiceSession: ObservableObject {
             guard let self, self.active, !self.responseRunning else { return }
             self.dismissBargeIn()
             self.status = self.muted ? "麦克风已静音" : "正在听你说"
+            self.speakTaskResultWhenIdle()
         }
         audio.onEngineStopped = { [weak self] reason in self?.fail(reason) }
         let stream = try audio.start(inputSampleRate: Double(connectionProtocol.inputSampleRate))
@@ -694,7 +753,16 @@ final class RealtimeVoiceSession: ObservableObject {
                                      label: connectionLabel)
         switch verdict {
         case .ok: if notice != nil, !health.hasProblem { notice = nil }
-        case .warn(let text): notice = text
+        case .warn(let text):
+            notice = text
+            if text == RealtimeCallHealth.stalledPlaybackNotice, health.takePlaybackRecovery() {
+                do {
+                    try audio.resumeStalledPlayback()
+                    notice = "播放卡住了，正在恢复"
+                } catch {
+                    fail(RealtimeCallHealth.playbackFailure)
+                }
+            }
         case .fail(let text): fail(text)
         }
     }
@@ -907,7 +975,7 @@ final class RealtimeVoiceSession: ObservableObject {
         connected = false; epoch = UUID()
         receiveTask?.cancel(); senderTask?.cancel(); microphoneTask?.cancel(); healthTask?.cancel(); healthTask = nil
         timeoutTask?.cancel(); clockTask?.cancel()
-        cloudWatchers.forEach { $0.cancel() }; cloudWatchers = []; pendingResponseCreate = false
+        cloudWatchers.forEach { $0.cancel() }; cloudWatchers = []; voiceAnnouncements = []
         outbound?.finish(); outbound = nil
         socket?.cancel(with: .normalClosure, reason: nil); socket = nil
         transport?.invalidateAndCancel(); transport = nil
@@ -926,14 +994,6 @@ final class RealtimeVoiceSession: ObservableObject {
     }
 
     private func observeLifecycle() {
-        // 秒回模式：对话页把后台进度（一句话）发过来，通话中口头告诉用户（只在通话真的接通时）
-        observers.append(NotificationCenter.default.addObserver(forName: Notification.Name("OpenMinisReplyStatusSpoken"), object: nil, queue: .main) { [weak self] note in
-            guard let text = note.userInfo?["text"] as? String, !text.isEmpty else { return }
-            Task { @MainActor [weak self] in
-                guard let self, self.active else { return }
-                self.announce("[后台进度] " + text + "\n请用一句很短的话口头告诉用户，然后继续听用户说。")
-            }
-        })
         let names: [Notification.Name] = [AVAudioSession.interruptionNotification,
             AVAudioSession.routeChangeNotification, AVAudioSession.mediaServicesWereResetNotification,
             UIApplication.didEnterBackgroundNotification, .newChatRequested]

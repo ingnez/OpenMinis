@@ -205,15 +205,6 @@ enum CloudReplyText {
     }
 
     /// 实时语音通话里念出来的进度（一句话）
-    static func spoken(_ w: CloudReplyWorker) -> String {
-        if w.needsDecision { return "后台有件事需要你决定。" }
-        switch w.status {
-        case "completed": return "后台的事做完了，结果发在对话里。"
-        case "failed", "interrupted", "limit_reached": return "后台的事没做完，详情在对话里。"
-        case "cancelled": return "后台任务已经停了。"
-        default: return "后台正在\(phrase(w))。"
-        }
-    }
 }
 
 /// 提示音 / 轻震：只在状态真的变了的那一刻响一次；第一次看到的（打开对话时已经做完的旧任务）不响
@@ -277,19 +268,6 @@ enum CloudReplyRow {
     /// 横滑停止：往左拖过这个距离松手就停
     static let swipeToStop: Double = 90
     static func shouldStop(translation: Double) -> Bool { translation <= -swipeToStop }
-}
-
-/// 实时语音通话中的进度播报：短语变了才念，两次之间至少隔 20 秒；结束 / 要你决定立刻念
-enum CloudReplySpoken {
-    static let minGap: Double = 20
-
-    static func next(previous: String?, current: CloudReplyWorker, lastSpokenAt: Date?, now: Date = Date()) -> String? {
-        let line = CloudReplyText.spoken(current)
-        guard line != previous else { return nil }
-        let urgent = current.needsDecision || !current.active
-        if !urgent, let t = lastSpokenAt, now.timeIntervalSince(t) < minGap { return nil }
-        return line
-    }
 }
 
 /// 秒回的首字时间：从点发送到对话里出现 Bot 的第一个字（E2E 断言 < 1 秒用）

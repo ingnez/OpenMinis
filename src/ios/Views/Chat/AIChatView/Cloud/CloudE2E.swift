@@ -44,8 +44,6 @@ enum CloudE2E {
     static let localModelId = "e2e-local-model"
     static let localFrontModelId = "e2e-local-front-model"
     static let localBackModelId = "e2e-local-back-model"
-    /// 通话中播报进度的 E2E：不真正拨号，状态行把「在通话里」当成真的，把要念的那句话写到 replySpokenLine
-    static var replySpeak: Bool { token != nil && ProcessInfo.processInfo.environment["OPENMINIS_E2E_REPLY_SPEAK"] == "1" }
 
     static func applyLocalReplyDefaults(_ env: [String: String]) {
         LocalReplyStore.clearOverrides()

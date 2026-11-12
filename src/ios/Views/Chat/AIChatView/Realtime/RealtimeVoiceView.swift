@@ -138,9 +138,10 @@ struct RealtimeCallSignal: View {
     let connected: Bool
     let micLevel: Float
     let speakLevel: Float
+    var compact = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private let barsPerSide = 12
-    private let spacing: CGFloat = 3
+    private var barsPerSide: Int { compact ? 5 : 12 }
+    private var spacing: CGFloat { compact ? 2 : 3 }
 
     var body: some View {
         let paused = reduceMotion || CloudE2E.pauseIdleAnimations
@@ -182,7 +183,8 @@ struct RealtimeCallSignal: View {
                 let isMic = index < barsPerSide
                 let level = max(0, min(1, isMic ? micLevel : speakLevel))
                 let position = Double(index % barsPerSide)
-                let envelope = 0.36 + 0.64 * (1 - abs(position - 5.5) / 5.5)
+                let center = Double(barsPerSide - 1) / 2
+                let envelope = 0.36 + 0.64 * (1 - abs(position - center) / center)
                 let movement = 0.72 + 0.28 * sin(phase * 11 + position * 0.89)
                 let height = 3 + max(0, size.height - 3) * CGFloat(Double(level) * envelope * movement)
                 Capsule()

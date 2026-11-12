@@ -61,9 +61,9 @@ final class RealtimeCloudBotHost: RealtimeVoiceHost {
         // 设定里含灵魂设定（风格、人格、禁止事项、语言）和语音设置，优先于上面的默认说法
         if !persona.isEmpty { text += "\n\n你的设定（严格遵守）：\n" + String(persona.prefix(6000)) }
         if toolsEnabled {
-            text += "\n\n需要真实执行的事（查资料、上网、跑代码、处理文件、操作电脑等）用 cloud_task_start 交给云端的你自己完成：它在同一个对话里，能用你的记忆、技能和工具，但听不到这次通话，所以 prompt 要写完整。交出去后先口头告诉用户已经开始做；收到“云电脑任务完成通知”后用一两句话转述结果。用户问进度时调用 cloud_task_status；cloud_routine_run 可运行已保存的例行任务。没有工具结果之前不得声称已完成。"
+            text += "\n\n查资料、操作电脑等需要真实执行的事必须调用 cloud_task_start。云端听不到通话，所以 prompt 要写完整。拿到 task_id 后，只说一次任务已提交。失败时直接说原因。用户问进度时调用 cloud_task_status，收到云电脑任务状态后只转述新信息。只有真实结果才能确认已经查过或完成。"
         } else {
-            text += "\n没有可执行工具，不得声称已执行外部操作。"
+            text += "\n没有可直接调用的工具。只有云电脑派发回执或真实结果能确认已接收或完成。"
         }
         return text
     }
@@ -81,7 +81,7 @@ final class RealtimeCloudBotHost: RealtimeVoiceHost {
             }
             lastTaskId = taskId
             return (Self.encode(["status": "submitted", "task_id": taskId,
-                                 "note": "已交给云端的\(botName)在后台执行，完成后会收到通知；现在先简短告诉用户已经开始。"]), taskId)
+                                 "note": "云电脑已接收，按后台可用名额执行。请只确认一次。"]), taskId)
         case "cloud_task_status":
             var args = arguments
             if (args["task_id"] as? String ?? "").isEmpty, let lastTaskId { args["task_id"] = lastTaskId }

@@ -30,6 +30,10 @@ def ensure_schema(conn):
                  "created_at REAL NOT NULL, started_at REAL, finished_at REAL)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_workers_front ON bot_workers(front_session, created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_workers_session ON bot_workers(worker_session)")
+    if "client_nonce" not in {row[1] for row in conn.execute("PRAGMA table_info(bot_workers)")}:
+        conn.execute("ALTER TABLE bot_workers ADD COLUMN client_nonce TEXT")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_workers_nonce ON bot_workers(front_session, client_nonce) "
+                 "WHERE client_nonce IS NOT NULL")
     conn.commit()
 
 
@@ -74,7 +78,7 @@ def running_count(conn, bot_id):
                         (bot_id or "",)).fetchone()[0]
 
 
-def create(conn, bot_id, front_session, goal, context=None, title=None):
+def create(conn, bot_id, front_session, goal, context=None, title=None, client_nonce=None):
     if not isinstance(goal, str) or not goal.strip():
         raise WorkerError("goal 不能为空")
     if context is not None and not isinstance(context, str):
@@ -83,12 +87,18 @@ def create(conn, bot_id, front_session, goal, context=None, title=None):
     sid = "sess_" + uuid.uuid4().hex[:12]
     title = (title if isinstance(title, str) and title.strip() else goal.strip().splitlines()[0])[:60]
     now = time.time()
-    conn.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, NULL, ?, '', ?, ?)",
-                 (sid, "后台任务：" + title, now, bot_id))
-    conn.execute("INSERT INTO bot_workers (worker_id, bot_id, front_session, worker_session, title, goal, context, status, created_at) "
-                 "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)", (wid, bot_id, front_session, sid, title, goal.strip()[:20000],
-                                                               (context or "")[:20000] or None, now))
-    conn.commit()
+    with conn:
+        if client_nonce:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute("SELECT worker_id FROM bot_workers WHERE front_session = ? AND client_nonce = ?",
+                                    (front_session, client_nonce)).fetchone()
+            if existing:
+                return get(conn, existing[0])
+        conn.execute("INSERT INTO sessions (session_id, local_session_id, title, instructions, created_at, persona_id) VALUES (?, NULL, ?, '', ?, ?)",
+                     (sid, "后台任务：" + title, now, bot_id))
+        conn.execute("INSERT INTO bot_workers (worker_id, bot_id, front_session, worker_session, title, goal, context, status, created_at, client_nonce) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)", (wid, bot_id, front_session, sid, title, goal.strip()[:20000],
+                                                                     (context or "")[:20000] or None, now, client_nonce))
     return get(conn, wid)
 
 

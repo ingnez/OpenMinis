@@ -8,7 +8,6 @@ enum CloudReplyService {
     /// 对话菜单改了这个对话的回复方式：对话页重新读一次（userInfo["session_id"]）
     nonisolated static let changed = Notification.Name("OpenMinisReplyModeChanged")
     /// 实时语音通话里念进度（RealtimeVoiceSession 收这个名字；用字面量，实时目录单独类型检查时不依赖这里）
-    nonisolated static let spoken = Notification.Name("OpenMinisReplyStatusSpoken")
     /// 刚发出消息：状态行勤快刷新（本地秒回派活之后后台任务马上会出现）
     nonisolated static let kick = Notification.Name("OpenMinisReplyStatusKick")
 
@@ -74,13 +73,9 @@ final class CloudReplyStatusModel: ObservableObject {
     private var loop: Task<Void, Never>?
     private var sessionId = ""
     private var fastUntil = Date.distantPast
-    private var lastSpoken: String?
-    private var lastSpokenAt: Date?
     private var mirrored: Set<String> = []
     var botName = ""
     var locked = false
-    /// 正在实时语音通话：进度念给用户听
-    var inRealtimeCall: () -> Bool = { false }
     /// 有后台任务结束：结果消息已经写进对话，页面要重新拉一次
     var onWorkerFinished: () -> Void = {}
     /// 本地模式：自己提供 worker 列表（不走云端 /v1/workers）
@@ -90,7 +85,6 @@ final class CloudReplyStatusModel: ObservableObject {
     #if DEBUG
     @Published var lastCue: String?
     @Published var liveActivityOn = false
-    @Published var lastSpokenLine: String?
     #endif
 
     var current: CloudReplyWorker? { CloudReplyRow.current(workers, finishedAt: finishedAt) }
@@ -100,9 +94,6 @@ final class CloudReplyStatusModel: ObservableObject {
         guard loop == nil || sessionId != sid else { return }
         loop?.cancel()
         sessionId = sid
-        #if DEBUG
-        if CloudE2E.replySpeak { inRealtimeCall = { true } }
-        #endif
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -148,7 +139,6 @@ final class CloudReplyStatusModel: ObservableObject {
             Task { try? await Task.sleep(nanoseconds: 1_500_000_000); self.onWorkerFinished() }
         }
         mirror()
-        speak()
     }
 
     func stop(_ w: CloudReplyWorker) {
@@ -225,20 +215,7 @@ final class CloudReplyStatusModel: ObservableObject {
         }
     }
 
-    // MARK: 实时通话中念进度
-
-    private func speak() {
-        guard inRealtimeCall(), let w = current else { return }
-        guard let line = CloudReplySpoken.next(previous: lastSpoken, current: w, lastSpokenAt: lastSpokenAt) else { return }
-        lastSpoken = line
-        lastSpokenAt = Date()
-        #if DEBUG
-        lastSpokenLine = line
-        #endif
-        NotificationCenter.default.post(name: CloudReplyService.spoken, object: nil, userInfo: ["text": line])
-    }
 }
-
 extension CloudReplyCue {
     var workerId: String {
         switch self {
@@ -602,10 +579,6 @@ struct CloudReplyComposerSlot: View {
         if CloudE2E.token != nil, status.liveActivityOn {
             Text("on").font(.system(size: 1)).opacity(0.02)
                 .accessibilityIdentifier("replyLiveActivity").accessibilityLabel("on")
-        }
-        if CloudE2E.token != nil, let line = status.lastSpokenLine {
-            Text(line).font(.system(size: 1)).opacity(0.02)
-                .accessibilityIdentifier("replySpokenLine").accessibilityLabel(line)
         }
         #endif
     }

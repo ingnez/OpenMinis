@@ -42,6 +42,8 @@ struct CloudVoiceRouteSheet: View {
         return .init(providerID: c.provider, providerLabel: "", model: c.model)
     }
 
+    private var playbackInterrupted: Bool { problem == RealtimeCallHealth.playbackFailure }
+
     private var options: [CloudVoiceRoute.Option] {
         let supported = RealtimeVoiceSettingsForm.supportedProviders(providers)
         let entries = providers.modelEntries.compactMap { e -> CloudVoiceRoute.Option? in
@@ -59,7 +61,7 @@ struct CloudVoiceRouteSheet: View {
                         .font(.callout).foregroundStyle(.primary)
                         .accessibilityIdentifier("voiceRouteProblem")
                 }
-                if !options.isEmpty {
+                if !playbackInterrupted, !options.isEmpty {
                     Section("换成能实时通话的模型（来自你的服务商）") {
                         ForEach(options) { o in
                             Button { switchTo(o) } label: {
@@ -72,11 +74,16 @@ struct CloudVoiceRouteSheet: View {
                     }
                 }
                 Section {
+                    if playbackInterrupted {
+                        Button { dismiss(); onRetry() } label: {
+                            Label("重新拨打", systemImage: "phone.arrow.up.right")
+                        }
+                    }
                     Button { dismiss(); onTurns() } label: {
                         Label("这次用普通语音（录音→识别→回复→朗读）", systemImage: "mic.circle")
                     }
                     .accessibilityIdentifier("voiceRouteTurns")
-                    if !current.model.isEmpty {
+                    if !playbackInterrupted, !current.model.isEmpty {
                         Button {
                             CloudVoiceRoute.rememberTurns(provider: current.providerID, model: current.model)
                             dismiss(); onTurns()
@@ -89,7 +96,8 @@ struct CloudVoiceRouteSheet: View {
                         .accessibilityIdentifier("voiceRouteSettings")
                 }
             }
-            .navigationTitle("实时语音没接通").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(playbackInterrupted ? "通话播放中断" : "实时语音没接通")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
             .sheet(isPresented: $showSettings) { RealtimeVoiceSettingsSheet(botId: botId) }
         }
