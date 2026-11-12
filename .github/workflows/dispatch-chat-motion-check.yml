@@ -1,36 +1,23 @@
-name: Build OpenMinis after message menu tests
+name: Stop superseded OpenMinis IPA dispatch
 on:
   push:
     branches: [grokbot-phase2-chat-motion-ci]
     paths: [.github/workflows/dispatch-chat-motion-check.yml]
 permissions:
   actions: write
-  contents: read
 jobs:
-  dispatch:
+  cancel:
     if: github.repository == 'ingnez/OpenMinis'
     runs-on: ubuntu-latest
-    timeout-minutes: 210
+    timeout-minutes: 5
     steps:
-      - name: Wait for simulator tests and dispatch the IPA build
+      - name: Stop the dispatch for the superseded revision
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_BRANCH: grokbot-phase2-message-menu
-          EXPECTED_SHA: a08eba3b24ff4e7ef90a2cd0e90973522e07b6bd
-          TEST_RUN: '43318170255'
         run: |
           set -euo pipefail
-          run_path="repos/$GITHUB_REPOSITORY/actions/runs/$TEST_RUN"
-          while true; do
-            result=$(gh api "$run_path" --jq '[.head_sha, .status, (.conclusion // "pending")] | @tsv')
-            IFS=$'\t' read -r tested_sha status conclusion <<< "$result"
-            test "$tested_sha" = "$EXPECTED_SHA"
-            if [ "$status" = completed ]; then
-              echo "Simulator tests: $conclusion"
-              test "$conclusion" = success
-              break
-            fi
-            sleep 45
-          done
-          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$TARGET_BRANCH" --jq '.object.sha')" = "$EXPECTED_SHA"
-          gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$TARGET_BRANCH" -f mac_runner=macos-15-intel
+          run_path="repos/$GITHUB_REPOSITORY/actions/runs/43318344788"
+          test "$(gh api "$run_path" --jq .head_sha)" = d636c642f9415ee9b7a19102650e4f157ee72845
+          if [ "$(gh api "$run_path" --jq .status)" != completed ]; then
+            gh api --method POST "$run_path/cancel"
+          fi
