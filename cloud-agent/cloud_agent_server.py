@@ -119,6 +119,7 @@ def sysnap_dir():
 GLOBAL_WORKSPACE = os.path.abspath(os.environ.get("OPENMINIS_WORKSPACE", os.path.join(BASE_DIR, "workspace")))
 TOKEN_FILE = os.environ.get("OPENMINIS_TOKEN_FILE", "/etc/openminis/token")
 MAX_TURNS = int(os.environ.get("OPENMINIS_MAX_TURNS", "128"))
+WORKER_MAX_TURNS = max(0, int(os.environ.get("OPENMINIS_WORKER_MAX_TURNS", "0")))
 
 def validate_and_load_token():
     token = os.environ.get("OPENMINIS_TOKEN")
@@ -2937,12 +2938,13 @@ def _worker_finish(wid, tid, started):
         w = cloud_workers.get(conn, wid)
         if w and w["status"] == "running":
             result = cloud_workers.last_answer(conn, w["worker_session"], started) if status != "cancelled" else None
-            if status == "failed":
-                error_row = conn.execute("SELECT payload FROM task_events WHERE task_id = ? AND event_type = 'error' "
+            if status in ("failed", "limit_reached"):
+                error_row = conn.execute("SELECT payload FROM task_events WHERE task_id = ? AND event_type IN ('error', 'limit_reached') "
                                          "ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
                 if error_row:
                     try:
-                        failure = json.loads(error_row[0]).get("error")
+                        detail = json.loads(error_row[0])
+                        failure = detail.get("error") or detail.get("message")
                     except (ValueError, AttributeError):
                         failure = None
                     if isinstance(failure, str) and failure.strip():
@@ -4820,7 +4822,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     c.execute("SELECT role, content, tool_calls, tool_call_id, meta FROM messages WHERE session_id = ? AND id > ? "
               "AND role != 'context_reset' ORDER BY id ASC", (session_id, last_reset))
     rows = c.fetchall()
+    is_worker = cloud_workers.is_worker_session(conn, session_id)
     conn.close()
+    turn_limit = (WORKER_MAX_TURNS or None) if is_worker else MAX_TURNS
 
     plugin_defs, plugin_map, plugin_note = plugin_tools_for_session(session_id, depth)
     # 系统提示保持稳定（不放随消息变化的内容），服务商的前缀缓存才能命中；@提及提示放到本轮请求的末尾
@@ -5139,7 +5143,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             return False
 
         turns = 0
-        while turns < MAX_TURNS:
+        while turn_limit is None or turns < turn_limit:
             turns += 1
             if is_task_cancelled(task_id):
                 final_status = "cancelled"
@@ -5442,7 +5446,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 break
         else:
             final_status = "limit_reached"
-            log_event(task_id, "limit_reached", {"message": f"Reached {MAX_TURNS} turns"})
+            log_event(task_id, "limit_reached", {"message": f"已达到任务设置的 {turn_limit} 轮上限。"})
     except Exception as e:
         if is_task_cancelled(task_id):
             final_status = "cancelled"
@@ -7295,7 +7299,8 @@ class Handler(BaseHTTPRequestHandler):
                     if mr[5]:
                         try:
                             meta = json.loads(mr[5])
-                            for k in ("reasoning", "duration_ms", "injected", "snapshot_id", "title", "internal", "client_nonce", "front_task_id"):
+                            for k in ("reasoning", "duration_ms", "injected", "snapshot_id", "title", "internal", "client_nonce",
+                                      "front_task_id", "worker_id", "worker_status", "worker_title"):
                                 if k in meta:
                                     m[k] = meta[k]
                             m.update(cloud_runmodel.public_meta(meta))

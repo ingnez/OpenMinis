@@ -168,7 +168,8 @@ def post_result(conn, w, defer_while_front_active=False):
             return None
         conn.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'assistant', ?, ?, ?)",
                      (current["front_session"], result_text(current), time.time(),
-                      json.dumps({"worker_id": current["worker_id"], "worker_status": current["status"]}, ensure_ascii=False)))
+                      json.dumps({"worker_id": current["worker_id"], "worker_status": current["status"],
+                                  "worker_title": current["title"]}, ensure_ascii=False)))
         conn.execute("UPDATE bot_workers SET reported = 1 WHERE worker_id = ?", (current["worker_id"],))
         return True
 

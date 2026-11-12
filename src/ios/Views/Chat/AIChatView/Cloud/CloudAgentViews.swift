@@ -1601,12 +1601,16 @@ struct CloudSessionView: View {
                         ForEach(dividers[-1] ?? []) { CloudCallDividerRow(seconds: $0.seconds) }
                         ForEach(Array(turns.enumerated()), id: \.element.presentationID) { idx, turn in
                             let msg = turn.message
-                            if msg.role == .user {
+                            if let outcome = turn.workerOutcome {
+                                CloudWorkerOutcomeRow(outcome: outcome)
+                                    .id(turn.presentationID)
+                            } else if msg.role == .user {
                                 cloudUserTurn(turn, accent: theme.accent)
                                     .id(turn.presentationID)
                                 anchoredReplies(after: turn, theme: theme)
                             } else {
                                 let prevAssistant = idx > 0 && turns[idx - 1].message.role == .assistant
+                                    && turns[idx - 1].workerOutcome == nil
                                 let extras = reactionExtras(CloudMessageExtras(turn.textRaw))
                                 CloudInstantFooterGate(turn:
                                     CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
@@ -1620,7 +1624,7 @@ struct CloudSessionView: View {
                                                          onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 }))
                                     .id(turn.presentationID)
                             }
-                            if idx == turns.count - 1, msg.role == .assistant, activeTaskStatus != "running" {
+                            if idx == turns.count - 1, msg.role == .assistant, turn.workerOutcome == nil, activeTaskStatus != "running" {
                                 CloudSmartReplyBar(text: msg.content, accent: theme.accent, onPick: quickSend)
                             }
                             ForEach(threads[idx] ?? []) { CloudBotThreadCollapsedRow(item: $0) }

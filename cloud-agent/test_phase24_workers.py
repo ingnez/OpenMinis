@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 import cloud_workers
@@ -96,6 +97,27 @@ class WorkerTests(CloudServerTestCase):
         self.assertIn("后台模型服务暂不可用", failed["result"])
         delivered = self._wait_results(sid, timeout=10)
         self.assertTrue(any("后台任务失败" in m["content"] and "后台模型服务暂不可用" in m["content"] for m in delivered))
+
+    def test_worker_turn_limit_is_opt_in_and_outcomes_keep_task_metadata(self):
+        def work(req):
+            step = len(fresh_tools(req))
+            if step < 5:
+                return tool_call(f"step-{step}", "shell_execute", {"command": f"echo step-{step}"})
+            return {"role": "assistant", "content": "五个步骤均已完成"}
+
+        model = "worker-turns"
+        FakeModelHandler.scripts[model] = self._front_script(work, {"goal": "检查文件", "title": "文件核对"})
+        for limit, status in ((0, "completed"), (2, "limit_reached")):
+            with self.subTest(limit=limit), mock.patch.object(self.srv, "MAX_TURNS", 2), \
+                    mock.patch.object(self.srv, "WORKER_MAX_TURNS", limit):
+                sid = self.request("POST", "/v1/sessions", {"title": "t", "persona_id": "boss"})[1]["session_id"]
+                self._say(sid, "查一下资料", model)
+                worker = self._workers(sid)[0]
+                done = self._wait_worker(worker["worker_id"], {status}, timeout=10)
+                self.assertIn("五个步骤" if not limit else "2 轮上限", done["result"])
+                outcomes = self._wait_results(sid, timeout=10)
+                row = next(m for m in outcomes if m.get("worker_id") == worker["worker_id"])
+                self.assertEqual((row["worker_status"], row["worker_title"]), (status, "文件核对"))
 
     def test_voice_dispatch_executes_tools_and_replayed_receipt_keeps_one_worker(self):
         def executor(req):

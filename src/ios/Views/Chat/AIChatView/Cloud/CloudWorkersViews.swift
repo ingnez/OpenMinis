@@ -56,6 +56,78 @@ struct CloudWorkerRow: View {
     }
 }
 
+struct CloudWorkerOutcomeRow: View {
+    let outcome: CloudWorkerOutcome
+    @State private var showDetails = false
+
+    private var status: (text: String, symbol: String, color: Color) {
+        switch outcome.status {
+        case "completed": return ("已完成", "checkmark.circle.fill", .green)
+        case "failed": return ("任务失败", "exclamationmark.circle.fill", .orange)
+        case "limit_reached": return ("任务达到限制", "pause.circle.fill", .orange)
+        case "interrupted": return ("任务中断", "pause.circle.fill", .orange)
+        case "cancelled": return ("已停止", "stop.circle.fill", .secondary)
+        default: return ("已结束", "checkmark.circle", .secondary)
+        }
+    }
+
+    var body: some View {
+        Button { showDetails = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: status.symbol)
+                    .font(.title3)
+                    .foregroundStyle(status.color)
+                    .frame(width: 32, height: 32)
+                    .background(status.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(outcome.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                    Text(status.text).font(.caption).foregroundStyle(status.color)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+            .contentShape(RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("workerOutcomeCard")
+        .accessibilityHint("查看任务结果和执行过程")
+        .sheet(isPresented: $showDetails) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text(outcome.title).font(.headline)
+                        Label(status.text, systemImage: status.symbol).font(.subheadline).foregroundStyle(status.color)
+                        let shown = CloudMessageText.display(outcome.detail)
+                        if shown.images > 0 {
+                            CloudMessageImages(content: outcome.detail, alignment: .leading)
+                        }
+                        if !shown.text.isEmpty {
+                            SelectableMarkdownView(markdown: shown.text)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        NavigationLink("查看执行过程") {
+                            CloudWorkerTimelineView(workerId: outcome.workerID, title: outcome.title)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                }
+                .navigationTitle("后台任务")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) { Button("关闭") { showDetails = false } }
+                }
+            }
+        }
+    }
+}
+
 /// 后台任务的过程：worker 自己会话里的每一步（胶囊工具步骤 + 小终端，与对话页同一套视图）
 struct CloudWorkerTimelineView: View {
     let workerId: String

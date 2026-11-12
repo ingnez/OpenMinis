@@ -174,6 +174,31 @@ enum CloudEventApplier {
     }
 }
 
+struct CloudWorkerOutcome {
+    let workerID: String
+    let status: String
+    let title: String
+    let detail: String
+
+    init?(_ row: [String: Any]) {
+        guard let id = row["worker_id"] as? String, !id.isEmpty,
+              let status = row["worker_status"] as? String else { return nil }
+        let content = row["content"] as? String ?? ""
+        let bodyStart = content.range(of: "」\n\n")
+        let heading = content[..<(bodyStart.map { content.index(after: $0.lowerBound) } ?? content.endIndex)]
+        let oldTitle: String?
+        if let start = heading.firstIndex(of: "「"), let end = heading.lastIndex(of: "」"), start < end {
+            oldTitle = String(heading[heading.index(after: start)..<end])
+        } else {
+            oldTitle = nil
+        }
+        self.workerID = id
+        self.status = status
+        title = row["worker_title"] as? String ?? oldTitle ?? "后台任务"
+        detail = bodyStart.map { content[$0.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+    }
+}
+
 /// 服务器会话历史（OpenAI 风格 messages）→ 与本地模式同样的 ChatMessage 列表。
 /// 同一轮里助手的多条消息（正文、tool_calls、tool 结果）合并成一条助手消息，工具结果挂到对应工具块上。
 enum CloudHistoryAdapter {
@@ -183,6 +208,7 @@ enum CloudHistoryAdapter {
         let raw: [String: Any]
         /// 这一轮最后一条有文字的原始消息（表情回应、引用回复针对它）
         var textRaw: [String: Any] = [:]
+        var workerOutcome: CloudWorkerOutcome? = nil
 
         var presentationID: String {
             if message.role == .user, let nonce = raw["client_nonce"] as? String, !nonce.isEmpty {
@@ -226,6 +252,13 @@ enum CloudHistoryAdapter {
                 guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 out.append(Turn(message: ChatMessage(role: .user, content: content), raw: m))
             case "assistant":
+                if let outcome = CloudWorkerOutcome(m) {
+                    flush()
+                    let result = ChatMessage(role: .assistant, content: content)
+                    CloudEventApplier.apply(result, type: "thought", payload: ["content": content])
+                    out.append(Turn(message: result, raw: m, textRaw: m, workerOutcome: outcome))
+                    continue
+                }
                 let msg = current ?? ChatMessage(role: .assistant, content: "")
                 current = msg
                 currentRaw = m

@@ -214,21 +214,35 @@ struct CloudAssistantTurnView: View {
     private var hasHiddenDetail: Bool { !hiddenThinking.isEmpty || !hiddenBriefs.isEmpty || !hiddenTools.isEmpty }
 }
 
-/// 秒回里 Bot 的回复：靠左的浅灰圆角气泡，最宽约屏宽 84%，右边总留一段空白（点空白展开下方的耗时和操作）
+/// 秒回里 Bot 的回复使用对话列的可用宽度，右侧留出点按空间。
 struct CloudBotBubble<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        HStack(spacing: 0) {
+        CloudBotBubbleLayout {
             content
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.systemGray6)))
-                .frame(maxWidth: UIScreen.main.bounds.width * 0.84, alignment: .leading)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("botReplyBubble")
-            Spacer(minLength: 0)
         }
+    }
+}
+
+private struct CloudBotBubbleLayout: Layout {
+    private let widthFraction: CGFloat = 0.9
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let bubble = subviews.first else { return .zero }
+        let columnWidth = proposal.width.flatMap { $0.isFinite ? $0 : nil }
+        let measured = bubble.sizeThatFits(ProposedViewSize(width: columnWidth.map { max(1, $0 * widthFraction) }, height: nil))
+        return CGSize(width: columnWidth ?? measured.width / widthFraction, height: measured.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+                              proposal: ProposedViewSize(width: max(1, bounds.width * widthFraction), height: nil))
     }
 }
 

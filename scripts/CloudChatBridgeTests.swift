@@ -85,6 +85,21 @@ struct LLMModel { let id: String; let displayName: String }
   precondition(reply.blocks[1].toolStatus == .success, "历史里没结果的工具不能一直转圈")
   precondition(reply.blocks[2].kind == .text && reply.blocks[2].content == "我可以帮你做很多事。")
   precondition(CloudEventApplier.toolName(reply.blocks[1]) == "shell_execute" && CloudEventApplier.toolName(reply.blocks[0]) == "memory_search")
+  let workerTurns = CloudHistoryAdapter.turns(from: [
+   ["role": "assistant", "content": "我会整理课件。", "id": 31],
+   ["role": "assistant", "content": "⚠️ 后台任务达到步数上限：「测试课件」\n\n第 17 页草稿",
+    "id": 32, "worker_id": "worker-32", "worker_status": "limit_reached"],
+   ["role": "assistant", "content": "下一条聊天回复。", "id": 33],
+   ["role": "assistant", "content": "✅ 后台任务完成：「旧标题」\n\n已导出文件。",
+    "id": 34, "worker_id": "worker-34", "worker_status": "done", "worker_title": "导出课件"],
+  ])
+  precondition(workerTurns.count == 4, "后台任务卡片和前后的聊天回复必须分别显示")
+  precondition(workerTurns[0].workerOutcome == nil && workerTurns[2].workerOutcome == nil)
+  precondition(workerTurns[1].workerOutcome?.workerID == "worker-32")
+  precondition(workerTurns[1].workerOutcome?.status == "limit_reached")
+  precondition(workerTurns[1].workerOutcome?.title == "测试课件", "兼容旧任务记录")
+  precondition(workerTurns[1].workerOutcome?.detail == "第 17 页草稿")
+  precondition(workerTurns[3].workerOutcome?.title == "导出课件", "新任务卡片使用独立标题字段")
   // 2.6.0：思考过程、工具耗时、插话、/reset 分隔线
   let history2: [[String: Any]] = [
    ["role": "user", "content": "查一下"],

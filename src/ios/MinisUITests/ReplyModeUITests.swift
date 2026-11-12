@@ -56,10 +56,16 @@ final class ReplyModeUITests: XCTestCase {
         let button = app.buttons["composerVoiceButton"]
         XCTAssertFalse(button.label.contains("停止"), "输入框按钮变成了停止键")
         shot(app, "reply-02b-插话秒回")
-        XCTAssertTrue(waitText(app, contains: "已按插话调整", timeout: 60), "后台结果里没体现插话")
+        hideKeyboard(app)
+        let result = app.buttons["workerOutcomeCard"]
+        XCTAssertTrue(result.waitForExistence(timeout: 60), "后台结果没有显示为独立卡片")
         XCTAssertTrue(requests(model: "e2e-back-model").contains { $0.contains("查一下天气") || $0.contains("插话") || !$0.isEmpty }, "后台模型没干活")
         XCTAssertTrue(app.descendants(matching: .any)["replyCueLast"].waitForExistence(timeout: 15), "完成时没有提示音/轻震")
         XCTAssertEqual(app.descendants(matching: .any)["replyCueLast"].label, "done", "完成提示不是 done：\(app.descendants(matching: .any)["replyCueLast"].label)")
+        XCTAssertFalse(waitText(app, contains: "已按插话调整", timeout: 0.5), "后台结果正文混进了聊天气泡")
+        result.tap()
+        XCTAssertTrue(waitText(app, contains: "已按插话调整", timeout: 8), "任务卡片详情没体现插话")
+        XCTAssertTrue(app.buttons["查看执行过程"].exists, "任务详情缺少执行过程入口")
         shot(app, "reply-02c-后台结果")
     }
 

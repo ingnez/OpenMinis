@@ -15,7 +15,8 @@
    - **日志脱敏**：标准日志中屏蔽 Authorization 头及请求体内的密钥字段。
    - **访问隔离**：服务默认绑定监听 `127.0.0.1:18765`，推荐由客户端（iOS/Android）通过 SSH 隧道端口转发访问（或通过 Nginx 等反向代理配置 TLS）；访问需携带安全 Bearer Token。
    - **凭据文件权限**：Token 文件生成后默认强制设置为 `600` 权限。
-   - **安全边界客观说明**：工作区提供会话路径隔离，但非安全虚拟化沙箱；由于 `shell_execute` 工具以当前服务用户权限运行系统 Shell，同 UID 下具备该用户的常规系统访问权限（后续 browser 等工具可直接利用 shell 安装并启动）。任务上限支持环境变量 `OPENMINIS_MAX_TURNS` 配置（默认 128 轮）。
+   - **安全边界客观说明**：工作区提供会话路径隔离，但非安全虚拟化沙箱；由于 `shell_execute` 工具以当前服务用户权限运行系统 Shell，同 UID 下具备该用户的常规系统访问权限（后续 browser 等工具可直接利用 shell 安装并启动）。
+   - 普通会话任务的模型请求轮数由 `OPENMINIS_MAX_TURNS` 配置，默认 128 轮。独立后台任务默认不限制轮数，可用 `OPENMINIS_WORKER_MAX_TURNS` 设置上限，`0` 表示不限轮数。
 
 3. **四大原生 VPS 工具**：
    - `shell_execute`：在 VPS 隔离的工作区目录（`cwd`）中执行 Shell 命令，采用独立进程组（`setsid`），支持超时自动 SIGKILL 与输出超长截断（32KB）。
