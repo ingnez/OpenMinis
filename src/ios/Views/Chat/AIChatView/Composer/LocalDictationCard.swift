@@ -6,12 +6,14 @@ import SwiftUI
 struct LocalDictationCard: View {
     @ObservedObject var viewModel: VoiceInputViewModel
     @Binding var inputText: String
-    let accent: Color
     let onStop: () -> Void
     let onSend: () -> Void
+    let onCancel: (String) -> Void
 
     @StateObject private var fake = CloudDictation()
     @State private var levels = DictationLevels()
+    @State private var draftBeforeRecording = ""
+    @State private var cancelled = false
 
     private var isFake: Bool { CloudE2E.fakeDictation }
 
@@ -19,19 +21,20 @@ struct LocalDictationCard: View {
         DictationCard(transcript: inputText,
                       partial: isFake ? fake.isRecording : (viewModel.state == .recording || viewModel.isTranscribing),
                       levels: isFake ? fake.levels : levels.values,
-                      accent: accent,
                       onStop: stop,
-                      onSend: onSend)
+                      onCancel: cancel,
+                      onSend: onSend,
+                      hasUntranscribedAudio: !isFake && viewModel.hasUntranscribedAudio)
             .onAppear(perform: start)
             .onDisappear {
                 if isFake { fake.stop() } else { viewModel.stopListening() }
             }
             .onChange(of: viewModel.transcript) { text in
-                guard !isFake, inputText != text else { return }
+                guard !cancelled, !isFake, inputText != text else { return }
                 inputText = text
             }
             .onChange(of: fake.transcript) { text in
-                guard isFake, !text.isEmpty else { return }
+                guard !cancelled, isFake, !text.isEmpty else { return }
                 inputText = text
             }
             .onReceive(viewModel.$waveformLevels) { bars in
@@ -42,12 +45,19 @@ struct LocalDictationCard: View {
     }
 
     private func start() {
+        draftBeforeRecording = inputText
         if isFake { fake.start(); return }
         viewModel.accumulate = true
         viewModel.setTranscript(inputText)
         viewModel.prepare()
         // 和原来的语音面板不同：照 Grok，点麦克风就直接开始听
         viewModel.handleMainButtonTap()
+    }
+
+    private func cancel() {
+        cancelled = true
+        if isFake { fake.stop() }
+        onCancel(draftBeforeRecording)
     }
 
     private func stop() {

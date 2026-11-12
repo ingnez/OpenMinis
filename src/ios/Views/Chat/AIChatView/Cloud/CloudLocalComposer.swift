@@ -49,7 +49,10 @@ struct LocalCallOverlay: View {
     var body: some View {
         if call.active {
             VStack(spacing: 4) {
-                CloudCallCapsule(call: call, name: name)
+                CloudCallCapsule(call: call, name: name,
+                                 avatar: Image(systemName: "sparkles")
+                                    .font(.system(size: 16, weight: .semibold)).foregroundStyle(.black)
+                                    .frame(width: 34, height: 34).background(.white, in: Circle()))
                 CloudCallLiveLines(lines: Array(call.lines.suffix(1)), tint: tint)
                     .lineLimit(2)
                     .padding(.horizontal, 12)

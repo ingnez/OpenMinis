@@ -675,7 +675,8 @@ final class E2EFlowsUITests: XCTestCase {
 
         let strip = elements["callStrip"]
         XCTAssertTrue(strip.exists)
-        XCTAssertLessThanOrEqual(strip.frame.height, 52, "通话条应保持紧凑")
+        XCTAssertLessThanOrEqual(strip.frame.height, 78, "通话条应保持单排")
+        XCTAssertLessThan(capsule.frame.midX, waveform.frame.midX, "通话头像在波形左边")
         XCTAssertTrue(app.buttons["挂断"].isHittable, "挂断不需要先展开面板")
         app.buttons["静音"].tap()
         XCTAssertTrue(app.buttons["取消静音"].waitForExistence(timeout: 5))
@@ -699,7 +700,7 @@ final class E2EFlowsUITests: XCTestCase {
     // MARK: - 听写卡片（照 Grok：实时文字 + 停止 + 滚动波形 + 发送）
 
     /// 听写卡片的共同检查：波形、文字、停止、发送都在，点发送后返回
-    private func checkDictationCard(_ app: XCUIApplication, prefix: String) {
+    private func checkDictationCard(_ app: XCUIApplication, prefix: String, swipeToSend: Bool = false) {
         let card = app.descendants(matching: .any)
         let wave = card["dictationWaveform"]
         XCTAssertTrue(wave.waitForExistence(timeout: 15), "听写时没出现波形")
@@ -709,9 +710,16 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["dictationStopButton"].exists, "听写卡片没有停止键")
         let send = app.buttons["dictationSendButton"]
         XCTAssertTrue(send.exists, "听写卡片没有发送键")
+        XCTAssertTrue(card["dictationSwipeCancelHint"].exists, "听写卡片没有左滑取消提示")
+        XCTAssertTrue(card["dictationSwipeSendHint"].exists, "听写卡片没有上滑发送提示")
         shot(app, "\(prefix)-听写卡片")
-        send.tap()
-        XCTAssertTrue(waitGone(wave, timeout: 10), "点发送后听写卡片没收起")
+        if swipeToSend {
+            let center = wave.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            center.press(forDuration: 0.1, thenDragTo: center.withOffset(CGVector(dx: 0, dy: -80)))
+        } else {
+            send.tap()
+        }
+        XCTAssertTrue(waitGone(wave, timeout: 10), "发送后听写卡片没收起")
     }
 
     func test22_botDictationCard() throws {
@@ -722,11 +730,31 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertTrue(mic.waitForExistence(timeout: 20), "Bot 输入栏没有听写键")
         let before = cloudProbe()?.cloud_texts.count ?? 0
         mic.tap()
-        checkDictationCard(app, prefix: "22")
+        checkDictationCard(app, prefix: "22", swipeToSend: true)
         XCTAssertTrue(poll(30) { (self.cloudProbe()?.cloud_texts.dropFirst(before).contains { $0.contains("e2e 听写 的 文字") }) ?? false },
                       "点发送后 Bot 没收到听写的文字")
         // 停止键只在听写时有；Bot 干活时输入栏右边也不会变成停止键
         XCTAssertFalse(app.buttons["dictationStopButton"].exists, "没在听写却还有听写停止键")
+    }
+
+    func test22a_botDictationSwipeCancelsAndRestoresDraft() {
+        let app = launch(extraEnv: ["OPENMINIS_E2E_FAKE_DICTATION": "1"])
+        openBot(app)
+        let field = app.descendants(matching: .any)["botComposerField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 20))
+        field.tap()
+        field.typeText("keep draft")
+        let before = cloudProbe()?.cloud_texts.count ?? 0
+        app.buttons["botDictationButton"].tap()
+        let elements = app.descendants(matching: .any)
+        let transcript = elements["dictationTranscript"]
+        XCTAssertTrue(poll(15) { transcript.exists && transcript.label.contains("e2e 听写 的 文字") })
+        let wave = elements["dictationWaveform"]
+        let center = wave.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.5))
+        center.press(forDuration: 0.1, thenDragTo: center.withOffset(CGVector(dx: -85, dy: 0)))
+        XCTAssertTrue(waitGone(wave, timeout: 10), "左滑没有取消听写")
+        XCTAssertTrue(poll(5) { (field.value as? String) == "keep draft" }, "取消必须恢复原草稿")
+        XCTAssertEqual(cloudProbe()?.cloud_texts.count, before, "取消不应该发送消息")
     }
 
     func test23_localDictationCard() throws {

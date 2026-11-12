@@ -371,7 +371,6 @@ extension AIChatView {
                 LocalDictationCard(
                     viewModel: voiceVM,
                     inputText: inputTextBinding,
-                    accent: Color.accentColor,
                     onStop: {
                         voiceVM.reset(clearTranscript: false)
                         withAnimation(.easeInOut(duration: 0.2)) { voiceInputActive = false }
@@ -382,9 +381,14 @@ extension AIChatView {
                         if !isWaitingToSendVoice {
                             withAnimation(.easeInOut(duration: 0.2)) { voiceInputActive = false }
                         }
+                    },
+                    onCancel: { original in
+                        withAnimation(.easeInOut(duration: 0.2)) { voiceInputActive = false }
+                        voiceVM.reset(clearTranscript: true)
+                        inputTextBinding.wrappedValue = original
                     }
                 )
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 28)
                 .padding(.top, topPadding)
                 .padding(.bottom, 10)
             )

@@ -140,8 +140,8 @@ struct RealtimeCallSignal: View {
     let speakLevel: Float
     var compact = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private var barsPerSide: Int { compact ? 5 : 12 }
-    private var spacing: CGFloat { compact ? 2 : 3 }
+    private let barsPerSide = 12
+    private let spacing: CGFloat = 3
 
     var body: some View {
         let paused = reduceMotion || CloudE2E.pauseIdleAnimations
@@ -150,7 +150,8 @@ struct RealtimeCallSignal: View {
             let phase = paused ? 0 : context.date.timeIntervalSinceReferenceDate
             GeometryReader { proxy in
                 if connected {
-                    waveform(size: proxy.size, phase: phase)
+                    if compact { compactWaveform(size: proxy.size, phase: phase) }
+                    else { waveform(size: proxy.size, phase: phase) }
                 } else {
                     pendingTrack(width: proxy.size.width, phase: phase)
                         .frame(maxHeight: .infinity)
@@ -173,6 +174,26 @@ struct RealtimeCallSignal: View {
         }
         .frame(height: 4)
         .clipShape(Capsule())
+    }
+
+    private func compactWaveform(size: CGSize, phase: TimeInterval) -> some View {
+        let count = max(5, Int(size.width / 5.5))
+        let pitch = size.width / CGFloat(count)
+        return Canvas { context, _ in
+            for index in 0..<count {
+                let isMic = index < count / 2
+                let level = max(0, min(1, isMic ? micLevel : speakLevel))
+                let fraction = CGFloat(index) / CGFloat(count - 1)
+                let edge = isMic ? 1 - fraction * 1.4 : fraction
+                let motion = 0.65 + 0.35 * sin(phase * 10 + Double(index) * 0.9)
+                let h = 2.8 + (size.height - 2.8) * CGFloat(level) * (0.25 + edge * 0.75) * CGFloat(motion)
+                let rect = CGRect(x: pitch * (CGFloat(index) + 0.5) - 1.4,
+                                  y: (size.height - h) / 2, width: 2.8, height: h)
+                context.fill(Path(roundedRect: rect, cornerRadius: 1.4),
+                             with: .color(.white.opacity(Double(0.22 + 0.78 * level))))
+            }
+        }
+        .frame(width: size.width, height: size.height)
     }
 
     private func waveform(size: CGSize, phase: TimeInterval) -> some View {

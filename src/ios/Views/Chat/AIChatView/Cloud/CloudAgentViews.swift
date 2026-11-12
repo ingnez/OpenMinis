@@ -724,7 +724,8 @@ struct CloudSessionView: View {
             }
 
             if let theme, call.active {
-                CloudCallCapsule(call: call, name: theme.name)
+                CloudCallCapsule(call: call, name: theme.name,
+                                 avatar: CloudBotAvatarView(spec: theme.spec, size: 34))
                     .padding(.vertical, 4)
             }
 
@@ -1254,31 +1255,37 @@ struct CloudSessionView: View {
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color(.secondarySystemBackground)))
                 .padding(.horizontal, 12)
             }
-            HStack {
-                Button { showModelPicker = true } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "cpu").font(.caption2)
-                        Text(theme.chipText).font(.caption.weight(.medium)).lineLimit(1)
-                        Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+            if !dictation.isRecording {
+                HStack {
+                    Button { showModelPicker = true } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "cpu").font(.caption2)
+                            Text(theme.chipText).font(.caption.weight(.medium)).lineLimit(1)
+                            Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Capsule().fill(Color(.systemGray6)))
                     }
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(Capsule().fill(Color(.systemGray6)))
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("切换模型与思考深度：\(theme.chipText)")
+                    CloudQuickCards(text: $inputPrompt)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("切换模型与思考深度：\(theme.chipText)")
-                CloudQuickCards(text: $inputPrompt)
+                .padding(.horizontal, 14)
             }
-            .padding(.horizontal, 14)
             if dictation.isRecording {
                 // 听写中：输入栏展开成卡片（实时文字 + 停止 + 滚动波形 + 发送），照 Grok
-                DictationCard(transcript: inputPrompt, partial: true, levels: dictation.levels, accent: theme.accent,
+                DictationCard(transcript: inputPrompt, partial: true, levels: dictation.levels,
                               onStop: { dictation.stop() },
+                              onCancel: {
+                                  dictation.stop()
+                                  inputPrompt = dictationBase
+                              },
                               onSend: {
                                   dictation.stop()
                                   sendTask()
                               })
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 28)
             } else {
                 HStack(alignment: .bottom, spacing: 8) {
                     Menu {
@@ -1436,7 +1443,7 @@ struct CloudSessionView: View {
         if dictation.isRecording {
             dictation.stop()
         } else {
-            dictationBase = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            dictationBase = inputPrompt
             dictation.start(language: theme.map { CloudBotVoiceSettings.load($0.botId).language } ?? "")
         }
     }
