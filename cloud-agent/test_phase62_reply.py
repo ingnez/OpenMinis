@@ -291,6 +291,74 @@ class ReplyModeTests(CloudServerTestCase):
                      if e["type"] == "tool_call" and e["payload"].get("tool") == "task_message"]
         self.assertEqual(forwarded, ["按用户补充调整：" + text for text in steers])
 
+    def test_04c_replayed_send_and_single_withdraw_during_burst(self):
+        sid = self._session()
+        entered, release = threading.Event(), threading.Event()
+
+        def front(d):
+            text = last_user(d).split("\n\n[", 1)[0]
+            if text == "第一条":
+                entered.set()
+                release.wait(10)
+            return {"role": "assistant", "content": "答：" + text}
+
+        FakeModelHandler.scripts[MAIN] = front
+        tid = self.submit(sid, "第一条", MAIN, client_nonce="receipt-start")[1]["task_id"]
+        inject = f"/v1/tasks/{tid}/messages"
+        try:
+            self.assertTrue(entered.wait(5))
+            code, replay = self.request("POST", inject, {"content": "第一条", "nonce": "receipt-start"})
+            self.assertEqual((code, replay["state"]), (200, "applied"))
+            for i, content in enumerate(("第二条", "发错的第三条", "第四条"), 2):
+                code, received = self.request("POST", inject, {"content": content, "nonce": f"receipt-{i}"})
+                self.assertEqual((code, received["state"]), (202, "queued"))
+            code, replay = self.request("POST", inject, {"content": "第二条", "nonce": "receipt-2"})
+            self.assertEqual((code, replay["state"]), (200, "queued"))
+            self.assertEqual(self.request("POST", f"/v1/tasks/{tid}/retract", {})[0], 409)
+            for _ in range(2):
+                self.assertEqual(self.request("POST", inject + "/withdraw", {"nonce": "receipt-3"})[0], 200)
+            code, replay = self.request("POST", inject, {"content": "发错的第三条", "nonce": "receipt-3"})
+            self.assertEqual((code, replay["state"]), (200, "withdrawn"))
+        finally:
+            release.set()
+
+        self.wait_status(tid, {"completed"}, timeout=10)
+        for n, content, state in ((2, "第二条", "applied"), (3, "发错的第三条", "withdrawn")):
+            code, replay = self.submit(sid, content, MAIN, client_nonce=f"receipt-{n}")
+            self.assertEqual((code, replay["task_id"], replay["state"]), (200, tid, state))
+        self.assertEqual(self.request("POST", inject + "/withdraw", {"nonce": "receipt-2"})[0], 409)
+        messages = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
+        self.assertEqual([m["content"] for m in messages if m["role"] in ("user", "assistant")],
+                         ["第一条", "答：第一条", "第二条", "答：第二条", "第四条", "答：第四条"])
+
+    def test_04d_unapplied_followup_can_be_retried_after_front_fails(self):
+        sid = self._session()
+        entered, release = threading.Event(), threading.Event()
+
+        def front(d):
+            if last_user(d).startswith("先失败"):
+                entered.set()
+                release.wait(10)
+                return {"role": "assistant", "content": ""}
+            return {"role": "assistant", "content": "这条已回答"}
+
+        FakeModelHandler.scripts[MAIN] = front
+        tid = self.submit(sid, "先失败", MAIN)[1]["task_id"]
+        try:
+            self.assertTrue(entered.wait(5))
+            code, _ = self.request("POST", f"/v1/tasks/{tid}/messages", {"content": "再问一次", "nonce": "recover-1"})
+            self.assertEqual(code, 202)
+        finally:
+            release.set()
+        self.wait_status(tid, {"failed"}, timeout=10)
+        events = self.request("GET", f"/v1/tasks/{tid}")[1]["events"]
+        self.assertTrue(any(e["type"] == "user_message_rejected" and e["payload"]["nonce"] == "recover-1" for e in events))
+        code, retried = self.submit(sid, "再问一次", MAIN, client_nonce="recover-1")
+        self.assertEqual(code, 202)
+        self.wait_status(retried["task_id"], {"completed"}, timeout=10)
+        messages = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
+        self.assertEqual(sum(m["content"] == "再问一次" for m in messages), 1)
+
     def test_05_front_cannot_run_work_tools(self):
         def front(d):
             if fresh_tools(d):

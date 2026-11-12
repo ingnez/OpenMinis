@@ -123,6 +123,8 @@ struct CloudUserTurnRow: View {
     let extras: CloudMessageExtras
     let onReply: (CloudReplyTarget) -> Void
     var onRetry: (() -> Void)? = nil
+    var pendingLabel: String? = nil
+    var onWithdraw: (() -> Void)? = nil
 
     private var content: String { message.content }
     private var sendFailed: Bool { message.sendTick == MessageSendTick.failed }
@@ -138,9 +140,15 @@ struct CloudUserTurnRow: View {
                             Label("回复", systemImage: "arrowshape.turn.up.left")
                         }
                     }
+                    if let onWithdraw {
+                        Button(role: .destructive, action: onWithdraw) {
+                            Label("撤回待处理消息", systemImage: "arrow.uturn.backward")
+                        }
+                    }
                 })
             })
-            MessageSendStatusRow(failed: sendFailed, adopted: message.adoptedMark, onRetry: onRetry)
+            MessageSendStatusRow(failed: sendFailed, adopted: message.adoptedMark,
+                                 pendingLabel: pendingLabel, onRetry: onRetry)
             if let e = extras.botReaction {
                 // Bot 用表情回应了这条（代替文字回复）
                 CloudReactionPill(emoji: e).padding(.trailing, 14).offset(y: -12).padding(.bottom, -12)

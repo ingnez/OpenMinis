@@ -77,6 +77,7 @@ struct CloudDraftKeeper: ViewModifier {
 struct CloudRetract: Equatable {
     let taskId: String
     let content: String
+    let nonce: String
 }
 
 struct CloudRetractToast: ViewModifier {

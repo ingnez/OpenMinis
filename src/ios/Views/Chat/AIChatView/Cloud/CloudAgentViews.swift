@@ -621,6 +621,7 @@ struct CloudSessionView: View {
     @State private var isLoading = false
     @State private var isSubmitting = false
     @StateObject private var delivery = CloudDeliveryBox()
+    @State private var canStoreOutbox = false
     @State private var failedSends: [UUID: CloudDeliveryBox.Item] = [:]
     @AppStorage(CloudWardVoice.doubleTapKey) private var doubleTapVoice = false
     @State private var watchedTasks: Set<String> = []
@@ -632,7 +633,9 @@ struct CloudSessionView: View {
     @State private var historyHidesTask = false
     @State private var activeTaskCreatedAt: Double?
     @State private var liveMessage = ChatMessage(role: .assistant, content: "")
-    @State private var completedLiveReplies: [ChatMessage] = []
+    @State private var completedLiveReplies: [CloudLiveReply] = []
+    @State private var initialReplyNonce: String?
+    @State private var liveReplyNonce: String?
     @State private var serverTracksReplyTurns = false
     /// 连续几次取不到进度时的一行温和提示（不是红色横幅），恢复后自动清除
     @State private var streamNotice: String?
@@ -642,20 +645,16 @@ struct CloudSessionView: View {
     @State private var loadedTaskId: String? = nil
     @State private var errorMessage: String? = nil
     @State private var followUpNotice: String? = nil
-    @State private var outboxCount = 0
     @State private var privacyHits: [CloudPrivacyScan.Hit] = []
     @State private var privacyConfirmed = false
     @State private var showPins = false
     @State private var retractable: CloudRetract? = nil
-    @State private var outboxTask: Task<Void, Never>? = nil
-    @State private var memoryOutbox: [String: (String, [String: Any])] = [:]
     @State private var showComputer = false
     @State private var attachments: [CloudPendingAttachment] = []
     /// 服务器上还有更早的消息（分页）
     @State private var hasOlderHistory = false
     @State private var loadingOlder = false
     /// 每个附件的上传状态（托盘卡片上的进度圈 / 重试）
-    @State private var uploadStates: [UUID: ImageStackSource.Upload] = [:]
     /// 点了哪个拍照识别要求（用来找更对口的 Bot）
     @State private var photoKind: String?
     @State private var showPhotos = false
@@ -973,11 +972,15 @@ struct CloudSessionView: View {
             rows = Array(messages.prefix(n))
         }
         historyHidesTask = taskIsLive && rows.count < messages.count
-        let pending = turns.reduce(into: [String: CloudHistoryAdapter.Turn]()) { result, turn in
-            if let nonce = CloudHistoryPager.pendingNonce(turn.raw) { result[nonce] = turn }
+        let users = turns.reduce(into: [String: CloudHistoryAdapter.Turn]()) { result, turn in
+            if turn.message.role == .user, let nonce = turn.raw["client_nonce"] as? String { result[nonce] = turn }
         }
         turns = CloudHistoryAdapter.turns(from: rows).map { turn in
-            CloudHistoryPager.pendingNonce(turn.raw).flatMap { pending[$0] } ?? turn
+            guard turn.message.role == .user, let nonce = turn.raw["client_nonce"] as? String,
+                  let previous = users[nonce] else { return turn }
+            if CloudHistoryPager.pendingNonce(turn.raw) != nil { return previous }
+            turn.message.adoptedMark = previous.message.adoptedMark
+            return turn
         }
     }
 
@@ -989,8 +992,21 @@ struct CloudSessionView: View {
         for ev in fresh {
             let type = ev["type"] as? String ?? ""
             let payload = ev["payload"] as? [String: Any] ?? [:]
+            if let nonce = payload["nonce"] as? String {
+                switch type {
+                case "user_message_applied", "user_message_withdrawn":
+                    delivery.remoteQueue[nonce] = nil
+                    finishPendingSend(nonce)
+                    if type == "user_message_withdrawn" { removePendingBubble(nonce) }
+                default:
+                    break
+                }
+            }
             if type == "user_message_applied", payload["separate_reply"] as? Bool == true {
-                if !liveMessage.blocks.isEmpty { completedLiveReplies.append(liveMessage) }
+                if !liveMessage.blocks.isEmpty {
+                    completedLiveReplies.append(.init(nonce: liveReplyNonce, message: liveMessage))
+                }
+                liveReplyNonce = payload["nonce"] as? String
                 liveMessage = ChatMessage(role: .assistant, content: "")
                 liveText = ""
                 liveReasoning = ""
@@ -1024,9 +1040,11 @@ struct CloudSessionView: View {
 
     private func loadSessionDetail() {
         isLoading = true
+        let taskAtRequest = activeTaskId
         // 先画手机上缓存的对话（不等连接），网络回来再静默替换
-        if messages.isEmpty, theme != nil, let cached = CloudChatCache.load(sessionId) {
-            messages = cached.messages
+        if messages.allSatisfy({ CloudHistoryPager.pendingNonce($0) != nil }),
+           theme != nil, let cached = CloudChatCache.load(sessionId) {
+            messages = CloudHistoryPager.merge(current: messages, fresh: cached.messages, preservePending: true)
             if tasks.isEmpty { tasks = cached.tasks }
             rebuildTurns()
         }
@@ -1036,7 +1054,9 @@ struct CloudSessionView: View {
                 await MainActor.run {
                     let fresh = res["messages"] as? [[String: Any]] ?? []
                     let freshTasks = res["tasks"] as? [[String: Any]] ?? []
-                    if let theme = self.theme, (res["incognito"] as? Bool) != true, !CloudBotLock.isLockedStored(theme.botId) {
+                    self.canStoreOutbox = (res["incognito"] as? Bool) != true
+                        && (self.theme.map { !CloudBotLock.isLockedStored($0.botId) } ?? true)
+                    if self.theme != nil, self.canStoreOutbox {
                         CloudChatCache.save(self.sessionId, messages: fresh, tasks: freshTasks)
                     }
                     // 分页：之前翻出来的更早消息留着；旧服务器不认 limit 时 has_more 缺省为 false
@@ -1047,11 +1067,18 @@ struct CloudSessionView: View {
                     self.tasks = freshTasks
                     self.isLoading = false
                     self.applyReplyPlan(CloudReplyPlan(json: res["reply"] as? [String: Any]))
+                    if self.activeTaskId != taskAtRequest, self.taskIsLive,
+                       self.tasks.first?["task_id"] as? String != self.activeTaskId {
+                        self.rebuildTurns()
+                        return
+                    }
                     if !self.isStreaming { self.liveText = "" }
                     if let latestTask = self.tasks.first,
                        let tid = latestTask["task_id"] as? String,
                        let status = latestTask["status"] as? String {
                         let needsEvents = self.loadedTaskId != tid
+                        self.initialReplyNonce = latestTask["client_nonce"] as? String
+                        if self.activeTaskId != tid { self.liveReplyNonce = self.initialReplyNonce }
                         self.activeTaskId = tid
                         self.activeTaskStatus = status
                         self.activeTaskCreatedAt = latestTask["created_at"] as? Double
@@ -1121,17 +1148,19 @@ struct CloudSessionView: View {
         let running = activeTaskStatus == "running" || activeTaskStatus == "waiting_user" || activeTaskStatus == "queued" || isSubmitting
         // 进行中，或刚结束、历史还没重新加载（这次任务的几轮还没出现在历史里）：由实时那一份显示
         let hasLiveReply = !liveMessage.blocks.isEmpty || !liveText.isEmpty || !liveReasoning.isEmpty
-        if (running || historyHidesTask) && (!completedLiveReplies.isEmpty || hasLiveReply) {
+        let detached = completedLiveReplies.filter { !hasReplyAnchor($0.nonce) }
+        let detachedLive = hasLiveReply && !hasReplyAnchor(liveReplyNonce)
+        if (running || historyHidesTask) && (!detached.isEmpty || detachedLive) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     CloudBotWatchingAvatar(spec: theme.spec, size: 22)
                     Text(theme.name).font(.subheadline.bold())
                 }
                 // 与本地模式同一条管线：事件 → liveMessage 的消息块，正在生成的文字接在后面
-                ForEach(completedLiveReplies, id: \.id) { reply in
-                    CloudAssistantTurnView(message: reply, spec: theme.spec, name: theme.name, accent: theme.accent, showHeader: false)
+                ForEach(detached) { reply in
+                    CloudAssistantTurnView(message: reply.message, spec: theme.spec, name: theme.name, accent: theme.accent, showHeader: false)
                 }
-                if hasLiveReply {
+                if detachedLive {
                     CloudAssistantTurnView(message: liveMessage, spec: theme.spec, name: theme.name, accent: theme.accent,
                                            showHeader: false, liveText: liveText, liveReasoning: liveReasoning)
                 }
@@ -1177,7 +1206,7 @@ struct CloudSessionView: View {
                 CloudReplyBanner(excerpt: r.excerpt) { replyTarget = nil }
             }
             if !attachments.isEmpty {
-                CloudAttachmentTray(attachments: $attachments, states: uploadStates, onRetry: { sendTask() })
+                CloudAttachmentTray(attachments: $attachments, states: [:], onRetry: { sendTask() })
                 if let kind = photoKind, attachments.contains(where: { $0.isImage }), let target = photoTarget(kind) {
                     // 识别后分给对应的 Bot：比如药品图交给药师 Bot，带着图片和要求过去
                     Button { handPhoto(to: target.id) } label: {
@@ -1534,9 +1563,8 @@ struct CloudSessionView: View {
                         ForEach(Array(turns.enumerated()), id: \.offset) { idx, turn in
                             let msg = turn.message
                             if msg.role == .user {
-                                CloudUserTurnRow(message: msg, accent: theme.accent, extras: CloudMessageExtras(turn.raw),
-                                                 onReply: { replyTarget = $0 },
-                                                 onRetry: { retryUserSend(msg) })
+                                cloudUserTurn(turn, accent: theme.accent)
+                                anchoredReplies(after: turn, theme: theme)
                             } else {
                                 let prevAssistant = idx > 0 && turns[idx - 1].message.role == .assistant
                                 let extras = reactionExtras(CloudMessageExtras(turn.textRaw))
@@ -1745,11 +1773,49 @@ struct CloudSessionView: View {
         return out
     }
 
-    private func submitPrepared(content: String, body rawBody: [String: Any]) {
+    private func cloudUserTurn(_ turn: CloudHistoryAdapter.Turn, accent: Color) -> some View {
+        let nonce = CloudHistoryPager.pendingNonce(turn.raw)
+        let queued = nonce.flatMap { delivery.canWithdraw($0) ? $0 : nil }
+        let label = nonce != nil && nonce == delivery.uploadingNonce
+            ? "正在上传附件"
+            : queued.map { delivery.remoteQueue[$0] == nil ? "待发送" : "等待回复" }
+        return CloudUserTurnRow(message: turn.message, accent: accent, extras: CloudMessageExtras(turn.raw),
+                                onReply: { replyTarget = $0 }, onRetry: { retryUserSend(turn.message) },
+                                pendingLabel: label, onWithdraw: queued.map { id in { withdrawQueuedSend(id) } })
+    }
+
+    private var usesReplyAnchors: Bool {
+        (taskIsLive || historyHidesTask) && serverTracksReplyTurns && replyPlan?.isInstant == true
+    }
+
+    private func hasReplyAnchor(_ nonce: String?) -> Bool {
+        guard usesReplyAnchors, let nonce else { return false }
+        return userTurn(nonce: nonce) != nil
+    }
+
+    @ViewBuilder
+    private func anchoredReplies(after turn: CloudHistoryAdapter.Turn, theme: CloudBotChatTheme) -> some View {
+        if usesReplyAnchors, let nonce = turn.raw["client_nonce"] as? String {
+            ForEach(completedLiveReplies.filter { $0.nonce == nonce }) { reply in
+                CloudAssistantTurnView(message: reply.message, spec: theme.spec, name: theme.name, accent: theme.accent)
+            }
+            if liveReplyNonce == nonce, !liveMessage.blocks.isEmpty || !liveText.isEmpty || !liveReasoning.isEmpty {
+                CloudAssistantTurnView(message: liveMessage, spec: theme.spec, name: theme.name, accent: theme.accent,
+                                       liveText: liveText, liveReasoning: liveReasoning)
+            }
+        }
+    }
+
+    private func submitPrepared(content: String, body rawBody: [String: Any], providerInstanceId: String? = nil) {
         var body = rawBody
         let nonce = body["client_nonce"] as? String ?? UUID().uuidString
         body["client_nonce"] = nonce
-        beginOptimisticSend(content: content.isEmpty ? "附件" : content, nonce: nonce)
+        let items = attachments
+        attachments = []
+        inputPrompt = ""
+        showPendingSend(content: content, nonce: nonce)
+        CloudHaptics.tap()
+        NotificationCenter.default.post(name: CloudReplyService.kick, object: nil)
         if let r = replyTarget {
             body["reply_to"] = r.id      // 引用回复
             replyTarget = nil
@@ -1759,27 +1825,14 @@ struct CloudSessionView: View {
         // 思考深度：Bot 自己设置了就由服务器使用；否则带上手机默认
         let effort = theme.flatMap { CloudEffort(rawValue: $0.effort) } ?? CloudEffort.globalDefault
         if effort != .off { body["reasoning_effort"] = effort.rawValue }
-        guard !attachments.isEmpty else {
-            submit(content: content, body: body, alreadyShown: true)
-            return
-        }
-        let items = attachments
-        Task {
-            do {
-                let lines = try await CloudAttachmentKit.upload(items, sessionId: sessionId) { id, state in uploadStates[id] = state }
-                let text = (content.isEmpty ? CloudAttachmentLines.placeholderText : content) + "\n\n" + lines.joined(separator: "\n")
-                var newBody = body
-                newBody["content"] = text
-                // 图片只传路径（附件行就是引用）：服务器调用模型时读上传的文件补成图片。
-                // 以前把 base64 塞进 message_parts，6 张照片就超过 2 MB 上限，发送直接 HTTP 400
-                newBody.removeValue(forKey: "message_parts")
-                attachments.removeAll()
-                uploadStates = [:]
-                submit(content: text, body: newBody, alreadyShown: true)
-            } catch {
-                errorMessage = "附件上传失败：\(error.localizedDescription)。点卡片上的「重试」再发一次"
-            }
-        }
+        errorMessage = nil
+        sendStartedAt = Date()
+        replyLatency.sent()
+        let item = CloudDeliveryBox.Item(content: content, nonce: nonce, body: body, attachments: items,
+                                         providerInstanceId: providerInstanceId)
+        persistSend(item)
+        delivery.items.append(item)
+        pumpDelivery()
     }
 
     /// 用户在「电脑」页点了「我完成了」：把控制权交回 Bot
@@ -1794,15 +1847,17 @@ struct CloudSessionView: View {
         Task { @MainActor in
             do {
                 _ = try await connection.request(method: "POST", path: "/v1/tasks/\(r.taskId)/retract", body: [:])
-                if let i = messages.lastIndex(where: { ($0["role"] as? String) == "user" && ($0["content"] as? String) == r.content }) {
-                    messages.remove(at: i)
+                messages.removeAll { $0["client_nonce"] as? String == r.nonce }
+                turns.removeAll { $0.raw["client_nonce"] as? String == r.nonce }
+                if activeTaskId == r.taskId {
+                    activeTaskStatus = "cancelled"
+                    historyHidesTask = false
+                    completedLiveReplies = []
+                    liveMessage = ChatMessage(role: .assistant, content: "")
+                    liveText = ""
+                    liveReasoning = ""
                 }
-                if let i = turns.lastIndex(where: { $0.message.role == .user && $0.message.content == r.content }) {
-                    turns.removeSubrange(i...)
-                }
-                activeTaskStatus = "cancelled"
-                liveText = ""
-                inputPrompt = r.content
+                if inputPrompt.isEmpty { inputPrompt = r.content }
                 CloudHaptics.success()
             } catch {
                 errorMessage = "撤回失败：\(error.localizedDescription)"
@@ -1892,17 +1947,16 @@ struct CloudSessionView: View {
             "client_nonce": nonce
         ]
 
-        submitPrepared(content: content, body: body)
+        submitPrepared(content: content, body: body, providerInstanceId: inst.id)
     }
 
-    private func beginOptimisticSend(content: String, nonce: String) {
-        inputPrompt = ""
-        let msg = ChatMessage(role: .user, content: content)
-        let row: [String: Any] = ["role": "user", "content": content, "timestamp": Date().timeIntervalSince1970, "client_nonce": nonce]
+    private func showPendingSend(content: String, nonce: String, createdAt: Double = Date().timeIntervalSince1970) {
+        guard !messages.contains(where: { $0["client_nonce"] as? String == nonce }) else { return }
+        let text = content.isEmpty ? "附件" : content
+        let msg = ChatMessage(role: .user, content: text)
+        let row: [String: Any] = ["role": "user", "content": text, "timestamp": createdAt, "client_nonce": nonce]
         messages.append(row)
         turns.append(CloudHistoryAdapter.Turn(message: msg, raw: row))
-        CloudHaptics.tap()
-        NotificationCenter.default.post(name: CloudReplyService.kick, object: nil)
     }
 
     private func userTurn(nonce: String) -> CloudHistoryAdapter.Turn? {
@@ -1929,125 +1983,195 @@ struct CloudSessionView: View {
     }
 
     private func markUserAdopted() {
-        turns.last { $0.message.role == .user }?.message.adoptedMark = true
+        if let nonce = liveReplyNonce {
+            userTurn(nonce: nonce)?.message.adoptedMark = true
+        } else if !usesReplyAnchors {
+            turns.last { $0.message.role == .user }?.message.adoptedMark = true
+        }
     }
 
-    private func submit(content: String, body rawBody: [String: Any], alreadyShown: Bool = true) {
-        var body = rawBody
-        // 每条消息一个 nonce：网络断了重发时服务器按它去重，不会发两遍
-        if body["client_nonce"] == nil { body["client_nonce"] = UUID().uuidString }
-        let nonce = body["client_nonce"] as? String ?? UUID().uuidString
-        errorMessage = nil
-        sendStartedAt = Date()   // 性能页「首字」实测起点，与本地模式同口径
-        replyLatency.sent()
-        delivery.items.append(CloudDeliveryBox.Item(content: content, nonce: nonce, body: body, alreadyShown: alreadyShown))
-        pumpDelivery()
+    private enum DeliveryResult {
+        case sent, queued, retry, cancelled
+        case failed(String)
     }
 
     private func pumpDelivery() {
-        guard !delivery.running, !delivery.items.isEmpty else { return }
+        guard !delivery.running, !delivery.paused, !delivery.items.isEmpty else { return }
         delivery.running = true
-        let item = delivery.items.removeFirst()
         Task { @MainActor in
-            await deliver(item)
-            delivery.running = false
-            pumpDelivery()
-        }
-    }
+            defer { delivery.running = false }
+            var attempt = 0
+            while !delivery.paused, !delivery.items.isEmpty {
+                var item = delivery.items.removeFirst()
+                delivery.inFlightNonce = item.nonce
+                var result: DeliveryResult
+                do {
+                    if !item.attachments.isEmpty {
+                        delivery.uploadingNonce = item.nonce
+                        let lines = try await CloudAttachmentKit.upload(item.attachments, sessionId: sessionId)
+                        delivery.uploadingNonce = nil
+                        let text = item.content.isEmpty ? CloudAttachmentLines.placeholderText : item.content
+                        item.body["content"] = text + "\n\n" + lines.joined(separator: "\n")
+                        item.body.removeValue(forKey: "message_parts")
+                        item.attachments = []
+                        persistSend(item)
+                    }
+                    result = try await deliver(item)
+                } catch let error where CloudOutbox.isTransient(error) {
+                    result = .retry
+                } catch {
+                    result = .failed(error.localizedDescription)
+                }
+                delivery.uploadingNonce = nil
+                delivery.inFlightNonce = nil
+                if delivery.cancelled.remove(item.nonce) != nil { result = .cancelled }
 
-    private func deliver(_ item: CloudDeliveryBox.Item) async {
-        if let tid = activeTaskId, ["running", "waiting_user", "queued"].contains(activeTaskStatus) {
-            if CloudReplyDeliveryPolicy.canInterrupt(enabled: steerInterrupt, body: item.body) {
-                if await injectMessage(item, taskId: tid) { return }
-            } else if !(await waitForDeliverySlot(taskId: tid)) {
-                errorMessage = "排队发送未完成，点消息旁的按钮重试"
-                markUserFailed(item: item)
-                return
+                switch result {
+                case .retry:
+                    persistSend(item)
+                    delivery.retrying.insert(item.nonce)
+                    delivery.items.insert(item, at: 0)
+                    let retryAt = Date().addingTimeInterval(CloudOutbox.retryDelay(attempt: attempt))
+                    attempt += 1
+                    while !delivery.paused, delivery.items.first?.nonce == item.nonce, Date() < retryAt {
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                    }
+                case .queued:
+                    delivery.retrying.remove(item.nonce)
+                    attempt = 0
+                case .sent, .cancelled:
+                    finishPendingSend(item.nonce)
+                    attempt = 0
+                case .failed(let reason):
+                    finishPendingSend(item.nonce)
+                    errorMessage = reason
+                    markUserFailed(item: item)
+                    attempt = 0
+                }
             }
         }
-        await postSessionMessage(item)
     }
 
-    /// true 表示本次插话已经确认送达，或者已明确显示失败；任务已结束时继续尝试普通发送。
-    private func injectMessage(_ item: CloudDeliveryBox.Item, taskId: String) async -> Bool {
-        switch await CloudInjector.inject(taskId: taskId, content: item.content, nonce: item.nonce) {
-        case .injected:
+    private func deliver(_ item: CloudDeliveryBox.Item) async throws -> DeliveryResult {
+        if let tid = activeTaskId, taskIsLive {
+            if CloudReplyDeliveryPolicy.canInterrupt(enabled: steerInterrupt, body: item.body) {
+                if let result = await injectMessage(item, taskId: tid) { return result }
+            } else if let result = try await waitForDeliverySlot(taskId: tid, nonce: item.nonce) {
+                return result
+            }
+        }
+        return try await postSessionMessage(item)
+    }
+
+    private func injectMessage(_ item: CloudDeliveryBox.Item, taskId: String) async -> DeliveryResult? {
+        let content = item.body["content"] as? String ?? item.content
+        switch await CloudInjector.inject(taskId: taskId, content: content, nonce: item.nonce) {
+        case .injected(let state):
+            if state == "withdrawn" {
+                removePendingBubble(item.nonce)
+            } else if state == "queued" {
+                let finalEvent = taskEvents.last {
+                    ($0["payload"] as? [String: Any])?["nonce"] as? String == item.nonce
+                        && ["user_message_applied", "user_message_rejected", "user_message_withdrawn"].contains($0["type"] as? String ?? "")
+                }?["type"] as? String
+                if finalEvent == "user_message_rejected" {
+                    return .retry
+                }
+                if finalEvent == "user_message_withdrawn" { removePendingBubble(item.nonce) }
+                if finalEvent == nil {
+                    delivery.remoteQueue[item.nonce] = .init(taskId: taskId, item: item)
+                    persistSend(item)
+                    markUserSent(nonce: item.nonce)
+                    if replyPlan?.isInstant == true { replyStatus.kick() }
+                    return .queued
+                }
+            }
             markUserSent(nonce: item.nonce)
             if replyPlan?.isInstant == true { replyStatus.kick() }
-            return true
+            return .sent
         case .notRunning:
-            return false
-        case .failed(let why):
-            errorMessage = "插话没送到：\(why)"
-            markUserFailed(item: item)
-            return true
+            return nil
+        case .retryable:
+            return .retry
+        case .failed(let reason):
+            return .failed(reason)
         }
     }
 
-    private func postSessionMessage(_ item: CloudDeliveryBox.Item, retryBusy: Bool = true) async {
+    private func postSessionMessage(_ item: CloudDeliveryBox.Item, retryBusy: Bool = true) async throws -> DeliveryResult {
+        var body = item.body
+        if let instanceId = item.providerInstanceId,
+           var provider = body["provider"] as? [String: Any], provider["api_key"] == nil {
+            guard let inst = ProviderConfigStore.shared.instance(for: instanceId), inst.isEnabled,
+                  inst.providerType == .openAI, inst.credentialType == .apiKey, !inst.azureMode,
+                  let key = ProviderKeychainHelper.loadAPIKey(instanceId: instanceId), !key.isEmpty else {
+                return .failed("原服务商的 API Key 不可用，恢复配置后可重试这条消息")
+            }
+            let resolved = inst.resolvedBaseURL(default: "https://api.openai.com")
+            provider["base_url"] = resolved.appendV1 ? "\(resolved.url)/v1" : resolved.url
+            provider["api_key"] = key
+            body["provider"] = provider
+        }
         do {
             try await connection.ensureConnected()
-            let res = try await connection.request(method: "POST", path: "/v1/sessions/\(sessionId)/messages", body: item.body)
+            let res = try await connection.request(method: "POST", path: "/v1/sessions/\(sessionId)/messages", body: body)
             markUserSent(nonce: item.nonce)
-            if let tid = res["task_id"] as? String { await accepted(taskId: tid, content: item.content, alreadyShown: item.alreadyShown) }
-        } catch let error where CloudOutbox.isTransient(error) {
-            queueForRetry(content: item.content, body: item.body)
-        } catch let busy as CloudSessionBusyError where retryBusy {
-            // 本机还没收到任务状态时，以服务器返回的 task id 为准。
-            if CloudReplyDeliveryPolicy.canInterrupt(enabled: steerInterrupt, body: item.body),
-               await injectMessage(item, taskId: busy.taskId) { return }
-            if await waitForDeliverySlot(taskId: busy.taskId) {
-                await postSessionMessage(item, retryBusy: false)
-            } else {
-                errorMessage = "排队发送未完成，点消息旁的按钮重试"
-                markUserFailed(item: item)
+            if res["idempotent_replayed"] as? Bool == true {
+                if res["state"] as? String == "withdrawn" { removePendingBubble(item.nonce) }
+                loadSessionDetail()
+            } else if let tid = res["task_id"] as? String {
+                await accepted(taskId: tid, content: item.content, nonce: item.nonce)
             }
-        } catch {
-            errorMessage = "发送失败: \(error.localizedDescription)"
-            markUserFailed(item: item)
+            return .sent
+        } catch let busy as CloudSessionBusyError where retryBusy {
+            if CloudReplyDeliveryPolicy.canInterrupt(enabled: steerInterrupt, body: body),
+               let result = await injectMessage(item, taskId: busy.taskId) { return result }
+            if let result = try await waitForDeliverySlot(taskId: busy.taskId, nonce: item.nonce) { return result }
+            return try await postSessionMessage(item, retryBusy: false)
         }
     }
 
-    private func waitForDeliverySlot(taskId: String) async -> Bool {
-        voiceProblem = "等这一步做完就发"
-        defer { if voiceProblem == "等这一步做完就发" { voiceProblem = nil } }
-        for _ in 0..<300 {
-            guard !Task.isCancelled else { return false }
+    private func waitForDeliverySlot(taskId: String, nonce: String) async throws -> DeliveryResult? {
+        delivery.waitingNonce = nonce
+        defer { delivery.waitingNonce = nil }
+        let deadline = Date().addingTimeInterval(600)
+        while Date() < deadline {
+            if delivery.cancelled.contains(nonce) { return .cancelled }
             let status: String
-            if taskId == activeTaskId {
+            let watchesTask = taskId == activeTaskId
+            if watchesTask {
                 status = activeTaskStatus
             } else {
-                guard let response = try? await connection.request(method: "GET", path: "/v1/tasks/\(taskId)"),
-                      let remoteStatus = response["status"] as? String else { return false }
-                status = remoteStatus
+                let response = try await connection.request(method: "GET", path: "/v1/tasks/\(taskId)")
+                status = response["status"] as? String ?? "unknown"
             }
-            if !["running", "waiting_user", "queued"].contains(status) { return true }
-            do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return false }
+            if !["running", "waiting_user", "queued"].contains(status) {
+                return delivery.cancelled.contains(nonce) ? .cancelled : nil
+            }
+            try await Task.sleep(nanoseconds: watchesTask ? 350_000_000 : 800_000_000)
         }
-        return false
+        return .failed("排队发送未完成，点消息旁的按钮重试")
     }
 
     /// 服务器收下了这条消息：进入「运行中」并开始拉进度
-    private func accepted(taskId tid: String, content: String, alreadyShown: Bool = false) async {
+    private func accepted(taskId tid: String, content: String, nonce: String) async {
         await MainActor.run {
             self.activeTaskId = tid
             self.activeTaskStatus = "running"
             self.watchedTasks.insert(tid)
             self.liveMessage = ChatMessage(role: .assistant, content: "")
             self.completedLiveReplies = []
+            self.initialReplyNonce = nonce
+            self.liveReplyNonce = nonce
             self.taskEvents = []
             self.ledger.reset()
             self.eventCursor = 0
             self.liveText = ""
             self.liveSeq = -1
             self.activeTaskCreatedAt = nil
-            if !alreadyShown {
-                let row: [String: Any] = ["role": "user", "content": content, "timestamp": Date().timeIntervalSince1970]
-                self.messages.append(row)
-                self.turns.append(CloudHistoryAdapter.Turn(message: ChatMessage(role: .user, content: content), raw: row))
-            }
+            self.historyHidesTask = true
+            self.retractable = CloudRetract(taskId: tid, content: content, nonce: nonce)
         }
-        await MainActor.run { self.retractable = CloudRetract(taskId: tid, content: content) }
         let botId = theme?.botId, sid = sessionId
         Task { @MainActor in
             let locked = botId.map { CloudBotLock.isLockedStored($0) } ?? false
@@ -2059,88 +2183,88 @@ struct CloudSessionView: View {
         pollTaskStatus(taskId: tid)
     }
 
-    /// 网络断了：消息先存本机（带图片的只留在本页内存），输入框清空，横幅显示「N 条待发送」，网络回来自动重发
-    @MainActor
-    private func queueForRetry(content: String, body: [String: Any]) {
-        isSubmitting = false
-        let nonce = body["client_nonce"] as? String ?? UUID().uuidString
-        let saved = CloudOutbox.encode(body).map { data in
-            CloudOutbox.shared.add(CloudOutboxItem(nonce: nonce, sessionId: sessionId, content: content, body: data,
-                                                   createdAt: Date().timeIntervalSince1970))
-        } ?? false
-        if !saved {
-            memoryOutbox[nonce] = (content, body)
-        }
-        refreshOutboxCount()
-        flushOutbox()
+    private func persistSend(_ item: CloudDeliveryBox.Item) {
+        guard canStoreOutbox, item.attachments.isEmpty,
+              theme.map({ !CloudBotLock.isLockedStored($0.botId) }) ?? true,
+              let data = CloudOutbox.encode(item.body, providerInstanceId: item.providerInstanceId) else { return }
+        CloudOutbox.shared.add(.init(nonce: item.nonce, sessionId: sessionId, content: item.content, body: data,
+                                    createdAt: item.createdAt, providerInstanceId: item.providerInstanceId))
     }
 
-    @MainActor
-    private func refreshOutboxCount() {
-        outboxCount = CloudOutbox.shared.items(for: sessionId).count + memoryOutbox.count
+    private func finishPendingSend(_ nonce: String) {
+        CloudOutbox.shared.remove(nonce)
+        delivery.retrying.remove(nonce)
     }
 
-    /// 逐条按原顺序重发；一条失败就退避等待再试，直到发完或离开页面
-    private func flushOutbox() {
-        guard outboxTask == nil else { return }
-        let sid = sessionId
-        outboxTask = Task { @MainActor in
-            defer { outboxTask = nil }
-            var attempt = 0
-            while !Task.isCancelled {
-                var pending: [(nonce: String, content: String, body: [String: Any])] =
-                    CloudOutbox.shared.items(for: sid).compactMap { i in CloudOutbox.decode(i.body).map { (nonce: i.nonce, content: i.content, body: $0) } }
-                pending += memoryOutbox.map { (nonce: $0.key, content: $0.value.0, body: $0.value.1) }
-                if pending.isEmpty { break }
-                // 正在跑别的任务时先等它结束，免得两条消息抢同一个对话
-                if activeTaskStatus == "running" || isSubmitting {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    continue
-                }
-                let next = pending[0]
+    private func removePendingBubble(_ nonce: String) {
+        messages.removeAll { CloudHistoryPager.pendingNonce($0) == nonce }
+        turns.removeAll { CloudHistoryPager.pendingNonce($0.raw) == nonce }
+    }
+
+    private func withdrawQueuedSend(_ nonce: String) {
+        if delivery.waitingNonce == nonce {
+            delivery.cancelled.insert(nonce)
+        } else if let index = delivery.items.firstIndex(where: { $0.nonce == nonce }) {
+            delivery.items.remove(at: index)
+        } else if let received = delivery.remoteQueue[nonce] {
+            Task { @MainActor in
                 do {
-                    try await connection.ensureConnected()
-                    let res = try await connection.request(method: "POST", path: "/v1/sessions/\(sid)/messages", body: next.body)
-                    CloudOutbox.shared.remove(next.nonce)
-                    memoryOutbox[next.nonce] = nil
-                    refreshOutboxCount()
-                    attempt = 0
-                    markUserSent(nonce: next.nonce)
-                    if let tid = res["task_id"] as? String { await accepted(taskId: tid, content: next.content, alreadyShown: true) }
-                } catch let error where CloudOutbox.isTransient(error) {
-                    try? await Task.sleep(nanoseconds: UInt64(CloudOutbox.retryDelay(attempt: attempt) * 1_000_000_000))
-                    attempt += 1
+                    _ = try await connection.request(method: "POST", path: "/v1/tasks/\(received.taskId)/messages/withdraw",
+                                                     body: ["nonce": nonce])
+                    delivery.remoteQueue[nonce] = nil
+                    finishPendingSend(nonce)
+                    removePendingBubble(nonce)
+                    CloudHaptics.success()
                 } catch {
-                    // 服务器明确拒绝：不再重发，放回输入框让你看着改
-                    CloudOutbox.shared.remove(next.nonce)
-                    memoryOutbox[next.nonce] = nil
-                    refreshOutboxCount()
-                    if inputPrompt.isEmpty { inputPrompt = next.content }
-                    errorMessage = "待发送的消息被拒绝: \(error.localizedDescription)（已放回输入框）"
+                    errorMessage = "撤回失败：\(error.localizedDescription)"
                 }
             }
+            return
+        } else {
+            return
         }
+        finishPendingSend(nonce)
+        removePendingBubble(nonce)
+        CloudHaptics.success()
     }
 
     private func resumeOutbox() {
-        // 「和 Bot 语音」快捷指令 / 操作按钮打开的：直接开通话
         if let theme, CloudBotEntry.pendingVoiceBot == theme.botId {
             CloudBotEntry.pendingVoiceBot = nil
             openVoiceCall()
         }
-        refreshOutboxCount()
-        if outboxCount > 0 { flushOutbox() }
+        delivery.paused = false
+        let queued = Set(delivery.items.map(\.nonce))
+        let restored = CloudOutbox.shared.items(for: sessionId).compactMap { item -> CloudDeliveryBox.Item? in
+            guard item.nonce != delivery.inFlightNonce, !queued.contains(item.nonce), delivery.remoteQueue[item.nonce] == nil,
+                  let body = CloudOutbox.decode(item.body) else { return nil }
+            showPendingSend(content: item.content, nonce: item.nonce, createdAt: item.createdAt)
+            return .init(content: item.content, nonce: item.nonce, body: body,
+                         providerInstanceId: item.providerInstanceId, createdAt: item.createdAt)
+        }
+        delivery.items.insert(contentsOf: restored, at: 0)
+        pumpDelivery()
     }
 
-    private func pauseOutbox() { outboxTask?.cancel() }
+    private func pauseOutbox() { delivery.paused = true }
 
-    @MainActor
+    private var outboxCount: Int {
+        delivery.retrying.isEmpty ? 0 : delivery.items.count
+    }
+
     private func discardOutbox() {
-        outboxTask?.cancel()
-        outboxTask = nil
-        for i in CloudOutbox.shared.items(for: sessionId) { CloudOutbox.shared.remove(i.nonce) }
-        memoryOutbox = [:]
-        refreshOutboxCount()
+        for nonce in delivery.items.map(\.nonce) {
+            withdrawQueuedSend(nonce)
+        }
+    }
+
+    private func retryUnappliedSends(taskId: String) {
+        let pending = delivery.remoteQueue.values.filter { $0.taskId == taskId }
+            .sorted { $0.item.createdAt < $1.item.createdAt }
+        guard !pending.isEmpty else { return }
+        for received in pending { delivery.remoteQueue[received.item.nonce] = nil }
+        delivery.items.insert(contentsOf: pending.map(\.item), at: 0)
+        pumpDelivery()
     }
 
     private func pollTaskStatus(taskId: String) {
@@ -2151,6 +2275,10 @@ struct CloudSessionView: View {
                 let res = try await quietly("/v1/tasks/\(taskId)")
                 await MainActor.run {
                     self.isPolling = false
+                    guard self.activeTaskId == taskId else {
+                        if let current = self.activeTaskId { self.pollTaskStatus(taskId: current) }
+                        return
+                    }
                     if let status = res["status"] as? String {
                         self.activeTaskStatus = status
                     }
@@ -2159,6 +2287,7 @@ struct CloudSessionView: View {
                             // 换了任务（或第一次打开）：从全量事件重建一份
                             self.liveMessage = ChatMessage(role: .assistant, content: "")
                             self.completedLiveReplies = []
+                            self.liveReplyNonce = self.initialReplyNonce
                             self.taskEvents = []
                             self.ledger.reset()
                             self.eventCursor = 0
@@ -2174,6 +2303,7 @@ struct CloudSessionView: View {
                     if ["running", "waiting_user", "queued"].contains(self.activeTaskStatus) {
                         self.watchedTasks.insert(taskId)
                     } else {
+                        self.retryUnappliedSends(taskId: taskId)
                         // 只对「这次在界面上看着它跑」的任务提示失败；打开对话时看到的旧任务结果不再弹横幅
                         if self.watchedTasks.contains(taskId), ["failed", "interrupted", "limit_reached"].contains(self.activeTaskStatus) {
                             self.errorMessage = CloudTaskFailure.text(status: self.activeTaskStatus, events: self.taskEvents)
@@ -2185,7 +2315,9 @@ struct CloudSessionView: View {
                 await MainActor.run {
                     self.isPolling = false
                     // 静默：任务在云端继续，稍后再接上
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self.pollTaskStatus(taskId: taskId) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                        if let current = self.activeTaskId { self.pollTaskStatus(taskId: current) }
+                    }
                 }
             }
         }
@@ -2244,7 +2376,12 @@ struct CloudSessionView: View {
                 onTrouble: { text in self.streamNotice = text })
             self.isStreaming = false
             self.streamNotice = nil
-            guard self.activeTaskId == taskId, let final else { return }
+            guard self.activeTaskId == taskId else {
+                if let current = self.activeTaskId { self.pollTaskStatus(taskId: current) }
+                return
+            }
+            guard let final else { return }
+            self.retryUnappliedSends(taskId: taskId)
             if self.watchedTasks.contains(taskId), [.failed, .interrupted, .limitReached].contains(final) {
                 self.errorMessage = CloudTaskFailure.text(status: final.rawValue, events: self.taskEvents)
             }

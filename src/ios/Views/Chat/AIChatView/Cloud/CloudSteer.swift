@@ -19,28 +19,26 @@ enum CloudSteerMode {
 
 enum CloudInjector {
     enum Outcome: Equatable {
-        case injected
+        case injected(state: String?)
         /// 任务已经结束 / 不在运行：改走普通发送
         case notRunning
+        case retryable
         case failed(String)
     }
 
     /// 同一条消息重试时带同一个 nonce，服务器只收一次
     static func inject(taskId: String, content: String, nonce: String) async -> Outcome {
-        var lastError = ""
-        for attempt in 0..<3 {
-            if attempt > 0 { try? await Task.sleep(nanoseconds: UInt64(800_000_000 * attempt)) }
-            do {
-                _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/tasks/\(taskId)/messages",
-                                                             body: ["content": content, "nonce": nonce])
-                return .injected
-            } catch {
-                let text = error.localizedDescription
-                if text.contains("HTTP 409") || text.contains("HTTP 404") || text.contains("版本过旧") { return .notRunning }
-                lastError = text
-            }
+        do {
+            let response = try await CloudConnection.shared.request(method: "POST", path: "/v1/tasks/\(taskId)/messages",
+                                                                    body: ["content": content, "nonce": nonce])
+            return .injected(state: response["state"] as? String)
+        } catch let error where CloudOutbox.isTransient(error) {
+            return .retryable
+        } catch {
+            let text = error.localizedDescription
+            if text.contains("HTTP 409") || text.contains("HTTP 404") || text.contains("版本过旧") { return .notRunning }
+            return .failed(text)
         }
-        return .failed(lastError)
     }
 }
 

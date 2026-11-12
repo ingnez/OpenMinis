@@ -17,10 +17,19 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(box.items(for: "s-a", now: 2000).isEmpty, "发出后移除")
         check(CloudOutbox.decode(body)?["content"] as? String == "测试消息", "往返")
         check(CloudOutbox.encode(["message_parts": [["type": "text"]]]) == nil, "带图片不存盘")
+        let providerBody = ["provider": ["base_url": "https://example.com/v1", "api_key": "fake-key"]]
+        check(CloudOutbox.encode(providerBody) == nil, "没有 Keychain 引用的密钥请求不存盘")
+        let encoded = CloudOutbox.encode(providerBody, providerInstanceId: "provider-1")!
+        let provider = CloudOutbox.decode(encoded)?["provider"] as? [String: String]
+        check(provider?["api_key"] == nil && provider?["base_url"] == "https://example.com/v1", "持久化重试请求只保留凭据引用")
         let big = Data(count: CloudOutbox.maxBodyBytes + 1)
         check(!box.add(CloudOutboxItem(nonce: "n-3", sessionId: "s-a", content: "", body: big, createdAt: 1000)), "太大不存")
         for i in 0..<30 { box.add(CloudOutboxItem(nonce: "m-\(i)", sessionId: "s-c", content: "", body: body, createdAt: 1000)) }
         check(box.all(now: 2000).count == CloudOutbox.maxItems, "最多 20 条")
+        check(box.items(for: "s-c", now: 2000).first?.nonce == "m-0", "队列满了不挤掉最早待发送")
+        box.remove("m-0")
+        box.add(CloudOutboxItem(nonce: "earlier", sessionId: "s-c", content: "", body: body, createdAt: 999))
+        check(box.items(for: "s-c", now: 2000).first?.nonce == "earlier", "恢复时按原始发送顺序")
         check(CloudOutbox.retryDelay(attempt: 0) == 2 && CloudOutbox.retryDelay(attempt: 3) == 16 && CloudOutbox.retryDelay(attempt: 9) == 30, "退避")
         check(CloudOutbox.isTransient(URLError(.networkConnectionLost)) && !CloudOutbox.isTransient(URLError(.badServerResponse)), "错误分类")
         check(!CloudOutbox.isTransient(NSError(domain: "x", code: 1)), "非网络错误")

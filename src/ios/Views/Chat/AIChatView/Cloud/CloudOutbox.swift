@@ -8,6 +8,7 @@ struct CloudOutboxItem: Codable, Equatable {
     let content: String
     let body: Data        // 请求 JSON
     let createdAt: Double
+    var providerInstanceId: String? = nil
 }
 
 final class CloudOutbox {
@@ -28,7 +29,7 @@ final class CloudOutbox {
     }
 
     func items(for sessionId: String, now: Double = Date().timeIntervalSince1970) -> [CloudOutboxItem] {
-        all(now: now).filter { $0.sessionId == sessionId }
+        all(now: now).filter { $0.sessionId == sessionId }.sorted { $0.createdAt < $1.createdAt }
     }
 
     /// 能存盘返回 true（太大 / 带图片的不存）
@@ -36,9 +37,14 @@ final class CloudOutbox {
     func add(_ item: CloudOutboxItem) -> Bool {
         guard item.body.count <= Self.maxBodyBytes else { return false }
         lock.lock(); defer { lock.unlock() }
-        var list = load().filter { $0.nonce != item.nonce }
-        list.append(item)
-        save(Array(list.suffix(Self.maxItems)))
+        var list = load().filter { item.createdAt - $0.createdAt < Self.maxAge }
+        if let index = list.firstIndex(where: { $0.nonce == item.nonce }) {
+            list[index] = item
+        } else {
+            guard list.count < Self.maxItems else { return false }
+            list.append(item)
+        }
+        save(list)
         return true
     }
 
@@ -69,9 +75,16 @@ final class CloudOutbox {
         return codes.contains(u.code)
     }
 
-    static func encode(_ body: [String: Any]) -> Data? {
-        guard body["message_parts"] == nil, JSONSerialization.isValidJSONObject(body) else { return nil }
-        return try? JSONSerialization.data(withJSONObject: body)
+    static func encode(_ body: [String: Any], providerInstanceId: String? = nil) -> Data? {
+        guard body["message_parts"] == nil else { return nil }
+        var payload = body
+        if var provider = payload["provider"] as? [String: Any], provider["api_key"] != nil {
+            guard providerInstanceId != nil else { return nil }
+            provider.removeValue(forKey: "api_key")
+            payload["provider"] = provider
+        }
+        guard JSONSerialization.isValidJSONObject(payload) else { return nil }
+        return try? JSONSerialization.data(withJSONObject: payload)
     }
 
     static func decode(_ data: Data) -> [String: Any]? {

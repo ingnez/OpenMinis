@@ -222,6 +222,15 @@ def init_db():
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_session_active ON tasks(session_id) WHERE status IN ('running', 'waiting_user')")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id, created_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id)")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS task_message_receipts (
+            session_id TEXT NOT NULL,
+            nonce TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            PRIMARY KEY (session_id, nonce)
+        )
+    """)
 
     # 加密凭据：api_key 仅以 AES-GCM 密文落盘，AAD 绑定凭据名
     cursor.execute("""
@@ -1124,38 +1133,86 @@ def live_has_content(live):
     return bool(live and (live.get("text") or live.get("reasoning") or live.get("tool")))
 
 # ---- 插话：任务进行中用户发来的新消息，不排队，下一步就交给模型
-INBOX = {}            # task_id -> {"closed": bool, "items": [{content, nonce}], "nonces": set}
+INBOX = {}            # task_id -> {"closed": bool, "items": [{content, nonce}]}
 INBOX_LOCK = threading.Lock()
+
+def inbox_receipt(conn, session_id, nonce):
+    if not nonce:
+        return None
+    return conn.execute("SELECT task_id, state FROM task_message_receipts WHERE session_id = ? AND nonce = ?",
+                        (session_id, nonce)).fetchone()
 
 def inbox_push(task_id, content, nonce):
     """返回 (状态码, 结果)。同一个 nonce 只收一次。任务已经收尾（不再看新消息）时返回 409，手机改为发新消息。"""
-    conn = get_db_connection()
-    try:
-        row = conn.execute("SELECT status, session_id FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
-    finally:
-        conn.close()
-    if not row:
-        return 404, {"error": "Task not found"}
     with INBOX_LOCK:
+        conn = get_db_connection()
+        try:
+            row = conn.execute("SELECT status, session_id FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            if not row:
+                return 404, {"error": "Task not found"}
+            receipt = inbox_receipt(conn, row[1], nonce)
+            if receipt:
+                return 200, {"task_id": receipt[0], "accepted": True, "duplicate": True, "state": receipt[1]}
+            if nonce:
+                initial = conn.execute("SELECT task_id FROM tasks WHERE session_id = ? AND client_nonce = ?",
+                                       (row[1], nonce)).fetchone()
+                if initial:
+                    return 200, {"task_id": initial[0], "accepted": True, "duplicate": True, "state": "applied"}
+        finally:
+            conn.close()
         box = INBOX.get(task_id)
-        if box and nonce and nonce in box["nonces"]:
-            return 200, {"task_id": task_id, "accepted": True, "duplicate": True}
+        if box and nonce and any(item["nonce"] == nonce for item in box["items"]):
+            return 200, {"task_id": task_id, "accepted": True, "duplicate": True, "state": "queued"}
         if row[0] not in ("running", "waiting_user", "queued") or (box and box["closed"]):
             return 409, {"error": "任务已经结束，请作为新消息发送", "status": row[0]}
-        box = INBOX.setdefault(task_id, {"closed": False, "items": [], "nonces": set()})
+        box = INBOX.setdefault(task_id, {"closed": False, "items": []})
         box["items"].append({"content": content, "nonce": nonce})
-        if nonce:
-            box["nonces"].add(nonce)
     log_event(task_id, "user_message", {"content": content, "nonce": nonce, "state": "pending"})
-    return 202, {"task_id": task_id, "accepted": True}
+    return 202, {"task_id": task_id, "accepted": True, "state": "queued"}
 
-def inbox_take(task_id, limit=None):
+def inbox_withdraw(task_id, nonce):
+    with INBOX_LOCK:
+        conn = get_db_connection()
+        try:
+            row = conn.execute("SELECT session_id FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            if not row:
+                return 404, {"error": "Task not found"}
+            session_id = row[0]
+            receipt = inbox_receipt(conn, session_id, nonce)
+            if receipt and receipt[0] == task_id and receipt[1] == "withdrawn":
+                return 200, {"state": "withdrawn"}
+            box = INBOX.get(task_id)
+            if not box or not any(item["nonce"] == nonce for item in box["items"]):
+                return 409, {"error": "这条消息已经开始处理或已离开队列"}
+            conn.execute("INSERT INTO task_message_receipts VALUES (?, ?, ?, 'withdrawn')",
+                         (session_id, nonce, task_id))
+            conn.commit()
+            box["items"] = [item for item in box["items"] if item["nonce"] != nonce]
+        finally:
+            conn.close()
+    log_event(task_id, "user_message_withdrawn", {"nonce": nonce})
+    return 200, {"state": "withdrawn"}
+
+def inbox_take(task_id, session_id, instant, limit=None):
     with INBOX_LOCK:
         box = INBOX.get(task_id)
         if not box or not box["items"]:
             return []
         count = len(box["items"]) if limit is None else limit
-        items, box["items"] = box["items"][:count], box["items"][count:]
+        items = box["items"][:count]
+        conn = get_db_connection()
+        try:
+            with conn:
+                for item in items:
+                    nonce = item["nonce"]
+                    conn.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'user', ?, ?, ?)",
+                                 (session_id, cloud_vault.redact(item["content"]), time.time(),
+                                  json.dumps({"injected": not instant, "client_nonce": nonce})))
+                    if nonce:
+                        conn.execute("INSERT INTO task_message_receipts VALUES (?, ?, ?, 'applied')", (session_id, nonce, task_id))
+        finally:
+            conn.close()
+        del box["items"][:count]
         return items
 
 def inbox_pending(task_id):
@@ -1166,7 +1223,7 @@ def inbox_pending(task_id):
 def inbox_close(task_id):
     """任务准备结束：还有没交给模型的插话就返回 True（继续跑），否则关门（之后的插话返回 409）。"""
     with INBOX_LOCK:
-        box = INBOX.setdefault(task_id, {"closed": False, "items": [], "nonces": set()})
+        box = INBOX.setdefault(task_id, {"closed": False, "items": []})
         if box["items"]:
             return True
         box["closed"] = True
@@ -1175,6 +1232,14 @@ def inbox_close(task_id):
 def inbox_drop(task_id):
     with INBOX_LOCK:
         INBOX.pop(task_id, None)
+
+def inbox_reject_pending(task_id):
+    with INBOX_LOCK:
+        box = INBOX.setdefault(task_id, {"closed": False, "items": []})
+        box["closed"] = True
+        items, box["items"] = box["items"], []
+    for item in items:
+        log_event(task_id, "user_message_rejected", {"nonce": item["nonce"]})
 
 def insert_message(session_id, role, content, tool_calls=None, tool_call_id=None, meta=None):
     content = cloud_vault.redact(content)
@@ -2012,6 +2077,7 @@ def purge_session(conn, sid):
     for tid in tids:
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (tid,))
     conn.execute("DELETE FROM tasks WHERE session_id = ?", (sid,))
+    conn.execute("DELETE FROM task_message_receipts WHERE session_id = ?", (sid,))
     conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
     conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
 
@@ -4894,7 +4960,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     try:
         def take_injected(limit=None):
             nonlocal current_user_content, mention_hint
-            for item in inbox_take(task_id, limit):
+            for item in inbox_take(task_id, session_id, instant, limit):
                 # 插话：作为一条用户消息放进上下文和历史（位置就是模型看到它的地方）
                 messages.append({"role": "user", "content": item["content"]})
                 if instant:
@@ -4906,7 +4972,6 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                         cloud_vision.expand_attachment_images(messages, _resolve_att, recent=1)
                     except Exception as e:
                         print(f"injected images failed: {type(e).__name__}", flush=True)
-                insert_message(session_id, "user", item["content"], meta={"injected": not instant, "client_nonce": item["nonce"]})
                 log_event(task_id, "user_message_applied", {"nonce": item["nonce"], "separate_reply": instant})
 
         def advance_after_reply():
@@ -5242,6 +5307,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         REPLY_BACK_MODEL.pop(task_id, None)
         with INSTANT_HANDOFF_LOCK:
             INSTANT_HANDED.discard(task_id)
+        try:
+            inbox_reject_pending(task_id)
+        except sqlite3.Error as e:
+            note_server_error("inbox_reject", e)
         conn = get_db_connection()
         c = conn.cursor()
         c.execute("UPDATE tasks SET status = ? WHERE task_id = ? AND status IN ('running', 'waiting_user')", (final_status, task_id))
@@ -7078,8 +7147,8 @@ class Handler(BaseHTTPRequestHandler):
                     if mr[3]:
                         m["tool_call_id"] = mr[3]
                     msgs.append(m)
-                c.execute("SELECT task_id, status, model, created_at FROM tasks WHERE session_id = ? ORDER BY created_at DESC", (sid,))
-                tasks = [{"task_id": tr[0], "status": tr[1], "model": tr[2], "created_at": tr[3]} for tr in c.fetchall()]
+                c.execute("SELECT task_id, status, model, created_at, client_nonce FROM tasks WHERE session_id = ? ORDER BY created_at DESC", (sid,))
+                tasks = [{"task_id": tr[0], "status": tr[1], "model": tr[2], "created_at": tr[3], "client_nonce": tr[4]} for tr in c.fetchall()]
                 # 每个任务的耗时（首字、总时长、token），手机长按消息时显示
                 timing_rows = c.execute("SELECT e.task_id, e.payload FROM task_events e JOIN tasks t ON t.task_id = e.task_id "
                                         "WHERE t.session_id = ? AND e.event_type = 'timings'", (sid,)).fetchall()
@@ -8822,6 +8891,12 @@ class Handler(BaseHTTPRequestHandler):
 
                 # Check client_nonce idempotency
                 if client_nonce:
+                    receipt = inbox_receipt(conn, sid, client_nonce)
+                    if receipt:
+                        conn.rollback()
+                        self._send(200, {"task_id": receipt[0], "session_id": sid, "state": receipt[1],
+                                         "idempotent_replayed": True})
+                        return
                     c.execute("SELECT task_id, status FROM tasks WHERE client_nonce = ? AND session_id = ?", (client_nonce, sid))
                     existing_task = c.fetchone()
                     if existing_task:
@@ -8970,6 +9045,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(code, body)
             return
 
+        m_withdraw = re.match(r"^/v1/tasks/([A-Za-z0-9_-]{1,64})/messages/withdraw$", path)
+        if m_withdraw:
+            nonce = req_json.get("nonce")
+            if not isinstance(nonce, str) or not 0 < len(nonce) <= 80:
+                self._send(400, {"error": "nonce must be a short string"})
+                return
+            code, body = inbox_withdraw(m_withdraw.group(1), nonce)
+            self._send(code, body)
+            return
+
         m_inject = re.match(r"^/v1/tasks/([A-Za-z0-9_-]{1,64})/messages$", path)
         if m_inject:
             # 插话：任务进行中追加一条用户消息，下一步就交给模型（同一个 nonce 只收一次）
@@ -9015,23 +9100,27 @@ class Handler(BaseHTTPRequestHandler):
             tid = parts[3] if len(parts) == 5 else ""
             conn = get_db_connection()
             try:
-                row = conn.execute("SELECT session_id, created_at, status FROM tasks WHERE task_id = ?", (tid,)).fetchone()
-                if not row:
-                    self._send(404, {"error": "Task not found"})
-                    return
-                sid, created, status = row
-                if time.time() - (created or 0) > RETRACT_WINDOW_S:
-                    self._send(409, {"error": "超过撤回时间", "window_s": RETRACT_WINDOW_S})
-                    return
-                newer = conn.execute("SELECT 1 FROM tasks WHERE session_id = ? AND created_at > ? LIMIT 1", (sid, created)).fetchone()
-                if newer:
-                    self._send(409, {"error": "之后又发了消息，不能撤回这条"})
-                    return
-                if status in ("running", "waiting_user"):
-                    set_task_cancelled(tid)
-                    conn.execute("UPDATE tasks SET status = 'cancelled' WHERE task_id = ?", (tid,))
-                n = conn.execute("DELETE FROM messages WHERE session_id = ? AND timestamp >= ?", (sid, created)).rowcount
-                conn.commit()
+                with INBOX_LOCK, conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    row = conn.execute("SELECT session_id, created_at, status FROM tasks WHERE task_id = ?", (tid,)).fetchone()
+                    if not row:
+                        self._send(404, {"error": "Task not found"})
+                        return
+                    sid, created, status = row
+                    if time.time() - (created or 0) > RETRACT_WINDOW_S:
+                        self._send(409, {"error": "超过撤回时间", "window_s": RETRACT_WINDOW_S})
+                        return
+                    newer = conn.execute("SELECT 1 FROM tasks WHERE session_id = ? AND created_at > ? LIMIT 1", (sid, created)).fetchone()
+                    followup = conn.execute("SELECT 1 FROM messages WHERE session_id = ? AND role = 'user' AND timestamp > ? LIMIT 1",
+                                            (sid, created)).fetchone()
+                    box = INBOX.get(tid)
+                    if newer or followup or (box and box["items"]):
+                        self._send(409, {"error": "之后又发了消息，不能撤回这条"})
+                        return
+                    if status in ("running", "waiting_user"):
+                        set_task_cancelled(tid)
+                        conn.execute("UPDATE tasks SET status = 'cancelled' WHERE task_id = ?", (tid,))
+                    n = conn.execute("DELETE FROM messages WHERE session_id = ? AND timestamp >= ?", (sid, created)).rowcount
             finally:
                 conn.close()
             log_event(tid, "cancelled", {"message": "Retracted by user", "retracted": True})
