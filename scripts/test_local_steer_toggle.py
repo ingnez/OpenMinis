@@ -18,6 +18,12 @@ check(QueueDeliveryPlanner.take(queued, at: .toolGap) == nil, "排队：工具�
 check(QueueDeliveryPlanner.take(queued, at: .turnEnd)?.deliver == [a], "排队：这一轮结束时送达")
 let steer = [QueueDeliveryPlanner.Item(id: a, interruptsAtToolGap: true, scheduledJobId: nil)]
 check(QueueDeliveryPlanner.take(steer, at: .toolGap)?.deliver == [a], "插话：下一个工具间隙就送达")
+let b = UUID()
+let burst = steer + [.init(id: b, interruptsAtToolGap: true, scheduledJobId: nil)]
+check(QueueDeliveryPlanner.take(burst, at: .toolGap, separateTurns: true) == nil, "秒回保留前一条完整回复")
+check(QueueDeliveryPlanner.take(burst, at: .turnEnd, separateTurns: true)?.deliver == [a], "秒回每次只交给模型一条消息")
+check(QueueDeliveryPlanner.take(Array(burst.dropFirst()), at: .turnEnd, separateTurns: true)?.deliver == [b], "第二条单独回答")
+check(QueueDeliveryPlanner.take(burst, at: .turnEnd)?.deliver == [a,b], "详细模式保留原顺序与合批")
 let me = ObjectIdentifier(NSObject.self)
 UserDefaults.standard.set(false, forKey: LocalSteerAbort.settingKey)
 LocalSteerAbort.request(me)

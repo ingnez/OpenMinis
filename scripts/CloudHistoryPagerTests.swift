@@ -18,6 +18,14 @@ func ids(_ list: [[String: Any]]) -> [Int] { list.compactMap(CloudHistoryPager.i
         check(ids(CloudHistoryPager.merge(current: [], fresh: recent)) == Array(51...60), "第一次加载")
         let live: [[String: Any]] = [["role": "assistant", "content": "流式中"]]
         check(CloudHistoryPager.merge(current: recent, fresh: live).count == 1, "新数据没有 id 时直接用新数据")
+        let pending: [[String: Any]] = [
+            ["role": "user", "content": "一样的内容", "client_nonce": "first"],
+            ["role": "user", "content": "一样的内容", "client_nonce": "second"]
+        ]
+        let received: [[String: Any]] = [["id": 63, "role": "user", "content": "一样的内容", "client_nonce": "first"]]
+        let merged = CloudHistoryPager.merge(current: recent + pending, fresh: received, preservePending: true)
+        check(merged.compactMap(CloudHistoryPager.pendingNonce) == ["second"], "只替换已确认的同一条消息，未确认的气泡继续显示")
+        check(CloudHistoryPager.merge(current: pending, fresh: [], preservePending: true).count == 2, "空历史刷新也保留连发气泡")
         print("PASS：Bot 对话分页路径、往前翻拼接、刷新合并")
     }
 }

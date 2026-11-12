@@ -22,6 +22,7 @@ struct CloudAssistantTurnView: View {
     var collapsible = false
     @State private var expanded = false
     @Environment(\.cloudReplyInstant) private var replyInstant
+    @State private var showHiddenDetail = false
 
     private var isResetNote: Bool {
         message.blocks.count == 1 && (message.blocks[0].toolUseId ?? "").hasPrefix(CloudEventApplier.resetPrefix)
@@ -93,16 +94,20 @@ struct CloudAssistantTurnView: View {
             ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
                 switch seg {
                 case .text(let block):
-                    CloudTextBlockView(block: block, accent: accent)
+                    if replyInstant {
+                        CloudBotBubble { CloudTextBlockView(block: block, accent: accent) }
+                    } else {
+                        CloudTextBlockView(block: block, accent: accent)
+                    }
                 case .thinking(let block):
-                    CloudThinkingView(text: block.content, streaming: false)
+                    if !replyInstant { CloudThinkingView(text: block.content, streaming: false) }
                 case .injected(let block):
                     CloudInjectedNote(text: block.content)
                 case .reset(let block):
                     CloudResetNoteView(block: block)
                 case .tools(let blocks):
-                    let shown = replyInstant ? blocks.filter { !CloudReplyMode.handoffTools.contains(CloudEventApplier.toolName($0) ?? "") } : blocks
-                    if !shown.isEmpty { CloudToolRunView(blocks: shown) }
+                    // 秒回：工具步骤不进聊天流，只在「查看详情」里（详细模式照旧）
+                    if !replyInstant { CloudToolRunView(blocks: blocks) }
                 case .card(let card):
                     if replyInstant, card.kind == .worker {
                         CloudReplyHandoffLine(title: card.payload["title"] as? String ?? "后台任务", accent: accent)
@@ -113,7 +118,7 @@ struct CloudAssistantTurnView: View {
                     CloudNoticeCapsule(text: text, systemImage: "eye")
                 }
             }
-            if !liveReasoning.isEmpty {
+            if !replyInstant, !liveReasoning.isEmpty {
                 CloudThinkingView(text: liveReasoning, streaming: true)
             }
             if !liveText.isEmpty {
@@ -128,6 +133,112 @@ struct CloudAssistantTurnView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .modifier(CloudCollapse(active: collapsible && isLong, expanded: $expanded))
+        .contextMenu {
+            if replyInstant, hasHiddenDetail {
+                Button("查看详情") { showHiddenDetail = true }
+            }
+        }
+        .sheet(isPresented: $showHiddenDetail) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if !hiddenThinking.isEmpty {
+                            Text("深度思考").font(.headline)
+                            Text(hiddenThinking).font(.callout).foregroundStyle(.secondary)
+                        }
+                        if !hiddenTools.isEmpty {
+                            Text("步骤").font(.headline)
+                            CloudToolRunView(blocks: hiddenTools)
+                        }
+                        ForEach(hiddenBriefs, id: \.self) { brief in
+                            Text(brief).font(.callout).textSelection(.enabled)
+                        }
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .navigationTitle("详情")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("收起") { showHiddenDetail = false } } }
+            }
+            .accessibilityIdentifier("replyBriefSheet")
+        }
+    }
+
+    private var hiddenThinking: String {
+        let blocks = message.blocks.filter { $0.kind == .thinking }.map(\.content).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        var parts = blocks
+        if !liveReasoning.isEmpty { parts.append(liveReasoning) }
+        return parts.joined(separator: "\n\n")
+    }
+
+    private var hiddenBriefs: [String] {
+        message.blocks.compactMap { b -> String? in
+            if let mark = CloudDelegationMark.parse(b.content) { return mark.shownBody }
+            if let card = CloudCards.decode(b), card.kind == .worker {
+                let title = card.payload["title"] as? String ?? ""
+                let goal = (card.payload["goal"] as? String) ?? (card.payload["context"] as? String) ?? ""
+                let text = [title, goal].filter { !$0.isEmpty }.joined(separator: "\n")
+                return text.isEmpty ? nil : text
+            }
+            return nil
+        }
+    }
+
+    /// 秒回时藏起来的工具步骤（派活 / 转话这类本来就在底部状态行里，不重复）
+    private var hiddenTools: [AssistantBlock] {
+        message.blocks.filter { b in
+            switch b.kind {
+            case .text, .thinking, .info: return false
+            default: return !CloudReplyMode.handoffTools.contains(CloudEventApplier.toolName(b) ?? "")
+            }
+        }
+    }
+
+    private var hasHiddenDetail: Bool { !hiddenThinking.isEmpty || !hiddenBriefs.isEmpty || !hiddenTools.isEmpty }
+}
+
+/// 秒回里 Bot 的回复：靠左的浅灰圆角气泡，最宽约屏宽 84%，右边总留一段空白（点空白展开下方的耗时和操作）
+struct CloudBotBubble<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        HStack(spacing: 0) {
+            content
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.systemGray6)))
+                .frame(maxWidth: UIScreen.main.bounds.width * 0.84, alignment: .leading)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("botReplyBubble")
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// 秒回：消息下面的耗时（首字 / 总 / tokens）和操作图标默认收起；点这条消息（气泡旁或下方的空白）展开，再点收起。
+/// 详细模式照旧一直显示。
+struct CloudInstantFooterGate<Turn: View, Footer: View>: View {
+    let turn: Turn
+    let footer: Footer
+    @Environment(\.cloudReplyInstant) private var instant
+    @State private var open = false
+
+    var body: some View {
+        if instant {
+            VStack(alignment: .leading, spacing: 6) {
+                turn
+                if open {
+                    footer.accessibilityIdentifier("botReplyFooter")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { open.toggle() } }
+        } else {
+            turn
+            footer
+        }
     }
 }
 

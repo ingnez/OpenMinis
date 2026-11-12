@@ -141,6 +141,7 @@ extension CollectionViewMessageListV3.Coordinator {
                     .transaction { $0.disablesAnimations = true }
                     .environmentObject(vm)
                     .environment(\.chatSearchHighlights, vm.chatSearch.highlights)
+                    .environment(\.cloudReplyInstant, vm.isInstantFrontTurn)
                 }.minSize(width: 0, height: 0).margins(.all, 0)
                 cell.applyContentConfiguration(config)
 

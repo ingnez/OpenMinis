@@ -47,6 +47,12 @@ struct AttachmentMeta: Identifiable, Equatable {
     }
 }
 
+
+/// 用户气泡角上只在真正失败时出现。发送中 / 已送达都不画，气泡一点击就按已发出显示。
+enum MessageSendTick: String, Equatable {
+    case failed
+}
+
 final class ChatMessage: Identifiable, ObservableObject {
     let id = UUID()
     let role: ChatMessageRole
@@ -68,6 +74,10 @@ final class ChatMessage: Identifiable, ObservableObject {
     @Published var isAwaitingModelResponse = false
     /// True when this message is queued but not yet injected into the agent loop.
     @Published var isQueued = false
+    /// 秒回发送失败：nil = 看起来已发出（包括刚点发送）。只有真正失败才是 .failed。
+    @Published var sendTick: MessageSendTick?
+    /// 后台任务已经收下这条插话（按新要求改了）。
+    @Published var adoptedMark = false
     /// True if this message is from the compacted history zone (read-only, no actions).
     @Published var isCompactedHistory = false
     /// True when this compact divider is still loading (LLM generating summary).

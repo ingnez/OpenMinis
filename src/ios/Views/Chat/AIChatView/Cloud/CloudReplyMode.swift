@@ -1,5 +1,26 @@
 import Foundation
 
+struct CloudSessionBusyError: LocalizedError {
+    let taskId: String
+    let reason: String
+
+    init?(statusCode: Int, response: [String: Any]?, reason: String) {
+        guard statusCode == 409, let taskId = response?["running_task_id"] as? String,
+              taskId.range(of: #"\A[A-Za-z0-9_-]{1,64}\z"#, options: .regularExpression) != nil else { return nil }
+        self.taskId = taskId
+        self.reason = reason
+    }
+
+    var errorDescription: String? { "云端 HTTP 409：\(reason)" }
+}
+
+enum CloudReplyDeliveryPolicy {
+    static func canInterrupt(enabled: Bool, body: [String: Any]) -> Bool {
+        // 任务的插话接口只接收文字和 nonce；带结构化内容的消息要完整发到对话接口。
+        enabled && body["reply_to"] == nil && body["choice_answer"] == nil && body["message_parts"] == nil
+    }
+}
+
 /// 回复方式（服务器 2.50.0+）：「秒回」前台快模型马上回话、后台 worker 干活；「详细」原来的实时步骤。
 /// 只放纯逻辑（Foundation），界面在 CloudReplyViews.swift；Linux 上 scripts/CloudReplyModeTests.swift 跑。
 enum CloudReplyMode: String, CaseIterable, Identifiable {
@@ -136,6 +157,22 @@ enum CloudReplyText {
         return "\(n / 3600) 小时 \(n % 3600 / 60) 分"
     }
 
+    /// 预计剩余秒数：只用真实历史用时。至少 3 个样本时取中位数减去已用时间；不够、快到了或已超时返回 nil（不瞎猜）。
+    static let etaMinSamples = 3
+    static func etaSeconds(history: [Double], elapsed: Double) -> Int? {
+        let xs = history.filter { $0 > 0 }
+        guard xs.count >= etaMinSamples else { return nil }
+        let sorted = xs.sorted()
+        let mid: Double
+        if sorted.count % 2 == 1 {
+            mid = sorted[sorted.count / 2]
+        } else {
+            mid = (sorted[sorted.count / 2 - 1] + sorted[sorted.count / 2]) / 2
+        }
+        let left = mid - elapsed
+        return left >= 5 ? Int(left.rounded()) : nil
+    }
+
     /// 预计剩余：服务器只在有真实历史数据时给 eta_s；本地按拿到之后过去的时间往下减，减到 5 秒以内就不显示（不瞎猜）
     static func eta(_ seconds: Int?, since fetched: Double = 0) -> String? {
         guard let s = seconds else { return nil }
@@ -211,12 +248,30 @@ struct CloudReplyTracker {
 /// 状态行该显示哪个任务：进行中的优先（最新开始的那个）；都结束了显示刚结束的一个几秒钟
 enum CloudReplyRow {
     static let lingerSeconds: Double = 4
+    /// 胶囊条最多同时露出几个任务，多出来的进「+N」角标
+    static let capsuleLimit = 4
 
     static func current(_ workers: [CloudReplyWorker], finishedAt: [String: Date] = [:], now: Date = Date()) -> CloudReplyWorker? {
-        let active = workers.filter(\.active).sorted { $0.createdAt > $1.createdAt }
-        if let a = active.first { return a }
-        return workers.filter { w in finishedAt[w.id].map { now.timeIntervalSince($0) < lingerSeconds } ?? false }
-            .sorted { $0.createdAt > $1.createdAt }.first
+        let items = visible(workers, finishedAt: finishedAt, now: now)
+        if let a = items.filter(\.active).sorted(by: { $0.createdAt > $1.createdAt }).first { return a }
+        return items.sorted { $0.createdAt > $1.createdAt }.first
+    }
+
+    /// 进行中的，加上刚结束、还要停留几秒打勾的
+    static func visible(_ workers: [CloudReplyWorker], finishedAt: [String: Date] = [:], now: Date = Date()) -> [CloudReplyWorker] {
+        workers.filter { w in
+            w.active || finishedAt[w.id].map { now.timeIntervalSince($0) < lingerSeconds } ?? false
+        }.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    static func overflowCount(_ visible: Int, limit: Int = capsuleLimit) -> Int {
+        max(0, visible - limit)
+    }
+
+    /// 多任务里选中胶囊的主文字
+    static func dispatchPhrase(title: String) -> String {
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "派单给后台" : "派单给\(t)"
     }
 
     /// 横滑停止：往左拖过这个距离松手就停
@@ -251,5 +306,28 @@ struct CloudReplyLatency {
     mutating func sawText(at d: Date = Date()) {
         guard let s = sentAt, firstTextMs == nil else { return }
         firstTextMs = max(0, Int((d.timeIntervalSince(s) * 1000).rounded()))
+    }
+}
+
+
+/// 秒回前台对插话的决定：转给正在跑的后台 / 另派一个 / 停下 / 直接回答。
+enum CloudReplyFrontAction: String, Equatable {
+    case steer, new, cancel, answer
+
+    /// 根据工具调用生成进度条上要显示的一句决定。
+    static func note(tool: String, args: [String: Any]) -> (action: CloudReplyFrontAction, line: String)? {
+        switch tool {
+        case "task_message":
+            let t = (args["text"] as? String) ?? (args["message"] as? String) ?? ""
+            let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (.steer, trimmed.isEmpty ? "按你的补充改正在做的任务" : "转给后台：\(trimmed)")
+        case "spawn_task":
+            let t = (args["title"] as? String) ?? (args["goal"] as? String) ?? "新任务"
+            return (.new, "另派后台：\(t)")
+        case "task_stop":
+            return (.cancel, "停下当前任务")
+        default:
+            return nil
+        }
     }
 }

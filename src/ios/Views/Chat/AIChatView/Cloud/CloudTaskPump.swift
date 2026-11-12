@@ -210,6 +210,9 @@ enum CloudHistoryAdapter {
                 note.blocks.append(AssistantBlock(kind: .info, content: m["title"] as? String ?? content,
                                                   toolUseId: CloudEventApplier.resetPrefix + snap))
                 out.append(Turn(message: note, raw: m))
+            case "user" where CloudInternalPrompt.isInternal(m):
+                // 例行任务 / 主动消息发给模型的提示词：不是用户说的，不画成用户气泡
+                continue
             case "user":
                 flush()
                 guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
@@ -373,5 +376,24 @@ enum CloudQuiet {
             do { return try await op() } catch { lastError = error }
         }
         throw lastError ?? CancellationError()
+    }
+}
+
+
+/// 服务器替用户发给模型的内部提示（例行任务、主动消息、每周复盘）：对话里不显示成用户气泡。
+/// 新数据带 internal 标记；老数据只能认内容（例行任务前缀，或提示词里的「只回复 [SKIP]」）。
+enum CloudInternalPrompt {
+    static let routinePrefix = "[例行任务「"
+    static let skipMarker = "只回复 [SKIP]"
+
+    static func isInternal(_ row: [String: Any]) -> Bool {
+        if let tag = row["internal"] as? String, !tag.isEmpty { return true }
+        if row["internal"] as? Bool == true { return true }
+        return isInternalText(row["content"] as? String ?? "")
+    }
+
+    static func isInternalText(_ content: String) -> Bool {
+        let t = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.hasPrefix(routinePrefix) || t.contains(skipMarker)
     }
 }

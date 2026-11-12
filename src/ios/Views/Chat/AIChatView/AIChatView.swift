@@ -496,6 +496,8 @@ struct AIChatView: View {
     /// from SOUL.md (`name`), falls back to "Minis". Refreshed on .soulMdChanged.
     @State var soulName: String = SoulStore.cachedMetadata.name.isEmpty
         ? "Minis" : SoulStore.cachedMetadata.name
+    @StateObject private var localReplyStatus = CloudReplyStatusModel()
+    @State var localReplyPlan = CloudReplyPlan(mode: .instant)
 
     /// True when any sheet or fullScreenCover is presented (suppress auto-focus to avoid keyboard bugs).
     var hasOverlayPresented: Bool {
@@ -557,10 +559,17 @@ struct AIChatView: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 6)
                     .modifier(ChatSearchComposerHider(hidden: isChatSearchActive))
+                // 秒回：底部一行进度；详细：原来的步骤条
+                LocalReplyComposerSlot(instant: localReplyPlan.isInstant, status: localReplyStatus,
+                                       theme: CloudBotChatTheme(localName: soulName, sessionId: vm.sessionId ?? ""),
+                                       firstTextMs: vm.replyLatency.firstTextMs)
+                    .modifier(ChatSearchComposerHider(hidden: isChatSearchActive))
+                if !localReplyPlan.isInstant {
                 floatingToolPreview
                     // [T-in-chat-search] Leaves with the composer while searching.
                     .modifier(ChatSearchComposerHider(hidden: isChatSearchActive))
                     .shadow(color: Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0, alpha: 0.25) : UIColor(white: 0, alpha: 0) }), radius: 6, x: 0, y: 4)
+                }
                 #if DEBUG
                 if isReadOnly {
                     forkBanner
@@ -576,6 +585,9 @@ struct AIChatView: View {
             // Register the composer (tool preview + input bar) as a
             // region the global speech capsule must not cover.
             .capsuleProtectedFrame("inputBar")
+            .modifier(LocalReplyChatChrome(sessionId: vm.sessionId ?? "", instant: localReplyPlan.isInstant,
+                                           botName: soulName, viewModel: vm, status: localReplyStatus,
+                                           onPlan: { localReplyPlan = $0 }))
             // [T-p1-delegate-task] Hosted on the stable VStack, not on
             // the capsule itself: the capsule unmounts the moment the
             // helper finishes, which would yank an open sheet away.

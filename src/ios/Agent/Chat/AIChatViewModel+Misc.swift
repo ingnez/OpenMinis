@@ -87,7 +87,7 @@ extension AIChatViewModel {
         if !silent && !deferUntilIdle {
             supersedePendingUserAsk()
             // [T-steer-interrupt] 插话：模型正在输出纯文字时提前结束这段，消息马上交给模型
-            LocalSteerAbort.request(ObjectIdentifier(self))
+            if !isInstantFrontTurn { LocalSteerAbort.request(ObjectIdentifier(self)) }
         }
         let pendingAttachments = attachments
         // [T-paste-live-bubble-card] Same birth-time card plan as send(): the
@@ -99,8 +99,8 @@ extension AIChatViewModel {
                                   pastePlan: pastePlanned.plan)
         prompt.deferUntilIdle = deferUntilIdle
         promptQueue.append(prompt)
-        // Show in chat immediately with queued styling
-        let chatMsg = ChatMessage(role: .user, content: text, isQueued: true)
+        // Show in chat immediately with queued styling（秒回插话不当成排队灰泡，先出勾）
+        let chatMsg = ChatMessage(role: .user, content: text, isQueued: !isInstantFrontTurn)
         chatMsg.queuedPromptId = prompt.id
         chatMsg.inputAttachments = pendingAttachments
         chatMsg.attachments = pastePlanned.metas

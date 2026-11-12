@@ -1728,6 +1728,19 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// [T-p1-delegate-task] Non-nil on a helper (child) vm. Drives the
     /// helper-specific prompt, tool set, turn cap and skill scope.
     var helperConfig: HelperConfig?
+    /// 秒回前台这一轮要用的模型条目（不写进对话绑定）；后台子任务用 localReplyBackEntryId
+    var turnModelEntryOverride: String?
+    var localReplyBackEntryId: String?
+    /// 这一轮秒回前台已经自动 spawn_task 过（模型没按提示、直接调了干活的工具）
+    var localReplyHandedOff = false
+    /// 本地秒回前台做出 Steer / New / Cancel / Answer 后通知界面。
+    /// 状态条由 AIChatView / Cloud 对话页自己持有，这里只发信号，不摸 View 的 replyStatus。
+    var onReplyFrontDecision: ((String, String?) -> Void)?
+    var replyLatency = CloudReplyLatency()
+
+    func noteReplyFrontDecision(_ line: String, action: String? = nil) {
+        onReplyFrontDecision?(line, action)
+    }
     /// [T-agent-model-identity] What the latest served turn of this vm's
     /// loop actually ran on (entry after fallback + the API-reported model).
     /// Read by the parent's HelperRunner / AgentJobRegistry for agent

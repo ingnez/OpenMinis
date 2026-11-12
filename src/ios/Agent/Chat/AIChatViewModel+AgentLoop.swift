@@ -89,6 +89,7 @@ extension AIChatViewModel {
 
     func runAgentLoop(resumingAt existingMsgIdx: Int? = nil, committedBlocks: Int? = nil) async throws {
         guard !isRetiredByReset else { throw CancellationError() }
+        prepareLocalReplyTurn()
 
         // 本地就是本地：本地对话只在本机跑。以前这里看到旧版「云电脑」开关留下的偏好
         // 就把整轮悄悄导到 VPS 主 Bot 上执行（11-11 真机：本地任务出现在云端小猪包对话里）。
@@ -161,8 +162,11 @@ extension AIChatViewModel {
         // model.
         pendingModelSwitch = false
 
-        // Resolve provider from ProviderConfigStore
-        guard let entry = resolveCurrentEntry() else {
+        // Resolve provider from ProviderConfigStore.
+        // 秒回前台这一轮用前台模型：请求真正发给它（turnModelEntryOverride 只改路由标签时，
+        // 请求仍走对话绑定的主模型，本地前台既不秒回也不派活：43117433250 本地 6 个用例）。
+        let frontEntry = turnModelEntryOverride.flatMap { ProviderConfigStore.shared.entry(for: $0) }
+        guard let entry = frontEntry ?? resolveCurrentEntry() else {
             let errMsg = ChatMessage(role: .assistant, content: "", blocks: [])
             errMsg.error = AppLocalized("No model configured. Add a provider in Settings.")
             messages.append(errMsg)
@@ -268,6 +272,7 @@ extension AIChatViewModel {
         // Authoritative memory-status footer (overrides any earlier
         // baseSystemPrompt mentions when memory is disabled).
         userSystemPrompt += memoryStatusFragment
+        if isInstantFrontTurn { userSystemPrompt += LocalReplyStore.frontNote }
 
         let promptBuildMs = (CFAbsoluteTimeGetCurrent() - loopSetupStart) * 1000
         logger.info("⏱️ [runAgentLoop] prompt build elapsed=\(String(format: "%.1f", promptBuildMs))ms history=\(self.agentHistory.count)")
@@ -1029,7 +1034,7 @@ extension AIChatViewModel {
             } else {
                 stream = try await streamWithGroupFallback(
                     provider: provider,
-                    messages: contextHistory,
+                    messages: applyingLocalFrontWorkerNote(contextHistory),
                     baseSystemPrompt: baseSystemPrompt,
                     systemPrompt: userSystemPrompt,
                     tools: tools,
@@ -1106,6 +1111,7 @@ extension AIChatViewModel {
                     }
                 }
                 userSystemPrompt += memoryStatusFragment
+                if isInstantFrontTurn { userSystemPrompt += LocalReplyStore.frontNote }
                 fallbackTrigger += 1
                 if !fallbackReasons.isEmpty {
                     // Resync the assistant message index by its stable id before
@@ -1280,7 +1286,7 @@ extension AIChatViewModel {
                         // with the reason).
                         reminderStream = try await streamWithGroupFallback(
                             provider: provider,
-                            messages: reminderHistory,
+                            messages: applyingLocalFrontWorkerNote(reminderHistory),
                             baseSystemPrompt: baseSystemPrompt,
                             systemPrompt: userSystemPrompt,
                             tools: tools,
@@ -1294,7 +1300,7 @@ extension AIChatViewModel {
                     } else {
                         reminderStream = try await streamWithAutoRetry(
                             provider: provider,
-                            messages: reminderHistory,
+                            messages: applyingLocalFrontWorkerNote(reminderHistory),
                             systemPrompt: userSystemPrompt,
                             tools: tools,
                             maxTokens: dynamicMaxTokens(provider: provider, model: activeModel, lastContextTokens: dispatchInputTokens),
@@ -1392,7 +1398,7 @@ extension AIChatViewModel {
                     msgIdx = resynced
                     streamResult = try await streamWithGroupFallbackUntilContent(
                         provider: provider,
-                        messages: applyRequestImageBudget(effectiveAgentHistory()),
+                        messages: applyingLocalFrontWorkerNote(applyRequestImageBudget(effectiveAgentHistory())),
                         baseSystemPrompt: baseSystemPrompt,
                         systemPrompt: userSystemPrompt,
                         tools: tools,
@@ -1415,7 +1421,7 @@ extension AIChatViewModel {
                     do {
                         let retryStream = try await streamWithAutoRetry(
                             provider: provider,
-                            messages: applyRequestImageBudget(effectiveAgentHistory()),
+                            messages: applyingLocalFrontWorkerNote(applyRequestImageBudget(effectiveAgentHistory())),
                             systemPrompt: userSystemPrompt,
                             tools: tools,
                             maxTokens: dynamicMaxTokens(provider: provider, model: activeModel, lastContextTokens: dispatchInputTokens),
@@ -1473,7 +1479,7 @@ extension AIChatViewModel {
                         // group entries until one returns non-empty content.
                         streamResult = try await streamWithGroupFallbackUntilContent(
                             provider: provider,
-                            messages: applyRequestImageBudget(effectiveAgentHistory()),
+                            messages: applyingLocalFrontWorkerNote(applyRequestImageBudget(effectiveAgentHistory())),
                             baseSystemPrompt: baseSystemPrompt,
                             systemPrompt: userSystemPrompt,
                             tools: tools,

@@ -74,8 +74,20 @@ extension AIChatViewModel {
         #else
         logger.info("🔑DRAFT [vm=\(self.vmInstanceId)] send() text=\(text.count)ch attachments=\(pendingAttachments.count) isProcessing=\(self.isProcessing) sessionId=\(self.sessionId ?? "nil") draftId=\(self.draftId ?? "nil")")
         #endif
-        guard !text.isEmpty || !pendingAttachments.isEmpty, !isProcessing else {
+        guard !text.isEmpty || !pendingAttachments.isEmpty, !isProcessing || isInstantFrontTurn else {
             logger.warning("🔑DRAFT [vm=\(self.vmInstanceId)] send() GUARD FAILED — text.isEmpty=\(text.isEmpty) attachments.isEmpty=\(pendingAttachments.isEmpty) isProcessing=\(self.isProcessing)")
+            return
+        }
+        if isInstantFrontTurn {
+            replyLatency.sent()
+            NotificationCenter.default.post(name: CloudReplyService.kick, object: nil)
+        }
+        // 秒回：发消息不挡住输入，气泡先上屏，前台随后逐条回答。
+        if isInstantFrontTurn, isProcessing {
+            enqueuePrompt(deferUntilIdle: false, overrideText: usingComposer ? nil : text)
+            if let last = messages.last(where: { $0.role == .user }) {
+                last.isQueued = false
+            }
             return
         }
 

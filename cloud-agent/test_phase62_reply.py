@@ -122,12 +122,14 @@ class ReplyModeTests(CloudServerTestCase):
         """前台：「查一下」→ 先流一句再 spawn_task；后台有任务时「插话」→ 先回再 task_message；其余直接秒回。
         后台：worker_steps 步带 tool_title 的命令，然后给结果（收到插话就在结果里注明）。"""
         def front(d):
-            text = last_user(d)
+            text = last_user(d).split("\n\n[", 1)[0].strip()
             if fresh_tools(d):
                 return {"role": "assistant", "content": ""}
             wid = running_worker(d)
-            if "插话" in text and wid:
-                return stream_then_tool("收到插话，马上转给后台。", "f2", "task_message", {"id": wid, "text": text})
+            if "查一下" not in text and wid:
+                short = (text or "这个要求")[:28]
+                line = f"你想{short}，我让后台现在就改。"
+                return stream_then_tool(line, "f2", "task_message", {"id": wid, "text": "按用户补充调整：" + text})
             if "查一下" in text:
                 return stream_then_tool("好，我让后台去查，做完告诉你。", "f1", "spawn_task",
                                         {"goal": text, "context": "假数据", "title": "查资料"})
@@ -233,12 +235,61 @@ class ReplyModeTests(CloudServerTestCase):
         self.assertEqual(task["status"], "completed")
         self.assertLess(time.time() - t0, 5, "后台在忙时前台没有马上回话")
         msgs = self.request("GET", f"/v1/sessions/{sid}")[1]["messages"]
-        self.assertIn("收到插话，马上转给后台", json.dumps(msgs, ensure_ascii=False))
+        blob = json.dumps(msgs, ensure_ascii=False)
+        self.assertIn("你想", blob)
+        self.assertIn("我让后台", blob)
+        self.assertNotIn("收到插话，马上转给后台", blob)
         self.assertEqual(self._worker(w["worker_id"])["status"], "running")
         self.gate.set()
         done = self._wait(lambda: (lambda x: x if x["status"] == "completed" else None)(self._worker(w["worker_id"])),
                           timeout=30, what="后台完成")
         self.assertEqual(done["result"], "后台结论：42（已按插话调整）")
+
+    def test_04b_burst_gets_separate_replies_while_worker_is_busy(self):
+        self._install(worker_steps=1, slow=True)
+        sid = self._session()
+        self._say(sid, "查一下资料")
+        worker = self._wait(lambda: (self._workers(sid) or [None])[0], what="后台任务")
+        self.assertEqual(worker["status"], "running")
+
+        steers = ["改成10页", "只要上海的", "先做大纲"]
+        question, answer = "三乘以四是多少？", "三乘以四等于12。"
+        burst = steers[:2] + [question, steers[2]]
+        entered, release = threading.Event(), threading.Event()
+        original_front = FakeModelHandler.scripts[FRONT]
+
+        def front(request):
+            current = last_user(request)
+            if current.startswith(burst[0]) and not fresh_tools(request):
+                entered.set()
+                release.wait(10)
+            if current.startswith(question):
+                return {"_chunks": [answer], "_delay": 0.02}
+            return original_front(request)
+
+        FakeModelHandler.scripts[FRONT] = front
+        tid = self.submit(sid, burst[0], MAIN)[1]["task_id"]
+        try:
+            self.assertTrue(entered.wait(5), "首条前台请求未开始")
+            for index, text in enumerate(burst[1:], 1):
+                code, _ = self.request("POST", f"/v1/tasks/{tid}/messages", {"content": text, "nonce": f"burst-{index}"})
+                self.assertEqual(code, 202)
+        finally:
+            release.set()
+
+        self.assertEqual(self.wait_status(tid, {"completed", "failed"}, timeout=10)["status"], "completed")
+        self.assertEqual(self._worker(worker["worker_id"])["status"], "running", "前台答复不应等待后台完成")
+        detail = self.request("GET", f"/v1/sessions/{sid}")[1]
+        self.assertTrue(detail["ordered_reply_turns"])
+        messages = detail["messages"]
+        self.assertEqual([m.get("client_nonce") for m in messages if m["role"] == "user" and m["content"] in burst[1:]],
+                         ["burst-1", "burst-2", "burst-3"])
+        replies = [m["content"] for m in messages if m["role"] == "assistant" and m.get("front_task_id") == tid and m.get("content")]
+        self.assertEqual(replies, [answer if text == question else f"你想{text}，我让后台现在就改。" for text in burst])
+        events = self.request("GET", f"/v1/tasks/{tid}")[1]["events"]
+        forwarded = [e["payload"]["arguments"]["text"] for e in events
+                     if e["type"] == "tool_call" and e["payload"].get("tool") == "task_message"]
+        self.assertEqual(forwarded, ["按用户补充调整：" + text for text in steers])
 
     def test_05_front_cannot_run_work_tools(self):
         def front(d):

@@ -5,6 +5,19 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
 
 @main struct CloudReplyModeTests {
     static func main() {
+        let busyResponse = ["running_task_id": "task_1234"]
+        let busy = CloudSessionBusyError(statusCode: 409, response: busyResponse, reason: "running")
+        check(busy?.taskId == "task_1234" && busy?.localizedDescription.contains("HTTP 409") == true, "只从 409 响应读取运行中的任务")
+        check(CloudSessionBusyError(statusCode: 409, response: [:], reason: "nonce conflict") == nil, "普通冲突不插话")
+        check(CloudSessionBusyError(statusCode: 500, response: busyResponse, reason: "error") == nil, "非 409 不插话")
+        check(CloudSessionBusyError(statusCode: 409, response: ["running_task_id": "task/other"], reason: "running") == nil, "任务 ID 必须是单个路径段")
+        check(CloudSessionBusyError(statusCode: 409, response: ["running_task_id": "task_1234\n"], reason: "running") == nil, "任务 ID 不允许尾部控制字符")
+        check(CloudReplyDeliveryPolicy.canInterrupt(enabled: true, body: ["content": "补充"]), "允许文字插话")
+        check(!CloudReplyDeliveryPolicy.canInterrupt(enabled: false, body: ["content": "补充"]), "排队偏好优先")
+        for key in ["reply_to", "choice_answer", "message_parts"] {
+            check(!CloudReplyDeliveryPolicy.canInterrupt(enabled: true, body: [key: 1]), "\(key) 要完整排队发送")
+        }
+
         // 解析：老服务器没有 reply 字段 → nil（界面按详细）
         check(CloudReplyPlan(json: nil) == nil && CloudReplyPlan(json: ["mode": "fast"]) == nil, "老服务器 / 未知模式")
         check(CloudReplyMode.fallback == .verbose, "没字段按详细")
@@ -33,6 +46,10 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         // 文字
         check(CloudReplyText.elapsed(8.9) == "8 秒" && CloudReplyText.elapsed(65) == "1 分 05 秒" && CloudReplyText.elapsed(3720) == "1 小时 2 分", "用时")
         check(CloudReplyText.elapsed(-3) == "0 秒", "负数")
+        check(CloudReplyText.etaSeconds(history: [], elapsed: 3) == nil, "没有样本不猜")
+        check(CloudReplyText.etaSeconds(history: [60, 80], elapsed: 3) == nil, "样本不够不猜")
+        check(CloudReplyText.etaSeconds(history: [60, 80, 100], elapsed: 20) == 60, "中位数 80 - 已用 20")
+        check(CloudReplyText.etaSeconds(history: [60, 80, 100], elapsed: 79) == nil, "快到了不显示")
         check(CloudReplyText.eta(nil) == nil, "没有数据不显示预计")
         check(CloudReplyText.eta(40) == "约还需 40 秒", CloudReplyText.eta(40) ?? "nil")
         check(CloudReplyText.eta(150) == "约还需 3 分钟", CloudReplyText.eta(150) ?? "nil")
@@ -98,6 +115,31 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(l.firstTextMs == 420, "首字 \(l.firstTextMs ?? -1)")
         l.sent(at: now)
         check(l.firstTextMs == nil, "新一条重新计")
-        print("PASS：回复方式解析、状态行文字、预计剩余只用真实数据、提示音只响一次、状态行选任务、语音播报节流、首字时间")
+        let capA = CloudReplyWorker(id: "a", title: "慢活", status: "running", createdAt: 1)
+        let capB = CloudReplyWorker(id: "b", title: "查资料", status: "running", createdAt: 2)
+        let capDone = CloudReplyWorker(id: "c", title: "旧的", status: "completed", createdAt: 0)
+        let capNow = Date()
+        let lingering = CloudReplyRow.visible([capA, capB, capDone], finishedAt: ["c": capNow.addingTimeInterval(-1)], now: capNow)
+        check(lingering.map(\.id) == ["c", "a", "b"], "可见顺序按创建时间：\(lingering.map(\.id))")
+        check(CloudReplyRow.current([capA, capB, capDone], finishedAt: ["c": capNow.addingTimeInterval(-1)], now: capNow)?.id == "b", "当前优先最新进行中")
+        check(CloudReplyRow.overflowCount(2) == 0 && CloudReplyRow.overflowCount(5) == 1, "多于 4 个才有角标")
+        check(CloudReplyRow.dispatchPhrase(title: "PPT大师做课件") == "派单给PPT大师做课件", "派单文案")
+        check(CloudReplyRow.dispatchPhrase(title: "  ") == "派单给后台", "空标题")
+        check(CloudReplyRow.visible([capDone], finishedAt: ["c": capNow.addingTimeInterval(-10)], now: capNow).isEmpty, "结束超过停留时间就收起")
+
+        if let n = CloudReplyFrontAction.note(tool: "task_message", args: ["text": "按用户补充调整：改成10页"]) {
+            check(n.action == .steer && n.line.contains("改成10页"), "转给后台应带原话：\(n.line)")
+        } else { check(false, "task_message 应有决定") }
+        if let n = CloudReplyFrontAction.note(tool: "spawn_task", args: ["title": "查天气"]) {
+            check(n.action == .new && n.line.contains("查天气"), n.line)
+        } else { check(false, "spawn 应有决定") }
+        if let n = CloudReplyFrontAction.note(tool: "task_stop", args: [:]) {
+            check(n.action == .cancel, n.line)
+        } else { check(false, "stop 应有决定") }
+        check(CloudReplyFrontAction.note(tool: "shell_execute", args: ["command": "ls"]) == nil, "普通工具不是前台决定")
+
+        print("PASS：回复方式解析、状态行文字、预计剩余只用真实数据、提示音只响一次、状态行选任务、语音播报节流、首字时间、多任务胶囊、前台插话决定")
+
+
     }
 }

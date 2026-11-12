@@ -9,6 +9,8 @@ enum CloudReplyService {
     nonisolated static let changed = Notification.Name("OpenMinisReplyModeChanged")
     /// 实时语音通话里念进度（RealtimeVoiceSession 收这个名字；用字面量，实时目录单独类型检查时不依赖这里）
     nonisolated static let spoken = Notification.Name("OpenMinisReplyStatusSpoken")
+    /// 刚发出消息：状态行勤快刷新（本地秒回派活之后后台任务马上会出现）
+    nonisolated static let kick = Notification.Name("OpenMinisReplyStatusKick")
 
     static func botSettings(_ botId: String) async throws -> CloudReplyBotSettings {
         let res = try await CloudConnection.shared.request(method: "GET", path: "/v1/bots/\(botId)/reply")
@@ -59,6 +61,14 @@ final class CloudReplyStatusModel: ObservableObject {
     @Published var expanded: CloudReplyWorker?
     /// 长按状态行：给这个后台任务补充要求
     @Published var interjecting: CloudReplyWorker?
+    /// 前台对最近一条插话的决定（转给后台 / 另派 / 停下 / 直接回答），显示在胶囊和进度页。
+    @Published private(set) var lastDecision: String?
+    @Published private(set) var lastAction: String?
+
+    func noteDecision(_ text: String, action: String? = nil) {
+        lastDecision = text
+        if let action { lastAction = action }
+    }
 
     private var tracker = CloudReplyTracker()
     private var loop: Task<Void, Never>?
@@ -73,6 +83,15 @@ final class CloudReplyStatusModel: ObservableObject {
     var inRealtimeCall: () -> Bool = { false }
     /// 有后台任务结束：结果消息已经写进对话，页面要重新拉一次
     var onWorkerFinished: () -> Void = {}
+    /// 本地模式：自己提供 worker 列表（不走云端 /v1/workers）
+    var workerSource: ((String) async -> [CloudReplyWorker])? = nil
+    var onStopWorker: ((CloudReplyWorker) -> Void)?
+    var onMessageWorker: ((CloudReplyWorker, String) throws -> Void)?
+    #if DEBUG
+    @Published var lastCue: String?
+    @Published var liveActivityOn = false
+    @Published var lastSpokenLine: String?
+    #endif
 
     var current: CloudReplyWorker? { CloudReplyRow.current(workers, finishedAt: finishedAt) }
     var activeCount: Int { workers.filter(\.active).count }
@@ -81,6 +100,9 @@ final class CloudReplyStatusModel: ObservableObject {
         guard loop == nil || sessionId != sid else { return }
         loop?.cancel()
         sessionId = sid
+        #if DEBUG
+        if CloudE2E.replySpeak { inRealtimeCall = { true } }
+        #endif
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -103,7 +125,15 @@ final class CloudReplyStatusModel: ObservableObject {
     }
 
     func refresh() async {
-        guard !sessionId.isEmpty, let list = try? await CloudReplyService.workers(sessionId) else { return }
+        guard !sessionId.isEmpty else { return }
+        let list: [CloudReplyWorker]
+        if let workerSource {
+            list = await workerSource(sessionId)
+        } else if let remote = try? await CloudReplyService.workers(sessionId) {
+            list = remote
+        } else {
+            return
+        }
         let cues = tracker.update(list)
         let now = Date()
         for w in list where !w.active && finishedAt[w.id] == nil && cues.contains(where: { $0.workerId == w.id }) {
@@ -124,7 +154,8 @@ final class CloudReplyStatusModel: ObservableObject {
     func stop(_ w: CloudReplyWorker) {
         Task {
             do {
-                try await CloudReplyService.stop(w.id)
+                if let onStopWorker { onStopWorker(w) }
+                else { try await CloudReplyService.stop(w.id) }
                 notice = "已停止「\(w.title)」"
             } catch {
                 notice = "没能停止：\(error.localizedDescription.prefix(80))"
@@ -138,7 +169,8 @@ final class CloudReplyStatusModel: ObservableObject {
         guard !t.isEmpty else { return }
         Task {
             do {
-                try await CloudReplyService.message(w.id, t)
+                if let onMessageWorker { try onMessageWorker(w, t) }
+                else { try await CloudReplyService.message(w.id, t) }
                 notice = "已转给后台：\(t.prefix(30))"
                 CloudHaptics.tap()
             } catch {
@@ -156,6 +188,14 @@ final class CloudReplyStatusModel: ObservableObject {
         case .failed: CloudHaptics.warning()
         case .stopped: CloudHaptics.tap()
         }
+        #if DEBUG
+        switch cue {
+        case .done: lastCue = "done"
+        case .decision: lastCue = "decision"
+        case .failed: lastCue = "failed"
+        case .stopped: lastCue = "stopped"
+        }
+        #endif
     }
 
     private func chime(_ id: SystemSoundID) {
@@ -172,6 +212,9 @@ final class CloudReplyStatusModel: ObservableObject {
                 if !mirrored.contains(key) {
                     mirrored.insert(key)
                     CloudBotLiveActivity.began(sessionId: key, botName: locked ? "已上锁的 Bot" : botName)
+                    #if DEBUG
+                    liveActivityOn = true
+                    #endif
                 }
                 let line = locked ? "后台进行中" : CloudReplyText.phrase(w) + " · " + CloudReplyText.elapsed(w.elapsed)
                 CloudBotLiveActivity.progress(sessionId: key, toolName: "", status: line)
@@ -189,6 +232,9 @@ final class CloudReplyStatusModel: ObservableObject {
         guard let line = CloudReplySpoken.next(previous: lastSpoken, current: w, lastSpokenAt: lastSpokenAt) else { return }
         lastSpoken = line
         lastSpokenAt = Date()
+        #if DEBUG
+        lastSpokenLine = line
+        #endif
         NotificationCenter.default.post(name: CloudReplyService.spoken, object: nil, userInfo: ["text": line])
     }
 }
@@ -207,6 +253,7 @@ struct CloudReplyStatusRow: View {
     let count: Int
     let fetchedAt: Date
     let theme: CloudBotChatTheme
+    var decision: String? = nil
     var onExpand: () -> Void
     var onStop: () -> Void
     var onInterject: () -> Void
@@ -298,12 +345,19 @@ struct CloudReplyStatusRow: View {
                                                      sinceFetch: sinceFetch, count: count)
                                : (worker.status == "completed" ? "做完了，结果在上面" : "已结束"))
                 .font(.caption2).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+            if let decision, !decision.isEmpty {
+                Text(decision)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .accessibilityIdentifier("replyFrontDecision")
+            }
         }
     }
 }
 
 /// 头像轻轻呼吸（工作中）
-private struct CloudReplyBreath: ViewModifier {
+struct CloudReplyBreath: ViewModifier {
     let active: Bool
     @State private var on = false
     func body(content: Content) -> some View {
@@ -526,12 +580,10 @@ struct CloudReplyComposerSlot: View {
     let firstTextMs: Int?
 
     var body: some View {
-        if instant, let w = status.current {
-            // 秒回：后台在做什么（一句话 + 用时），点开看过程、左滑停止、长按补充要求
-            CloudReplyStatusRow(worker: w, count: status.activeCount, fetchedAt: status.fetchedAt, theme: theme,
-                                onExpand: { status.expanded = w }, onStop: { status.stop(w) },
-                                onInterject: { status.interjecting = w })
-                .padding(.horizontal, 12)
+        if instant, !CloudReplyRow.visible(status.workers, finishedAt: status.finishedAt).isEmpty {
+            // 秒回：一件事仍是原来的状态行；多件并行时换成可横滑的胶囊条。点开看进度，不先摊开任务简报。
+            CloudReplyLiveBar(status: status, theme: theme)
+                .padding(.horizontal, CloudReplyRow.visible(status.workers, finishedAt: status.finishedAt).count == 1 ? 12 : 0)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
         }
         #if DEBUG
@@ -542,6 +594,18 @@ struct CloudReplyComposerSlot: View {
                 .accessibilityIdentifier("replyFirstTextMs")
                 .accessibilityLabel("replyFirstTextMs")
                 .accessibilityValue("\(ms)")
+        }
+        if CloudE2E.token != nil, let cue = status.lastCue {
+            Text(cue).font(.system(size: 1)).opacity(0.02)
+                .accessibilityIdentifier("replyCueLast").accessibilityLabel(cue)
+        }
+        if CloudE2E.token != nil, status.liveActivityOn {
+            Text("on").font(.system(size: 1)).opacity(0.02)
+                .accessibilityIdentifier("replyLiveActivity").accessibilityLabel("on")
+        }
+        if CloudE2E.token != nil, let line = status.lastSpokenLine {
+            Text(line).font(.system(size: 1)).opacity(0.02)
+                .accessibilityIdentifier("replySpokenLine").accessibilityLabel(line)
         }
         #endif
     }
@@ -558,9 +622,11 @@ struct CloudReplyChatChrome: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.cloudReplyInstant, instant)
-            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: status.current?.id)
+            .animation(CloudE2E.pauseIdleAnimations ? nil : .spring(response: 0.4, dampingFraction: 0.85), value: status.current?.id)
             .sheet(item: $status.expanded) { w in
-                CloudReplyStepsSheet(worker: w, onStop: { status.stop(w) }, onInterject: { status.interjecting = w })
+                CloudReplyProgressSheet(worker: w, fetchedAt: status.fetchedAt, decision: status.lastDecision, onStop: { status.stop(w) }, onInterject: { status.interjecting = w }) {
+                    CloudWorkerTimelineView(workerId: w.id, title: w.title)
+                }
             }
             .alert("给后台补充要求", isPresented: interjectShown) {
                 TextField("比如：结果用表格列出来", text: $text)
@@ -575,6 +641,7 @@ struct CloudReplyChatChrome: ViewModifier {
                 let sid = sessionId
                 Task { @MainActor in onPlan(try? await CloudReplyService.session(sid)) }
             }
+            .onReceive(NotificationCenter.default.publisher(for: CloudReplyService.kick)) { _ in status.kick() }
             .onDisappear { status.stopPolling() }
     }
 

@@ -38,9 +38,27 @@ enum CloudE2E {
             }
         }
         if let base = local { Task { @MainActor in keepInjected(localBaseURL: base) } }
+        applyLocalReplyDefaults(env)
     }
 
     static let localModelId = "e2e-local-model"
+    static let localFrontModelId = "e2e-local-front-model"
+    static let localBackModelId = "e2e-local-back-model"
+    /// 通话中播报进度的 E2E：不真正拨号，状态行把「在通话里」当成真的，把要念的那句话写到 replySpokenLine
+    static var replySpeak: Bool { token != nil && ProcessInfo.processInfo.environment["OPENMINIS_E2E_REPLY_SPEAK"] == "1" }
+
+    static func applyLocalReplyDefaults(_ env: [String: String]) {
+        LocalReplyStore.clearOverrides()
+        if let mode = env["OPENMINIS_E2E_LOCAL_REPLY"], mode == "instant" || mode == "verbose" {
+            // 详细模式也先备好前台 / 后台模型，方便测试里再切到秒回
+            LocalReplyStore.setDefault(CloudReplyMode(rawValue: mode) ?? .instant,
+                                       frontModel: env["OPENMINIS_E2E_LOCAL_FRONT"] ?? localFrontModelId,
+                                       backModel: env["OPENMINIS_E2E_LOCAL_BACK"] ?? localBackModelId)
+        } else {
+            // 其他流程没点名回复方式：回到默认秒回、前台后台跟随当前模型，避免上一个流程留下的设置影响「本地收到：」
+            LocalReplyStore.setDefault(.instant, frontModel: "", backModel: "")
+        }
+    }
 
     /// 实时通话 E2E：OPENMINIS_E2E_REALTIME=ws://127.0.0.1:18796 指向 e2e 栈里的假实时服务（OpenAI Realtime 协议）
     static var realtimeURL: String? {
@@ -113,6 +131,21 @@ enum CloudE2E {
             store.defaultPrimaryGroupId = group.id
         }
         store.addAgentLoopEntry(entry.id)
+        for (mid, label) in [(localFrontModelId, "E2E 本地前台"), (localBackModelId, "E2E 本地后台")] {
+            let extra: ModelEntry
+            if let old = store.config.modelEntries.first(where: { $0.providerInstanceId == inst.id && $0.model.id == mid }) {
+                extra = old
+            } else {
+                extra = ModelEntry(providerInstanceId: inst.id, model: LLMModel(id: mid, displayName: label, provider: "openai"))
+                _ = store.addEntry(extra)
+            }
+            if let g = store.config.modelGroups.first(where: { $0.name == "E2E本地" }), !g.memberEntryIds.contains(extra.id) {
+                var fixed = g
+                fixed.memberEntryIds.append(extra.id)
+                store.updateGroup(fixed)
+            }
+            store.addAgentLoopEntry(extra.id)
+        }
     }
 
     /// 启动后 30 秒内每半秒看一眼：服务商库异步加载把注入的本地配置冲掉了就再补上（注入本身是幂等的；实时服务商在点声波时注入）

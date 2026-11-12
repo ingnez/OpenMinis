@@ -597,6 +597,9 @@ public final class CloudConnection: ObservableObject {
             if response.statusCode == 501 || (response.statusCode == 404 && reason == "Not found") {
                 throw failure("云电脑上的服务版本过旧，请点「安装 / 更新服务器 Agent 服务」后重试")
             }
+            if let busy = CloudSessionBusyError(statusCode: response.statusCode, response: parsed, reason: reason) {
+                throw busy
+            }
             throw failure("云端 HTTP \(response.statusCode)：\(reason)")
         }
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw failure("云端没有返回 JSON 对象") }

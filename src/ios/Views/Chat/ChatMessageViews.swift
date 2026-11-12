@@ -459,6 +459,9 @@ struct ChatMessageRow: View {
                             }
                         }
                     }
+                    if message.sendTick == .failed || message.adoptedMark {
+                        MessageSendStatusRow(failed: message.sendTick == .failed, adopted: message.adoptedMark)
+                    }
                 }
             }
             .modifier(MinisOpenURLHandler())

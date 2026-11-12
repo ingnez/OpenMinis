@@ -419,7 +419,7 @@ enum QueueDeliveryPlanner {
         let scheduledJobId: String?
     }
 
-    static func take(_ items: [Item], at point: QueueDeliveryPoint) -> QueueTake? {
+    static func take(_ items: [Item], at point: QueueDeliveryPoint, separateTurns: Bool = false) -> QueueTake? {
         guard !items.isEmpty else { return nil }
         func scheduledTake(_ jobId: String) -> QueueTake {
             let fires = items.filter { $0.scheduledJobId == jobId }
@@ -432,6 +432,7 @@ enum QueueDeliveryPlanner {
             // The user's follow-up first, exactly as before — but only theirs.
             let typed = items.filter(\.interruptsAtToolGap)
             if !typed.isEmpty {
+                if separateTurns { return nil }
                 return QueueTake(deliver: typed.map(\.id), coalesced: [], scheduledJobId: nil)
             }
             // Then the scheduled job that has waited longest. Other jobs wait
@@ -442,8 +443,8 @@ enum QueueDeliveryPlanner {
             return nil
         case .turnEnd:
             if let jobId = items[0].scheduledJobId { return scheduledTake(jobId) }
-            // Everything else still arrives together, as it always has; the
-            // scheduled fires behind it get their own turns afterwards.
+            // 秒回中的每条消息有独立回复，详细模式继续沿用原来的合批逻辑。
+            if separateTurns { return QueueTake(deliver: [items[0].id], coalesced: [], scheduledJobId: nil) }
             let rest = items.filter { $0.scheduledJobId == nil }
             return QueueTake(deliver: rest.map(\.id), coalesced: [], scheduledJobId: nil)
         }
@@ -567,7 +568,7 @@ extension AIChatViewModel {
                                       interruptsAtToolGap: !prompt.deferUntilIdle,
                                       scheduledJobId: Self.scheduledCallback(inQueuedText: prompt.text)?.jobId)
         }
-        return QueueDeliveryPlanner.take(items, at: point)
+        return QueueDeliveryPlanner.take(items, at: point, separateTurns: isInstantFrontTurn)
     }
 
     /// Takes `take` out of the queue: returns the prompts to deliver (queue

@@ -171,7 +171,7 @@ guard !vm.isEmpty, !fb.isEmpty, !factory.isEmpty, !store.isEmpty, !picker.isEmpt
 
 print("\n▶️  A. source: turn-start reset happens before the entry is resolved")
 if let core = body(of: "private func runAgentLoopCore(", in: vm).map(code) {
-    let resolveAt = offset("guard let entry = resolveCurrentEntry() else", in: core)
+    let resolveAt = offset("guard let entry = frontEntry ?? resolveCurrentEntry() else", in: core)
     let resetAt = offset("pendingModelSwitch = false", in: core)
     check("runAgentLoopCore resolves the entry", resolveAt != nil)
     check("runAgentLoopCore resets pendingModelSwitch", resetAt != nil)

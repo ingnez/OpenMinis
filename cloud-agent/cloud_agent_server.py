@@ -640,7 +640,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.51.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.51.1"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1148,12 +1148,13 @@ def inbox_push(task_id, content, nonce):
     log_event(task_id, "user_message", {"content": content, "nonce": nonce, "state": "pending"})
     return 202, {"task_id": task_id, "accepted": True}
 
-def inbox_take(task_id):
+def inbox_take(task_id, limit=None):
     with INBOX_LOCK:
         box = INBOX.get(task_id)
         if not box or not box["items"]:
             return []
-        items, box["items"] = box["items"], []
+        count = len(box["items"]) if limit is None else limit
+        items, box["items"] = box["items"][:count], box["items"][count:]
         return items
 
 def inbox_pending(task_id):
@@ -4412,7 +4413,7 @@ WORKER_INSTRUCTIONS = (
 FRONT_NOTE = (
     "\n\n[前台对话] 先回话：每条消息先马上给一句简短回应或直接答案；要调用工具时，在同一条回复的文字里先写这句回应再调工具。"
     "简单的问题和闲聊直接回答。需要多步操作、大量工具调用、耗时超过一分钟的事，用 spawn_task 交给后台任务，"
-    "然后只回一句简短的确认（比如「好，我去查，做完告诉你」），不要在这里自己一步步做。用户补充或修改进行中的任务用 task_message，要停用 task_stop。")
+    "然后只回一句简短的确认（比如「好，我去查，做完告诉你」），不要在这里自己一步步做。后台正在做事时用户又发来消息：立刻理解他的意思，用一句自然的话点明他想做什么、你接下来会怎么做（例如「你想把课件改成 10 页，我让后台现在就改」），不要用固定套话；然后由你决定：用 task_message 把改写后的具体要求转给正在跑的后台，或 spawn_task 另派一件，或 task_stop 停下/换掉，或直接回答。")
 DELEGATION_TOOLS = {"send_to_bot", "delegate_task"}
 ADMIN_TOOLS = {"create_bot", "update_bot", "delete_bot", "restore_bot", "set_primary_bot", "admin_api"}
 
@@ -4663,7 +4664,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             finally:
                 _pc.close()
     system_text += cloud_bots.language_tail(get_persona(session_persona_id(session_id)))   # 灵魂设定的回复语言：结尾再强调一次
-    dynamic_note = mention_note(session_id, initial_content)
+    current_user_content = initial_content
+    mention_hint = mention_note(session_id, current_user_content)
+    dynamic_note = ""
     try:
         _ec = get_db_connection()
         try:
@@ -4837,7 +4840,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 return call_chat(route["url"], {"Content-Type": "application/json", "Authorization": f"Bearer {route['key']}"}, {
                     "model": route["model"], "messages": send_msgs, "tools": tools, "tool_choice": "auto"
                 }, effort, stream=rs_perf.get("stream", True), on_text=on_text, cache_key=perf["bot_id"] or session_id,
-                   on_reasoning=on_reasoning, should_abort=lambda: inbox_pending(task_id) or is_task_cancelled(task_id))
+                   on_reasoning=on_reasoning,
+                   should_abort=lambda: is_task_cancelled(task_id) or (not instant and inbox_pending(task_id)))
             except cloud_llm.Aborted:
                 raise
             except Exception as e:
@@ -4880,20 +4884,40 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 retried = False
 
     try:
-        def take_injected():
-            for item in inbox_take(task_id):
+        def take_injected(limit=None):
+            nonlocal current_user_content, mention_hint
+            for item in inbox_take(task_id, limit):
                 # 插话：作为一条用户消息放进上下文和历史（位置就是模型看到它的地方）
                 messages.append({"role": "user", "content": item["content"]})
+                if instant:
+                    current_user_content = item["content"]
+                    mention_hint = mention_note(session_id, current_user_content)
                 if cloud_vision.image_lines(item["content"]):
                     # 运行中带图片插话：同样把上传的图片补成图片内容
                     try:
                         cloud_vision.expand_attachment_images(messages, _resolve_att, recent=1)
                     except Exception as e:
                         print(f"injected images failed: {type(e).__name__}", flush=True)
-                insert_message(session_id, "user", item["content"], meta={"injected": True, "nonce": item["nonce"]})
-                log_event(task_id, "user_message_applied", {"nonce": item["nonce"]})
+                insert_message(session_id, "user", item["content"], meta={"injected": not instant, "client_nonce": item["nonce"]})
+                log_event(task_id, "user_message_applied", {"nonce": item["nonce"], "separate_reply": instant})
 
-        for _ in range(MAX_TURNS):
+        def advance_after_reply():
+            nonlocal answered, turns, loop_guard
+            if not inbox_close(task_id):
+                return False
+            if instant:
+                # 一条用户消息完成前台回复后，再取下一条。后台工人有自己的生命周期。
+                take_injected(limit=1)
+                answered = False
+                turns = 0
+                loop_guard = cloud_runmodel.LoopGuard()
+                with TURN_LOCK:
+                    TURN_FLAGS.pop(task_id, None)
+            return True
+
+        turns = 0
+        while turns < MAX_TURNS:
+            turns += 1
             if is_task_cancelled(task_id):
                 final_status = "cancelled"
                 break
@@ -4904,7 +4928,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 insert_message(session_id, "assistant", cloud_vision.NO_VISION_REPLY, meta={"vision": "unavailable"})
                 answered = True
                 break
-            take_injected()
+            if not instant:
+                take_injected()
             try:
                 send_msgs, trim_note = cloud_llm.trim_messages(messages, rs_perf.get("context_trim_tokens", 0))
                 if trim_note and not perf["trimmed"]:
@@ -4915,8 +4940,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     _wnote = _front_worker_note(session_id)
                     if _wnote:
                         send_msgs = _append_note(send_msgs, _wnote)
-                if dynamic_note:
-                    send_msgs = _append_note(send_msgs, dynamic_note)
+                if mention_hint or dynamic_note:
+                    send_msgs = _append_note(send_msgs, (mention_hint or "") + dynamic_note)
                 if instant:
                     tools = cloud_reply.front_tools(session_tools(session_id, depth))   # 前台不拿干活的工具，全部交给后台
                 else:
@@ -4970,12 +4995,14 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 # 思考过程：先于这一轮的文字和工具写入，手机按顺序画「深度思考」气泡
                 log_event(task_id, "reasoning", {"content": reasoning_text[:200000], "chars": len(reasoning_text)})
             row_meta = {"reasoning": reasoning_text[:200000]} if reasoning_text else None
+            if instant:
+                row_meta = dict(row_meta or {}, front_task_id=task_id)
 
             if not content and not tool_calls:
-                if answered and not inbox_close(task_id):
-                    break               # 工具做完后模型没再说话：前面的回答就是最终回答
                 if answered:
-                    continue            # 有插话：接着回答新消息
+                    if advance_after_reply():
+                        continue
+                    break               # 工具做完后模型没再说话：前面的回答就是最终回答
                 log_event(task_id, "error", {"error": "模型返回了空回复（没有文字也没有工具调用）"})
                 final_status = "failed"
                 break
@@ -5026,7 +5053,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                         front_err = cloud_reply.front_blocked(fn_name)
                         if front_err:
                             handed = instant_auto_handoff(
-                                task_id, session_id, fn_name, initial_content,
+                                task_id, session_id, fn_name, current_user_content,
                                 REPLY_BACK_MODEL.get(task_id) or main_model, provider_config)
                             return (tc_id, fn_name, handed, 0)
                     if fn_name in ("browser_action", "desktop_action") and isinstance(fn_args, dict):
@@ -5129,8 +5156,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                                 }
                                 messages.append(vision_user_msg)
 
-                    insert_message(session_id, "tool", tool_content_str, tool_call_id=tc_id,
-                                   meta={"duration_ms": duration_ms} if duration_ms is not None else None)
+                    tool_meta = {"duration_ms": duration_ms} if duration_ms is not None else {}
+                    if instant:
+                        tool_meta["front_task_id"] = task_id
+                    insert_message(session_id, "tool", tool_content_str, tool_call_id=tc_id, meta=tool_meta)
 
                 parallel = (len(tool_calls) > 1 and resource_settings().get("parallel_tools", True)
                             and all(((tc.get("function") or {}).get("name")) in PARALLEL_SAFE_TOOLS for tc in tool_calls))
@@ -5158,10 +5187,15 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 tf = TURN_FLAGS.get(task_id) or {}
                 if tf.get("answered"):
                     answered = True
-                if tf.get("end") and not inbox_close(task_id):
-                    _post_turn_card(task_id, session_id)    # 选项卡：本轮到此结束，等用户点选
+                if tf.get("end"):
+                    if instant:
+                        _post_turn_card(task_id, session_id)
+                    if advance_after_reply():
+                        continue
+                    if not instant:
+                        _post_turn_card(task_id, session_id)
                     break
-            elif inbox_close(task_id):
+            elif advance_after_reply():
                 continue                # 回答完了但用户刚插了话：接着处理新消息
             else:
                 break
@@ -5676,7 +5710,9 @@ def launch_routine_run(routine, trigger="schedule", context=None):
                   (sid, "例行任务：" + routine["name"], instructions, now, routine.get("persona_id")))
         c.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
                   (tid, sid, routine["model"], now))
-        c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (sid, content, now))
+        # 例行任务 / 主动消息的提示词是发给模型的，不是用户说的：标 internal，App 不画成用户气泡
+        c.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'user', ?, ?, ?)",
+                  (sid, content, now, json.dumps({"internal": "routine"})))
         c.execute("UPDATE routine_runs SET task_id = ?, session_id = ? WHERE run_id = ?", (tid, sid, run_id))
         conn.commit()
     finally:
@@ -7013,7 +7049,7 @@ class Handler(BaseHTTPRequestHandler):
                     if mr[5]:
                         try:
                             meta = json.loads(mr[5])
-                            for k in ("reasoning", "duration_ms", "injected", "snapshot_id", "title"):
+                            for k in ("reasoning", "duration_ms", "injected", "snapshot_id", "title", "internal", "client_nonce", "front_task_id"):
                                 if k in meta:
                                     m[k] = meta[k]
                             m.update(cloud_runmodel.public_meta(meta))
@@ -7047,7 +7083,7 @@ class Handler(BaseHTTPRequestHandler):
                     _rp = None
                 conn.close()
                 self._send(200, {"session_id": s[0], "local_session_id": s[1], "title": s[2], "instructions": s[3], "created_at": s[4], "messages": msgs, "tasks": tasks,
-                                 "incognito": bool(s[5]), "has_more": has_more, "reply": _rp})
+                                 "incognito": bool(s[5]), "has_more": has_more, "reply": _rp, "ordered_reply_turns": True})
                 return
 
         if path == "/v1/routines":
@@ -8734,7 +8770,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(429, {"error": blocked, "error_kind": "daily_cap"})
                 return
             # 引用回复 / 选项卡的回答
-            user_meta = {}
+            user_meta = {"client_nonce": client_nonce} if client_nonce else {}
             rconn = get_db_connection()
             try:
                 if req_json.get("reply_to") is not None:

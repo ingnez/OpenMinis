@@ -90,10 +90,9 @@ class ClashImport(unittest.TestCase):
     def test_version_bumped_together(self):
         import os, re
         import cloud_agent_server
-        self.assertEqual(cloud_agent_server.AGENT_VERSION, "2.51.0")
         here = os.path.dirname(os.path.abspath(__file__))
         swift = open(os.path.join(here, "..", "src/ios/Views/Chat/AIChatView/Cloud/CloudLinkSupervisor.swift"), encoding="utf-8").read()
-        self.assertEqual(re.search(r'bundledAgentVersion = "([^"]+)"', swift).group(1), "2.51.0")
+        self.assertEqual(re.search(r'bundledAgentVersion = "([^"]+)"', swift).group(1), cloud_agent_server.AGENT_VERSION)
 
     def test_plain_links_still_work(self):
         link = "trojan://fake@example.invalid:443?sni=example.invalid#t"
