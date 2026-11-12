@@ -45,6 +45,7 @@ extension CollectionViewMessageListV3 {
         var onRevertCompact: (() -> Void)?
         var onForceSync: (() -> Void)?
         var onShareMessages: ((UUID) -> Void)?
+        var openImageGallery = OpenImageGalleryAction { _ in }
         var maxContentWidth: CGFloat = 0
         var lastInputFocused: Bool = false
 

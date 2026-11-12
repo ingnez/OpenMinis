@@ -1651,12 +1651,60 @@ extension E2EFlowsUITests {
         }
         openBot(app)
         send(app, "E2E引用卡布局")
-        let headline = app.staticTexts["E2E结论正文"]
+        let headline = app.descendants(matching: .any)["cloudOneLineHeadline"]
         let source = app.descendants(matching: .any)["cloudSourceChip"]
         XCTAssertTrue(headline.waitForExistence(timeout: 30))
+        XCTAssertTrue(waitText(app, contains: "E2E结论正文：今夜值班，记得交班。", timeout: 5))
+        XCTAssertFalse(anyElement(app, contains: "**今夜值班**"), "折叠结论露出了 Markdown 星号")
         XCTAssertTrue(source.waitForExistence(timeout: 10))
         XCTAssertGreaterThanOrEqual(source.frame.minY, headline.frame.maxY, "出处卡盖住了结论")
         shot(app, "36-正文与出处卡")
+    }
+
+    func test37_botComposerMenuContainsModelAndEffort() throws {
+        let app = launch()
+        openBot(app)
+
+        let menu = app.buttons["botComposerMenu"]
+        let model = app.buttons["模型与思考深度"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        XCTAssertFalse(model.exists, "模型入口还在输入框上方")
+        XCTAssertFalse(app.buttons["泵速换算"].exists)
+        XCTAssertFalse(app.buttons["评分量表"].exists)
+
+        menu.tap()
+        XCTAssertTrue(model.waitForExistence(timeout: 5), "＋菜单里没有模型入口")
+        model.tap()
+        XCTAssertTrue(app.navigationBars["\(Self.botName) 的模型"].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitText(app, contains: "思考深度", timeout: 5))
+    }
+
+    func test38_localImageOnlyMessageScrubsToSixthImage() throws {
+        let app = launch(attach: 6, homeMode: "local", extraEnv: [
+            "OPENMINIS_E2E_LOCAL_PROVIDER": "http://127.0.0.1:18797"
+        ], extraArgs: ["-launchScreen", "2"])
+        XCTAssertTrue(localModelReady(app), "本地模式未加载模拟服务商")
+
+        let send = localSendButton(app)
+        XCTAssertTrue(send.waitForExistence(timeout: 10))
+        XCTAssertTrue(send.isEnabled, "纯图片消息无法发送")
+        send.tap()
+        XCTAssertTrue(waitText(app, contains: "本地收到：", timeout: 60))
+
+        let stack = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@ AND label == %@", "imageStack", "6 张图片")
+        ).firstMatch
+        XCTAssertTrue(stack.waitForExistence(timeout: 10))
+        revealBelowNavBar(app, stack)
+        pressVisible(app, stack)
+        XCTAssertTrue(waitValue(stack, "已展开", timeout: 5), "长按图片没有铺开")
+        XCTAssertFalse(app.descendants(matching: .any)["messageMenuPanel"].exists, "图片长按打开了消息菜单")
+
+        let start = stack.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5))
+        let end = stack.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.5))
+        start.press(forDuration: 0.8, thenDragTo: end)
+        XCTAssertTrue(app.buttons["关闭"].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitSelected(app.buttons["第 6 张"], timeout: 5), "左滑松手没有打开第 6 张")
     }
 
     private func revealTodayBar(_ app: XCUIApplication) {

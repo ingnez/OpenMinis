@@ -1289,24 +1289,6 @@ struct CloudSessionView: View {
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color(.secondarySystemBackground)))
                 .padding(.horizontal, 12)
             }
-            if !dictation.isRecording {
-                HStack {
-                    Button { showModelPicker = true } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "cpu").font(.caption2)
-                            Text(theme.chipText).font(.caption.weight(.medium)).lineLimit(1)
-                            Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
-                        }
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Capsule().fill(Color(.systemGray6)))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("切换模型与思考深度：\(theme.chipText)")
-                    CloudQuickCards(text: $inputPrompt)
-                }
-                .padding(.horizontal, 14)
-            }
             if dictation.isRecording {
                 // 听写中：输入栏展开成卡片（实时文字 + 停止 + 滚动波形 + 发送），照 Grok
                 DictationCard(transcript: inputPrompt, partial: true, levels: dictation.levels,
@@ -1337,11 +1319,17 @@ struct CloudSessionView: View {
                             Label("插话：直接告诉它", systemImage: "arrow.turn.up.right").tag(true)
                             Label("排队：这一轮做完再发", systemImage: "text.badge.plus").tag(false)
                         }
+                        Divider()
+                        Button { showModelPicker = true } label: {
+                            Label("模型与思考深度", systemImage: "cpu")
+                        }
+                        .accessibilityHint("当前：\(theme.chipText)")
                     } label: {
                         Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).foregroundStyle(.primary)
                             .frame(width: 40, height: 40).background(Circle().fill(Color(.systemGray6)))
                     }
-                    .accessibilityLabel("添加附件")
+                    .accessibilityLabel("添加附件与聊天选项")
+                    .accessibilityIdentifier("botComposerMenu")
                     HStack(alignment: .bottom, spacing: 4) {
                         TextField(CloudBotComposerAction.placeholder(botName: theme.name, localHint: false), text: $inputPrompt, axis: .vertical)
                             .font(.system(.body, design: typography?.design.swiftUI ?? .default))

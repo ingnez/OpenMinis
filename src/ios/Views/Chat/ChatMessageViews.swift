@@ -432,11 +432,8 @@ struct ChatMessageRow: View {
             Spacer(minLength: 60)
 
             VStack(alignment: .trailing, spacing: 6) {
-                if userDisplayText.isEmpty {
-                    userAttachments
-                        .modifier(MessageActionMenu(selectableText: { "" }, groups: userMessageActions))
-                } else {
-                    userAttachments
+                userAttachments
+                if !userDisplayText.isEmpty {
                     HStack(spacing: 6) {
                         SearchHighlightText(userDisplayText, key: searchKey())
                             .font(.system(size: FontSettings.shared.scaledMessage(16.5),
@@ -485,10 +482,14 @@ struct ChatMessageRow: View {
 
     @ViewBuilder
     private var userAttachments: some View {
+        // 图片叠卡自己处理长按，只有非图片附件可以代替文字气泡打开消息菜单。
+        let fileMenu = userDisplayText.isEmpty
+            ? MessageActionMenu(selectableText: { "" }, groups: userMessageActions)
+            : nil
         if !message.attachments.isEmpty {
-            UserAttachmentList(attachments: message.attachments, searchMessageId: message.id)
+            UserAttachmentList(attachments: message.attachments, searchMessageId: message.id, fileMenu: fileMenu)
         } else if !message.inputAttachments.isEmpty {
-            QueuedAttachmentPreview(attachments: message.inputAttachments)
+            QueuedAttachmentPreview(attachments: message.inputAttachments, fileMenu: fileMenu)
         }
     }
 

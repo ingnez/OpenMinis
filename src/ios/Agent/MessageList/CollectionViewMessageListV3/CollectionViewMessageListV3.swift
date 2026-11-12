@@ -132,6 +132,7 @@ struct CollectionViewMessageListV3: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> MessageListViewController {
         let vc = MessageListViewController()
+        context.coordinator.openImageGallery = context.environment.openImageGallery
         context.coordinator.attach(to: vc, vm: vm)
         // Drops are handled exclusively by the SwiftUI `.onDrop` on the chat
         // root view. Previously a UIDropInteraction here intercepted drops on
@@ -169,6 +170,7 @@ struct CollectionViewMessageListV3: UIViewControllerRepresentable {
         coord.onRevertCompact = onRevertCompact
         coord.onForceSync = onForceSync
         coord.onShareMessages = onShareMessages
+        coord.openImageGallery = context.environment.openImageGallery
         coord.maxContentWidth = maxContentWidth
 
         // Bottom inset base = input bar + tool bar overlay height + breathing room.

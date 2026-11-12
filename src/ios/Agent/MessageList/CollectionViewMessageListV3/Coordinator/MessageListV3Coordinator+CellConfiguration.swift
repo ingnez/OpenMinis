@@ -104,6 +104,9 @@ extension CollectionViewMessageListV3.Coordinator {
                     // [T-in-chat-search] Same reason: the search highlights
                     // must be handed to every hosted cell explicitly.
                     .environment(\.chatSearchHighlights, vm.chatSearch.highlights)
+                    .environment(\.openImageGallery, OpenImageGalleryAction { [weak self] presentation in
+                        self?.openImageGallery.perform(presentation)
+                    })
                 }.minSize(width: 0, height: 0).margins(.all, 0)
                 cell.applyContentConfiguration(config)
 

@@ -1533,6 +1533,20 @@ struct AIChatView: View {
             minisLogger.info("[Share] AIChatView.onAppear: sessionId=\(sessionId ?? "nil") bufferVersion=\(shareCoordinator.bufferVersion) hasBuffer=\(shareCoordinator.pendingShareBuffer != nil)")
             injectPendingShareIfNeeded()
             injectPendingTransferIfNeeded()
+            #if DEBUG
+            let testImageCount = CloudE2E.fakeAttachments
+            if CloudE2E.token != nil, testImageCount > 0, vm.messages.isEmpty, vm.attachments.isEmpty {
+                for index in 0..<testImageCount {
+                    let size = CGSize(width: 80, height: 80)
+                    let image = UIGraphicsImageRenderer(size: size).image { context in
+                        UIColor(hue: CGFloat(index) / CGFloat(testImageCount), saturation: 0.75,
+                                brightness: 0.9, alpha: 1).setFill()
+                        context.fill(CGRect(origin: .zero, size: size))
+                    }
+                    vm.addImageAttachment(image)
+                }
+            }
+            #endif
             isChatViewVisible = true
             pageLeaveLatch.markAppeared()
             // [T-crash-breadcrumbs] Which page is on screen - a hash, never the title.

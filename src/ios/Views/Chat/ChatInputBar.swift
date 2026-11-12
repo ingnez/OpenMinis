@@ -837,16 +837,11 @@ struct UserAttachmentList: View {
     /// [T-in-chat-search] The message these tiles belong to, so a file name
     /// can carry search highlights; nil where search does not apply.
     var searchMessageId: UUID? = nil
+    var fileMenu: MessageActionMenu? = nil
     @Environment(\.openURL) private var openURL
     @Environment(\.openImageGallery) private var openImageGallery
 
     private let tileSize: CGFloat = UserAttachmentTileMetrics.tile
-
-    /// All image attachments in this message, in original order. Used to
-    /// populate the paged gallery when the user taps any single image tile.
-    private var imageAttachments: [AttachmentMeta] {
-        attachments.filter { $0.isImage }
-    }
 
     /// 叠成一摞的图片（贴的文字引用不算）
     private var stackImages: [AttachmentMeta] {
@@ -859,10 +854,14 @@ struct UserAttachmentList: View {
         VStack(alignment: .trailing, spacing: UserAttachmentTileMetrics.gap) {
             if !images.isEmpty {
                 ImageCardStack(sources: images.map { meta in
-                    ImageStackSource(id: minisMediaCacheKey(for: meta.minisURL), load: { await Self.loadDisplay(meta, maxPixel: 640) })
-                }, onOpen: { i in if images.indices.contains(i) { openGallery(startingAt: images[i]) } })
+                    ImageStackSource(id: "\(meta.id):\(minisMediaCacheKey(for: meta.minisURL))",
+                                     load: { await Self.loadDisplay(meta, maxPixel: 640) })
+                }, onOpen: { openGallery(images, at: $0) })
             }
-            if !others.isEmpty { tiles(others) }
+            if !others.isEmpty {
+                let fileTiles = tiles(others)
+                if let fileMenu { fileTiles.modifier(fileMenu) } else { fileTiles }
+            }
         }
     }
 
@@ -898,20 +897,16 @@ struct UserAttachmentList: View {
         }
     }
 
-    /// Build a `[GalleryItem]` from this message's image attachments and
-    /// present it with `tapped` as the starting page.
-    private func openGallery(startingAt tapped: AttachmentMeta) {
-        let all = imageAttachments
-        guard let start = all.firstIndex(where: { $0.minisURL == tapped.minisURL }) else {
-            return
-        }
-        let items: [GalleryItem] = all.map { meta in
+    /// Open the same ordered set the stack is displaying.
+    private func openGallery(_ images: [AttachmentMeta], at index: Int) {
+        guard images.indices.contains(index) else { return }
+        let items: [GalleryItem] = images.map { meta in
             // Fingerprint-keyed id so if the underlying file is rewritten
             // between two opens of the gallery, TabView treats it as a
             // different page and doesn't reuse the cached state/bitmap.
             let fpKey = minisMediaCacheKey(for: meta.minisURL)
             return GalleryItem(
-                id: fpKey,
+                id: "\(meta.id):\(fpKey)",
                 title: meta.fileName,
                 load: {
                     // Route through the shared NSCache using the same
@@ -933,7 +928,7 @@ struct UserAttachmentList: View {
                 source: .markdown(meta.minisURL)
             )
         }
-        openImageGallery(GalleryPresentation(items: items, startIndex: start))
+        openImageGallery(GalleryPresentation(items: items, startIndex: index))
     }
 
     /// [T-paste-live-bubble-card] Pasted-text reference card: same visual
@@ -1059,6 +1054,8 @@ private struct WebAppAddToHomeMenuModifier: ViewModifier {
 /// Async image tile — loads and decodes off the main thread, caches via NativeMediaImageCache.
 struct QueuedAttachmentPreview: View {
     let attachments: [InputAttachment]
+    var fileMenu: MessageActionMenu? = nil
+    @Environment(\.openImageGallery) private var openImageGallery
 
     private let tileSize: CGFloat = UserAttachmentTileMetrics.tile
 
@@ -1069,18 +1066,32 @@ struct QueuedAttachmentPreview: View {
             if !images.isEmpty {
                 // 排队中：和发出后同一摞卡片（行高不跳），上面转圈表示还没发出
                 ImageCardStack(sources: images.map { a in
-                    ImageStackSource(id: a.cacheURL.absoluteString, load: {
-                        let url = a.cacheURL
-                        return await Task.detached { () -> UIImage? in
-                            guard let d = try? Data(contentsOf: url) else { return nil }
-                            return downsampleImageData(d, maxPixelSize: 640)
-                        }.value
-                    }, state: a.loadState == .failed ? .failed : .uploading(nil))
-                }, onOpen: { _ in })
+                    ImageStackSource(id: "\(a.id):\(a.cacheURL.absoluteString)",
+                                     load: { await Self.loadImage(a.cacheURL, maxPixel: 640) },
+                                     state: a.loadState == .failed ? .failed : .uploading(nil))
+                }, onOpen: { index in
+                    guard images.indices.contains(index), images[index].loadState == .ready else { return }
+                    let items = images.map { attachment in
+                        GalleryItem(id: attachment.id.uuidString, title: attachment.fileName,
+                                    load: { await Self.loadImage(attachment.cacheURL, maxPixel: 2048) },
+                                    source: .file(attachment.cacheURL))
+                    }
+                    openImageGallery(GalleryPresentation(items: items, startIndex: index))
+                })
                 .opacity(0.85)
             }
-            if !others.isEmpty { queuedTiles(others) }
+            if !others.isEmpty {
+                let fileTiles = queuedTiles(others)
+                if let fileMenu { fileTiles.modifier(fileMenu) } else { fileTiles }
+            }
         }
+    }
+
+    private static func loadImage(_ url: URL, maxPixel: CGFloat) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return downsampleImageData(data, maxPixelSize: maxPixel)
+        }.value
     }
 
     private func queuedTiles(_ list: [InputAttachment]) -> some View {

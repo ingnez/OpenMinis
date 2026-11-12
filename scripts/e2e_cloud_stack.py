@@ -152,7 +152,7 @@ def front_script(data):
     text = last_user_text(data)
     if "E2E引用卡布局" in text:
         return {"role": "assistant", "content": (
-            "一句话：E2E结论正文\n\n这里是展开后的细节。\n\n"
+            "一句话：E2E结论正文：**今夜值班**，记得交班。\n\n这里是展开后的细节。\n\n"
             "依据：这是一段模拟出处。它有较长的标题、期刊名和出版信息，用来验证大字体下的分行。"
             "｜把握度：中（这里是较长的说明，需要正常换行。）")}
     step = _front_memory_step(data, text)

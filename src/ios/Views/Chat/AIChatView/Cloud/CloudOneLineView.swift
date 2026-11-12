@@ -6,16 +6,13 @@ struct CloudOneLineView: View {
     let detail: String
     let accent: Color
     @State private var open = false
-    @Environment(\.cloudChatTypography) private var typography
-    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(head)
-                .font(.system(.body, design: typography?.design.swiftUI ?? .default).weight(.semibold))
-                .dynamicTypeSize(typography?.messageTypeSize ?? typeSize)
-                .textSelection(.enabled)
+            SelectableMarkdownView(markdown: head)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("cloudOneLineHeadline")
                 .padding(.leading, 12)
                 .overlay(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 2).fill(accent).frame(width: 4)
