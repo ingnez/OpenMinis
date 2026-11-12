@@ -40,8 +40,7 @@ final class CloudBotCallController: ObservableObject {
     @Published private(set) var connected = false
     @Published private(set) var isEnding = false
     @Published private(set) var muted = false
-    @Published private(set) var micLevel: Float = 0
-    @Published private(set) var speakLevel: Float = 0
+    let levels = RealtimeCallLevels()
     @Published private(set) var elapsed = 0
     @Published private(set) var status = ""
     @Published private(set) var error: String?
@@ -66,10 +65,12 @@ struct CloudBotCallSettingsSheet: View {
     @ObservedObject var call: CloudBotCallController
     var body: some View { EmptyView() }
 }
+@MainActor final class RealtimeCallLevels: ObservableObject {}
 struct RealtimeCallSignal: View {
     let connected: Bool
-    let micLevel: Float
-    let speakLevel: Float
+    @ObservedObject var levels: RealtimeCallLevels
+    let muted: Bool
+    let ending: Bool
     var compact = false
     var body: some View { EmptyView() }
 }

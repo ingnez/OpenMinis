@@ -20,8 +20,7 @@ final class RealtimeVoiceSession: ObservableObject {
     @Published var lines: [Line] = []
     @Published var elapsed = 0
     /// 麦克风 / AI 说话的音量 0…1（平滑过，约 12 次每秒更新）
-    @Published private(set) var micLevel: Float = 0
-    @Published private(set) var speakLevel: Float = 0
+    let levels: RealtimeCallLevels
     /// Bot 模式的浮动通话：切到后台不挂断（App 已开后台音频），由灵动岛显示通话
     var continuesInBackground = false
     private var micMeter = RealtimeLevelMeter()
@@ -94,7 +93,10 @@ final class RealtimeVoiceSession: ObservableObject {
     /// Bot 播音 / 生成期间才开始的语音段：只有这些段的转写可能是回声（用户先说、Bot 复述的不算）
     private var itemsStartedWhileBotTalking: Set<String> = []
 
-    init(host: RealtimeVoiceHost) { self.host = host }
+    init(host: RealtimeVoiceHost, levels: RealtimeCallLevels? = nil) {
+        self.host = host
+        self.levels = levels ?? RealtimeCallLevels()
+    }
     /// 等一个任务最多 seconds 秒；按时完成返回 true（超时不取消它，让它在后台自己跑完）
     static func finishes(_ task: Task<Void, Never>, within seconds: Double) async -> Bool {
         final class Once: @unchecked Sendable { var done = false }
@@ -669,9 +671,11 @@ final class RealtimeVoiceSession: ObservableObject {
         if !audio.hasPendingAudio { echoGate.beginPlayback(at: now) }
         try audio.play(bytes)
         noteSpeakLevel(bytes)
-        status = "AI 正在说 · 可以直接插话"
+        let speaking = "AI 正在说 · 可以直接插话"
+        if status != speaking { status = speaking }
         health.received(bytes: bytes.count, at: now)
-        receivedAudioKB = audio.playedBytes / 1024
+        let playedKB = audio.playedBytes / 1024
+        if receivedAudioKB != playedKB { receivedAudioKB = playedKB }
         if notice == RealtimeCallHealth.missingReplyAudioNotice { notice = nil }
     }
 
@@ -895,7 +899,7 @@ final class RealtimeVoiceSession: ObservableObject {
         let now = Date()
         guard now.timeIntervalSince(lastMicLevelAt) > 0.08 else { return }
         lastMicLevelAt = now
-        micLevel = v
+        levels.updateMic(v)
     }
 
     private func noteSpeakLevel(_ pcm: Data) {
@@ -903,13 +907,13 @@ final class RealtimeVoiceSession: ObservableObject {
         let now = Date()
         guard now.timeIntervalSince(lastSpeakLevelAt) > 0.08 else { return }
         lastSpeakLevelAt = now
-        speakLevel = v
+        levels.updateSpeaker(v)
     }
 
     /// 播放排空后让「说话音量」慢慢落回 0（由界面定时调用）
     func settleLevels() {
-        if !audio.hasPendingAudio { speakLevel = speakMeter.decay() }
-        if muted { micLevel = micMeter.decay() }
+        if !audio.hasPendingAudio { levels.updateSpeaker(speakMeter.decay()) }
+        if muted { levels.updateMic(micMeter.decay()) }
     }
 
     /// 按住说话：按下开麦、松开静音
@@ -984,7 +988,7 @@ final class RealtimeVoiceSession: ObservableObject {
         VoiceModePreference.shared.isCapturing = false
         observers.forEach { NotificationCenter.default.removeObserver($0) }; observers = []
         UIApplication.shared.isIdleTimerDisabled = oldIdleDisabled
-        micLevel = 0; speakLevel = 0; micMeter = RealtimeLevelMeter(); speakMeter = RealtimeLevelMeter()
+        levels.updateMic(0); levels.updateSpeaker(0); micMeter = RealtimeLevelMeter(); speakMeter = RealtimeLevelMeter()
         status = reason
         let transcript = lines.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .map { RealtimeTranscriptLine(role: $0.role, text: $0.text, interrupted: $0.interrupted) }

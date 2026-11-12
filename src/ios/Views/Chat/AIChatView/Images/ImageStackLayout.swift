@@ -25,6 +25,13 @@ enum ImageStackLayout {
     static let captionSpacing: CGFloat = 6
     /// 旋转和错开需要的余量，算进容器尺寸，免得卡片角压到别的行
     static let stackInset = CGSize(width: 28, height: 8)
+    /// 铺开后相邻两张中心的水平间距
+    static let fanSpacing: CGFloat = 46
+    /// 跟手滑动超过这个距离，松手就打开当前高亮的那张；否则只保持展开/收回
+    static let scrubThreshold: CGFloat = 12
+    /// 当前选中的卡放大，其余略缩小（长按滑动时）
+    static let highlightScale: CGFloat = 1.14
+    static let restScale: CGFloat = 0.94
 
     static func isStack(_ count: Int) -> Bool { count > 1 }
 
@@ -53,7 +60,7 @@ enum ImageStackLayout {
             let mid = Double(n - 1) / 2
             return (0..<n).reversed().map { i in
                 let d = Double(i) - mid
-                return Card(index: i, rotation: d * 8, offset: CGSize(width: d * 46, height: abs(d) * 6), zIndex: Double(n - i))
+                return Card(index: i, rotation: d * 8, offset: CGSize(width: d * fanSpacing, height: abs(d) * 6), zIndex: Double(n - i))
             }
         }
         let n = min(count, maxStacked)
@@ -74,6 +81,39 @@ extension ImageStackLayout {
             if abs(p.x - cx) <= cardSize.width / 2, abs(p.y - cy) <= cardSize.height / 2 { return card.index }
         }
         return 0
+    }
+}
+
+extension ImageStackLayout {
+    /// 手指在铺开容器里的 x（左上为原点）对应哪一张（只在可见的铺开张数里，最近中心）
+    static func focusedIndex(atX x: CGFloat, count: Int, keeping current: Int? = nil) -> Int {
+        let n = min(max(count, 1), maxFanned)
+        guard n > 1 else { return 0 }
+        let mid = stackSize(count: count).width / 2
+        if let current, (0..<n).contains(current) {
+            let currentX = mid + (CGFloat(current) - CGFloat(n - 1) / 2) * fanSpacing
+            // 小幅抖动跨过两张图的分界时，保留高亮和触感状态。
+            if abs(x - currentX) <= fanSpacing / 2 + 4 { return current }
+        }
+        var best = 0
+        var bestDist = CGFloat.greatestFiniteMagnitude
+        for i in 0..<n {
+            let d = CGFloat(i) - CGFloat(n - 1) / 2
+            let cx = mid + d * fanSpacing
+            let dist = abs(x - cx)
+            if dist < bestDist { bestDist = dist; best = i }
+        }
+        return best
+    }
+
+    static func scale(index: Int, focused: Int, fanned: Bool) -> CGFloat {
+        guard fanned else { return 1 }
+        return index == focused ? highlightScale : restScale
+    }
+
+    /// 松手是否打开当前高亮的那张（滑动超过阈值）
+    static func shouldOpenOnRelease(horizontal: CGFloat, vertical: CGFloat) -> Bool {
+        abs(horizontal) >= scrubThreshold && abs(horizontal) > abs(vertical)
     }
 }
 

@@ -582,6 +582,30 @@ struct CloudSessionsView: View {
 
 
 // MARK: - 3. Single Cloud Session Chat & Task Execution View
+private struct CloudChatScrollTracking: ViewModifier {
+    @Binding var followLatest: Bool
+    @Binding var isUserScrolling: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content.onScrollPhaseChange { _, phase, context in
+                switch phase {
+                case .tracking, .interacting, .decelerating:
+                    if !isUserScrolling { isUserScrolling = true }
+                case .idle where isUserScrolling:
+                    let geometry = context.geometry
+                    followLatest = geometry.contentSize.height - geometry.visibleRect.maxY <= 64
+                    isUserScrolling = false
+                default:
+                    break
+                }
+            }
+        } else {
+            content
+        }
+    }
+}
+
 struct CloudSessionView: View {
     let sessionId: String
     let sessionTitle: String
@@ -654,6 +678,9 @@ struct CloudSessionView: View {
     /// 服务器上还有更早的消息（分页）
     @State private var hasOlderHistory = false
     @State private var loadingOlder = false
+    @State private var followLatest = true
+    @State private var isUserScrolling = false
+    @State private var historyScrollAnchor: String?
     /// 每个附件的上传状态（托盘卡片上的进度圈 / 重试）
     /// 点了哪个拍照识别要求（用来找更对口的 Bot）
     @State private var photoKind: String?
@@ -1556,16 +1583,23 @@ struct CloudSessionView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 60)
                     }
-                    let shownItems = CloudTaskFailure.display(messages.filter { ($0["role"] as? String) != "user" || !CloudInternalPrompt.isInternal($0) })
+                    let shownItems = theme == nil
+                        ? CloudTaskFailure.display(messages.filter { ($0["role"] as? String) != "user" || !CloudInternalPrompt.isInternal($0) })
+                        : []
                     if let theme {
                         Color.clear.frame(height: 1).id("chat-top")
-                        ForEach(threadRows.filter { threadAnchor($0) == -1 }) { CloudBotThreadCollapsedRow(item: $0) }
-                        let stamps = turns.map { ($0.raw["timestamp"] as? NSNumber)?.doubleValue ?? 0 }
-                        ForEach(callDividers.filter { CloudCallDivider.anchor($0, timestamps: stamps) == -1 }) { CloudCallDividerRow(seconds: $0.seconds) }
-                        ForEach(Array(turns.enumerated()), id: \.offset) { idx, turn in
+                        let timestamps = threadRows.isEmpty && callDividers.isEmpty ? [] : turns.map { $0.raw["timestamp"] as? NSNumber }
+                        let threadTimes = threadRows.isEmpty ? [] : timestamps.map { $0.map { Date(timeIntervalSince1970: $0.doubleValue) } }
+                        let dividerTimes = callDividers.isEmpty ? [] : timestamps.map { $0?.doubleValue ?? 0 }
+                        let threads = Dictionary(grouping: threadRows) { CloudBotThreadRules.anchor(firstAt: $0.firstAt, turnTimes: threadTimes) }
+                        let dividers = Dictionary(grouping: callDividers) { CloudCallDivider.anchor($0, timestamps: dividerTimes) }
+                        ForEach(threads[-1] ?? []) { CloudBotThreadCollapsedRow(item: $0) }
+                        ForEach(dividers[-1] ?? []) { CloudCallDividerRow(seconds: $0.seconds) }
+                        ForEach(Array(turns.enumerated()), id: \.element.presentationID) { idx, turn in
                             let msg = turn.message
                             if msg.role == .user {
                                 cloudUserTurn(turn, accent: theme.accent)
+                                    .id(turn.presentationID)
                                 anchoredReplies(after: turn, theme: theme)
                             } else {
                                 let prevAssistant = idx > 0 && turns[idx - 1].message.role == .assistant
@@ -1580,15 +1614,16 @@ struct CloudSessionView: View {
                                     CloudAssistantFooter(text: msg.content, latency: CloudLatency.line(for: turn.raw, tasks: tasks),
                                                          extras: extras, selfId: theme.botId,
                                                          onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 }))
+                                    .id(turn.presentationID)
                             }
                             if idx == turns.count - 1, msg.role == .assistant, activeTaskStatus != "running" {
                                 CloudSmartReplyBar(text: msg.content, accent: theme.accent, onPick: quickSend)
                             }
-                            ForEach(threadRows.filter { threadAnchor($0) == idx }) { CloudBotThreadCollapsedRow(item: $0) }
-                            ForEach(callDividers.filter { CloudCallDivider.anchor($0, timestamps: stamps) == idx }) { CloudCallDividerRow(seconds: $0.seconds) }
+                            ForEach(threads[idx] ?? []) { CloudBotThreadCollapsedRow(item: $0) }
+                            ForEach(dividers[idx] ?? []) { CloudCallDividerRow(seconds: $0.seconds) }
                         }
                     }
-                    ForEach(Array((theme == nil ? shownItems : []).enumerated()), id: \.offset) { _, item in
+                    ForEach(Array(shownItems.enumerated()), id: \.offset) { _, item in
                         let msg = item.message
                         let role = msg["role"] as? String ?? "user"
                         let content = msg["content"] as? String ?? ""
@@ -1650,6 +1685,7 @@ struct CloudSessionView: View {
                 }
                 .padding()
             }
+            .modifier(CloudChatScrollTracking(followLatest: $followLatest, isUserScrolling: $isUserScrolling))
             .environment(\.cloudChatActions, chatActions)
             // 往下拖消息收起键盘（和信息 App 一样）；以前键盘只能点别处收，拖动时键盘一直顶着，叠放卡片被挤到导航栏下面
             .scrollDismissesKeyboard(.interactively)
@@ -1662,15 +1698,29 @@ struct CloudSessionView: View {
             })
             .overlay(alignment: .bottomTrailing) {
                 if theme != nil && messages.count > 4 {
-                    CloudScrollButtons(onTop: { withAnimation { proxy.scrollTo("chat-top", anchor: .top) } },
-                                       onBottom: { withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) } })
+                    CloudScrollButtons(onTop: {
+                        followLatest = false
+                        withAnimation { proxy.scrollTo("chat-top", anchor: .top) }
+                    }, onBottom: {
+                        followLatest = true
+                        withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                    })
                 }
             }
             .onChange(of: messages.count) { _ in
+                if let anchor = historyScrollAnchor {
+                    historyScrollAnchor = nil
+                    proxy.scrollTo(anchor, anchor: .top)
+                    return
+                }
+                guard followLatest, !isUserScrolling else { return }
                 withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) }
             }
             .onAppear {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    guard followLatest, !isUserScrolling else { return }
+                    proxy.scrollTo("chat-bottom", anchor: .bottom)
+                }
             }
         }
         // 看图页「问问这张图」：图片放回附件，输入框起个头
@@ -1690,7 +1740,13 @@ struct CloudSessionView: View {
                 let page = res["messages"] as? [[String: Any]] ?? []
                 hasOlderHistory = (res["has_more"] as? Bool ?? false) && !page.isEmpty
                 guard !page.isEmpty else { return }
-                messages = CloudHistoryPager.prepend(page, to: messages)
+                let merged = CloudHistoryPager.prepend(page, to: messages)
+                guard merged.count != messages.count else { return }
+                if theme != nil {
+                    followLatest = false
+                    historyScrollAnchor = turns.first?.presentationID
+                }
+                messages = merged
                 rebuildTurns()
             }
         }
@@ -1762,12 +1818,6 @@ struct CloudSessionView: View {
         }
     }
 
-    private func threadAnchor(_ row: CloudBotThreadCollapsed) -> Int {
-        CloudBotThreadRules.anchor(firstAt: row.firstAt, turnTimes: turns.map { t in
-            (t.raw["timestamp"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
-        })
-    }
-
     private func reactionExtras(_ e: CloudMessageExtras) -> CloudMessageExtras {
         guard let id = e.id, let local = localReactions[id] else { return e }
         var out = e
@@ -1815,6 +1865,7 @@ struct CloudSessionView: View {
         let items = attachments
         attachments = []
         inputPrompt = ""
+        followLatest = true
         showPendingSend(content: content, nonce: nonce)
         CloudHaptics.tap()
         NotificationCenter.default.post(name: CloudReplyService.kick, object: nil)

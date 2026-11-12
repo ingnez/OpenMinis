@@ -17,8 +17,7 @@ final class CloudBotCallController: ObservableObject {
     @Published private(set) var connected = false
     @Published private(set) var isEnding = false
     @Published private(set) var muted = false
-    @Published private(set) var micLevel: Float = 0
-    @Published private(set) var speakLevel: Float = 0
+    let levels = RealtimeCallLevels()
     @Published private(set) var elapsed = 0
     @Published private(set) var status = ""
     @Published private(set) var error: String?
@@ -71,7 +70,7 @@ final class CloudBotCallController: ObservableObject {
         let providerID = cfg.provider, model = cfg.model, voice = cfg.voice
         let preview = model.contains("preview")
         guard !providerID.isEmpty, !model.isEmpty else { error = "先在「实时语音」设置里选好服务商和模型"; return }
-        let s = RealtimeVoiceSession(host: host)
+        let s = RealtimeVoiceSession(host: host, levels: levels)
         s.continuesInBackground = true
         session = s
         callName = name
@@ -98,12 +97,11 @@ final class CloudBotCallController: ObservableObject {
         }.store(in: &bag)
         s.$isEnding.sink { [weak self] in self?.isEnding = $0 }.store(in: &bag)
         s.$muted.sink { [weak self] in self?.muted = $0 }.store(in: &bag)
-        s.$micLevel.sink { [weak self] in self?.micLevel = $0 }.store(in: &bag)
-        s.$speakLevel.sink { [weak self] in self?.speakLevel = $0 }.store(in: &bag)
         s.$elapsed.sink { [weak self] in self?.elapsed = $0 }.store(in: &bag)
-        s.$status.sink { [weak self] in self?.status = $0 }.store(in: &bag)
-        s.$notice.sink { [weak self] in self?.notice = $0 }.store(in: &bag)
-        s.$receivedAudioKB.sink { [weak self] in self?.receivedAudioKB = $0 }.store(in: &bag)
+        s.$status.removeDuplicates().sink { [weak self] in self?.status = $0 }.store(in: &bag)
+        s.$notice.removeDuplicates().sink { [weak self] in self?.notice = $0 }.store(in: &bag)
+        s.$receivedAudioKB.removeDuplicates().throttle(for: .milliseconds(500), scheduler: RunLoop.main, latest: true)
+            .sink { [weak self] in self?.receivedAudioKB = $0 }.store(in: &bag)
         s.$error.sink { [weak self] e in if let e { self?.error = e } }.store(in: &bag)
         s.$lines.sink { [weak self] ls in
             self?.lines = ls.map { CloudBotCallLine(id: $0.id, role: $0.role, text: $0.text) }
@@ -127,7 +125,7 @@ final class CloudBotCallController: ObservableObject {
         UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
         if let startedAt, elapsed > 0 { onEnded?(startedAt, elapsed) }
         startedAt = nil
-        micLevel = 0; speakLevel = 0
+        levels.updateMic(0); levels.updateSpeaker(0)
     }
 
     func toggleMute() { session?.toggleMute() }

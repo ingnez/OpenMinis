@@ -111,8 +111,8 @@ struct CloudCallCapsule<Avatar: View>: View {
                 .accessibilityLabel("与 \(name) 的通话，\(headerStatus)")
                 .accessibilityIdentifier("callCapsule")
                 .accessibilityValue(CloudCallCapsuleText.value(connected: call.connected, receivedKB: call.receivedAudioKB, lines: call.lines.count))
-            RealtimeCallSignal(connected: call.connected, micLevel: call.muted || call.isEnding ? 0 : call.micLevel,
-                               speakLevel: call.isEnding ? 0 : call.speakLevel, compact: true)
+            RealtimeCallSignal(connected: call.connected, levels: call.levels,
+                               muted: call.muted, ending: call.isEnding, compact: true)
                 .frame(height: 19)
                 .frame(maxWidth: .infinity)
             control("gearshape", label: "通话设置") { showSettings = true }

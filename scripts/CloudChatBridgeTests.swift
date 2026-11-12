@@ -71,6 +71,13 @@ struct LLMModel { let id: String; let displayName: String }
    ["role": "user", "content": "好"],
   ]
   let turns = CloudHistoryAdapter.turns(from: history)
+  let pending = CloudHistoryAdapter.turns(from: [["role": "user", "content": "在吗", "client_nonce": "local-id"]])
+  let confirmed = CloudHistoryAdapter.turns(from: [
+   ["role": "assistant", "content": "更早的回复", "id": 21],
+   ["role": "user", "content": "在吗", "client_nonce": "local-id", "id": 22],
+  ])
+  precondition(pending[0].presentationID == confirmed[1].presentationID, "确认送达和加载旧消息不能重建原气泡")
+  precondition(confirmed[0].presentationID == "history:21", "历史回复使用稳定的服务器消息 ID")
   precondition(turns.count == 3, "一问一答 + 追问应为 3 条，实际 \(turns.count)")
   let reply = turns[1].message
   precondition(reply.blocks.count == 3, "两个工具块 + 一段正文")

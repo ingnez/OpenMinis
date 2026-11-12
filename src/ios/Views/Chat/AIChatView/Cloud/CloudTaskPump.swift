@@ -183,6 +183,14 @@ enum CloudHistoryAdapter {
         let raw: [String: Any]
         /// 这一轮最后一条有文字的原始消息（表情回应、引用回复针对它）
         var textRaw: [String: Any] = [:]
+
+        var presentationID: String {
+            if message.role == .user, let nonce = raw["client_nonce"] as? String, !nonce.isEmpty {
+                return "user:\(nonce)"
+            }
+            if let id = raw["id"] as? Int { return "history:\(id)" }
+            return "message:\(message.id)"
+        }
     }
 
     static func turns(from messages: [[String: Any]]) -> [Turn] {

@@ -110,8 +110,8 @@ struct RealtimeVoiceView: View {
                         .font(.subheadline.monospacedDigit()).foregroundStyle(.white.opacity(0.75))
                 }
             }
-            RealtimeCallSignal(connected: session.connected, micLevel: session.muted || session.isEnding ? 0 : session.micLevel,
-                               speakLevel: session.isEnding ? 0 : session.speakLevel)
+            RealtimeCallSignal(connected: session.connected, levels: session.levels,
+                               muted: session.muted, ending: session.isEnding)
                 .frame(height: 46)
             if let notice = session.notice {
                 Text(notice).font(.caption).foregroundStyle(.orange)
@@ -133,20 +133,62 @@ struct RealtimeVoiceView: View {
     }
 }
 
-/// 连接中用滑动光段，接通后左右半边分别响应麦克风和 Bot 音量。
+/// 音量变化只重画波形，不刷新聊天列表和通话按钮。
+@MainActor
+final class RealtimeCallLevels: ObservableObject {
+    @Published private(set) var mic: Float = 0
+    @Published private(set) var speaker: Float = 0
+
+    func updateMic(_ level: Float) {
+        if mic != level { mic = level }
+    }
+
+    func updateSpeaker(_ level: Float) {
+        if speaker != level { speaker = level }
+    }
+}
+
 struct RealtimeCallSignal: View {
     let connected: Bool
-    let micLevel: Float
-    let speakLevel: Float
+    @ObservedObject var levels: RealtimeCallLevels
+    let muted: Bool
+    let ending: Bool
     var compact = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let mic = muted || ending ? 0 : Double(levels.mic)
+        let speaker = ending ? 0 : Double(levels.speaker)
+        let paused = reduceMotion || CloudE2E.pauseIdleAnimations
+        let smoothing = paused ? nil : Animation.linear(duration: 0.08)
+        RealtimeCallSignalDrawing(connected: connected, micLevel: mic, speakLevel: speaker,
+                                  compact: compact, paused: paused)
+            .animation(smoothing, value: mic)
+            .animation(smoothing, value: speaker)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(connected ? "实时通话波形" : "正在连接实时通话")
+            .accessibilityIdentifier(connected ? "realtimeCallLiveWaveform" : "realtimeCallPendingTrack")
+    }
+}
+
+/// 在两次音量采样之间插值。活跃时跟随系统的动画节奏，安静时停止时钟。
+private struct RealtimeCallSignalDrawing: View, Animatable {
+    let connected: Bool
+    var micLevel: Double
+    var speakLevel: Double
+    let compact: Bool
+    let paused: Bool
     private let barsPerSide = 12
     private let spacing: CGFloat = 3
 
+    var animatableData: AnimatablePair<Double, Double> {
+        get { AnimatablePair(micLevel, speakLevel) }
+        set { micLevel = newValue.first; speakLevel = newValue.second }
+    }
+
     var body: some View {
-        let paused = reduceMotion || CloudE2E.pauseIdleAnimations
         let quiet = connected && max(micLevel, speakLevel) < 0.025
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: paused || quiet)) { context in
+        TimelineView(.animation(paused: paused || quiet)) { context in
             let phase = paused ? 0 : context.date.timeIntervalSinceReferenceDate
             GeometryReader { proxy in
                 if connected {
@@ -158,9 +200,6 @@ struct RealtimeCallSignal: View {
                 }
             }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(connected ? "实时通话波形" : "正在连接实时通话")
-        .accessibilityIdentifier(connected ? "realtimeCallLiveWaveform" : "realtimeCallPendingTrack")
     }
 
     private func pendingTrack(width: CGFloat, phase: TimeInterval) -> some View {
@@ -199,18 +238,20 @@ struct RealtimeCallSignal: View {
     private func waveform(size: CGSize, phase: TimeInterval) -> some View {
         let count = barsPerSide * 2
         let barWidth = max(1, (size.width - CGFloat(count - 1) * spacing) / CGFloat(count))
-        return HStack(spacing: spacing) {
-            ForEach(0..<count, id: \.self) { index in
+        return Canvas { context, _ in
+            for index in 0..<count {
                 let isMic = index < barsPerSide
                 let level = max(0, min(1, isMic ? micLevel : speakLevel))
                 let position = Double(index % barsPerSide)
                 let center = Double(barsPerSide - 1) / 2
                 let envelope = 0.36 + 0.64 * (1 - abs(position - center) / center)
                 let movement = 0.72 + 0.28 * sin(phase * 11 + position * 0.89)
-                let height = 3 + max(0, size.height - 3) * CGFloat(Double(level) * envelope * movement)
-                Capsule()
-                    .fill((isMic ? Color.white : Color(red: 0.49, green: 0.80, blue: 1)).opacity(0.28 + Double(level) * 0.72))
-                    .frame(width: barWidth, height: height)
+                let height = 3 + max(0, size.height - 3) * CGFloat(level * envelope * movement)
+                let rect = CGRect(x: CGFloat(index) * (barWidth + spacing), y: (size.height - height) / 2,
+                                  width: barWidth, height: height)
+                let tint = isMic ? Color.white : Color(red: 0.49, green: 0.80, blue: 1)
+                context.fill(Path(roundedRect: rect, cornerRadius: min(barWidth, height) / 2),
+                             with: .color(tint.opacity(0.28 + level * 0.72)))
             }
         }
         .frame(width: size.width, height: size.height)
