@@ -92,13 +92,7 @@ final class E2EFlowsUITests: XCTestCase {
 
     func test07_pluginMarketNoErrno13() throws {
         let app = launch()
-        let gear = app.buttons["设置"]
-        XCTAssertTrue(gear.waitForExistence(timeout: 60))
-        gear.tap()
-        let market = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "插件市场")).firstMatch
-        XCTAssertTrue(scrollTo(app, market), "Bot 设置里没有「插件市场」")
-        market.tap()
-        XCTAssertTrue(waitText(app, contains: "Fetch", timeout: 30) || waitText(app, contains: "抓取网页", timeout: 5), "插件目录没加载出来")
+        openPluginMarket(app, needEcho: false)
         XCTAssertFalse(anyElement(app, contains: "Errno 13"), "插件市场里出现 Errno 13")
         XCTAssertFalse(anyElement(app, contains: "Permission denied"), "插件市场里出现 Permission denied")
         shot(app, "07-插件市场")
@@ -106,27 +100,24 @@ final class E2EFlowsUITests: XCTestCase {
 
     func test07b_pluginCatalogInstallMovesToInstalled() throws {
         let app = launch()
-        let gear = app.buttons["设置"]
-        XCTAssertTrue(gear.waitForExistence(timeout: 60))
-        gear.tap()
-        let market = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "插件市场")).firstMatch
-        XCTAssertTrue(scrollTo(app, market), "Bot 设置里没有「插件市场」")
-        market.tap()
-        XCTAssertTrue(app.navigationBars["插件市场"].waitForExistence(timeout: 15) || waitText(app, contains: "插件目录", timeout: 15), "插件市场页没打开")
-        // 目录来自 GET /v1/plugins，标题「插件目录」在列表还空时就会出现；先等到真正的条目
-        XCTAssertTrue(waitText(app, contains: "E2E 回声", timeout: 30) || waitText(app, contains: "Fetch", timeout: 5) || waitText(app, contains: "网页抓取", timeout: 5),
-                      "插件目录没加载出来")
-        let echo = app.descendants(matching: .any)["pluginCatalog-e2e-echo"]
-        let echoName = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "E2E 回声")).firstMatch
-        XCTAssertTrue(scrollTo(app, echo) || scrollTo(app, echoName), "插件目录没有 e2e 假插件")
+        openPluginMarket(app, needEcho: true)
+        // e2e-echo 在目录首位，打开时已在屏幕上。不要再 scrollTo：
+        // 对 sheet 里的 List 向下拖会关掉 Bot 设置，测试就会停在首页直到超时。
         let install = app.descendants(matching: .any)["pluginInstall-e2e-echo"]
-        XCTAssertTrue(scrollTo(app, install), "插件目录里没有「E2E 回声」的安装按钮")
-        install.tap()
+        if !install.waitForExistence(timeout: 5) {
+            dumpUI(app, "07b-没有安装按钮")
+            XCTFail("插件目录里没有「E2E 回声」的安装按钮")
+        }
+        tapPoint(app, install)
         let installed = app.descendants(matching: .any)["pluginInstalled-e2e-echo"]
-        XCTAssertTrue(poll(30) { installed.exists }, "安装后没有出现在「已安装」")
+        if !poll(30, { installed.exists }) {
+            dumpUI(app, "07b-安装后没有已安装")
+            XCTFail("安装后没有出现在「已安装」")
+        }
         // 已安装的条目留在目录里应显示「已安装」，不能再出现「安装」
         XCTAssertFalse(app.descendants(matching: .any)["pluginInstall-e2e-echo"].exists, "已安装插件仍留在插件目录并显示「安装」")
-        XCTAssertTrue(waitText(app, contains: "已安装", timeout: 5) || waitText(app, contains: "安装成功", timeout: 5) || waitText(app, contains: "已经安装", timeout: 2),
+        let marked = app.descendants(matching: .any)["pluginCatalogInstalled-e2e-echo"]
+        XCTAssertTrue(marked.waitForExistence(timeout: 5) || waitText(app, contains: "已安装", timeout: 5) || waitText(app, contains: "安装成功", timeout: 5) || waitText(app, contains: "已经安装", timeout: 2),
                       "安装后没有可见的成功/已安装提示")
         shot(app, "07b-插件目录安装")
     }
@@ -720,30 +711,85 @@ final class E2EFlowsUITests: XCTestCase {
         app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", s, s)).firstMatch.exists
     }
 
-    /// 只在 List（collection/table）上拖。Bot 设置是 sheet，对整页向下拖会把插件市场关掉。
-    private func scrollTo(_ app: XCUIApplication, _ el: XCUIElement) -> Bool {
-        if el.exists, el.isHittable { return true }
-        let cv = app.collectionViews.firstMatch
-        let tb = app.tables.firstMatch
-        let scroller = cv.exists ? cv : (tb.exists ? tb : app)
-        let onList = cv.exists || tb.exists
-        func flick(from dy0: CGFloat, to dy1: CGFloat) {
-            let start = scroller.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: dy0))
-            let end = scroller.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: dy1))
-            start.press(forDuration: 0.05, thenDragTo: end)
-        }
-        if onList {
-            for _ in 0..<10 {
-                if el.exists, el.isHittable { return true }
-                flick(from: 0.35, to: 0.80)
+    /// 打开 Bot 设置里的插件市场，等到目录条目出现。失败时留下截图和控件树。
+    private func openPluginMarket(_ app: XCUIApplication, needEcho: Bool) {
+        let gearId = app.buttons["settingsGear"]
+        XCTAssertTrue(gearId.waitForExistence(timeout: 60) || app.buttons["设置"].waitForExistence(timeout: 5), "首页没有设置按钮")
+        (gearId.exists ? gearId : app.buttons["设置"]).tap()
+        let market = app.descendants(matching: .any)["pluginMarketRow"]
+        let marketName = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "插件市场")).firstMatch
+        XCTAssertTrue(market.waitForExistence(timeout: 8) || marketName.waitForExistence(timeout: 8) || app.navigationBars["Bot 设置"].waitForExistence(timeout: 8), "Bot 设置没打开")
+        let row = market.exists ? market : marketName
+        if !visibleInWindow(app, row) {
+            // 只往下翻设置列表。绝不能向下拖：sheet 会被关掉。
+            if !scrollTo(app, market.exists ? market : marketName) {
+                dumpUI(app, "07-设置里没有插件市场")
+                XCTFail("Bot 设置里没有「插件市场」")
             }
         }
-        if el.exists, el.isHittable { return true }
-        for _ in 0..<14 {
-            if el.exists, el.isHittable { return true }
-            flick(from: 0.80, to: 0.35)
+        let target = market.exists ? market : marketName
+        tapPoint(app, target)
+        let opened = app.navigationBars["插件市场"].waitForExistence(timeout: 15) || waitText(app, contains: "插件目录", timeout: 15)
+        if !opened {
+            dumpUI(app, "07-插件市场页没打开")
+            XCTFail("插件市场页没打开")
         }
-        return el.exists
+        // 目录来自 GET /v1/plugins，标题「插件目录」在列表还空时就会出现；先等到真正的条目
+        let loaded = waitText(app, contains: "E2E 回声", timeout: 30) || waitText(app, contains: "Fetch", timeout: 5) || waitText(app, contains: "网页抓取", timeout: 5)
+        if !loaded {
+            dumpUI(app, "07-插件目录没加载")
+            XCTFail("插件目录没加载出来")
+        }
+        if needEcho {
+            let echo = app.descendants(matching: .any)["pluginCatalog-e2e-echo"]
+            let echoName = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "E2E 回声")).firstMatch
+            if !echo.exists && !echoName.exists {
+                dumpUI(app, "07b-没有e2e假插件")
+                XCTFail("插件目录没有 e2e 假插件")
+            }
+        }
+    }
+
+    private func tapPoint(_ app: XCUIApplication, _ el: XCUIElement) {
+        let f = el.frame
+        if f.width > 1, f.height > 1 {
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: f.midX, dy: f.midY)).tap()
+        } else {
+            el.tap()
+        }
+    }
+
+    private func dumpUI(_ app: XCUIApplication, _ name: String) {
+        shot(app, name)
+        let tree = XCTAttachment(string: app.debugDescription)
+        tree.name = name + "-控件树"
+        tree.lifetime = .keepAlways
+        add(tree)
+    }
+
+    private func visibleInWindow(_ app: XCUIApplication, _ el: XCUIElement) -> Bool {
+        guard el.exists else { return false }
+        let f = el.frame
+        let w = app.windows.firstMatch.frame
+        guard w.width > 0, f.width > 0, f.height > 0 else { return false }
+        return f.maxY > w.minY + 80 && f.minY < w.maxY - 20 && f.maxX > w.minX && f.minX < w.maxX
+    }
+
+    /// 只在 List 上往下翻。不要对整页或列表顶部向下拖：Bot 设置是 sheet，会把插件市场一起关掉。
+    private func scrollTo(_ app: XCUIApplication, _ el: XCUIElement) -> Bool {
+        if visibleInWindow(app, el) { return true }
+        let cv = app.collectionViews.firstMatch
+        let tb = app.tables.firstMatch
+        // 找不到 List 就不要拖整页
+        guard cv.exists || tb.exists else { return el.exists }
+        let scroller = cv.exists ? cv : tb
+        for _ in 0..<14 {
+            if visibleInWindow(app, el) { return true }
+            let start = scroller.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.72))
+            let end = scroller.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.32))
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
+        return el.exists || visibleInWindow(app, el)
     }
 
     private struct Probe: Decodable { let images: Int; let text: String }

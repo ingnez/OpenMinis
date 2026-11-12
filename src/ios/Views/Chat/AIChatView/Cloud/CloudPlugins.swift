@@ -36,7 +36,7 @@ struct CloudPlugin: Identifiable, Hashable {
     let oauthConnected: Bool
 
     init?(_ d: [String: Any], installed: Bool) {
-        guard let pid = (d["plugin_id"] as? String) ?? (d["id"] as? String) else { return nil }
+        guard let pid = CloudPlugin.identifier(d) else { return nil }
         id = pid
         kind = d["kind"] as? String ?? "mcp"
         name = d["name"] as? String ?? pid
@@ -61,6 +61,22 @@ struct CloudPlugin: Identifiable, Hashable {
         oauthConnected = oauth["connected"] as? Bool ?? false
     }
 
+    static func identifier(_ d: [String: Any]) -> String? {
+        let raw = (d["plugin_id"] as? String) ?? (d["id"] as? String)
+        let s = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return s.isEmpty ? nil : s
+    }
+
+    static func flag(_ d: [String: Any], _ key: String) -> Bool {
+        if let b = d[key] as? Bool { return b }
+        if let n = d[key] as? NSNumber { return n.boolValue }
+        if let s = d[key] as? String {
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return t == "1" || t == "true" || t == "yes"
+        }
+        return false
+    }
+
     var statusText: String {
         switch status {
         case "ready": return kind == "skill" ? "技能包 · 已启用" : "可用"
@@ -81,11 +97,11 @@ enum CloudPluginService {
         let resp = try await CloudBotService.connected().request(method: "GET", path: "/v1/plugins", body: nil)
         let installed = (resp["installed"] as? [[String: Any]] ?? []).compactMap { CloudPlugin($0, installed: true) }
         let installedIds = Set(installed.map(\.id))
-        // 必须尊重服务端 catalog.installed；再与已安装 id 交叉核对，避免目录仍显示「安装」
+        // 必须尊重服务端 catalog.installed；再与已安装 id 交叉核对，避免目录仍显示「安装」。
+        // JSON 的 true 有时是 NSNumber，只写 as? Bool 会得到 false，已安装项就会继续显示「安装」。
         let catalog = (resp["catalog"] as? [[String: Any]] ?? []).compactMap { d -> CloudPlugin? in
-            let flagged = d["installed"] as? Bool ?? false
-            let pid = (d["plugin_id"] as? String) ?? (d["id"] as? String) ?? ""
-            return CloudPlugin(d, installed: flagged || installedIds.contains(pid))
+            let pid = CloudPlugin.identifier(d) ?? ""
+            return CloudPlugin(d, installed: CloudPlugin.flag(d, "installed") || installedIds.contains(pid))
         }
         return (installed, catalog)
     }
@@ -214,26 +230,7 @@ struct CloudPluginsView: View {
                 }
                 // 保持服务端顺序（e2e-echo 在首位）；已安装的仍留在目录里，显示「已安装」而不是「安装」
                 ForEach(catalog) { p in
-                    HStack {
-                        pluginRow(p, catalogId: "pluginCatalog-\(p.id)")
-                        Spacer()
-                        if p.installed {
-                            Text("已安装").font(.caption).foregroundStyle(.secondary)
-                            NavigationLink("打开") {
-                                CloudPluginDetailView(plugin: installed.first(where: { $0.id == p.id }) ?? p, onChanged: { await reload() })
-                            }
-                            .accessibilityIdentifier("pluginOpen-\(p.id)")
-                        } else if busyId == p.id {
-                            ProgressView()
-                                .accessibilityIdentifier("pluginInstalling-\(p.id)")
-                        } else {
-                            Button("安装") { run(busyId: p.id) { try await CloudPluginService.install(catalogId: p.id) } }
-                                .buttonStyle(.borderless)
-                                .disabled(busy)
-                                .accessibilityIdentifier("pluginInstall-\(p.id)")
-                        }
-                    }
-                    .accessibilityIdentifier("pluginCatalog-\(p.id)")
+                    catalogRow(p)
                 }
             }
 
@@ -349,6 +346,47 @@ struct CloudPluginsView: View {
                 errorText = error.localizedDescription
             }
             busy = false
+        }
+    }
+
+    /// 整行都是「安装」按钮，避免 List 行里的小 Button 点了没反应。
+    @ViewBuilder
+    private func catalogRow(_ p: CloudPlugin) -> some View {
+        if p.installed {
+            HStack {
+                pluginRow(p)
+                Spacer()
+                Text("已安装").font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("pluginCatalogInstalled-\(p.id)")
+                NavigationLink("打开") {
+                    CloudPluginDetailView(plugin: installed.first(where: { $0.id == p.id }) ?? p, onChanged: { await reload() })
+                }
+                .accessibilityIdentifier("pluginOpen-\(p.id)")
+            }
+            .accessibilityIdentifier("pluginCatalog-\(p.id)")
+        } else if busyId == p.id {
+            HStack {
+                pluginRow(p)
+                Spacer()
+                ProgressView()
+                    .accessibilityIdentifier("pluginInstalling-\(p.id)")
+            }
+            .accessibilityIdentifier("pluginCatalog-\(p.id)")
+        } else {
+            Button {
+                run(busyId: p.id) { try await CloudPluginService.install(catalogId: p.id) }
+            } label: {
+                HStack {
+                    pluginRow(p)
+                    Spacer()
+                    Text("安装").foregroundStyle(.tint)
+                }
+                .contentShape(Rectangle())
+                .accessibilityIdentifier("pluginCatalog-\(p.id)")
+            }
+            .buttonStyle(.plain)
+            .disabled(busy)
+            .accessibilityIdentifier("pluginInstall-\(p.id)")
         }
     }
 

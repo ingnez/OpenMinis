@@ -947,6 +947,7 @@ struct CloudBotHubView: View {
                 })) { Label("控制中心与手表", systemImage: "applewatch") }
                 NavigationLink(destination: CloudBotsView()) { Label("我的 Bot（模板、导入导出）", systemImage: "person.3") }
                 NavigationLink(destination: CloudPluginsView()) { Label("插件市场", systemImage: "puzzlepiece.extension") }
+                    .accessibilityIdentifier("pluginMarketRow")
                 NavigationLink(destination: CloudRoutinesView()) { Label("例行任务", systemImage: "clock.arrow.circlepath") }
                 NavigationLink(destination: CloudEventTriggersView()) { Label("事件触发（GitHub、邮件、Telegram）", systemImage: "bolt.badge.clock") }
                 NavigationLink(destination: CloudMemoryTimelineView()) { Label("云端记忆", systemImage: "brain") }

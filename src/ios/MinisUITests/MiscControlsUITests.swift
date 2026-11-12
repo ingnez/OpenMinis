@@ -95,28 +95,24 @@ final class MiscControlsUITests: XCTestCase {
         app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", s, s)).firstMatch.exists
     }
 
-    /// 只在 List（collection/table）上拖。Bot 设置是 sheet，对整页向下拖会把插件市场关掉。
+    /// 只在 List 上往下翻。不要对整页或列表顶部向下拖：Bot 设置是 sheet，会把页面一起关掉。
     private func scrollTo(_ app: XCUIApplication, _ el: XCUIElement) -> Bool {
-        if el.exists, el.isHittable { return true }
+        if el.exists {
+            let f = el.frame, w = app.windows.firstMatch.frame
+            if w.width > 0, f.width > 0, f.height > 0, f.maxY > w.minY + 80, f.minY < w.maxY - 20 { return true }
+        }
         let cv = app.collectionViews.firstMatch
         let tb = app.tables.firstMatch
-        let scroller = cv.exists ? cv : (tb.exists ? tb : app)
-        let onList = cv.exists || tb.exists
-        func flick(from dy0: CGFloat, to dy1: CGFloat) {
-            let start = scroller.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: dy0))
-            let end = scroller.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: dy1))
-            start.press(forDuration: 0.05, thenDragTo: end)
-        }
-        if onList {
-            for _ in 0..<10 {
-                if el.exists, el.isHittable { return true }
-                flick(from: 0.35, to: 0.80)
-            }
-        }
-        if el.exists, el.isHittable { return true }
+        guard cv.exists || tb.exists else { return el.exists }
+        let scroller = cv.exists ? cv : tb
         for _ in 0..<14 {
-            if el.exists, el.isHittable { return true }
-            flick(from: 0.80, to: 0.35)
+            if el.exists {
+                let f = el.frame, w = app.windows.firstMatch.frame
+                if w.width > 0, f.width > 0, f.height > 0, f.maxY > w.minY + 80, f.minY < w.maxY - 20 { return true }
+            }
+            let start = scroller.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.72))
+            let end = scroller.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.32))
+            start.press(forDuration: 0.05, thenDragTo: end)
         }
         return el.exists
     }

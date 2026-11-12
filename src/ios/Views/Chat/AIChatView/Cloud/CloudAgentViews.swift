@@ -288,6 +288,7 @@ struct CloudAgentSettingsView: View {
                         .font(.headline)
                         .foregroundColor(.accentColor)
                 }
+                .accessibilityIdentifier("pluginMarketRow")
 
                 NavigationLink(destination: CloudMemoryTimelineView()) {
                     Label("记忆时间线", systemImage: "brain.head.profile")
