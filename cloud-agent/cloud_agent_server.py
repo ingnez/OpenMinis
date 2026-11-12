@@ -5676,7 +5676,9 @@ def launch_routine_run(routine, trigger="schedule", context=None):
                   (sid, "例行任务：" + routine["name"], instructions, now, routine.get("persona_id")))
         c.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
                   (tid, sid, routine["model"], now))
-        c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (sid, content, now))
+        # 例行任务 / 主动消息的提示词是发给模型的，不是用户说的：标 internal，App 不画成用户气泡
+        c.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'user', ?, ?, ?)",
+                  (sid, content, now, json.dumps({"internal": "routine"})))
         c.execute("UPDATE routine_runs SET task_id = ?, session_id = ? WHERE run_id = ?", (tid, sid, run_id))
         conn.commit()
     finally:
@@ -7009,7 +7011,7 @@ class Handler(BaseHTTPRequestHandler):
                     if mr[5]:
                         try:
                             meta = json.loads(mr[5])
-                            for k in ("reasoning", "duration_ms", "injected", "snapshot_id", "title"):
+                            for k in ("reasoning", "duration_ms", "injected", "snapshot_id", "title", "internal"):
                                 if k in meta:
                                     m[k] = meta[k]
                             m.update(cloud_runmodel.public_meta(meta))

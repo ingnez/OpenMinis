@@ -217,6 +217,50 @@ final class ReplyModeUITests: XCTestCase {
     }
 
 
+    /// 简单（秒回）模式不堆累赘：聊天流里没有「深度思考」和工具步骤胶囊；Bot 回复是靠左的浅灰气泡、右边留白；
+    /// 耗时和操作图标默认收起，点气泡旁的空白展开，再点收起
+    func testReply_simpleModeNoClutter() throws {
+        let app = launch(mode: "instant")
+        openBot(app)
+        send(app, "先翻记忆 早上好")
+        XCTAssertTrue(waitText(app, contains: "记忆里没有新事", timeout: 25), "前台没回话")
+        hideKeyboard(app)
+        XCTAssertFalse(app.staticTexts["深度思考"].waitForExistence(timeout: 1.5), "秒回聊天流里出现了「深度思考」")
+        XCTAssertFalse(waitText(app, contains: "REASONING_SHOULD_BE_HIDDEN", timeout: 0.5), "秒回聊天流里出现了思考原文")
+        XCTAssertFalse(waitText(app, contains: "检索用户近期待办", timeout: 1), "秒回聊天流里出现了工具步骤胶囊")
+        let bubble = app.descendants(matching: .any).matching(identifier: "botReplyBubble").element(boundBy: 0)
+        XCTAssertTrue(bubble.waitForExistence(timeout: 5), "Bot 回复不是气泡")
+        let width = app.frame.width
+        XCTAssertLessThan(bubble.frame.maxX, width * 0.9, "气泡右边没有留白：maxX=\(bubble.frame.maxX) 屏宽=\(width)")
+        let copy = app.buttons.matching(NSPredicate(format: "label == %@", "复制回复"))
+        XCTAssertEqual(copy.count, 0, "秒回时操作图标 / 耗时默认就显示了")
+        shot(app, "reply-08a-秒回无累赘")
+        let blank = app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: (bubble.frame.maxX + width) / 2, dy: bubble.frame.midY))
+        blank.tap()
+        XCTAssertTrue(poll(5) { copy.count > 0 }, "点气泡旁的空白没有展开操作图标和耗时")
+        shot(app, "reply-08b-点空白展开")
+        blank.tap()
+        XCTAssertTrue(poll(5) { copy.count == 0 }, "再点一次没有收起")
+        shot(app, "reply-08c-再点收起")
+    }
+
+    /// 例行任务 / 主动消息的内部提示词（「…只回复 [SKIP]」）不能显示成用户气泡；后面 Bot 的回复照常显示
+    func testReply_internalPromptNotUserBubble() throws {
+        var app = launch(mode: "instant")
+        openBot(app)
+        send(app, "你好秒回")
+        XCTAssertTrue(waitText(app, contains: "秒回：你好秒回", timeout: 20), "前台没回话")
+        XCTAssertNotNil(probe("/_e2e/internal_prompt"), "探针没写进内部提示")
+        app.terminate()
+        app = launch(mode: "instant", reset: false)
+        openBot(app)
+        XCTAssertTrue(waitText(app, contains: "E2E 内部提示后的回复", timeout: 30), "内部提示后的 Bot 回复没显示")
+        XCTAssertFalse(waitText(app, contains: "E2E_INTERNAL", timeout: 1.5), "内部提示词显示出来了")
+        XCTAssertFalse(waitText(app, contains: "只回复 [SKIP]", timeout: 0.5), "主动消息提示词显示成了用户气泡")
+        shot(app, "reply-09-内部提示不显示")
+    }
+
     /// 详细模式：和以前一样，主模型直接干活、步骤条显示步骤，没有后台状态行
     func testReply_verboseModeUnchanged() throws {
         let app = launch(mode: "verbose")
@@ -227,6 +271,8 @@ final class ReplyModeUITests: XCTestCase {
                       || app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "e2e-shell-ok")).firstMatch.exists, "详细模式没显示步骤")
         XCTAssertFalse(app.descendants(matching: .any)["replyStatusRow"].exists, "详细模式出现了后台状态行")
         XCTAssertFalse(requests(model: "e2e-front-model").contains { $0.contains("跑个命令") }, "详细模式叫了前台模型")
+        XCTAssertTrue(poll(30) { app.buttons.matching(NSPredicate(format: "label == %@", "复制回复")).count > 0 }, "详细模式的操作图标不该收起")
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "botReplyBubble").count == 0, "详细模式不该改成气泡")
         shot(app, "reply-05-详细模式")
     }
 
@@ -520,8 +566,8 @@ final class ReplyModeUITests: XCTestCase {
         return r.requests.map(\.text)
     }
 
-    private func launch(mode: String) -> XCUIApplication {
-        _ = probe("/_e2e/reset")
+    private func launch(mode: String, reset: Bool = true) -> XCUIApplication {
+        if reset { _ = probe("/_e2e/reset") }
         XCTAssertNotNil(probe("/_e2e/reply?mode=" + mode), "探针设不了回复方式（E2E 云端没起来？）")
         let app = XCUIApplication()
         app.launchEnvironment["OPENMINIS_E2E_HOMEMODE"] = "bots"

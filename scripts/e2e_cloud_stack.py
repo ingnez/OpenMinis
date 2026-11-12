@@ -132,10 +132,24 @@ def _front_interject_response(text, wid, tool_id, stream=_stream_then_tool):
     return {"_chunks": [line], "_delay": 0.02}
 
 
+def _front_memory_step(data, text):
+    """「先翻记忆」：前台先带思考调一个步骤（标题「检索用户近期待办」），拿到结果再回话。秒回聊天流里两样都不该出现。"""
+    fresh = _fresh_tools(data)
+    if fresh and any(m.get("tool_call_id") == "fm1" for m in fresh):
+        return {"_chunks": ["秒回：记忆里没有新事要提醒。"], "_delay": 0.02}
+    if "先翻记忆" in text and not fresh:
+        return _stream_then_tool("", "fm1", "memory_search", {"query": "近期待办", "tool_title": "检索用户近期待办"},
+                                 reasoning="REASONING_SHOULD_BE_HIDDEN: check memory first.")
+    return None
+
+
 def front_script(data):
     """秒回前台：「查一下」→ 先回一句再派后台；后台在跑时「插话」→ 先回再转给后台；其余直接秒回。"""
     import re
     text = last_user_text(data)
+    step = _front_memory_step(data, text)
+    if step:
+        return step
     if _fresh_tools(data):
         return {"role": "assistant", "content": ""}
     blob = json.dumps(data, ensure_ascii=False)
@@ -448,6 +462,32 @@ def main():
                 FAKE_DESK.update({"on": False, "clip": "", "typed": [], "keys": [], "clip_sets": []})
                 body = json.dumps({"cleared_sessions": len(sids)}).encode()
                 self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if urlparse(self.path).path == "/_e2e/internal_prompt":
+                # 往假 Bot 最近的对话里写两条内部提示（新数据带 internal 标记 / 老数据只有提示词原文）和一条 Bot 回复：
+                # App 不能把内部提示画成用户气泡（R1：「…只回复 [SKIP]」出现在绿色气泡里）
+                import sqlite3, time as _t
+                db = sqlite3.connect(os.environ["OPENMINIS_DB"])
+                row = db.execute("SELECT s.session_id FROM sessions s JOIN messages m ON m.session_id = s.session_id "
+                                 "WHERE s.persona_id = ? ORDER BY m.id DESC LIMIT 1", (BOT_ID,)).fetchone()
+                now = _t.time()
+                if row:
+                    sid = row[0]
+                    db.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'user', ?, ?, ?)",
+                               (sid, "[例行任务「主动消息」于 2026-01-01 09:00:00 +0800 触发（按计划）]\nE2E_INTERNAL_ROUTINE 先看看用户最近在忙什么。",
+                                now, json.dumps({"internal": "routine"})))
+                    db.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)",
+                               (sid, "E2E_INTERNAL_LEGACY 现在是你主动联系用户的时间。如果没有值得打扰用户的事，只回复 [SKIP]。", now + 0.1))
+                    db.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'assistant', ?, ?)",
+                               (sid, "例行提醒：E2E 内部提示后的回复", now + 0.2))
+                    db.commit()
+                db.close()
+                body = json.dumps({"session": row[0] if row else None}).encode()
+                self.send_response(200 if row else 404)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()

@@ -1494,7 +1494,7 @@ struct CloudSessionView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 60)
                     }
-                    let shownItems = CloudTaskFailure.display(messages)
+                    let shownItems = CloudTaskFailure.display(messages.filter { ($0["role"] as? String) != "user" || !CloudInternalPrompt.isInternal($0) })
                     if let theme {
                         Color.clear.frame(height: 1).id("chat-top")
                         ForEach(threadRows.filter { threadAnchor($0) == -1 }) { CloudBotThreadCollapsedRow(item: $0) }
@@ -1509,14 +1509,16 @@ struct CloudSessionView: View {
                             } else {
                                 let prevAssistant = idx > 0 && turns[idx - 1].message.role == .assistant
                                 let extras = reactionExtras(CloudMessageExtras(turn.textRaw))
-                                CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
-                                                       showHeader: !prevAssistant, collapsible: true)
-                                    .modifier(CloudAssistantLongPress(text: msg.content, extras: extras,
-                                                                      onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 },
-                                                                      botId: theme.botId, onAsk: quickSend))
-                                CloudAssistantFooter(text: msg.content, latency: CloudLatency.line(for: turn.raw, tasks: tasks),
-                                                     extras: extras, selfId: theme.botId,
-                                                     onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 })
+                                CloudInstantFooterGate(turn:
+                                    CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
+                                                           showHeader: !prevAssistant, collapsible: true)
+                                        .modifier(CloudAssistantLongPress(text: msg.content, extras: extras,
+                                                                          onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 },
+                                                                          botId: theme.botId, onAsk: quickSend)),
+                                    footer:
+                                    CloudAssistantFooter(text: msg.content, latency: CloudLatency.line(for: turn.raw, tasks: tasks),
+                                                         extras: extras, selfId: theme.botId,
+                                                         onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 }))
                             }
                             if idx == turns.count - 1, msg.role == .assistant, activeTaskStatus != "running" {
                                 CloudSmartReplyBar(text: msg.content, accent: theme.accent, onPick: quickSend)
