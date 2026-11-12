@@ -1,4 +1,4 @@
-name: Dispatch OpenMinis message menu tests
+name: Build OpenMinis after message menu tests
 on:
   push:
     branches: [grokbot-phase2-chat-motion-ci]
@@ -10,15 +10,27 @@ jobs:
   dispatch:
     if: github.repository == 'ingnez/OpenMinis'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 210
     steps:
-      - name: Dispatch the message menu simulator tests
+      - name: Wait for simulator tests and dispatch the IPA build
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_BRANCH: grokbot-phase2-message-menu
           EXPECTED_SHA: a08eba3b24ff4e7ef90a2cd0e90973522e07b6bd
-          TESTS: MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages
+          TEST_RUN: '43318170255'
         run: |
           set -euo pipefail
+          run_path="repos/$GITHUB_REPOSITORY/actions/runs/$TEST_RUN"
+          while true; do
+            result=$(gh api "$run_path" --jq '[.head_sha, .status, (.conclusion // "pending")] | @tsv')
+            IFS=$'\t' read -r tested_sha status conclusion <<< "$result"
+            test "$tested_sha" = "$EXPECTED_SHA"
+            if [ "$status" = completed ]; then
+              echo "Simulator tests: $conclusion"
+              test "$conclusion" = success
+              break
+            fi
+            sleep 45
+          done
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$TARGET_BRANCH" --jq '.object.sha')" = "$EXPECTED_SHA"
-          gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$TARGET_BRANCH" -f ui_tests=true -f mac_runner=macos-26 -f only_testing="$TESTS"
+          gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$TARGET_BRANCH" -f mac_runner=macos-15-intel
