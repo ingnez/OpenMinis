@@ -53,6 +53,22 @@ struct CloudBotTopAvatar: View {
     @ObservedObject private var link = CloudLinkSupervisor.shared
 
     var body: some View {
+        ZStack(alignment: .topLeading) {
+            avatarButton
+            // 星标状态给 VoiceOver / XCUITest 读：和头像按钮并列的独立元素（放在按钮的 background 里会被并进按钮，43151506030）。
+            // 只读、不可点；说明在长按菜单里
+            if bot.isPrimary {
+                Color.clear.frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+                    .accessibilityElement()
+                    .accessibilityIdentifier("primaryStarBadge")
+                    .accessibilityLabel(star.text)
+                    .accessibilityValue(star.tone.rawValue)
+            }
+        }
+    }
+
+    private var avatarButton: some View {
         Button(action: onTap) {
             VStack(spacing: 8) {
                 CloudBotAliveAvatar(spec: CloudBotAvatarSpec.of(bot), size: size, interactive: false,
@@ -88,16 +104,6 @@ struct CloudBotTopAvatar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background {
-            // 星标状态给 VoiceOver / XCUITest 读（只读，不可点；说明在长按菜单里）
-            if bot.isPrimary {
-                Color.clear.frame(width: 1, height: 1)
-                    .accessibilityElement()
-                    .accessibilityIdentifier("primaryStarBadge")
-                    .accessibilityLabel(star.text)
-                    .accessibilityValue(star.tone.rawValue)
-            }
-        }
         .accessibilityLabel("打开 \(bot.name)，\(presence.accessibilityText)")
         .accessibilityValue(presence.state == .error ? "皱眉" : (typing != nil ? "思考中眨眼" : "平静"))
     }
