@@ -269,6 +269,10 @@ private struct LogTextView: UIViewRepresentable {
     let text: String
     private var typography = AppUIKitTextFont(size: 11, design: .mono, relativeTo: .caption)
 
+    init(text: String) {
+        self.text = text
+    }
+
     func makeUIView(context: Context) -> UITextView {
         let textView = UITextView(usingTextLayoutManager: true)
         textView.isEditable = false

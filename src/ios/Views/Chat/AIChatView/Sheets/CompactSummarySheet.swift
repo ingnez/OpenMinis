@@ -96,6 +96,10 @@ private struct SelectableTextView: UIViewRepresentable {
     let text: String
     private var typography = AppUIKitTextFont(size: 14)
 
+    init(text: String) {
+        self.text = text
+    }
+
     func makeUIView(context: Context) -> UITextView {
         let tv = UITextView()
         tv.isEditable = false
