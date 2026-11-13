@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import zipfile
 
 repo = os.environ['GITHUB_REPOSITORY']
 job_id = '131892608182'
@@ -21,9 +22,25 @@ with Path('mac-live.log').open('wb') as out:
     result = subprocess.run(['gh', 'api', 'repos/'+repo+'/actions/jobs/'+job_id+'/logs'],
                             stdout=out, stderr=subprocess.PIPE)
 if result.returncode:
-    Path('mac-progress.json').write_text(json.dumps({'job_id':job_id,'source_sha':expected,
-        'status':job['status'],'log_download_failed':True,'exit_code':result.returncode},indent=2))
-    raise SystemExit('Could not retrieve Mac log; metadata was preserved')
+    message = result.stderr.decode(errors='replace')
+    message = re.sub(r'https?://[^\s"\']+', '[redirect URL]', message)[:3000]
+    with Path('mac-run-logs.zip').open('wb') as out:
+        fallback = subprocess.run(['gh','api','repos/'+repo+'/actions/runs/'+str(job['run_id'])+'/logs'],
+                                  stdout=out,stderr=subprocess.PIPE)
+    if fallback.returncode == 0:
+        with zipfile.ZipFile('mac-run-logs.zip') as archive:
+            names = [n for n in archive.namelist() if 'ui-tests' in n and n.endswith('.txt')]
+            if names:
+                Path('mac-live.log').write_bytes(b'\n'.join(archive.read(n) for n in names))
+                result = subprocess.CompletedProcess(result.args, 0)
+    if result.returncode:
+        fallback_message = re.sub(r'https?://[^\s"\']+', '[redirect URL]',fallback.stderr.decode(errors='replace'))[:3000]
+        Path('mac-progress.json').write_text(json.dumps({'job_id':job_id,'source_sha':expected,
+            'status':job['status'],'log_download_failed':True,'exit_code':result.returncode,
+            'job_log_error':message,'run_log_error':fallback_message},indent=2))
+        print(message)
+        print(fallback_message)
+        raise SystemExit('Could not retrieve current logs; exact API errors were preserved')
 
 path = Path('mac-live.log')
 log = path.read_text(encoding='utf-8-sig', errors='replace')
