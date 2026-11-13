@@ -16,8 +16,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_BRANCH: grokbot-phase2-message-menu
-          EXPECTED_SHA: 006ed2388c6ba6a84bf62d28fc08a293a04b0d9d
-          TESTS: MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport,MinisUITests/E2EFlowsUITests/test40_cloudMessageSwipeQuotesExactReply
+          EXPECTED_SHA: 7e800a544d9da65b8adf3600fa39aad487312281
+          TESTS: MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport,MinisUITests/E2EFlowsUITests/test40_cloudMessageSwipeQuotesExactReply,MinisUITests/E2EFlowsUITests/test04_markdownBoldInQuoteCJK,MinisUITests/E2EFlowsUITests/test20_localMarkdownBoldInQuoteCJK
         run: |
           set -euo pipefail
           repo="repos/$GITHUB_REPOSITORY"
@@ -26,9 +26,9 @@ jobs:
             echo "A newer revision superseded $EXPECTED_SHA"
             exit 0
           fi
-          previous="$repo/actions/runs/43361113558"
+          previous="$repo/actions/runs/43366979683"
           while [ "$(gh api "$previous" --jq .status)" != completed ]; do
-            echo "Waiting for the previous simulator run 43361113558 to finish"
+            echo "Waiting for the previous simulator run 43366979683 to finish"
             sleep 45
           done
           if [ "$(gh api "$ref" --jq '.object.sha')" != "$EXPECTED_SHA" ]; then
