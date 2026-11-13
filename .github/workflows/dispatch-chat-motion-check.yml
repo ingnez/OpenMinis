@@ -1,4 +1,4 @@
-name: Validate and build the latest OpenMinis fixes
+name: Validate chat deliverables and the existing iOS regressions
 on:
   push:
     branches: [grokbot-phase2-chat-motion-ci]
@@ -7,8 +7,8 @@ permissions:
   actions: write
   contents: read
 env:
-  TARGET_BRANCH: grokbot-phase2-minisskills
-  EXPECTED_SHA: f4bc6d76462466559e2ec1140249c966bf2a938b
+  TARGET_BRANCH: grokbot-phase2-deliver-integration
+  EXPECTED_SHA: 3df4e4dba2a9bdeab71e047a9cdd182fa8844de6
 jobs:
   dispatch:
     if: github.repository == 'ingnez/OpenMinis'
@@ -21,7 +21,7 @@ jobs:
         id: dispatch
         env:
           GH_TOKEN: ${{ github.token }}
-          TESTS: MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport,MinisUITests/E2EFlowsUITests/test40_cloudMessageSwipeQuotesExactReply,MinisUITests/E2EFlowsUITests/test04_markdownBoldInQuoteCJK,MinisUITests/E2EFlowsUITests/test20_localMarkdownBoldInQuoteCJK
+          TESTS: MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport,MinisUITests/E2EFlowsUITests/test40_cloudMessageSwipeQuotesExactReply,MinisUITests/E2EFlowsUITests/test04_markdownBoldInQuoteCJK,MinisUITests/E2EFlowsUITests/test20_localMarkdownBoldInQuoteCJK,MinisUITests/MinisSmokeUITests/testLaunchShowsHomeAndSurvivesBackgrounding,MinisUITests/DeliverablesUITests/testBotDeliverableCards,MinisUITests/DeliverablesUITests/testLocalDeliverableLinkCard
         run: |
           set -euo pipefail
           repo="repos/$GITHUB_REPOSITORY"
@@ -30,9 +30,9 @@ jobs:
             echo "A newer revision superseded $EXPECTED_SHA"
             exit 0
           fi
-          previous="$repo/actions/runs/43381666126"
+          previous="$repo/actions/runs/43396450120"
           while [ "$(gh api "$previous" --jq .status)" != completed ]; do
-            echo "Waiting for the previous simulator run 43381666126 to finish"
+            echo "Waiting for the previous simulator run 43396450120 to finish"
             sleep 45
           done
           if [ "$(gh api "$ref" --jq '.object.sha')" != "$EXPECTED_SHA" ]; then
@@ -126,8 +126,8 @@ jobs:
           sha256sum --check SHA256SUMS
           unzip -tq Minis-unsigned.ipa
           short_sha=${EXPECTED_SHA:0:7}
-          tag="grokbot-minisskills-$short_sha"
-          ipa="Minis-minisskills-$short_sha-unsigned.ipa"
+          tag="grokbot-deliver-$short_sha"
+          ipa="Minis-deliver-$short_sha-unsigned.ipa"
           mv Minis-unsigned.ipa "$ipa"
           sha256sum "$ipa" > "$ipa.sha256"
           if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
