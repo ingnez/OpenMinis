@@ -186,11 +186,30 @@ jobs:
           ipa="Minis-combined-$short_sha-unsigned.ipa"
           mv Minis-unsigned.ipa "$ipa"
           sha256sum "$ipa" > "$ipa.sha256"
-          notes="The full simulator and MinisTests regressions passed. IPA source: $EXPECTED_SHA. Simulator: https://github.com/$GITHUB_REPOSITORY/actions/runs/$TEST_RUN. Linux checks and IPA build: https://github.com/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN"
+          test -s 测试清单.md
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          repo = os.environ['GITHUB_REPOSITORY']
+          notes = [
+              '# OpenMinis 整合版（未签名）', '',
+              '整合成果直达、图片交互、Bot 间对话与群聊、交班和任务功能、备份，以及第三方模型和聊天界面修复。', '',
+              '- 源码：' + os.environ['EXPECTED_SHA'],
+              '- 完整模拟器界面测试和 MinisTests：https://github.com/' + repo + '/actions/runs/' + os.environ['TEST_RUN'],
+              '- Linux、安装版 Agent、真实浏览器与 IPA 构建：https://github.com/' + repo + '/actions/runs/' + os.environ['BUILD_RUN'], '',
+              '## 已知限制', '',
+              '- IPA 未签名，签名后才能安装。',
+              '- 锁屏／灵动岛任务状态沿用已有实现；新增审批页面目前仅为 App 内预览，尚未接通系统实时活动上的审批。',
+              '- Watch 表盘小组件未包含在此 IPA；不能把 App 内预览视为已交付的手表功能。',
+              '- 签名安装、120 Hz、触感、外放回声、Watch／App Group、Files／WPS、iCloud 和 VPS 验收仍待对应设备及环境。', '',
+              Path('测试清单.md').read_text(),
+          ]
+          Path('RELEASE_NOTES.md').write_text('\n'.join(notes))
+          PY
           if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$tag" "$ipa" "$ipa.sha256" --repo "$GITHUB_REPOSITORY" \
+            gh release create "$tag" "$ipa" "$ipa.sha256" 测试清单.md --repo "$GITHUB_REPOSITORY" \
               --target "$EXPECTED_SHA" --prerelease --title "OpenMinis $short_sha (unsigned)" \
-              --notes "$notes"
+              --notes-file RELEASE_NOTES.md
           fi
           curl --fail --silent --show-error --location --head --retry 4 --max-time 30 \
             --output /dev/null "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$ipa"
