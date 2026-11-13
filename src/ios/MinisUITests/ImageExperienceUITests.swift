@@ -50,6 +50,7 @@ final class ImageExperienceUITests: XCTestCase {
         app.launchArguments += ["-OpenMinisCloud_name", "E2E云电脑", "-OpenMinisCloud_host", "127.0.0.1"]
         app.launchArguments += ["-OpenMinisCloud_lockDefaultsDecided", "(e2ebot)", "-OpenMinisCloud_lockedBots", "()"]
         app.launchEnvironment["OPENMINIS_E2E_TOKEN"] = Self.token
+        app.launchEnvironment["OPENMINIS_E2E_FIXTURE_ID"] = UUID().uuidString
         app.launchEnvironment["OPENMINIS_E2E_PORT"] = "18765"
         app.launchEnvironment["OPENMINIS_E2E_ATTACH"] = String(attach)
         app.launch()

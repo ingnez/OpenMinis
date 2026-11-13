@@ -192,6 +192,35 @@ class ExperienceHTTPTests(CloudServerTestCase):
                     with self.srv.active_tasks_lock:
                         self.srv.active_tasks.pop(tid, None)
 
+    def test_stop_paused_root_cancels_its_still_live_process(self):
+        import subprocess
+        import cloud_workers
+        sid = self.new_session()
+        db = self.srv.get_db_connection()
+        try:
+            worker = cloud_workers.create(db, None, sid, "暂停后的实际进程")
+            tid = "synthetic-paused-root-" + worker["worker_id"]
+            db.execute("INSERT INTO tasks(task_id,session_id,status,model,created_at) VALUES (?,?,'paused','fake',?)",
+                       (tid, worker["worker_session"], time.time()))
+            db.commit()
+            cloud_workers.set_status(db, worker["worker_id"], "paused", task_id=tid)
+        finally:
+            db.close()
+        process = subprocess.Popen(["/bin/sh", "-c", "trap '' TERM; sleep 60"], start_new_session=True)
+        with self.srv.active_tasks_lock:
+            self.srv.active_tasks[tid] = {"process": process, "cancelled": False}
+        try:
+            self.srv.worker_stop(worker["worker_id"])
+            self.assertNotEqual(process.wait(timeout=5), 0)
+            self.assertTrue(self.srv.is_task_cancelled(tid))
+        finally:
+            if process.poll() is None:
+                import signal
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+            with self.srv.active_tasks_lock:
+                self.srv.active_tasks.pop(tid, None)
+
     def body(self, **extra):
         provider = {"base_url": self.model_base, "api_key": "fake-front-phone-only", "protocol": "chat"}
         data = {"experience": {"version": 1}, "execution_profiles": {
@@ -375,20 +404,27 @@ class ExperienceHTTPTests(CloudServerTestCase):
             return {"role": "assistant", "content": json.dumps({"pass": True, "unmet": [], "evidence": [
                 {"criterion": 0, "event_id": result["event_id"], "kind": "test", "summary": "Python 断言实际通过"}]})}
         FakeModelHandler.scripts["experience-reviewer"] = review
-        status, task = self.submit(sid, "验证算术", "base", client_nonce="verified", **self.body())
+        first_request = len(FakeModelHandler.auth_headers)
+        # The ordinary provider is intentionally unusable. Front, worker and
+        # reviewer must each use their explicit phone-owned role profile.
+        unused = {"base_url": self.model_base + "/unused-fallback", "api_key": "fake-unused-fallback"}
+        status, task = self.submit(sid, "验证算术", "base", provider=unused,
+                                   client_nonce="verified", **self.body())
         self.assertEqual(status, 202)
         self.wait_status(task["task_id"], {"completed"})
         def verified():
             _, tray = self.request("GET", f"/v1/workers?session_id={sid}")
-            return tray["workers"][0] if tray.get("workers") and tray["workers"][0]["status"] == "completed" else None
+            return tray["workers"][0] if tray.get("workers") and tray["workers"][0]["status"] in ("completed", "failed") else None
         result = self.wait_until(verified)
+        self.assertEqual(result["status"], "completed", result.get("result"))
         self.assertEqual(result["workorder"]["verification"], "verified")
         self.assertEqual(len(result["workorder"]["evidence"]), 1)
         _, ledger = self.request("GET", f"/v1/sessions/{sid}/experience")
         self.assertEqual(ledger["requests"][0]["status"], "delivered")
 
-        self.assertIn("Bearer fake-back-phone-only", FakeModelHandler.auth_headers)
-        self.assertIn("Bearer fake-review-phone-only", FakeModelHandler.auth_headers)
+        current_headers = FakeModelHandler.auth_headers[first_request:]
+        self.assertIn("Bearer fake-back-phone-only", current_headers)
+        self.assertIn("Bearer fake-review-phone-only", current_headers)
 
     def test_06_simulator_fixture_really_generates_and_verifies_its_delivery(self):
         import importlib.util

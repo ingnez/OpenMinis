@@ -611,6 +611,19 @@ jobs:
           sudo cp cloud-agent/test_browser_real.py /opt/openminis-cloud-agent/test_browser_real.py
           sudo chown root:root /opt/openminis-cloud-agent/test_browser_real.py
           sudo -u openminis env DISPLAY=:99 XAUTHORITY=/var/lib/openminis-cloud-agent/.Xauthority HOME=/var/lib/openminis-cloud-agent PLAYWRIGHT_BROWSERS_PATH=/var/lib/openminis-cloud-agent/ms-playwright OPENMINIS_REAL_BROWSER_TEST=1 /opt/openminis-cloud-agent/venv/bin/python3 /opt/openminis-cloud-agent/test_browser_real.py 2>&1 | tee cloud-browser-real.log
+      - name: 依赖安装后补齐独立屏幕与图片压缩验收
+        run: |
+          set -euo pipefail
+          cd cloud-agent
+          /opt/openminis-cloud-agent/venv/bin/python3 -m unittest -v \
+            test_phase13_displays.PerBotDisplayTests.test_display_starts_and_vnc_listens \
+            test_phase14_efficiency.DesktopThumbnailTests.test_fake_scrot_is_downscaled_to_jpeg \
+            test_phase61_pillow_install.PillowInstallTests.test_02_large_photo_compressed_with_pillow \
+            2>&1 | tee ../cloud-dependency-cases.log
+          if grep -q 'skipped' ../cloud-dependency-cases.log; then
+            echo 'Required desktop/image dependency cases were skipped.' >&2
+            exit 1
+          fi
       - name: 云电脑中文输入回归（真 Xvfb + 真 xclip：不再卡 5 秒超时；剪贴板往返；没剪贴板工具时逐字输入）
         run: |
           set -euo pipefail
@@ -681,6 +694,7 @@ jobs:
             cloud-unicode-type.log
             cloud-desktop-test.log
             cloud-browser-real.log
+            cloud-dependency-cases.log
             cloud-browser-agent.log
             cloud-proxy.log
             cloud-desktop-bench.log
@@ -1765,9 +1779,10 @@ jobs:
         run: |
           if [ -z "$ONLY_TESTING" ]; then test "$FULL_RESULT" = success; else test "$TARGET_RESULT" = success; fi
 
-      - name: 端到端流程结果与截图
+      - name: 先汇总具名 UI 结果
         if: always()
         run: |
+          echo "$GITHUB_SHA" > ui-validation-source.txt
           if [ ! -f ui-tests.log ]; then
             echo 'UI tests did not execute; inspect prerequisite logs.' > e2e-summary.md
             exit 0
@@ -1776,6 +1791,28 @@ jobs:
           xcrun xcresulttool get test-results tests --path ui-tests.xcresult --format json > ui-tests-tests.json 2>/dev/null || true
           python3 scripts/e2e_summary.py ui-tests.log ui-tests-summary.json ui-tests-tests.json > e2e-summary.md || true
           cat e2e-summary.md
+
+      # Text evidence stays small even when XCTest has recorded long videos.
+      # Publish verdicts before exporting/uploading those large attachments.
+      - name: Upload concise UI diagnostics first
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-diagnostics-early
+          path: |
+            ui-validation-source.txt
+            e2e-summary.md
+            ui-tests-summary.json
+            ui-tests-tests.json
+            ui-tests.log
+            ui-suites/*.log
+            ui-merge-failure
+            agent-entry.log
+          retention-days: 7
+
+      - name: 导出完整 UI 截图和录屏
+        if: always()
+        run: |
           mkdir -p e2e-shots
           xcrun xcresulttool export attachments --path ui-tests.xcresult --output-path e2e-shots 2>&1 | tail -3 || true
           ls e2e-shots | head -50
@@ -1794,6 +1831,8 @@ jobs:
             ui-tests-summary.json
             ui-tests-tests.json
             e2e-shots
+            !e2e-shots/**/*.mp4
+            !e2e-shots/**/*.mov
             e2e-cloud-stack.log
             simulator-boot.log
             ffmpeg-simulator.log
@@ -1828,6 +1867,8 @@ jobs:
             ui-tests-summary.json
             ui-tests-tests.json
             e2e-shots
+            !e2e-shots/**/*.mp4
+            !e2e-shots/**/*.mov
             e2e-cloud-stack.log
             simulator-boot.log
             unit-tests.log

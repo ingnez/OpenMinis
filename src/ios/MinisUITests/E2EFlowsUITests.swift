@@ -846,6 +846,7 @@ final class E2EFlowsUITests: XCTestCase {
         // 这里把它标成「已决定过、不上锁」，测的是对话流程；上锁本身另有单测
         app.launchArguments += ["-OpenMinisCloud_lockDefaultsDecided", "(e2ebot)", "-OpenMinisCloud_lockedBots", "()"]
         app.launchEnvironment["OPENMINIS_E2E_TOKEN"] = Self.token
+        app.launchEnvironment["OPENMINIS_E2E_FIXTURE_ID"] = UUID().uuidString
         app.launchEnvironment["OPENMINIS_E2E_PORT"] = "18765"
         if attach > 0 { app.launchEnvironment["OPENMINIS_E2E_ATTACH"] = String(attach) }
         app.launch()

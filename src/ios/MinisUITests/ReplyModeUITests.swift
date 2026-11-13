@@ -34,7 +34,13 @@ final class ReplyModeUITests: XCTestCase {
         XCTAssertTrue(waitText(app, contains: "完成标准是文件存在且内容验证通过", timeout: 20))
         let card = app.descendants(matching: .any)["deliverableCard-体验结果.txt"]
         XCTAssertTrue(card.waitForExistence(timeout: 60), "工单没有交回真实文件卡片")
+        hideKeyboard(app)
+        let outcome = app.buttons.matching(identifier: "workerOutcomeCard").firstMatch
+        XCTAssertTrue(outcome.waitForExistence(timeout: 15), "没有实际工单结果入口")
+        outcome.tap()
         XCTAssertTrue(waitText(app, contains: "体验文件已生成并通过 Python 断言", timeout: 20))
+        shot(app, "experience-verified-result-details")
+        app.buttons["关闭"].tap()
         assertNoReasoningOrBrief(app)
         shot(app, "experience-verified-file-delivery")
         send(app, "体验慢任务")
@@ -595,6 +601,7 @@ final class ReplyModeUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["OPENMINIS_E2E_HOMEMODE"] = "local"
         app.launchEnvironment["OPENMINIS_E2E_TOKEN"] = Self.token
+        app.launchEnvironment["OPENMINIS_E2E_FIXTURE_ID"] = UUID().uuidString
         app.launchEnvironment["OPENMINIS_E2E_PORT"] = "18765"
         app.launchEnvironment["OPENMINIS_E2E_LOCAL_PROVIDER"] = "http://127.0.0.1:18797"
         app.launchEnvironment["OPENMINIS_E2E_LOCAL_REPLY"] = mode
@@ -676,6 +683,7 @@ final class ReplyModeUITests: XCTestCase {
         app.launchArguments += ["-OpenMinisCloud_name", "E2E云电脑", "-OpenMinisCloud_host", "127.0.0.1"]
         app.launchArguments += ["-OpenMinisCloud_lockDefaultsDecided", "(e2ebot)", "-OpenMinisCloud_lockedBots", "()"]
         app.launchEnvironment["OPENMINIS_E2E_TOKEN"] = Self.token
+        app.launchEnvironment["OPENMINIS_E2E_FIXTURE_ID"] = UUID().uuidString
         app.launchEnvironment["OPENMINIS_E2E_PORT"] = "18765"
         if experience {
             app.launchEnvironment["OPENMINIS_E2E_EXPERIENCE"] = "1"

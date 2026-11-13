@@ -82,6 +82,7 @@ final class Frog1850Chunk2UITests: XCTestCase {
         app.launchArguments += ["-OpenMinisCloud_lockDefaultsDecided", "(e2ebot, e2emaker)", "-OpenMinisCloud_lockedBots", "()"]
         app.launchArguments += extraArgs
         app.launchEnvironment["OPENMINIS_E2E_TOKEN"] = Self.token
+        app.launchEnvironment["OPENMINIS_E2E_FIXTURE_ID"] = UUID().uuidString
         app.launchEnvironment["OPENMINIS_E2E_PORT"] = "18765"
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 60))

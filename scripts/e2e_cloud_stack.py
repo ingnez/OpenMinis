@@ -211,7 +211,7 @@ def _front_memory_step(data, text):
 def front_script(data):
     """秒回前台：「查一下」→ 先回一句再派后台；后台在跑时「插话」→ 先回再转给后台；其余直接秒回。"""
     import re
-    text = last_user_text(data)
+    text = last_user_text(data).split("\n\n[这个对话的后台任务", 1)[0]
     if any(t.get("function", {}).get("name") == "dispatch_workorder" for t in data.get("tools", [])):
         if _fresh_tools(data):
             return {"role": "assistant", "content": "已派发，验证后交回结果。"}
@@ -321,17 +321,40 @@ def _api(method, path, body=None):
         return json.loads(r.read() or b"{}")
 
 
+def stop_fixture_work():
+    """Drain only this synthetic Bot before resetting its visible history."""
+    import sqlite3
+    import cloud_agent_server as srv
+    for worker in _api("GET", f"/v1/workers?bot={BOT_ID}").get("workers", []):
+        if worker.get("status") in ("queued", "running", "waiting_user", "paused"):
+            _api("POST", f"/v1/workers/{worker['worker_id']}/stop", {})
+    with sqlite3.connect(os.environ["OPENMINIS_DB"]) as db:
+        tasks = db.execute("SELECT t.task_id FROM tasks t JOIN sessions s ON s.session_id=t.session_id "
+                           "WHERE s.persona_id=?", (BOT_ID,)).fetchall()
+        live = db.execute("SELECT t.task_id FROM tasks t JOIN sessions s ON s.session_id=t.session_id "
+                          "WHERE s.persona_id=? AND t.status IN ('running','queued','waiting_user')", (BOT_ID,)).fetchall()
+    for (task,) in live:
+        _api("POST", f"/v1/tasks/{task}/cancel", {})
+    owned = {row[0] for row in tasks}
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        workers = _api("GET", f"/v1/workers?bot={BOT_ID}").get("workers", [])
+        with srv.active_tasks_lock:
+            active = bool(owned.intersection(srv.active_tasks))
+        unsettled = any(w["status"] in ("queued", "running", "waiting_user", "paused")
+                        or not w.get("reported") for w in workers)
+        if not active and not unsettled:
+            return
+        time.sleep(.05)
+    raise RuntimeError("Synthetic Bot tasks did not drain before resetting history")
+
+
 def set_reply(mode):
     """探针 /_e2e/reply?mode=instant|verbose：设 e2ebot 的回复方式、清掉各对话的单独设置、停掉还在跑的后台任务。"""
     import sqlite3
     if mode:
         _api("PUT", f"/v1/bots/{BOT_ID}/reply", {"mode": mode, "front_model": FRONT_MODEL, "back_model": BACK_MODEL})
-        for w in _api("GET", f"/v1/workers?bot={BOT_ID}").get("workers", []):
-            if w.get("status") in ("queued", "running", "waiting_user", "paused"):
-                try:
-                    _api("POST", f"/v1/workers/{w['id']}/stop", {})
-                except Exception:
-                    pass
+        stop_fixture_work()
     db = sqlite3.connect(os.environ["OPENMINIS_DB"])
     sids = [r[0] for r in db.execute("SELECT session_id FROM sessions WHERE persona_id = ?", (BOT_ID,))]
     if mode:
@@ -604,6 +627,9 @@ def main():
             if urlparse(self.path).path == "/_e2e/reset":
                 # 每个流程开头清空假 Bot 的对话：历史越积越长，控件树大到 XCUITest 取快照超时（test08 实测）
                 import sqlite3
+                # Stop and drain first: late cancellation/result messages must
+                # not reappear after the next fixture has cleared its history.
+                stop_fixture_work()
                 db = sqlite3.connect(os.environ["OPENMINIS_DB"])
                 sids = [r[0] for r in db.execute("SELECT session_id FROM sessions WHERE persona_id = ?", (BOT_ID,))]
                 for sid in sids:

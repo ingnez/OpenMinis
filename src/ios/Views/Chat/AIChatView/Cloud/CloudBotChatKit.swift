@@ -379,7 +379,19 @@ enum CloudAttachmentKit {
         let resized = UIGraphicsImageRenderer(size: size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
         let jpgName = (name as NSString).deletingPathExtension + ".jpg"   // HEIC 等一律转 JPEG
         guard let data = keep ? resized.jpegData(compressionQuality: 0.92) : CloudImageBudget.fit(resized) else { return nil }
-        return CloudPendingAttachment(filename: jpgName, data: data, isImage: true, thumbnail: resized)
+        return CloudPendingAttachment(filename: jpgName, data: data, isImage: true, thumbnail: trayPreview(resized))
+    }
+
+    /// Crop only the small display preview. Its actual bitmap has square bounds
+    /// as well as its SwiftUI frame; the upload and original remain untouched.
+    static func trayPreview(_ image: UIImage) -> UIImage {
+        let edge: CGFloat = 140
+        guard image.size.width > 0, image.size.height > 0 else { return image }
+        let factor = max(edge / image.size.width, edge / image.size.height)
+        let size = CGSize(width: image.size.width * factor, height: image.size.height * factor)
+        let rect = CGRect(x: (edge - size.width) / 2, y: (edge - size.height) / 2,
+                          width: size.width, height: size.height)
+        return UIGraphicsImageRenderer(size: CGSize(width: edge, height: edge)).image { _ in image.draw(in: rect) }
     }
 
     /// 发给模型看的图片：拍照 / 相册的直接用；从「文件」里选的图片解码后同样压缩；不是图片返回 nil

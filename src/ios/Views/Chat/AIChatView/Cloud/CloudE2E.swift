@@ -31,6 +31,13 @@ enum CloudE2E {
     static func applyLaunchDefaults() {
         let env = ProcessInfo.processInfo.environment
         guard env["OPENMINIS_E2E_TOKEN"] != nil else { return }
+        // Separate fixtures while retaining drafts across relaunches of the
+        // same fixture, so restart/persistence tests still exercise real storage.
+        if let fixture = env["OPENMINIS_E2E_FIXTURE_ID"],
+           fixture != UserDefaults.standard.string(forKey: "OpenMinisE2ELastFixture") {
+            UserDefaults.standard.removeObject(forKey: CloudDrafts.key)
+            UserDefaults.standard.set(fixture, forKey: "OpenMinisE2ELastFixture")
+        }
         UserDefaults.standard.set(env["OPENMINIS_E2E_EXPERIENCE"] == "1", forKey: "OpenMinis_experience_enabled")
         CrashReporter.forgetCrashLoopForE2E()
         if let mode = env["OPENMINIS_E2E_HOMEMODE"] { UserDefaults.standard.set(mode, forKey: CloudBotHome.modeKey) }

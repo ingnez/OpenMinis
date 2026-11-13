@@ -680,9 +680,7 @@ struct CloudSessionView: View {
     @State private var tasks: [[String: Any]] = []
     @State private var inputPrompt: String = ""
     @State private var replyTarget: CloudReplyTarget?
-    // UIKit owns first responder status; FocusState without a SwiftUI focused
-    // field resets during redraws and dismisses the editor after one character.
-    @State private var botComposerFocused = false
+    @FocusState private var botComposerFocused: Bool
     @StateObject private var transcriptSwipe = CloudTranscriptSwipe()
     /// 用户刚点的表情回应（服务器确认前先显示）；值为 nil 表示刚取消
     @State private var localReactions: [Int: String?] = [:]
@@ -1580,13 +1578,14 @@ struct CloudSessionView: View {
             .accessibilityLabel("添加附件与聊天选项")
             .accessibilityIdentifier("botComposerMenu")
             HStack(alignment: .bottom, spacing: 4) {
-                CloudComposerTextView(text: $inputPrompt,
-                    isFocused: Binding(get: { botComposerFocused }, set: { botComposerFocused = $0 }),
-                    placeholder: CloudBotComposerAction.placeholder(botName: theme.name, localHint: false),
-                    font: (typography?.design ?? .current).styled(
-                        UIFontMetrics(forTextStyle: .body).scaledFont(for: .systemFont(ofSize: 17),
-                            compatibleWith: UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(typography?.inputTypeSize ?? typeSize))),
-                        boldText: typography?.boldText ?? UIAccessibility.isBoldTextEnabled))
+                TextField(CloudBotComposerAction.placeholder(botName: theme.name, localHint: false), text: $inputPrompt, axis: .vertical)
+                    .font(.system(.body, design: typography?.design.swiftUI ?? .default))
+                    .dynamicTypeSize(typography?.inputTypeSize ?? typeSize)
+                    .accessibilityIdentifier("botComposerField")
+                    .focused($botComposerFocused)
+                    .lineLimit(1...6)
+                    .padding(.vertical, 8)
+                    .frame(minHeight: 38)
                 Button { toggleDictation() } label: {
                     Image(systemName: dictation.isRecording ? "stop.circle.fill" : "mic").font(.system(size: 17))
                         .foregroundStyle(dictation.isRecording ? Color.red : Color.secondary)

@@ -3446,6 +3446,10 @@ def worker_stop(wid):
         # Ownership is explicit so another Bot's jobs remain untouched.
         with active_tasks_lock:
             owned = [tid for tid, entry in active_tasks.items() if entry.get("owner_worker_id") == wid]
+            # A paused database row can still have a live root execution (for
+            # example during recovery). Stop that process as well as children.
+            if w.get("task_id") in active_tasks:
+                owned.append(w["task_id"])
         for tid in owned:
             set_task_cancelled(tid)
         for job in BG_JOBS.list():
@@ -6263,7 +6267,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                         finally:
                             ec.close()
                     elif fn_name in WORKER_FRONT_TOOLS:
-                        res = tool_worker(task_id, session_id, fn_name, fn_args, REPLY_BACK_MODEL.get(task_id) or main_model, provider_config) \
+                        res = tool_worker(task_id, session_id, fn_name, fn_args, REPLY_BACK_MODEL.get(task_id) or main_model, back_provider) \
                             if depth == 0 and session_is_front(session_id) else {"error": "这里不能派后台任务，直接完成"}
                         if instant and fn_name in ("spawn_task", "dispatch_workorder") and isinstance(res, dict) and res.get("id"):
                             with INSTANT_HANDOFF_LOCK:

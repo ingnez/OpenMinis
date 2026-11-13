@@ -144,6 +144,12 @@ final class CloudReplyStatusModel: ObservableObject {
         } else {
             return
         }
+        let previous = Dictionary(uniqueKeysWithValues: workers.map { ($0.id, $0) })
+        let decisionChanged = list.contains { worker in
+            (worker.status == "paused" || worker.needsDecision)
+                && (previous[worker.id]?.status != worker.status
+                    || previous[worker.id]?.needsDecision != worker.needsDecision)
+        }
         let cues = tracker.update(list)
         if workerSource == nil {
             await CloudExperience.restoreWorkers(list)
@@ -156,7 +162,9 @@ final class CloudReplyStatusModel: ObservableObject {
         workers = list
         fetchedAt = now
         for cue in cues { play(cue) }
-        if cues.contains(where: { if case .decision = $0 { return false }; return true }) {
+        // A restart also inserts a resume-choice message. A paused task emits
+        // no completion cue, but its new question must still reach the chat.
+        if decisionChanged || cues.contains(where: { if case .decision = $0 { return false }; return true }) {
             onWorkerFinished()
             // 结果消息可能比状态晚一点写进对话：稍后再拉一次
             Task { try? await Task.sleep(nanoseconds: 1_500_000_000); self.onWorkerFinished() }
