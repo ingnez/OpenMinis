@@ -1,0 +1,141 @@
+name: Run full OpenMinis iOS regression and publish the verified IPA
+on:
+  push:
+    branches: [grokbot-phase2-chat-motion-ci]
+    paths: [.github/workflows/dispatch-final-openminis-ipa.yml]
+permissions:
+  actions: write
+  contents: read
+env:
+  TARGET_BRANCH: grokbot-phase2-backup-integration
+  EXPECTED_SHA: 3a8e8e0d73b50b6d86dd04bf69b4a4261cc3c803
+jobs:
+  dispatch:
+    if: github.repository == 'ingnez/OpenMinis'
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    outputs:
+      build_run: ${{ steps.dispatch.outputs.build_run }}
+    steps:
+      - name: Run simulator regressions, then dispatch the IPA
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="repos/$GITHUB_REPOSITORY"
+          ref="$repo/git/ref/heads/$TARGET_BRANCH"
+          if [ "$(gh api "$ref" --jq '.object.sha')" != "$EXPECTED_SHA" ]; then
+            echo "A newer revision superseded $EXPECTED_SHA"
+            exit 0
+          fi
+          previous="$repo/actions/runs/43408002370"
+          while [ "$(gh api "$previous" --jq .status)" != completed ]; do
+            echo "Waiting for the previous simulator run 43408002370 to finish"
+            sleep 45
+          done
+          test "$(gh api "$previous" --jq .conclusion)" = success
+          if [ "$(gh api "$ref" --jq '.object.sha')" != "$EXPECTED_SHA" ]; then
+            echo "A newer revision superseded $EXPECTED_SHA"
+            exit 0
+          fi
+          runs="$repo/actions/workflows/build-ios.yml/runs?branch=$TARGET_BRANCH&head_sha=$EXPECTED_SHA&event=workflow_dispatch&per_page=10"
+          before=$(gh api "$runs" --jq '.workflow_runs[0].id // 0')
+          gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$TARGET_BRANCH" -f ui_tests=true -f mac_runner=macos-15
+          last_id=
+          completed_checks=0
+          while true; do
+            result=$(gh api "$runs" --jq "([.workflow_runs[] | select(.id > $before)][0] // {}) | [(.id // 0), (.status // \"pending\"), (.conclusion // \"pending\")] | @tsv")
+            IFS=$'\t' read -r test_id status conclusion <<< "$result"
+            if [ "$test_id" != "$last_id" ]; then
+              echo "Simulator run: $test_id"
+              completed_checks=0
+              last_id="$test_id"
+            fi
+            if [ "$status" = completed ]; then
+              if [ "$conclusion" = success ]; then break; fi
+              completed_checks=$((completed_checks + 1))
+              if [ "$completed_checks" -ge 3 ]; then echo "Simulator tests: $conclusion"; exit 1; fi
+            fi
+            sleep 45
+          done
+          evidence=$(mktemp -d)
+          gh run download "$test_id" --repo "$GITHUB_REPOSITORY" --name Minis-e2e-early --dir "$evidence"
+          gh run download "$test_id" --repo "$GITHUB_REPOSITORY" --name Minis-ui-tests --dir "$evidence/full"
+          gh api "$repo/actions/runs/$test_id/jobs" --jq '.jobs[] | select(.name == "ui-tests") | .steps[] | select(.name | contains("iOS 单元测试 MinisTests")) | .conclusion' | grep -Fx success
+          python3 - "$evidence/e2e-summary.md" "$evidence/full/unit-tests.log" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          report = Path(sys.argv[1]).read_text()
+          rows = [line.split("|")[1:3] for line in report.splitlines() if line.startswith("|")]
+          results = [(name.strip(), outcome.strip()) for name, outcome in rows if re.match(r"\w+UITests\.test\w+$", name.strip())]
+          if not results or any(not outcome.startswith("PASS") for _, outcome in results):
+              sys.exit("The full simulator report contains failed or missing tests")
+          unit = Path(sys.argv[2]).read_text()
+          counts = re.findall(r"Executed (\d+) tests?, with (\d+) failures?", unit)
+          if not any(int(tests) > 0 and int(failed) == 0 for tests, failed in counts):
+              sys.exit("MinisTests did not report a completed successful test suite")
+          print(f"{len(results)} full simulator cases passed, with successful MinisTests results")
+          PY
+          if [ "$(gh api "$ref" --jq '.object.sha')" != "$EXPECTED_SHA" ]; then
+            echo "A newer revision superseded $EXPECTED_SHA"
+            exit 0
+          fi
+          before=$(gh api "$runs" --jq '.workflow_runs[0].id // 0')
+          gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$TARGET_BRANCH" -f mac_runner=macos-15-intel
+          while true; do
+            result=$(gh api "$runs" --jq "([.workflow_runs[] | select(.id > $before)][0] // {}) | [(.id // 0), (.status // \"pending\"), (.conclusion // \"pending\")] | @tsv")
+            IFS=$'\t' read -r build_id status conclusion <<< "$result"
+            if [ "$status" = completed ]; then
+              echo "IPA build $build_id: $conclusion"
+              if [ "$conclusion" = success ]; then
+                echo "build_run=$build_id" >> "$GITHUB_OUTPUT"
+                break
+              fi
+              if [ "$build_id" != "${last_id:-}" ]; then
+                completed_checks=0
+                last_id=$build_id
+              fi
+              completed_checks=$((completed_checks + 1))
+              if [ "$completed_checks" -ge 3 ]; then exit 1; fi
+            fi
+            sleep 45
+          done
+
+  prerelease:
+    needs: dispatch
+    if: needs.dispatch.outputs.build_run != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Verify and publish the same-commit unsigned IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN: ${{ needs.dispatch.outputs.build_run }}
+        run: |
+          set -euo pipefail
+          ref="repos/$GITHUB_REPOSITORY/git/ref/heads/$TARGET_BRANCH"
+          test "$(gh api "$ref" --jq '.object.sha')" = "$EXPECTED_SHA"
+          test "$(gh run view "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" --json headSha --jq .headSha)" = "$EXPECTED_SHA"
+          gh run download "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" --name Minis-unsigned-ipa
+          test "$(cat SOURCE_COMMIT.txt)" = "$EXPECTED_SHA"
+          sha256sum --check SHA256SUMS
+          unzip -tq Minis-unsigned.ipa
+          short_sha=${EXPECTED_SHA:0:7}
+          tag="grokbot-backup-$short_sha"
+          ipa="Minis-backup-$short_sha-unsigned.ipa"
+          mv Minis-unsigned.ipa "$ipa"
+          sha256sum "$ipa" > "$ipa.sha256"
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" "$ipa" "$ipa.sha256" --repo "$GITHUB_REPOSITORY" \
+              --target "$EXPECTED_SHA" --prerelease --title "OpenMinis $short_sha (unsigned)" \
+              --notes "The full simulator and MinisTests regressions passed. IPA source: $EXPECTED_SHA. Build: https://github.com/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN"
+          fi
+          curl --fail --silent --show-error --location --head --retry 4 --max-time 30 \
+            --output /dev/null "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$ipa"
+          sha256sum "$ipa"
