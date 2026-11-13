@@ -181,7 +181,9 @@ final class E2EFlowsUITests: XCTestCase {
         XCTAssertEqual(cards.count, 3, "托盘里不是 3 张")
         XCTAssertGreaterThanOrEqual(cards.firstMatch.frame.height, 100, "Bot 图片缩略图过小")
         let composer = app.descendants(matching: .any)["botComposerField"]
-        XCTAssertGreaterThanOrEqual(composer.frame.height, 36, "附图时 Bot 输入框被挤压")
+        let inputArea = app.descendants(matching: .any)["botComposerInputArea"]
+        XCTAssertTrue(inputArea.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(inputArea.frame.height, 36, "附图时 Bot 输入区域被挤压")
         XCTAssertTrue(composer.isHittable)
         let toggle = app.descendants(matching: .any)["keepOriginalToggle"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5), "托盘下面没有「保留原图 / 自动压缩」开关")
@@ -197,6 +199,12 @@ final class E2EFlowsUITests: XCTestCase {
         app.buttons["移除"].tap()
         XCTAssertTrue(waitCount(cards, 2, timeout: 5), "移除后托盘不是 2 张")
         shot(app, "09c-移除一张后")
+        // SwiftUI reports the text glyph bounds as the field's AX frame.
+        // Exercise the padded top edge of the real input area as well.
+        inputArea.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.05)).tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8), "输入区域边缘点按没有聚焦")
+        composer.typeText("tray draft")
+        XCTAssertEqual(composer.value as? String, "tray draft", "附图时文字输入不完整")
     }
 
     func test10_stackCaptionFanOutAndViewer() throws {

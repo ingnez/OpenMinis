@@ -1586,6 +1586,8 @@ struct CloudSessionView: View {
                     .lineLimit(1...6)
                     .padding(.vertical, 8)
                     .frame(minHeight: 38)
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(TapGesture().onEnded { botComposerFocused = true })
                 Button { toggleDictation() } label: {
                     Image(systemName: dictation.isRecording ? "stop.circle.fill" : "mic").font(.system(size: 17))
                         .foregroundStyle(dictation.isRecording ? Color.red : Color.secondary)
@@ -1595,6 +1597,8 @@ struct CloudSessionView: View {
                 .accessibilityIdentifier("botDictationButton")
             }
             .frame(maxWidth: compact ? CloudOneHandMode.fieldMaxWidth : .infinity)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("botComposerInputArea")
             // 最右边一个会变形的圆按钮：没字 = 声波（实时语音，长按按住说话），有字 = 发送；干活时有字 = 插话 / 排队。底色是头像色
             CloudMorphButton(action: CloudBotComposerAction.of(hasDraft: hasDraft, working: working,
                                                                submitting: false, steerInterrupt: steerInterrupt),

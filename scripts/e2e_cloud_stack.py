@@ -321,6 +321,17 @@ def _api(method, path, body=None):
         return json.loads(r.read() or b"{}")
 
 
+def executing_fixture_tasks():
+    tasks = set()
+    for frame in sys._current_frames().values():
+        while frame:
+            if (frame.f_code.co_name == "run_agent_task"
+                    and frame.f_globals.get("__name__") == "cloud_agent_server"):
+                tasks.add(frame.f_locals.get("task_id"))
+            frame = frame.f_back
+    return tasks
+
+
 def stop_fixture_work():
     """Drain only this synthetic Bot before resetting its visible history."""
     import sqlite3
@@ -339,8 +350,10 @@ def stop_fixture_work():
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         workers = _api("GET", f"/v1/workers?bot={BOT_ID}").get("workers", [])
-        with srv.active_tasks_lock:
-            active = bool(owned.intersection(srv.active_tasks))
+        # Cancellation markers can remain after a gate waiter has returned.
+        # Wait for real execution frames, including the final tool-result write,
+        # instead of either treating every marker as work or clearing too early.
+        active = bool(owned.intersection(executing_fixture_tasks()))
         unsettled = any(w["status"] in ("queued", "running", "waiting_user", "paused")
                         or not w.get("reported") for w in workers)
         if not active and not unsettled:
@@ -378,7 +391,17 @@ def set_approval(mode):
 def simulate_restart():
     """探针 /_e2e/restart：模拟云端进程重启（进行中的后台任务改为暂停并询问是否继续）。"""
     import cloud_agent_server as srv
+    previous = executing_fixture_tasks()
     srv.init_db()
+    # A real process restart cannot leave its old shell/model calls running.
+    # Preserve recover()'s paused rows and choice, then terminate old executions.
+    for task in previous:
+        srv.set_task_cancelled(task)
+    deadline = time.monotonic() + 5
+    while previous.intersection(executing_fixture_tasks()):
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Synthetic restart did not terminate its old executions")
+        time.sleep(.05)
     return {"ok": True}
 
 

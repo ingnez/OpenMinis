@@ -3509,13 +3509,13 @@ def worker_resume(wid, model=None, provider=None, note=""):
                 runtime = {}
         model = model or runtime.get("model")
         provider = dict(provider) if isinstance(provider, dict) else {}
-        if not provider.get("credential") and runtime.get("credential"):
+        if not provider.get("api_key") and not provider.get("credential") and runtime.get("credential"):
             provider = {"credential": runtime["credential"], "protocol": runtime.get("protocol") or "chat"}
-        if not model or not provider.get("credential"):
+        if not model or not (provider.get("api_key") or provider.get("credential")):
             bot = get_persona(w.get("bot_id")) if w.get("bot_id") else None
             if bot:
                 model = model or bot.get("model")
-                if not provider.get("credential") and bot.get("credential"):
+                if not (provider.get("api_key") or provider.get("credential")) and bot.get("credential"):
                     provider = {"credential": bot["credential"], "protocol": bot.get("protocol") or "chat"}
         if not model:
             return 409, {"error": "没有保存可用的模型，请在对话里让 Bot 继续"}
@@ -5483,6 +5483,16 @@ def call_llm(url, headers, body):
     with opener.open(req, timeout=120) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
+def _clear_unstarted_task(task_id):
+    """Early exits never enter the model loop's normal runtime cleanup."""
+    EXPERIENCE_TASKS.pop(task_id, None)
+    EXPERIENCE_REQUESTS.pop(task_id, None)
+    TASK_EFFORT.pop(task_id, None)
+    TASK_PRIORITY.pop(task_id, None)
+    with active_tasks_lock:
+        active_tasks.pop(task_id, None)
+
+
 def run_agent_task(task_id, session_id, initial_content, model, provider_config, instructions, depth=0):
     """顶层任务先排队：同一 Bot 的并发数、全局并发数、同时运行的 Bot 数都来自资源设置；子代理在父任务的名额里运行。"""
     if depth > 0:
@@ -5497,6 +5507,7 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
             conn.commit()
         finally:
             conn.close()
+        _clear_unstarted_task(task_id)
         return None
     lane = task_lane(session_id)
     bot_id = session_persona_id(session_id)
@@ -5515,6 +5526,7 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
         finally:
             conn.close()
         log_event(task_id, "cancelled", {"message": "排队时已取消"})
+        _clear_unstarted_task(task_id)
         return None
     timer = None
     try:

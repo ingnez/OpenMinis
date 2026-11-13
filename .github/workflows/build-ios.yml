@@ -1482,10 +1482,12 @@ jobs:
         env:
           no_proxy: localhost,127.0.0.1,::1
         run: |
+          set -euo pipefail
           python3 scripts/e2e_cloud_stack.py "$RUNNER_TEMP/openminis-e2e" > e2e-cloud-stack.log 2>&1 &
           for i in $(seq 1 60); do grep -q "E2E 云端就绪" e2e-cloud-stack.log && break; sleep 1; done
           cat e2e-cloud-stack.log
           grep -q "E2E 云端就绪" e2e-cloud-stack.log
+          python3 scripts/test_e2e_fixture_reset.py 2>&1 | tee fixture-reset.log
 
       # Fail at the shared entry point before spending hours retrying dependent flows.
       # Explicit subsets still run exactly the requested methods.
@@ -1798,7 +1800,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Minis-ui-diagnostics-early
+          name: Minis-e2e-early
           path: |
             ui-validation-source.txt
             e2e-summary.md
@@ -1808,6 +1810,7 @@ jobs:
             ui-suites/*.log
             ui-merge-failure
             agent-entry.log
+            fixture-reset.log
           retention-days: 7
 
       - name: 导出完整 UI 截图和录屏
@@ -1816,33 +1819,6 @@ jobs:
           mkdir -p e2e-shots
           xcrun xcresulttool export attachments --path ui-tests.xcresult --output-path e2e-shots 2>&1 | tail -3 || true
           ls e2e-shots | head -50
-
-      # 端到端结果一出来就先传（不等后面约 20 分钟的单元测试），失败时能马上看截图
-      - name: Upload e2e results (early)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Minis-e2e-early
-          path: |
-            ui-tests.log
-            ui-suites/*.log
-            ui-merge-failure
-            e2e-summary.md
-            ui-tests-summary.json
-            ui-tests-tests.json
-            e2e-shots
-            !e2e-shots/**/*.mp4
-            !e2e-shots/**/*.mov
-            e2e-cloud-stack.log
-            simulator-boot.log
-            ffmpeg-simulator.log
-            rclone-simulator.log
-            hang-samples
-            cloud-agent-test.log
-            agent-entry.log
-            cloud-connection-typecheck.log
-            watch-preflight.log
-          retention-days: 7
 
       - name: 定向 UI 通过后的 Agent 完整回归
         id: agent_diagnostic_regression
@@ -1863,6 +1839,7 @@ jobs:
             ui-suites/*.log
             ui-merge-failure
             ui-tests.xcresult
+            fixture-reset.log
             e2e-summary.md
             ui-tests-summary.json
             ui-tests-tests.json
@@ -1871,6 +1848,9 @@ jobs:
             !e2e-shots/**/*.mov
             e2e-cloud-stack.log
             simulator-boot.log
+            ffmpeg-simulator.log
+            rclone-simulator.log
+            hang-samples
             unit-tests.log
             cloud-agent-test.log
             agent-entry.log

@@ -435,7 +435,14 @@ class ExperienceHTTPTests(CloudServerTestCase):
         FakeModelHandler.scripts["experience-front"] = fixture.front_script
         FakeModelHandler.scripts["experience-back"] = fixture.back_script
         FakeModelHandler.scripts["experience-reviewer"] = fixture.experience_review_script
-        sid = self.new_session()
+        # A Bot's older server credential must never replace the explicitly
+        # supplied phone profile when a completed workstream is resumed.
+        self.request("PUT", "/v1/credentials/experience-obsolete", {
+            "api_key": "fake-obsolete-server-key", "base_url": self.model_base + "/obsolete"})
+        self.request("PUT", "/v1/bots/experience-profiles", {"name": "synthetic role routing",
+            "instructions": "synthetic", "model": "base", "credential": "experience-obsolete"})
+        sid = self.request("POST", "/v1/sessions", {"title": "synthetic profile resume",
+            "persona_id": "experience-profiles"})[1]["session_id"]
         status, task = self.submit(sid, "体验生成文件", "base", client_nonce="simulator-fixture", **self.body())
         self.assertEqual(status, 202)
         self.wait_status(task["task_id"], {"completed"})
@@ -457,8 +464,9 @@ class ExperienceHTTPTests(CloudServerTestCase):
         self.wait_status(task["task_id"], {"completed"})
         def revised():
             value = self.request("GET", "/v1/workers/" + worker["worker_id"])[1]["worker"]
-            return value if value["status"] == "completed" and value["task_id"] != original_task else None
+            return value if value["status"] in ("completed", "failed") and value["task_id"] != original_task else None
         newer = self.wait_until(revised)
+        self.assertEqual(newer["status"], "completed", newer.get("result"))
         self.assertGreater(newer["workorder"]["revision"], worker["workorder"]["revision"])
         self.assertEqual(newer["workorder"]["verification"], "verified")
         all_workers = self.request("GET", f"/v1/workers?session_id={sid}")[1]["workers"]
