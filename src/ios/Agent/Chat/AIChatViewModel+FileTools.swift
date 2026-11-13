@@ -731,8 +731,11 @@ extension AIChatViewModel {
         guard let sid = sessionId, let message = messages.last(where: { $0.role == .assistant }),
               let raw = agentHistory.dropFirst(historyCount).last(where: { $0.role == .assistant && $0.dbMessageId != nil }),
               let rowId = raw.dbMessageId else { return }
+        // Local streaming writes the completed reply into text blocks; the
+        // legacy content field may still be empty at this point.
+        let replyText = message.blocks.filter { $0.kind == .text }.map(\.content).joined(separator: "\n")
         let items = pendingDeliveries + (await completedChildDeliveries(after: historyCount))
-            + CloudLinkExtract.links(in: message.content)
+            + CloudLinkExtract.links(in: replyText.isEmpty ? message.content : replyText)
         guard !items.isEmpty, sessionId == sid, !isRetiredByReset else { return }
         message.addLocalDeliveries(items)
         await ChatStore.shared.saveLocalDeliveries(messageId: rowId, items: message.deliverables)

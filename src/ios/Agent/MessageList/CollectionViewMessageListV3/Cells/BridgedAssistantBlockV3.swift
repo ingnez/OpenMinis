@@ -38,7 +38,16 @@ struct BridgedAssistantBlockV3: View {
         case .memoryTool: return "assistantMemoryBlock"
         case .delegateTool: return "assistantDelegateBlock"
         case .userAskTool: return "assistantUserAskBlock"
-        case .info: return "assistantInfoBlock"
+        case .info:
+            // The UIKit bridge owns the outer accessibility container. Keep
+            // a delivered file's identity instead of replacing it with the
+            // generic info-block identifier.
+            if block.toolUseId?.hasPrefix("local-delivery-") == true,
+               let data = block.content.data(using: .utf8),
+               let item = try? JSONDecoder().decode(CloudDeliverable.self, from: data) {
+                return "deliverableCard-\(item.name)"
+            }
+            return "assistantInfoBlock"
         }
     }
 
