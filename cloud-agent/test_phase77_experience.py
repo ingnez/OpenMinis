@@ -73,6 +73,78 @@ class ExperiencePolicyTests(unittest.TestCase):
 class ExperienceHTTPTests(CloudServerTestCase):
     reply_default = None
 
+    def test_restart_restores_recorded_tool_results_before_the_next_user_without_replaying_writes(self):
+        import cloud_workers
+        sid = self.new_session()
+        db = self.srv.get_db_connection()
+        try:
+            worker = cloud_workers.create(db, None, sid, "恢复真实写入结果")
+            task, now = "task-history-repair", time.time()
+            db.execute("INSERT INTO tasks(task_id,session_id,status,model,created_at) VALUES (?,?,?,?,?)",
+                       (task, worker["worker_session"], "paused", "fake", now))
+            db.commit()
+            actual = self.srv.tool_file_write(task, worker["worker_session"], {"path": "resume-proof.txt", "content": "只写一次"})
+            self.assertNotIn("error", actual)
+            db.execute("INSERT INTO task_events(task_id,event_type,payload,timestamp) VALUES (?,?,?,?)",
+                       (task, "tool_result", json.dumps({"id": "write", "result": actual}), now + 1))
+            calls = json.dumps([{"id": "write", "function": {"name": "file_write"}},
+                                {"id": "read", "function": {"name": "file_read"}}])
+            rows = [("assistant", None, calls, None, None, now),
+                    ("user", "继续核验已有文件", None, None, None, now + 2),
+                    ("tool", "已存在的读结果", None, "read", None, now + 1)]
+            repaired = cloud_workers.restore_tool_rows(db, worker["worker_session"], rows)
+            self.assertEqual([r[0] for r in repaired], ["assistant", "tool", "tool", "user"])
+            self.assertEqual(json.loads(repaired[1][1]), actual)
+            self.assertEqual(repaired[2][1], "已存在的读结果")
+            path = os.path.join(self.srv.get_session_workspace(worker["worker_session"]), "resume-proof.txt")
+            with open(path) as f:
+                self.assertEqual(f.read(), "只写一次")
+            # Virtual repair leaves the persistent transcript and provenance unchanged.
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM messages WHERE session_id=?", (worker["worker_session"],)).fetchone()[0], 0)
+        finally:
+            db.close()
+
+    def test_restart_unknown_tool_outcome_stays_unknown_and_ignores_foreign_or_old_results(self):
+        import cloud_workers
+        sid, other = self.new_session(), self.new_session()
+        db = self.srv.get_db_connection()
+        try:
+            now = time.time()
+            for tid, session, stamp in [("own-old", sid, now - 10), ("foreign", other, now + 1)]:
+                db.execute("INSERT INTO tasks(task_id,session_id,status,model,created_at) VALUES (?,?,?,?,?)", (tid, session, "completed", "fake", stamp))
+                db.execute("INSERT INTO task_events(task_id,event_type,payload,timestamp) VALUES (?,?,?,?)",
+                    (tid, "tool_result", json.dumps({"id": "pending", "result": {"status": "success"}}), stamp))
+            rows = [("assistant", None, json.dumps([{"id": "pending"}]), None, None, now)]
+            repaired = cloud_workers.restore_tool_rows(db, sid, rows)
+            result = json.loads(repaired[1][1])
+            self.assertEqual(result["status"], "unknown")
+            self.assertTrue(result["needs_state_check"])
+        finally:
+            db.close()
+
+    def test_restart_background_started_receipt_does_not_prove_the_process_finished(self):
+        import cloud_workers
+        sid = self.new_session()
+        db = self.srv.get_db_connection()
+        try:
+            worker = cloud_workers.create(db, None, sid, "后台启动回执")
+            contract = {"workstream": "bg-recovery", "goal": "核验后台完成", "context": "编造数据",
+                        "success_criteria": ["实际完成"], "report_back": "完成依据"}
+            orders.attach(db, worker["worker_id"], sid, contract)
+            task, now = "task-bg-recovery", time.time()
+            db.execute("INSERT INTO tasks(task_id,session_id,status,model,created_at) VALUES (?,?,?,?,?)",
+                       (task, worker["worker_session"], "running", "fake", now))
+            for kind, payload in [("tool_call", {"id": "bg", "tool": "shell_execute"}),
+                                   ("tool_result", {"id": "bg", "result": {"status": "started", "job_id": "job-demo"}})]:
+                db.execute("INSERT INTO task_events(task_id,event_type,payload,timestamp) VALUES (?,?,?,?)", (task, kind, json.dumps(payload), now))
+            cloud_workers.set_status(db, worker["worker_id"], "running", task_id=task)
+            cloud_workers.recover(db)
+            cp = cloud_workers.load_checkpoint(cloud_workers.get(db, worker["worker_id"]))
+            self.assertFalse(cp["safe_resume"])
+            self.assertEqual(cp["uncertain_background_jobs"], ["job-demo"])
+        finally:
+            db.close()
+
     def test_stop_reaps_detached_child_jobs_after_parent_finishes_without_touching_other_workers(self):
         import cloud_workers
         import cloud_experience_runtime

@@ -5582,7 +5582,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
 
     # Retrieve all session messages for LLM context
     last_reset = c.execute("SELECT MAX(id) FROM messages WHERE session_id = ? AND role = 'context_reset'", (session_id,)).fetchone()[0] or 0
-    c.execute("SELECT role, content, tool_calls, tool_call_id, meta FROM messages WHERE session_id = ? AND id > ? "
+    c.execute("SELECT role, content, tool_calls, tool_call_id, meta, timestamp FROM messages WHERE session_id = ? AND id > ? "
               "AND role != 'context_reset' ORDER BY id ASC", (session_id, last_reset))
     rows = c.fetchall()
     delegation = c.execute("SELECT delegation_id FROM bot_delegations WHERE to_task = ?", (task_id,)).fetchone()
@@ -5657,7 +5657,15 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     if session_incognito(session_id):
         dynamic_note = (dynamic_note or "") + INCOGNITO_NOTE
     messages = [{"role": "system", "content": system_text.lstrip()}]
-    for r_role, r_content, r_tc, r_tcid, r_meta in rows:
+    if is_worker:
+        recovery_conn = get_db_connection()
+        try:
+            worker = cloud_workers.by_session(recovery_conn, session_id)
+            if worker and cloud_workorders.get(recovery_conn, worker["worker_id"]):
+                rows = cloud_workers.restore_tool_rows(recovery_conn, session_id, rows)
+        finally:
+            recovery_conn.close()
+    for r_role, r_content, r_tc, r_tcid, r_meta, _stamp in rows:
         m = {"role": r_role}
         if r_content is not None:
             decoded_content = cloud_runmodel.model_content(r_role, r_content, r_meta)

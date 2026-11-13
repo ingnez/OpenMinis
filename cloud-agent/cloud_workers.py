@@ -223,6 +223,58 @@ def post_result(conn, w, defer_while_front_active=False):
         return True
 
 
+def restore_tool_rows(conn, session_id, rows):
+    """Repair a crash between recording a result event and saving its tool row.
+
+    This only reconstructs model history; it never executes a tool or creates
+    evidence. An unknown outcome stays explicitly unknown for manual recovery.
+    """
+    output, consumed = [], set()
+    for index, row in enumerate(rows):
+        if index in consumed:
+            continue
+        output.append(row)
+        role, content, raw_calls, call_id, meta, stamp = row
+        if role != "assistant" or not raw_calls:
+            continue
+        try:
+            calls = json.loads(raw_calls)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(calls, list):
+            continue
+        end = next((i for i in range(index + 1, len(rows)) if rows[i][0] == "assistant"), len(rows))
+        upper = rows[end][5] if end < len(rows) else float("inf")
+        stored = {rows[i][3]: i for i in range(index + 1, end) if rows[i][0] == "tool"}
+        events = None
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            cid = call.get("id")
+            if not cid:
+                continue
+            if cid in stored:
+                consumed.add(stored[cid])
+                output.append(rows[stored[cid]])
+                continue
+            if events is None:
+                events = {}
+                for (raw,) in conn.execute("SELECT e.payload FROM task_events e JOIN tasks t ON t.task_id=e.task_id "
+                        "WHERE t.session_id=? AND e.event_type='tool_result' AND e.timestamp>=? AND e.timestamp<=? ORDER BY e.id",
+                        (session_id, stamp, upper)):
+                    try:
+                        event = json.loads(raw)
+                        if event.get("id") and "result" in event:
+                            events.setdefault(event["id"], event["result"])
+                    except (ValueError, TypeError, AttributeError):
+                        continue
+            result = events.get(cid, {"status": "unknown", "needs_state_check": True,
+                "error": "服务在记录工具结果前中断。先核对实际状态，不能直接重放可能有副作用的操作。"})
+            text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+            output.append(("tool", text, None, cid, None, stamp))
+    return output
+
+
 def recover(conn, post_prompt=None):
     """服务器重启：已经写出答案的算完成；其余进行中 / 排队的任务改成暂停并保存进度，
     通过 post_prompt(conn, worker) 在前台对话里问用户要不要继续（不要只靠用户在聊天里说「继续」）。
@@ -253,17 +305,26 @@ def recover(conn, post_prompt=None):
         cp = load_checkpoint(w) or {}
         cp.update({"reason": "restart", "task_id": w.get("task_id"), "saved_at": time.time()})
         if verified:
-            calls, results = set(), set()
+            calls, results, background = set(), set(), set()
             for kind, payload in conn.execute("SELECT event_type,payload FROM task_events WHERE task_id=? "
                                                "AND event_type IN ('tool_call','tool_result')", (w.get("task_id"),)):
                 try:
-                    event_id = json.loads(payload).get("id")
+                    event = json.loads(payload)
+                    event_id = event.get("id")
+                    result = event.get("result")
+                    if kind == "tool_result" and isinstance(result, dict):
+                        if result.get("status") == "started" and result.get("job_id"):
+                            background.add(result["job_id"])
+                        for job in result.get("jobs", []) if isinstance(result.get("jobs"), list) else []:
+                            if isinstance(job, dict) and job.get("status") == "finished":
+                                background.discard(job.get("job_id"))
                 except (ValueError, AttributeError):
                     event_id = None
                 if event_id:
                     (calls if kind == "tool_call" else results).add(event_id)
-            cp["safe_resume"] = not bool(calls - results)
+            cp["safe_resume"] = not bool(calls - results or background)
             cp["uncertain_calls"] = sorted(calls - results)
+            cp["uncertain_background_jobs"] = sorted(background)
         set_status(conn, w["worker_id"], "paused", stop_reason="restart", pause_requested=0,
                    checkpoint=json.dumps(cp, ensure_ascii=False), finished_at=None)
         w = get(conn, w["worker_id"])
