@@ -193,8 +193,8 @@ final class DeliverablesUITests: XCTestCase {
     @MainActor
     private func localModelReady(_ app: XCUIApplication) -> Bool {
         poll(20) {
-            let m = app.buttons["Model"]
-            return m.exists && !(((m.value as? String) ?? "").contains("No model"))
+            let m = app.buttons["localModelPicker"]
+            return m.exists && ((m.value as? String) ?? "").contains("E2E")
         }
     }
 

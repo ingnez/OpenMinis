@@ -390,6 +390,7 @@ extension AIChatView {
                     // VALUE rather than folded into the label, so VoiceOver
                     // keeps them distinguishable from the control's name.
                     .accessibilityElement(children: .ignore)
+                    .accessibilityIdentifier("localModelPicker")
                     .accessibilityLabel(Text("Model", comment: "VoiceOver label for the model picker button"))
                     .accessibilityValue(Text(
                         isGroupBound

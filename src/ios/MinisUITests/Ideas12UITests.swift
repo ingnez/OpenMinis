@@ -101,8 +101,12 @@ final class Ideas12UITests: XCTestCase {
         executionTimeAllowance = 180
         let app = launch(extraEnv: ["OPENMINIS_E2E_ONE_HAND": "1"])
         openBot(app)
-        XCTAssertTrue(app.descendants(matching: .any)["oneHandComposer"].waitForExistence(timeout: 15),
-                      "单手模式没有把输入/发送/语音集中到右下角")
+        let surface = app.descendants(matching: .any)["botComposer"]
+        let menu = app.descendants(matching: .any)["botComposerMenu"]
+        XCTAssertTrue(surface.waitForExistence(timeout: 15))
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        XCTAssertGreaterThan(menu.frame.minX - surface.frame.minX, 20,
+                             "单手模式没有向右收拢输入控件")
         let field = app.descendants(matching: .any)["botComposerField"]
         XCTAssertTrue(field.waitForExistence(timeout: 10), "单手容器覆盖了输入框的独立标识")
         field.tap()

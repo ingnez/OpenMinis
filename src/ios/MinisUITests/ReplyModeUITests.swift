@@ -574,8 +574,8 @@ final class ReplyModeUITests: XCTestCase {
     private func openLocalComposer(_ app: XCUIApplication) {
         XCTAssertTrue(poll(60) { app.textViews.firstMatch.exists || app.textFields.firstMatch.exists }, "本地模式没打开新对话的输入框")
         XCTAssertTrue(poll(25) {
-            let m = app.buttons["Model"]
-            return m.exists && !(((m.value as? String) ?? "").contains("No model"))
+            let m = app.buttons["localModelPicker"]
+            return m.exists && ((m.value as? String) ?? "").contains("E2E")
         }, "本地模式没选上注入的假模型（No model selected）")
     }
 

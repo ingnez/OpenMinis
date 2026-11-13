@@ -1494,10 +1494,11 @@ jobs:
             -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
             -scmProvider system -disableAutomaticPackageResolution \
             -only-testing:MinisUITests/E2EFlowsUITests/test01_sendText \
+            -collect-test-diagnostics never \
             -test-timeouts-enabled YES -default-test-execution-time-allowance 150 \
             -maximum-test-execution-time-allowance 240 -parallel-testing-enabled NO \
             -resultBundlePath ui-entry.xcresult \
-            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= | tee ui-entry.log
+            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= 2>&1 | tee ui-entry.log
           xcrun xcresulttool get test-results summary --path ui-entry.xcresult --format json > ui-entry-summary.json
           python3 - <<'PY'
           import json
@@ -1590,10 +1591,12 @@ jobs:
           # 主线程卡死取证：模拟器里的 App 是本机进程，CPU 连续 10 秒占满就 sample 一次调用栈（最多 4 份）
           mkdir -p hang-samples
           ( n=0; hot=0; while [ $n -lt 4 ]; do sleep 2
-              pid=$(pgrep -f '/Minis.app/Minis$' | head -1); [ -z "$pid" ] && { hot=0; continue; }
+              pid=$(pgrep -f "/CoreSimulator/Devices/$DEV/data/Containers/Bundle/Application/.*/Minis.app/Minis$" | head -1); [ -z "$pid" ] && { hot=0; continue; }
               cpu=$(ps -o %cpu= -p "$pid" | awk '{print int($1)}'); [ "${cpu:-0}" -ge 90 ] && hot=$((hot+1)) || hot=0
               if [ $hot -ge 5 ]; then n=$((n+1)); hot=0; sample "$pid" 3 -file "hang-samples/hang-$n-$(date +%H%M%S).txt" >/dev/null 2>&1 || true; sleep 20; fi
-            done ) &
+            done ) >/dev/null 2>&1 &
+          composer_watch_pid=$!
+          trap 'kill "$composer_watch_pid" 2>/dev/null || true' EXIT
           xcodebuild test \
             -project src/ios/Minis.xcodeproj \
             -scheme MinisE2E \
@@ -1605,13 +1608,14 @@ jobs:
             -disableAutomaticPackageResolution \
             -showBuildTimingSummary \
             "${ONLY_FLAGS[@]}" \
+            -collect-test-diagnostics never \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 150 \
             -maximum-test-execution-time-allowance 240 \
             -parallel-testing-enabled NO \
             -retry-tests-on-failure -test-iterations 2 \
             -resultBundlePath ui-tests.xcresult \
-            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= | tee ui-tests.log
+            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= 2>&1 | tee ui-tests.log
 
       - name: 端到端流程结果与截图
         if: always()
@@ -1673,6 +1677,7 @@ jobs:
           xcodebuild test \
             -project src/ios/Minis.xcodeproj \
             -scheme MinisUnitTests \
+            -collect-test-diagnostics never \
             -configuration Debug \
             -destination "id=$DEV" \
             -derivedDataPath build \
