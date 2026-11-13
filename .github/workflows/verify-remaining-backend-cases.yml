@@ -1,0 +1,42 @@
+name: Verify desktop and image cases with their real dependencies
+on:
+  push:
+    branches: [grokbot-phase2-chat-motion-ci]
+    paths: [.github/workflows/verify-remaining-backend-cases.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c9cf4bcc8b74b6029bb9e960e4e8fab91d068291
+      - name: Install isolated CI desktop and image dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -q xvfb x11vnc xauth openbox python3-pil
+      - name: Require the three previously skipped tests to execute
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > backend-validation-source.txt
+          cd cloud-agent
+          python3 -m unittest -v \
+            test_phase13_displays.PerBotDisplayTests.test_display_starts_and_vnc_listens \
+            test_phase14_efficiency.DesktopThumbnailTests.test_fake_scrot_is_downscaled_to_jpeg \
+            test_phase61_pillow_install.PillowInstallTests.test_02_large_photo_compressed_with_pillow \
+            2>&1 | tee ../backend-dependency-cases.log
+          if grep -q 'skipped' ../backend-dependency-cases.log; then
+            echo 'Required dependency cases were skipped.' >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-dependency-evidence
+          path: |
+            backend-validation-source.txt
+            backend-dependency-cases.log
+          retention-days: 7
