@@ -19,13 +19,13 @@ run = api('/actions/runs/'+str(job['run_id']))
 assert run['head_sha'] == expected, 'Unexpected source SHA'
 Path('mac-job.json').write_text(json.dumps(job, indent=2))
 with Path('mac-live.log').open('wb') as out:
-    result = subprocess.run(['gh', 'api', 'repos/'+repo+'/actions/jobs/'+job_id+'/logs'],
+    result = subprocess.run(['gh', 'api', '--allow-escape-sequences', 'repos/'+repo+'/actions/jobs/'+job_id+'/logs'],
                             stdout=out, stderr=subprocess.PIPE)
 if result.returncode:
     message = result.stderr.decode(errors='replace')
     message = re.sub(r'https?://[^\s"\']+', '[redirect URL]', message)[:3000]
     with Path('mac-run-logs.zip').open('wb') as out:
-        fallback = subprocess.run(['gh','api','repos/'+repo+'/actions/runs/'+str(job['run_id'])+'/logs'],
+        fallback = subprocess.run(['gh','api','--allow-escape-sequences','repos/'+repo+'/actions/runs/'+str(job['run_id'])+'/logs'],
                                   stdout=out,stderr=subprocess.PIPE)
     if fallback.returncode == 0:
         with zipfile.ZipFile('mac-run-logs.zip') as archive:
