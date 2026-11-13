@@ -425,7 +425,7 @@ enum CloudAttachmentKit {
                     await progress?(item.id, .done)
                     let path = resp["file_path"] as? String ?? item.filename
                     if item.isImage || CloudImageBudget.isImageName(item.filename) {
-                        CloudAttachmentCache.save(item.data, name: (path as NSString).lastPathComponent)   // 气泡缩略图先用本机这份
+                        await CloudAttachmentCache.save(item.data, name: (path as NSString).lastPathComponent)   // 气泡缩略图先用本机这份
                     }
                     return (i, "[附件] \(item.filename) → 工作区 \(path)")
                 }

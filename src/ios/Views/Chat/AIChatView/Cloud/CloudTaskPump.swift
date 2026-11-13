@@ -209,6 +209,15 @@ enum CloudHistoryAdapter {
         /// 这一轮最后一条有文字的原始消息（表情回应、引用回复针对它）
         var textRaw: [String: Any] = [:]
         var workerOutcome: CloudWorkerOutcome? = nil
+        fileprivate var firstRowIndex: Int? = nil
+        fileprivate var lastRowIndex: Int? = nil
+
+        init(message: ChatMessage, raw: [String: Any], textRaw: [String: Any] = [:], workerOutcome: CloudWorkerOutcome? = nil) {
+            self.message = message
+            self.raw = raw
+            self.textRaw = textRaw
+            self.workerOutcome = workerOutcome
+        }
 
         var presentationID: String {
             if message.role == .user, let nonce = raw["client_nonce"] as? String, !nonce.isEmpty {
@@ -219,22 +228,40 @@ enum CloudHistoryAdapter {
         }
     }
 
-    static func turns(from messages: [[String: Any]]) -> [Turn] {
+    static func turns(from messages: [[String: Any]], reusing previous: [Turn] = [], previousRows: [[String: Any]] = []) -> [Turn] {
+        var reusable: [String: Turn] = [:]
+        for turn in previous { reusable[turn.presentationID] = turn }
         var out: [Turn] = []
         var current: ChatMessage?
         var currentRaw: [String: Any] = [:]
         var currentTextRaw: [String: Any] = [:]
         var toolNames: [String: String] = [:]
+        var firstIndex = 0
+        var lastIndex = 0
+        func append(_ value: Turn, first: Int, last: Int) {
+            var turn = value
+            if let old = reusable[value.presentationID], let oldFirst = old.firstRowIndex, let oldLast = old.lastRowIndex,
+               oldLast - oldFirst == last - first, previousRows.indices.contains(oldFirst), previousRows.indices.contains(oldLast),
+               sameRows(messages[first...last], previousRows[oldFirst...oldLast]) {
+                turn = old
+            }
+            turn.firstRowIndex = first
+            turn.lastRowIndex = last
+            out.append(turn)
+        }
         func flush() {
-            if let c = current, !c.blocks.isEmpty || c.error != nil { out.append(Turn(message: c, raw: currentRaw, textRaw: currentTextRaw)) }
+            if let c = current, !c.blocks.isEmpty || c.error != nil {
+                append(Turn(message: c, raw: currentRaw, textRaw: currentTextRaw), first: firstIndex, last: lastIndex)
+            }
             current = nil
             currentTextRaw = [:]
         }
-        for m in messages {
+        for (index, m) in messages.enumerated() {
             let role = m["role"] as? String ?? ""
             let content = m["content"] as? String ?? ""
             switch role {
             case "user" where m["injected"] as? Bool == true && current != nil:
+                lastIndex = index
                 // 插话：留在这一轮里原来的位置
                 CloudEventApplier.apply(current!, type: "user_message_applied", payload: ["content": content, "nonce": "h\(out.count)-\(content.count)"])
             case "context_reset":
@@ -243,22 +270,24 @@ enum CloudHistoryAdapter {
                 let snap = m["snapshot_id"] as? String ?? ""
                 note.blocks.append(AssistantBlock(kind: .info, content: m["title"] as? String ?? content,
                                                   toolUseId: CloudEventApplier.resetPrefix + snap))
-                out.append(Turn(message: note, raw: m))
+                append(Turn(message: note, raw: m), first: index, last: index)
             case "user" where CloudInternalPrompt.isInternal(m):
                 // 例行任务 / 主动消息发给模型的提示词：不是用户说的，不画成用户气泡
                 continue
             case "user":
                 flush()
                 guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-                out.append(Turn(message: ChatMessage(role: .user, content: content), raw: m))
+                append(Turn(message: ChatMessage(role: .user, content: content), raw: m), first: index, last: index)
             case "assistant":
                 if let outcome = CloudWorkerOutcome(m) {
                     flush()
                     let result = ChatMessage(role: .assistant, content: content)
                     CloudEventApplier.apply(result, type: "thought", payload: ["content": content])
-                    out.append(Turn(message: result, raw: m, textRaw: m, workerOutcome: outcome))
+                    append(Turn(message: result, raw: m, textRaw: m, workerOutcome: outcome), first: index, last: index)
                     continue
                 }
+                if current == nil { firstIndex = index }
+                lastIndex = index
                 let msg = current ?? ChatMessage(role: .assistant, content: "")
                 current = msg
                 currentRaw = m
@@ -284,6 +313,7 @@ enum CloudHistoryAdapter {
                 }
             case "tool":
                 guard let msg = current else { continue }
+                lastIndex = index
                 let parsed: Any = content.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) } ?? content
                 var payload: [String: Any] = ["id": m["tool_call_id"] as? String ?? "", "result": parsed]
                 if let ms = m["duration_ms"] { payload["duration_ms"] = ms }
@@ -301,6 +331,12 @@ enum CloudHistoryAdapter {
             for b in t.message.blocks where b.toolStatus == .running { b.toolStatus = .success }
         }
         return out
+    }
+
+    static func sameRows<Rows: Collection>(_ lhs: Rows, _ rhs: Rows) -> Bool where Rows.Element == [String: Any] {
+        lhs.count == rhs.count && zip(lhs, rhs).allSatisfy { pair in
+            (pair.0 as NSDictionary).isEqual(to: pair.1)
+        }
     }
 
     static func toolCalls(_ m: [String: Any]) -> [[String: Any]] {

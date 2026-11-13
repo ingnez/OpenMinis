@@ -188,9 +188,11 @@ final class CloudBotHomeModel: ObservableObject {
     /// 有 Bot 在回复时的轻量刷新：只拉 Bot 列表（阶段、预览、计数），不动群聊、分组和资源
     func refreshBots() async {
         guard CloudConnection.shared.isConnected, let list = try? await CloudBotService.list() else { return }
-        bots = list
+        if bots != list {
+            bots = list
+            CloudSpotlight.index(list)
+        }
         CloudWatchBridge.shared.publish(list, currentId: currentForWatch())
-        CloudSpotlight.index(list)
     }
 
     /// 顶部一排大头像：主 Bot + 置顶的 Bot（隐藏的不算）
@@ -382,7 +384,8 @@ final class CloudBotHomeModel: ObservableObject {
         connecting = false
         link.handle(.pageOpened)
         do {
-            bots = try await CloudQuiet.retry { try await CloudBotService.list() }
+            let list = try await CloudQuiet.retry { try await CloudBotService.list() }
+            if bots != list { bots = list }
             CloudWatchBridge.shared.publish(bots, currentId: currentForWatch())
             CloudSpotlight.index(bots)
             CloudBotLock.shared.lockSecretHoldersByDefault(bots)
@@ -390,10 +393,11 @@ final class CloudBotHomeModel: ObservableObject {
             publishToWidget()
             prefetchChats()
             // 旧版服务器没有群聊接口：忽略错误
-            groups = (try? await CloudGroupService.list()) ?? groups
+            if let updated = try? await CloudGroupService.list(), groups != updated { groups = updated }
             if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/bot_sections"),
                let items = r["sections"] as? [[String: Any]] {
-                sections = items.compactMap(CloudBotSection.init)
+                let updated = items.compactMap(CloudBotSection.init)
+                if sections != updated { sections = updated }
             }
             if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/resources") {
                 let settings = r["settings"] as? [String: Any] ?? [:]
@@ -414,11 +418,12 @@ final class CloudBotHomeModel: ObservableObject {
                     Task { await lock.syncToServer() }
                 }
             }
-            exams = await CloudExamService.list() ?? exams
+            if let updated = await CloudExamService.list(), exams != updated { exams = updated }
             // 旧服务器没有 /v1/feed：保持空
             if let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/feed"),
                let items = r["items"] as? [[String: Any]] {
-                feed = items.compactMap(CloudFeedItem.init)
+                let updated = items.compactMap(CloudFeedItem.init)
+                if feed != updated { feed = updated }
                 publishFeedToWidget()
             }
         } catch let error as URLError where CloudConnection.tunnelDropped(error) {
@@ -553,6 +558,7 @@ struct CloudBotHomeScreen: View {
     /// iPad / Mac 三栏里选中的对话
     @State private var splitSelection: String?
     @State private var search = ""
+    @State private var scrollingHome = false
     @FocusState private var searchFocused: Bool
     @StateObject private var searchModel = CloudSearchModel()
     @State private var showCreate = false
@@ -662,6 +668,8 @@ struct CloudBotHomeScreen: View {
                         Color.clear.frame(height: 90)
                     }
                 }
+                .environment(\.cloudScrollInMotion, scrollingHome)
+                .modifier(CloudHomeScrollPhase(scrolling: $scrollingHome))
                 .refreshable { await model.refresh() }
                 .scrollDismissesKeyboard(.interactively)
                 bottomBar
@@ -890,6 +898,21 @@ struct CloudBotHomeScreen: View {
                            startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea(edges: .bottom)
                 .allowsHitTesting(false)
+        }
+    }
+}
+
+private struct CloudHomeScrollPhase: ViewModifier {
+    @Binding var scrolling: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content.onScrollPhaseChange { _, phase in
+                let moving = phase == .interacting || phase == .decelerating
+                if scrolling != moving { scrolling = moving }
+            }
+        } else {
+            content
         }
     }
 }

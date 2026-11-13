@@ -657,6 +657,9 @@ struct CloudSessionView: View {
     @State private var watchedTasks: Set<String> = []
     /// 与本地模式同一个消息模型：服务器历史转换后的回合、正在进行任务的那条助手消息
     @State private var turns: [CloudHistoryAdapter.Turn] = []
+    @State private var displayedHistoryRows: [[String: Any]]?
+    @State private var threadsByTurn: [Int: [CloudBotThreadCollapsed]] = [:]
+    @State private var callsByTurn: [Int: [CloudCallDivider]] = [:]
     /// 已用过的任务事件 id：全量重拉、长轮询、恢复连接重叠时同一事件只用一次
     @State private var ledger = CloudEventLedger()
     /// 进行中的任务已写进历史的那几轮暂时不从历史画（实时那一份负责），任务结束重新加载后恢复
@@ -865,6 +868,8 @@ struct CloudSessionView: View {
             callDividers = CloudCallDivider.load(sessionId)
             if !CloudE2E.attachWhenBusy { injectE2EAttachments() }
         }
+        .onChange(of: callDividers) { _ in updateHistoryMarkers() }
+        .onChange(of: threadRows) { _ in updateHistoryMarkers() }
         .onChange(of: activeTaskId) { tid in if tid != nil, CloudE2E.attachWhenBusy { injectE2EAttachments() } }
         .modifier(CloudDraftKeeper(sessionId: sessionId, text: $inputPrompt))
         .modifier(CloudReplyChatChrome(sessionId: sessionId, instant: showsInstantHistory, status: replyStatus,
@@ -1010,16 +1015,37 @@ struct CloudSessionView: View {
             let n = CloudEventLedger.visibleHistoryCount(roles: roles, timestamps: stamps, liveShown: liveHistoryReady, taskStartedAt: activeTaskCreatedAt)
             rows = Array(messages.prefix(n))
         }
-        historyHidesTask = liveHistoryReady && rows.count < messages.count
+        let hidesLiveHistory = liveHistoryReady && rows.count < messages.count
+        if historyHidesTask != hidesLiveHistory { historyHidesTask = hidesLiveHistory }
+        if let displayedHistoryRows, CloudHistoryAdapter.sameRows(rows, displayedHistoryRows) { return }
         let users = turns.reduce(into: [String: CloudHistoryAdapter.Turn]()) { result, turn in
             if turn.message.role == .user, let nonce = turn.raw["client_nonce"] as? String { result[nonce] = turn }
         }
-        turns = CloudHistoryAdapter.turns(from: rows).map { turn in
+        turns = CloudHistoryAdapter.turns(from: rows, reusing: turns, previousRows: displayedHistoryRows ?? []).map { turn in
             guard turn.message.role == .user, let nonce = turn.raw["client_nonce"] as? String,
                   let previous = users[nonce] else { return turn }
-            if CloudHistoryPager.pendingNonce(turn.raw) != nil { return previous }
-            turn.message.adoptedMark = previous.message.adoptedMark
+            if CloudHistoryPager.pendingNonce(turn.raw) != nil, CloudHistoryPager.pendingNonce(previous.raw) != nil { return previous }
+            if turn.message.adoptedMark != previous.message.adoptedMark {
+                turn.message.adoptedMark = previous.message.adoptedMark
+            }
             return turn
+        }
+        displayedHistoryRows = rows
+        updateHistoryMarkers()
+    }
+
+    private func updateHistoryMarkers() {
+        if !threadRows.isEmpty {
+            let times = turns.map { ($0.raw["timestamp"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) } }
+            threadsByTurn = Dictionary(grouping: threadRows) { CloudBotThreadRules.anchor(firstAt: $0.firstAt, turnTimes: times) }
+        } else if !threadsByTurn.isEmpty {
+            threadsByTurn = [:]
+        }
+        if !callDividers.isEmpty {
+            let times = turns.map { ($0.raw["timestamp"] as? NSNumber)?.doubleValue ?? 0 }
+            callsByTurn = Dictionary(grouping: callDividers) { CloudCallDivider.anchor($0, timestamps: times) }
+        } else if !callsByTurn.isEmpty {
+            callsByTurn = [:]
         }
     }
 
@@ -1605,13 +1631,8 @@ struct CloudSessionView: View {
                         : []
                     if let theme {
                         Color.clear.frame(height: 1).id("chat-top")
-                        let timestamps = threadRows.isEmpty && callDividers.isEmpty ? [] : turns.map { $0.raw["timestamp"] as? NSNumber }
-                        let threadTimes = threadRows.isEmpty ? [] : timestamps.map { $0.map { Date(timeIntervalSince1970: $0.doubleValue) } }
-                        let dividerTimes = callDividers.isEmpty ? [] : timestamps.map { $0?.doubleValue ?? 0 }
-                        let threads = Dictionary(grouping: threadRows) { CloudBotThreadRules.anchor(firstAt: $0.firstAt, turnTimes: threadTimes) }
-                        let dividers = Dictionary(grouping: callDividers) { CloudCallDivider.anchor($0, timestamps: dividerTimes) }
-                        ForEach(threads[-1] ?? []) { CloudBotThreadCollapsedRow(item: $0) }
-                        ForEach(dividers[-1] ?? []) { CloudCallDividerRow(seconds: $0.seconds) }
+                        ForEach(threadsByTurn[-1] ?? []) { CloudBotThreadCollapsedRow(item: $0) }
+                        ForEach(callsByTurn[-1] ?? []) { CloudCallDividerRow(seconds: $0.seconds) }
                         ForEach(Array(turns.enumerated()), id: \.element.presentationID) { idx, turn in
                             let msg = turn.message
                             if let outcome = turn.workerOutcome {
@@ -1640,8 +1661,8 @@ struct CloudSessionView: View {
                             if idx == turns.count - 1, msg.role == .assistant, turn.workerOutcome == nil, activeTaskStatus != "running" {
                                 CloudSmartReplyBar(text: msg.content, accent: theme.accent, onPick: quickSend)
                             }
-                            ForEach(threads[idx] ?? []) { CloudBotThreadCollapsedRow(item: $0) }
-                            ForEach(dividers[idx] ?? []) { CloudCallDividerRow(seconds: $0.seconds) }
+                            ForEach(threadsByTurn[idx] ?? []) { CloudBotThreadCollapsedRow(item: $0) }
+                            ForEach(callsByTurn[idx] ?? []) { CloudCallDividerRow(seconds: $0.seconds) }
                         }
                     }
                     ForEach(Array(shownItems.enumerated()), id: \.offset) { _, item in
@@ -1706,6 +1727,8 @@ struct CloudSessionView: View {
                 }
                 .padding()
             }
+            .accessibilityIdentifier("cloudChatTranscript")
+            .environment(\.cloudScrollInMotion, isUserScrolling)
             .modifier(CloudChatScrollTracking(followLatest: $followLatest, isUserScrolling: $isUserScrolling,
                                               startsAtBottom: theme != nil))
             .environment(\.cloudChatActions, chatActions)
@@ -1925,6 +1948,8 @@ struct CloudSessionView: View {
                 _ = try await connection.request(method: "POST", path: "/v1/tasks/\(r.taskId)/retract", body: [:])
                 messages.removeAll { $0["client_nonce"] as? String == r.nonce }
                 turns.removeAll { $0.raw["client_nonce"] as? String == r.nonce }
+                displayedHistoryRows = nil
+                updateHistoryMarkers()
                 if activeTaskId == r.taskId {
                     activeTaskStatus = "cancelled"
                     historyHidesTask = false
@@ -2033,6 +2058,8 @@ struct CloudSessionView: View {
         let row: [String: Any] = ["role": "user", "content": text, "timestamp": createdAt, "client_nonce": nonce]
         messages.append(row)
         turns.append(CloudHistoryAdapter.Turn(message: msg, raw: row))
+        displayedHistoryRows?.append(row)
+        updateHistoryMarkers()
     }
 
     private func userTurn(nonce: String) -> CloudHistoryAdapter.Turn? {
@@ -2275,6 +2302,8 @@ struct CloudSessionView: View {
     private func removePendingBubble(_ nonce: String) {
         messages.removeAll { CloudHistoryPager.pendingNonce($0) == nonce }
         turns.removeAll { CloudHistoryPager.pendingNonce($0.raw) == nonce }
+        displayedHistoryRows = nil
+        updateHistoryMarkers()
     }
 
     private func withdrawQueuedSend(_ nonce: String) {

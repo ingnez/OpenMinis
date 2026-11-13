@@ -980,8 +980,7 @@ final class NoAnimationCollectionView: UICollectionView {
     /// Distance from the collection view's top/bottom edge within which a
     /// selection-handle drag triggers auto-scroll.
     private static let selectionAutoScrollEdgeInset: CGFloat = 80
-    /// Per-tick scroll step at 60Hz (points). ~12pt/tick ≈ 720pt/s.
-    private static let selectionAutoScrollStep: CGFloat = 12
+    private static let selectionAutoScrollSpeed: CGFloat = 720
 
     private var selectionAutoScrollLink: CADisplayLink?
     /// The live drag touch point, in THIS collection view's coordinate space,
@@ -1006,9 +1005,10 @@ final class NoAnimationCollectionView: UICollectionView {
             return
         }
         if selectionAutoScrollLink == nil {
-            let link = CADisplayLink(target: self, selector: #selector(stepSelectionAutoScroll))
+            let link = CADisplayLink(target: self, selector: #selector(stepSelectionAutoScroll(_:)))
             // 拖选自动滚动跟手指走：ProMotion 机器上允许跑到 120Hz
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+            let maximum = Float(window?.screen.maximumFramesPerSecond ?? 60)
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: min(60, maximum), maximum: maximum, preferred: maximum)
             link.add(to: .main, forMode: .common)
             selectionAutoScrollLink = link
         }
@@ -1043,7 +1043,7 @@ final class NoAnimationCollectionView: UICollectionView {
         return 0
     }
 
-    @objc private func stepSelectionAutoScroll() {
+    @objc private func stepSelectionAutoScroll(_ link: CADisplayLink) {
         // Drive entirely off the last live touch point — no dependency on
         // selection-change events, so holding still at the edge keeps scrolling.
         guard hasActiveTextSelection, let touchPoint = selectionDragTouchPoint else {
@@ -1053,14 +1053,15 @@ final class NoAnimationCollectionView: UICollectionView {
         guard dir != 0 else { stopSelectionAutoScroll(); return }
         let maxOffset = max(-adjustedContentInset.top,
                             contentSize.height - bounds.height + adjustedContentInset.bottom)
-        let proposed = contentOffset.y + dir * Self.selectionAutoScrollStep
+        let interval = min(max(link.targetTimestamp - link.timestamp, 0), 1.0 / 30)
+        let proposed = contentOffset.y + dir * Self.selectionAutoScrollSpeed * CGFloat(interval)
         let clamped = min(max(proposed, -adjustedContentInset.top), maxOffset)
         // [T-ios-selection-autoscroll-edge-flicker] Already at the content
         // extreme — stop rather than re-setting the same offset every frame
         // (which, paired with the selection re-extend below, was a source of
         // edge flicker when the user held past the end of the content).
         guard abs(clamped - contentOffset.y) > 0.5 else { stopSelectionAutoScroll(); return }
-        // Non-animated, direct offset move so it tracks the 60Hz drag without a
+        // Non-animated offset keeps the selection aligned without a
         // competing CA animation (which would jitter against the handle).
         setContentOffset(CGPoint(x: contentOffset.x, y: clamped), animated: false)
         // Nudge the selection to follow the newly-scrolled-in content: extend

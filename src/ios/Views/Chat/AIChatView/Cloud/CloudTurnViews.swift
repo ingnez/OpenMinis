@@ -103,7 +103,12 @@ struct CloudAssistantTurnView: View {
         VStack(alignment: .leading, spacing: 8) {
             if showHeader && !isResetNote {
                 HStack(spacing: 8) {
-                    CloudBotWatchingAvatar(spec: spec, size: 22)
+                    if collapsible {
+                        CloudBotAvatarView(spec: spec, size: 22)
+                            .accessibilityHidden(true)
+                    } else {
+                        CloudBotWatchingAvatar(spec: spec, size: 22)
+                    }
                     Text(name).font(.subheadline.bold())
                 }
             }

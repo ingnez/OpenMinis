@@ -1,11 +1,23 @@
 //
 //  CloudTouchTracker.swift
-//  Minis - 让 Bot 头像的眼睛跟着屏幕上任意位置的手指看：
+//  Minis - 让 Bot 头像的眼睛看向点按位置：
 //  在窗口上挂一个永不识别成功的手势识别器（不拦截、不延迟任何触摸），只记录手指位置。
 //
 
+import Combine
 import SwiftUI
 import UIKit
+
+private struct CloudScrollInMotionKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var cloudScrollInMotion: Bool {
+        get { self[CloudScrollInMotionKey.self] }
+        set { self[CloudScrollInMotionKey.self] = newValue }
+    }
+}
 
 @MainActor
 final class CloudTouchTracker: NSObject, ObservableObject, UIGestureRecognizerDelegate {
@@ -24,7 +36,7 @@ final class CloudTouchTracker: NSObject, ObservableObject, UIGestureRecognizerDe
             .flatMap(\.windows)
             .first(where: \.isKeyWindow)
         guard let window else { return }
-        let watcher = CloudTouchWatcher { [weak self] p, ended in self?.report(p, ended: ended) }
+        let watcher = CloudTouchWatcher { [weak self] p in self?.report(p) }
         watcher.cancelsTouchesInView = false
         watcher.delaysTouchesBegan = false
         watcher.delaysTouchesEnded = false
@@ -33,13 +45,13 @@ final class CloudTouchTracker: NSObject, ObservableObject, UIGestureRecognizerDe
         installedWindow = window
     }
 
-    private func report(_ p: CGPoint, ended: Bool) {
+    private func report(_ p: CGPoint?) {
         clearTask?.cancel()
-        if ended {
+        guard let p else {
             clearTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 1_200_000_000)
                 guard !Task.isCancelled else { return }
-                self?.point = nil
+                if self?.point != nil { self?.point = nil }
             }
             return
         }
@@ -54,29 +66,46 @@ final class CloudTouchTracker: NSObject, ObservableObject, UIGestureRecognizerDe
 
 /// 只观察、永不识别的手势
 final class CloudTouchWatcher: UIGestureRecognizer {
-    private let onTouch: (CGPoint, Bool) -> Void
+    private let onTouch: (CGPoint?) -> Void
+    private var start: CGPoint?
+    private var followsTouch = false
 
-    init(onTouch: @escaping (CGPoint, Bool) -> Void) {
+    init(onTouch: @escaping (CGPoint?) -> Void) {
         self.onTouch = onTouch
         super.init(target: nil, action: nil)
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let t = touches.first { onTouch(t.location(in: nil), false) }
+        guard let p = touches.first?.location(in: nil) else { return }
+        start = p
+        followsTouch = true
+        onTouch(p)
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let t = touches.first { onTouch(t.location(in: nil), false) }
+        guard followsTouch, let start, let p = touches.first?.location(in: nil) else { return }
+        if hypot(p.x - start.x, p.y - start.y) > 12 {
+            followsTouch = false
+            onTouch(nil)
+        } else {
+            onTouch(p)
+        }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let t = touches.first { onTouch(t.location(in: nil), true) }
+        if followsTouch { onTouch(nil) }
         state = .failed
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let t = touches.first { onTouch(t.location(in: nil), true) }
+        if followsTouch { onTouch(nil) }
         state = .failed
+    }
+
+    override func reset() {
+        super.reset()
+        start = nil
+        followsTouch = false
     }
 }
 
@@ -84,18 +113,25 @@ final class CloudTouchWatcher: UIGestureRecognizer {
 struct CloudFollowTouch: ViewModifier {
     @Binding var gaze: CGSize
     var enabled: Bool = true
-    @ObservedObject private var tracker = CloudTouchTracker.shared
+    @Environment(\.cloudScrollInMotion) private var scrolling
     @State private var frame: CGRect = .zero
 
     func body(content: Content) -> some View {
         content
-            .background(GeometryReader { g in
-                Color.clear
-                    .onAppear { frame = g.frame(in: .global) }
-                    .onChange(of: g.frame(in: .global)) { frame = $0 }
-            })
-            .onChange(of: tracker.point) { p in
-                guard enabled, frame.width > 0 else { return }
+            .background {
+                if enabled && !scrolling {
+                    GeometryReader { geometry in
+                        Color.clear
+                            .onAppear { frame = geometry.frame(in: .global) }
+                            .onChange(of: geometry.frame(in: .global)) { frame = $0 }
+                    }
+                }
+            }
+            .onChange(of: scrolling) { moving in
+                if moving && gaze != .zero { gaze = .zero }
+            }
+            .onReceive(CloudTouchTracker.shared.$point.dropFirst()) { p in
+                guard enabled, !scrolling, frame.width > 0 else { return }
                 guard let p else {
                     withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) { gaze = .zero }
                     return
@@ -117,6 +153,7 @@ struct CloudBotWatchingAvatar: View {
     var size: CGFloat = 22
     var mood: CloudBotMood = .calm
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.cloudScrollInMotion) private var scrolling
     @State private var gaze: CGSize = .zero
     @State private var eyeOpen: CGFloat = 1
 
@@ -124,11 +161,14 @@ struct CloudBotWatchingAvatar: View {
         CloudBotAvatarView(spec: spec, size: size, gaze: gaze, eyeOpen: eyeOpen, mood: mood)
             .animation(.spring(response: 0.35, dampingFraction: 0.7), value: mood)
             .modifier(CloudFollowTouch(gaze: $gaze, enabled: !reduceMotion))
-            .task(id: reduceMotion) {
+            .task(id: scrolling) {
+                eyeOpen = 1
+                guard !scrolling, !CloudE2E.pauseIdleAnimations else { return }
                 try? await Task.sleep(nanoseconds: UInt64.random(in: 500_000_000...4_000_000_000))
                 while !Task.isCancelled {
                     withAnimation(.easeInOut(duration: 0.07)) { eyeOpen = 0.1 }
                     try? await Task.sleep(nanoseconds: 120_000_000)
+                    guard !Task.isCancelled else { return }
                     withAnimation(.easeInOut(duration: 0.1)) { eyeOpen = 1 }
                     try? await Task.sleep(nanoseconds: UInt64.random(in: 2_500_000_000...6_000_000_000))
                 }

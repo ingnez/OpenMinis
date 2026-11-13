@@ -24,6 +24,8 @@ extension EnvironmentValues {
 
 /// 上传过的图片在本机留一份（缓存目录，最多 300 个），气泡缩略图先用它，历史消息再从云端取
 enum CloudAttachmentCache {
+    private static let io = DispatchQueue(label: "com.openminis.cloud-attachment-cache", qos: .utility)
+
     private static var dir: URL {
         let d = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("cloud-attachments", isDirectory: true)
         try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
@@ -34,26 +36,32 @@ enum CloudAttachmentCache {
         name.range(of: #"^[A-Za-z0-9._-]{1,128}$"#, options: .regularExpression) != nil && !name.contains("..") ? name : nil
     }
 
-    static func save(_ data: Data, name: String) {
+    static func save(_ data: Data, name: String) async {
         guard let n = safe(name) else { return }
-        try? data.write(to: dir.appendingPathComponent(n), options: .atomic)
-        prune()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            io.async {
+                try? data.write(to: dir.appendingPathComponent(n), options: .atomic)
+                prune()
+                continuation.resume()
+            }
+        }
     }
 
-    static func data(_ name: String) -> Data? {
+    static func data(_ name: String) async -> Data? {
         guard let n = safe(name) else { return nil }
-        return try? Data(contentsOf: dir.appendingPathComponent(n))
+        return await withCheckedContinuation { continuation in
+            io.async { continuation.resume(returning: try? Data(contentsOf: dir.appendingPathComponent(n))) }
+        }
     }
 
     private static func prune(keep: Int = 300) {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]),
-              files.count > keep else { return }
-        let sorted = files.sorted {
-            ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
-                < ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
-        }
-        for f in sorted.prefix(files.count - keep) { try? fm.removeItem(at: f) }
+              files.count > keep + 24 else { return }
+        let sorted = files.map { url in
+            (url, (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
+        }.sorted { $0.1 < $1.1 }
+        for (url, _) in sorted.prefix(files.count - keep) { try? fm.removeItem(at: url) }
     }
 }
 
@@ -91,9 +99,10 @@ enum CloudMessageImageData {
         let rest = url.dropFirst(attachmentScheme.count)
         guard let bar = rest.firstIndex(of: "|") else { return nil }
         let sid = String(rest[..<bar]), name = String(rest[rest.index(after: bar)...])
-        if let local = CloudAttachmentCache.data(name) { return local }
-        guard !sid.isEmpty, let remote = try? await CloudConnection.shared.downloadAttachment(path: "/v1/sessions/\(sid)/attachments/\(name)") else { return nil }
-        CloudAttachmentCache.save(remote, name: name)
+        if let local = await CloudAttachmentCache.data(name) { return local }
+        guard !Task.isCancelled, !sid.isEmpty,
+              let remote = try? await CloudConnection.shared.downloadAttachment(path: "/v1/sessions/\(sid)/attachments/\(name)") else { return nil }
+        await CloudAttachmentCache.save(remote, name: name)
         return remote
     }
 
@@ -111,8 +120,12 @@ enum CloudMessageImageData {
         } else {
             data = nil
         }
-        guard let data else { return nil }
-        let img = await Task.detached { downsampleImageData(data, maxPixelSize: maxPixel) }.value
+        guard !Task.isCancelled, let data else { return nil }
+        let decoder = Task.detached(priority: maxPixel <= 640 ? .utility : .userInitiated) {
+            guard !Task.isCancelled else { return nil as UIImage? }
+            return downsampleImageData(data, maxPixelSize: maxPixel)
+        }
+        let img = await withTaskCancellationHandler { await decoder.value } onCancel: { decoder.cancel() }
         if let img { NativeMediaImageCache.shared.set(img, for: key) }
         return img
     }

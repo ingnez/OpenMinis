@@ -406,6 +406,7 @@ struct CloudBotAliveAvatar: View {
     var mood: CloudBotMood = .calm
     var working = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.cloudScrollInMotion) private var scrolling
     @State private var gaze: CGSize = .zero
     @State private var eyeOpen: CGFloat = 1
     @State private var touching = false
@@ -413,7 +414,7 @@ struct CloudBotAliveAvatar: View {
     @State private var shy = false
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || CloudE2E.pauseIdleAnimations)) { ctx in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: scrolling || reduceMotion || CloudE2E.pauseIdleAnimations)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             let breath = reduceMotion ? 0 : sin(t * 1.6)
             let tilt = CloudBotMood.tilt(gaze: (Double(gaze.width), Double(gaze.height)), shy: shy)
@@ -459,7 +460,10 @@ struct CloudBotAliveAvatar: View {
             bounce = 1.12
             withAnimation(.spring(response: 0.35, dampingFraction: 0.45)) { bounce = 1 }
         }
-        .task(id: reduceMotion ? 2 : (working ? 1 : 0)) { await live() }
+        .task(id: scrolling ? 3 : (reduceMotion ? 2 : (working ? 1 : 0))) {
+            eyeOpen = 1
+            if !scrolling, !CloudE2E.pauseIdleAnimations { await live() }
+        }
         .accessibilityHidden(true)
     }
 
@@ -481,11 +485,14 @@ struct CloudBotAliveAvatar: View {
             if working || Int.random(in: 0..<3) > 0 {
                 withAnimation(.easeInOut(duration: 0.07)) { eyeOpen = 0.1 }
                 try? await Task.sleep(nanoseconds: 110_000_000)
+                guard !Task.isCancelled else { return }
                 withAnimation(.easeInOut(duration: 0.1)) { eyeOpen = 1 }
                 if Int.random(in: 0..<5) == 0 {     // 偶尔连眨两下
                     try? await Task.sleep(nanoseconds: 160_000_000)
+                    guard !Task.isCancelled else { return }
                     withAnimation(.easeInOut(duration: 0.07)) { eyeOpen = 0.1 }
                     try? await Task.sleep(nanoseconds: 100_000_000)
+                    guard !Task.isCancelled else { return }
                     withAnimation(.easeInOut(duration: 0.1)) { eyeOpen = 1 }
                 }
             }

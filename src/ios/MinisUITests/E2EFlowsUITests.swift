@@ -1724,6 +1724,32 @@ extension E2EFlowsUITests {
         shot(app, "38-本地第七张图与看图菜单")
     }
 
+    func test39_cloudHistoryFlingKeepsViewport() throws {
+        executionTimeAllowance = 240
+        let app = launch()
+        openBot(app) // Ensure the fixture Bot has a conversation to seed.
+        goBack(app)
+        let url = try XCTUnwrap(URL(string: "http://127.0.0.1:18799/_e2e/scroll_history"))
+        let seed = try JSONDecoder().decode([String: Int].self, from: Data(contentsOf: url))
+        XCTAssertEqual(seed["seeded"], 48)
+        openBot(app)
+        let latest = app.textViews.containing(NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", "滚动测试回复 48", "滚动测试回复 48")).firstMatch
+        XCTAssertTrue(poll(30) { latest.exists && latest.isHittable }, "长对话打开后没有定位到最新消息")
+        let list = app.scrollViews["cloudChatTranscript"]
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+
+        list.swipeDown(velocity: .fast)
+        XCTAssertTrue(poll(8) { !latest.exists || !latest.isHittable }, "快速下拉后仍被锁在最新消息")
+        list.swipeUp(velocity: .fast)
+        list.swipeDown(velocity: .fast)
+        XCTAssertTrue(poll(8) { !latest.exists || !latest.isHittable }, "反向甩动后被拉回最新消息")
+        shot(app, "39a-快速滑动后停在历史")
+
+        app.buttons["到最新"].tap()
+        XCTAssertTrue(poll(12) { latest.exists && latest.isHittable }, "滑动后无法回到最新消息")
+        shot(app, "39b-回到长对话末尾")
+    }
+
     private func revealTodayBar(_ app: XCUIApplication) {
         let bar = app.descendants(matching: .any)["todayCard"]
         let menu = app.buttons["homeAppsButton"]

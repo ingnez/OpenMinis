@@ -66,7 +66,7 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
     private var cardViews: [UIImageView] = []
     private var badges: [UIView] = []
     private var images: [String: UIImage] = [:]
-    private var loadIDs: [String: UUID] = [:]
+    private var imageLoads: [String: (id: UUID, task: Task<Void, Never>)] = [:]
     private var fanned = false
     private var selectedIndex = 0
     private var startedFanned = false
@@ -110,7 +110,11 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
         super.didMoveToWindow()
         if window == nil {
             stopLink()
+            for load in imageLoads.values { load.task.cancel() }
+            imageLoads.removeAll()
             applyLayout(animated: false)
+        } else {
+            loadMissingImages()
         }
     }
 
@@ -129,7 +133,9 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
             stopLink()
             let visibleIDs = Set(ids)
             images = images.filter { visibleIDs.contains($0.key) }
-            loadIDs = loadIDs.filter { visibleIDs.contains($0.key) }
+            for id in imageLoads.keys.filter({ !visibleIDs.contains($0) }) {
+                imageLoads.removeValue(forKey: id)?.task.cancel()
+            }
             if sources.count < 2 { fanned = false }
             selectedIndex = ImageViewerIndex.clamp(selectedIndex, count: sources.count)
             rebuildCards()
@@ -179,20 +185,20 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
     }
 
     private func loadMissingImages() {
+        guard window != nil else { return }
         for i in layoutCards.indices {
             let src = sources[i]
             if let img = images[src.id] {
                 if cardViews[i].image !== img { cardViews[i].image = img }
                 continue
             }
-            guard loadIDs[src.id] == nil else { continue }
+            guard imageLoads[src.id] == nil else { continue }
             let token = UUID()
-            loadIDs[src.id] = token
-            Task { [weak self] in
+            let task = Task { [weak self] in
                 let img = await src.load()
                 await MainActor.run {
-                    guard let self, self.loadIDs[src.id] == token else { return }
-                    self.loadIDs[src.id] = nil
+                    guard let self, !Task.isCancelled, self.imageLoads[src.id]?.id == token else { return }
+                    self.imageLoads[src.id] = nil
                     if let img {
                         self.images[src.id] = img
                         for index in self.cardViews.indices where self.sources[index].id == src.id {
@@ -201,6 +207,7 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
                     }
                 }
             }
+            imageLoads[src.id] = (token, task)
         }
     }
 
@@ -392,7 +399,10 @@ final class ImageStackScrubView: UIView, UIGestureRecognizerDelegate {
         }
     }
 
-    deinit { displayLink?.invalidate() }
+    deinit {
+        displayLink?.invalidate()
+        for load in imageLoads.values { load.task.cancel() }
+    }
 }
 
 /// 上传进度环（跟手选择不依赖它，只给上传中的卡用）

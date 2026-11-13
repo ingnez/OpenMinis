@@ -118,6 +118,22 @@ struct LLMModel { let id: String; let displayName: String }
   precondition(r2[2].kind == .info && (r2[2].toolUseId ?? "").hasPrefix(CloudEventApplier.injectPrefix) && r2[2].content == "顺便看看 b", "插话留在原位置")
   precondition(r2[3].kind == .text && r2[3].content == "好的")
   precondition(t2[2].message.blocks.first?.toolUseId == CloudEventApplier.resetPrefix + "snap1", "reset 分隔线带快照 id")
+  let identifiedHistory = history2.enumerated().map { index, row -> [String: Any] in
+   var identified = row
+   identified["id"] = index + 100
+   return identified
+  }
+  let previous = CloudHistoryAdapter.turns(from: identifiedHistory)
+  let older: [[String: Any]] = [["role": "user", "id": 99, "content": "更早的问题"]]
+  let paged = older + identifiedHistory
+  let expanded = CloudHistoryAdapter.turns(from: paged, reusing: previous, previousRows: identifiedHistory)
+  precondition(expanded[2].message === previous[1].message, "加载更早消息时，旧回复的消息和 Markdown 块保持原实例")
+  var updated = paged
+  updated[3]["content"] = "{\"stdout\": \"变化的工具结果\"}"
+  let refreshed = CloudHistoryAdapter.turns(from: updated, reusing: expanded, previousRows: paged)
+  precondition(refreshed[2].message !== expanded[2].message, "仅工具结果变化也须重建该轮")
+  precondition(refreshed[2].message.blocks[1].content.contains("变化的工具结果"))
+  precondition(refreshed[3].message === expanded[3].message, "更新一轮不应重建其他消息")
   let live2 = ChatMessage(role: .assistant, content: "")
   CloudEventApplier.apply(live2, type: "user_message_applied", payload: ["content": "插一句", "nonce": "n1"])
   CloudEventApplier.apply(live2, type: "user_message_applied", payload: ["content": "插一句", "nonce": "n1"])

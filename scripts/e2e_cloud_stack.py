@@ -526,6 +526,24 @@ def main():
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if urlparse(self.path).path == "/_e2e/scroll_history":
+                import sqlite3
+                with sqlite3.connect(os.environ["OPENMINIS_DB"]) as db:
+                    sid = db.execute("SELECT session_id FROM sessions WHERE persona_id = ? ORDER BY created_at DESC LIMIT 1",
+                                     (BOT_ID,)).fetchone()
+                    if sid:
+                        rows = []
+                        start = time.time() - 120
+                        for i in range(1, 49):
+                            rows.append((sid[0], "user", f"滚动测试问题 {i:02d}", start + i * 2))
+                            text = f"滚动测试回复 {i:02d}\n\n**这是滚动回归的段落。**\n\n" + "正文用来覆盖聊天历史的排版与惯性滑动。" * 7
+                            rows.append((sid[0], "assistant", text, start + i * 2 + 1))
+                        db.executemany("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)", rows)
+                self.send_response(200 if sid else 404)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"seeded": 48 if sid else 0}).encode())
+                return
             if urlparse(self.path).path == "/_e2e/internal_prompt":
                 # 往假 Bot 最近的对话里写两条内部提示（新数据带 internal 标记 / 老数据只有提示词原文）和一条 Bot 回复：
                 # App 不能把内部提示画成用户气泡（R1：「…只回复 [SKIP]」出现在绿色气泡里）
