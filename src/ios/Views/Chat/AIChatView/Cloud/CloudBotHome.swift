@@ -1055,6 +1055,7 @@ struct CloudBotHubView: View {
             Section {
                 NavigationLink(destination: CloudUsageView()) { Label("用量与每日上限", systemImage: "chart.bar") }
                 NavigationLink(destination: CloudBackupView()) { Label("备份与恢复", systemImage: "externaldrive") }
+                    .accessibilityIdentifier("cloudBackupLink")
                 NavigationLink(destination: FaceIDProtectionSettingsView()) { Label("Face ID 锁（打开 App 先验证）", systemImage: "faceid") }
                 NavigationLink(destination: CloudExamListView()) { Label("考试倒计时", systemImage: "calendar.badge.clock") }
                 NavigationLink(destination: CloudErrorLogView()) { Label("导出错误日志", systemImage: "ladybug") }

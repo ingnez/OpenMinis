@@ -819,3 +819,9 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 锁屏 / 灵动岛审批：本机保存待审批快照；设置页有预览和语音口令（只存摘要）。真机实时活动尚未改现有 `AgentWidgetExtension`，以免主 IPA 编不过。
 - 查房待办箱：`GET/POST /v1/ward-todos`、`POST .../done`、`DELETE /v1/ward-todos/<id>`。不要写入姓名或住院号。
 - 手表表盘小组件源码在 `src/ios/MinisWatchWidgets/`，scheme 为 `MinisWatchWidgets`。没有挂进 Minis / MinisWatch，主 IPA 流水线不变。验收走 App 预览页和 Linux 单测。
+
+## 备份与恢复预览（2.57.0）
+
+- `POST /v1/backup/preview`：请求体 `{backup}`，按与 `POST /v1/backup/import` 相同的跳过规则做干跑，不写库。返回 `{preview: {bots, sessions, messages, groups, memory, skills, skipped}}`，表示将新增的数量与跳过已有的条数。
+- 已有 `GET /v1/backup?messages=0|1` 与 `POST /v1/backup/import` 不变。备份格式仍是 `openminis-backup/1`，不含任何密钥、Token 或服务商凭证。
+- App 生成文件名为 `OpenMinis备份-YYYY-MM-DD-HHmm.minisbackup`（Asia/Shanghai），写入前先读回自校验，通过才显示成功卡。恢复前先调 preview 再确认。
