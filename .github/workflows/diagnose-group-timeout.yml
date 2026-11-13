@@ -1,0 +1,40 @@
+name: Diagnose the group-result timeout on the pinned candidate (Linux only)
+on:
+  push:
+    branches: [grokbot-phase2-chat-motion-ci]
+    paths:
+      - .github/workflows/diagnose-group-timeout.yml
+      - scripts/diagnostics/diagnose_group_timeout.py
+permissions:
+  contents: read
+env:
+  SOURCE_SHA: a5a2b7c9230026e5df6f9d6a77eafba306f99977
+jobs:
+  trace-group-result:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          path: source
+      - uses: actions/checkout@v4
+        with:
+          path: diagnostics
+      - name: Verify source and trace the complete original suite
+        run: |
+          set -o pipefail
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_SHA"
+          git -C source rev-parse HEAD > SOURCE_COMMIT.txt
+          python3 diagnostics/scripts/diagnostics/diagnose_group_timeout.py \
+            "$PWD/source/cloud-agent" "$PWD/group-trace.jsonl" 2>&1 | tee group-diagnostic-suite.log
+      - name: Preserve timing and thread evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: group-result-diagnostic-a5a2b7c
+          path: |
+            SOURCE_COMMIT.txt
+            group-trace.jsonl
+            group-diagnostic-suite.log
+          retention-days: 7
