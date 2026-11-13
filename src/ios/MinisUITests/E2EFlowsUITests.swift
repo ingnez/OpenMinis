@@ -1689,6 +1689,27 @@ extension E2EFlowsUITests {
         XCTAssertTrue(waitText(app, contains: "思考深度", timeout: 5))
     }
 
+    func test41_cloudProviderGroupsFoldAndShowLocalModels() throws {
+        let app = launch(extraEnv: ["OPENMINIS_E2E_LOCAL_PROVIDER": "http://127.0.0.1:18797"])
+        openBot(app)
+        app.buttons["botComposerMenu"].tap()
+        let modelSettings = app.buttons["模型与思考深度"]
+        XCTAssertTrue(modelSettings.waitForExistence(timeout: 8))
+        modelSettings.tap()
+        let provider = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "E2E本地")).firstMatch
+        XCTAssertTrue(provider.waitForExistence(timeout: 20), "云端模型页没有识别本地服务商")
+        let localModel = app.buttons["e2e-local-model"]
+        XCTAssertFalse(localModel.exists, "服务商模型默认应收起")
+        provider.tap()
+        XCTAssertTrue(localModel.waitForExistence(timeout: 10), "本地已添加模型没有出现在云端目录")
+        shot(app, "cloud-provider-expanded")
+        provider.tap()
+        XCTAssertTrue(poll(8) { !localModel.exists }, "服务商模型没有收起")
+        shot(app, "cloud-provider-collapsed")
+        provider.tap()
+        XCTAssertTrue(localModel.waitForExistence(timeout: 8), "收起后无法再次展开")
+    }
+
     func test38_localImageOnlyMessageScrubsPastSixthImage() throws {
         executionTimeAllowance = 300
         let app = launch(attach: 7, homeMode: "local",

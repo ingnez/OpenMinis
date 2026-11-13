@@ -16,7 +16,13 @@ final class CloudModelCatalog: ObservableObject {
     private var requestID = UUID()
     private var cache: [String: [CloudModelChoice]] = [:]
 
-    func refresh(providerID id: String, fetch: () async throws -> [CloudModelChoice]) async {
+    static func mergedModels(local: [CloudModelChoice], online: [CloudModelChoice]) -> [CloudModelChoice] {
+        var seen = Set<String>()
+        return (local + online).filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
+            .sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+    }
+
+    func refresh(providerID id: String, fallback: [CloudModelChoice] = [], fetch: () async throws -> [CloudModelChoice]) async {
         let token = UUID()
         requestID = token
         if providerID != id {
@@ -24,6 +30,7 @@ final class CloudModelCatalog: ObservableObject {
             models = cache[id] ?? []
             refreshedAt = nil
         }
+        models = Self.mergedModels(local: fallback, online: models)
         error = nil
         guard !id.isEmpty else {
             models = []; loading = false
@@ -33,9 +40,7 @@ final class CloudModelCatalog: ObservableObject {
         do {
             let values = try await fetch()
             guard requestID == token else { return }
-            var seen = Set<String>()
-            models = values.filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
-                .sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+            models = Self.mergedModels(local: fallback, online: values)
             cache[id] = models
             refreshedAt = Date()
             loading = false

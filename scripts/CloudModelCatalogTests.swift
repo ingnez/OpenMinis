@@ -28,6 +28,15 @@ struct CloudModelCatalogTests {
         precondition(catalog.models.map(\.id) == ["custom-alias"])
         await catalog.refresh(providerID: "") { fatalError("未选服务商不得发请求") }
         precondition(catalog.models.isEmpty && !catalog.loading)
+        let manual = CloudModelChoice(id: "manual-alias", name: "本地手动模型")
+        await catalog.refresh(providerID: "manual", fallback: [manual]) { throw NSError(domain: "test", code: 3) }
+        precondition(catalog.models == [manual] && catalog.error != nil)
+        await catalog.refresh(providerID: "manual", fallback: [manual]) {
+            [manual, .init(id: "online-model", name: "在线模型")]
+        }
+        precondition(catalog.models.map(\.id) == ["manual-alias", "online-model"])
+        await catalog.refresh(providerID: "another") { throw NSError(domain: "test", code: 4) }
+        precondition(catalog.models.isEmpty, "本地手动模型不能串到其他服务商")
         print("在线模型目录回归通过：去重、别名、跨服务商迟到请求、错误保留、空目录清理、无服务商不请求")
     }
 }

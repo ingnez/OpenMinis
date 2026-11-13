@@ -331,7 +331,7 @@ struct CloudAgentSettingsView: View {
                 selectedProviderInstanceId = first.id
             }
         }
-        .task(id: selectedProviderInstanceId) {
+        .task(id: "\(selectedProviderInstanceId):\(providerStore.configRevision):\(providerStore.authRevision)") {
             activateModelProvider()
             await refreshCloudModels()
         }
@@ -369,7 +369,10 @@ struct CloudAgentSettingsView: View {
 
     private func refreshCloudModels() async {
         let id = selectedProviderInstanceId
-        await modelCatalog.refresh(providerID: id) {
+        let local = providerStore.config.modelEntries
+            .filter { $0.providerInstanceId == id && !$0.isHidden }
+            .map { CloudModelChoice(id: $0.model.id, name: $0.model.displayName) }
+        await modelCatalog.refresh(providerID: id, fallback: local) {
             guard let instance = availableOpenAIInstances.first(where: { $0.id == id }) else {
                 throw NSError(domain: "CloudModels", code: 1, userInfo: [NSLocalizedDescriptionKey: "请先选择有效的服务商"])
             }

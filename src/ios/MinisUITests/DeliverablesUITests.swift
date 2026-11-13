@@ -29,9 +29,19 @@ final class DeliverablesUITests: XCTestCase {
 
     @MainActor
     func testLocalDeliverableLinkCard() throws {
+        try verifyLocalDeliverables(mode: "instant")
+    }
+
+    @MainActor
+    func testLocalVerboseDeliverableCards() throws {
+        try verifyLocalDeliverables(mode: "verbose")
+    }
+
+    @MainActor
+    private func verifyLocalDeliverables(mode: String) throws {
         executionTimeAllowance = 240
         let app = launch(homeMode: "local", extraEnv: ["OPENMINIS_E2E_LOCAL_PROVIDER": "http://127.0.0.1:18797"],
-                         extraArgs: ["-launchScreen", "2"])
+                         extraArgs: ["-launchScreen", "2", "-OpenMinis_localReplyMode", mode])
         XCTAssertTrue(localModelReady(app), "本地模式未加载模拟服务商")
         let input = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
         input.tap(); dismissKeyboardIntro(app); input.typeText("生成交付物")
@@ -39,7 +49,12 @@ final class DeliverablesUITests: XCTestCase {
         XCTAssertTrue(sendButton.waitForExistence(timeout: 10))
         sendButton.tap()
         let pdf = card(app, named: "本地说明.pdf")
-        XCTAssertTrue(pdf.waitForExistence(timeout: 70), "本地回复缺少 PDF 卡片")
+        if !pdf.waitForExistence(timeout: 70) {
+            shot(app, "d1-local-missing-cards-\(mode)")
+            XCTFail("本地回复缺少 PDF 卡片（\(mode)）")
+            return
+        }
+        shot(app, "d1-local-cards-\(mode)")
         XCTAssertTrue(card(app, named: "example.com").waitForExistence(timeout: 15), "本地回复缺少链接卡片")
         try verifyPreviewAndExport(app, card: pdf, filename: "本地说明.pdf")
         openFilesPage(app)
@@ -63,18 +78,29 @@ final class DeliverablesUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars[filename].exists || app.staticTexts[filename].exists, "预览标题不正确")
         shot(app, "d1-preview")
         close.tap()
+        XCTAssertTrue(poll(10) { !close.exists }, "文件预览没有关闭")
 
         let save = card.buttons["deliverableSave"]
         XCTAssertTrue(save.waitForExistence(timeout: 8), "交付卡片缺少存到文件按钮")
         revealBelowNavBar(app, save)
         save.tap()
-        let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["取消", "Cancel"])).firstMatch
-        XCTAssertTrue(cancel.waitForExistence(timeout: 20), "系统文件导出界面没有打开")
+        let saveFile = app.buttons.matching(NSPredicate(format: "label IN %@", ["Save", "存储", "保存"])).firstMatch
+        XCTAssertTrue(saveFile.waitForExistence(timeout: 20), "系统文件导出界面没有打开")
         shot(app, "d1-save-to-files")
-        if cancel.isHittable { cancel.tap() }
+        XCTAssertTrue(saveFile.isHittable, "系统文件保存按钮不可点击")
+        saveFile.tap()
+        let saved = card.descendants(matching: .any).matching(identifier: "deliverableSavedLocation").firstMatch
+        XCTAssertTrue(poll(25) {
+            let replace = app.alerts.buttons.matching(NSPredicate(format: "label IN %@", ["Replace", "替换"])).firstMatch
+            if replace.exists, replace.isHittable { replace.tap() }
+            return saved.exists
+        }, "文件保存未收到成功回调")
+        XCTAssertTrue(saved.label.contains(filename), "保存结果缺少文件名")
+        shot(app, "d1-saved-to-files")
         let share = card.buttons["deliverableShare"]
         XCTAssertTrue(share.waitForExistence(timeout: 8), "交付卡片缺少分享按钮")
         revealBelowNavBar(app, share)
+        XCTAssertTrue(share.isHittable, "分享按钮被其他界面遮挡")
         share.tap()
         XCTAssertTrue(poll(20) {
             app.otherElements["ActivityListView"].exists

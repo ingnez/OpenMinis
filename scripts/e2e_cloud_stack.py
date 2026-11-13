@@ -67,11 +67,13 @@ def image_count(data):
 
 def delivery_pdf():
     parts = ["%PDF-1.4\n"]
+    content = "BT /F1 18 Tf 36 700 Td (OpenMinis delivery preview) Tj ET\n"
     objects = (
         "<< /Type /Catalog /Pages 2 0 R >>",
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
-        "<< /Length 0 >>\nstream\nendstream",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        f"<< /Length {len(content)} >>\nstream\n{content}endstream",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     )
     offsets = [0]
     for number, value in enumerate(objects, 1):

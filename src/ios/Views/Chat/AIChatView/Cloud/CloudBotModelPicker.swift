@@ -71,33 +71,61 @@ final class CloudAllModelsCatalog: ObservableObject {
     @Published private(set) var unsupported: [String] = []
     @Published private(set) var loading = false
     private var loadedAt: Date?
+    private var loadedRevision = ""
+    private var requestID = UUID()
+
+    static var configurationRevision: String {
+        let store = ProviderConfigStore.shared
+        return "\(store.configRevision):\(store.authRevision)"
+    }
 
     func load(force: Bool = false) async {
-        if !force, let loadedAt, Date().timeIntervalSince(loadedAt) < 300, !groups.isEmpty { return }
+        let revision = Self.configurationRevision
+        if !force, loadedRevision == revision, let loadedAt,
+           Date().timeIntervalSince(loadedAt) < 300, !groups.isEmpty { return }
+        let token = UUID()
+        requestID = token
         loading = true
-        let instances = ProviderConfigStore.shared.config.instances.filter { $0.isEnabled }
+        let config = ProviderConfigStore.shared.config
+        let instances = config.instances.filter { $0.isEnabled }
         unsupported = instances.filter { CloudCredentialSync.eligibleInstance($0.id) == nil }.map { $0.label }
-        var out: [CloudModelGroup] = []
-        for inst in instances where CloudCredentialSync.eligibleInstance(inst.id) != nil {
+        let eligible = instances.filter { CloudCredentialSync.eligibleInstance($0.id) != nil }
+        let localModels = eligible.map { inst in
+            config.modelEntries.filter { $0.providerInstanceId == inst.id && !$0.isHidden }
+                .map { CloudModelChoice(id: $0.model.id, name: $0.model.displayName) }
+        }
+        @MainActor func options(_ index: Int, online: [CloudModelChoice] = []) -> [CloudModelOption] {
+            let inst = eligible[index]
+            return CloudModelCatalog.mergedModels(local: localModels[index], online: online)
+                .map { CloudModelOption(instanceId: inst.id, providerLabel: inst.label, model: $0.id) }
+        }
+        var out = eligible.indices.map { index in
+            CloudModelGroup(id: eligible[index].id, label: eligible[index].label, models: options(index), error: nil)
+        }
+        groups = out
+        for (index, inst) in eligible.enumerated() {
+            guard requestID == token else { return }
             guard let key = ProviderKeychainHelper.loadAPIKey(instanceId: inst.id), !key.isEmpty else {
-                out.append(CloudModelGroup(id: inst.id, label: inst.label, models: [], error: "未配置 API Key"))
+                out[index] = CloudModelGroup(id: inst.id, label: inst.label, models: options(index), error: "未配置 API Key")
+                groups = out
                 continue
             }
             do {
                 let models = try await OpenAIModelsAPI.fetchModels(apiKey: key, baseURL: inst.effectiveCustomBaseURL,
-                                                                   appendV1Suffix: inst.appendV1Suffix, forceRefresh: force,
+                                                                   appendV1Suffix: inst.appendV1Suffix, forceRefresh: true,
                                                                    userAgent: inst.customUserAgent, includeNonChat: false)
-                var seen = Set<String>()
-                let options = models.map(\.id).filter { !$0.isEmpty && seen.insert($0).inserted }
-                    .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-                    .map { CloudModelOption(instanceId: inst.id, providerLabel: inst.label, model: $0) }
-                out.append(CloudModelGroup(id: inst.id, label: inst.label, models: options, error: nil))
+                guard requestID == token else { return }
+                let online = models.map { CloudModelChoice(id: $0.id, name: $0.displayName) }
+                out[index] = CloudModelGroup(id: inst.id, label: inst.label, models: options(index, online: online), error: nil)
             } catch {
-                out.append(CloudModelGroup(id: inst.id, label: inst.label, models: [], error: error.localizedDescription))
+                guard requestID == token else { return }
+                out[index] = CloudModelGroup(id: inst.id, label: inst.label, models: options(index), error: error.localizedDescription)
             }
+            groups = out
         }
         groups = out
         loadedAt = Date()
+        loadedRevision = revision
         loading = false
     }
 }
@@ -110,12 +138,15 @@ struct CloudModelEffortSheet: View {
     var allowFollowDefault = true
     let onPick: (_ option: CloudModelOption?, _ effort: CloudEffort) -> Void
     @ObservedObject private var catalog = CloudAllModelsCatalog.shared
+    @ObservedObject private var providerStore = ProviderConfigStore.shared
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var selected: CloudModelOption?
     @State private var followDefault = false
     @State private var effort: CloudEffort = .off
     @State private var unsupportedModels: Set<String> = CloudEffort.knownUnsupported
+    @State private var expandedProviders: Set<String> = []
+    @State private var initialized = false
 
     var body: some View {
         NavigationStack {
@@ -154,10 +185,19 @@ struct CloudModelEffortSheet: View {
                     Section { HStack { ProgressView(); Text("正在获取各服务商的模型列表…").foregroundStyle(.secondary) } }
                 }
                 ForEach(catalog.groups) { group in
-                    let models = group.models.filter { query.isEmpty || $0.model.localizedCaseInsensitiveContains(query) }
-                    if !models.isEmpty || (query.isEmpty && group.error != nil) {
-                        Section(group.label) {
+                    let providerMatches = group.label.localizedCaseInsensitiveContains(query)
+                    let models = group.models.filter { query.isEmpty || providerMatches || $0.model.localizedCaseInsensitiveContains(query) }
+                    if query.isEmpty || providerMatches || !models.isEmpty {
+                        Section {
+                          DisclosureGroup(isExpanded: Binding(
+                            get: { !query.isEmpty || expandedProviders.contains(group.id) },
+                            set: { if $0 { expandedProviders.insert(group.id) } else { expandedProviders.remove(group.id) } }
+                          )) {
                             if let err = group.error { Text(err).font(.caption).foregroundStyle(.red) }
+                            if models.isEmpty, group.error == nil {
+                                Text(catalog.loading ? "正在获取模型…" : "暂无模型，可在本地服务商设置中添加后刷新")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                             ForEach(models) { option in
                                 Button {
                                     selected = option
@@ -175,6 +215,14 @@ struct CloudModelEffortSheet: View {
                                     }
                                 }
                             }
+                          } label: {
+                            HStack {
+                                Text(group.label).foregroundStyle(.primary)
+                                Spacer()
+                                Text("\(models.count)").foregroundStyle(.secondary).monospacedDigit()
+                            }
+                            .accessibilityIdentifier("cloudProviderGroup-" + group.id)
+                          }
                         }
                     }
                 }
@@ -200,14 +248,18 @@ struct CloudModelEffortSheet: View {
                     .disabled(!followDefault && selected == nil)
                 }
             }
-            .task {
-                effort = current.effort
-                followDefault = current.instanceId.isEmpty && allowFollowDefault
-                if !current.instanceId.isEmpty {
-                    selected = CloudModelOption(instanceId: current.instanceId, providerLabel: "", model: current.model)
+            .task(id: "\(providerStore.configRevision):\(providerStore.authRevision)") {
+                if !initialized {
+                    initialized = true
+                    effort = current.effort
+                    followDefault = current.instanceId.isEmpty && allowFollowDefault
+                    if !current.instanceId.isEmpty {
+                        selected = CloudModelOption(instanceId: current.instanceId, providerLabel: "", model: current.model)
+                        expandedProviders.insert(current.instanceId)
+                    }
+                    await CloudEffort.refreshUnsupported()
+                    unsupportedModels = CloudEffort.knownUnsupported
                 }
-                await CloudEffort.refreshUnsupported()
-                unsupportedModels = CloudEffort.knownUnsupported
                 await catalog.load()
                 if let sel = selected, let match = catalog.groups.flatMap(\.models).first(where: { $0.instanceId == sel.instanceId && $0.model == sel.model }) {
                     selected = match

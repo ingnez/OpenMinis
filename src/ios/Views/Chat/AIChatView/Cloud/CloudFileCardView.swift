@@ -17,6 +17,7 @@ struct CloudFileCardView: View {
     @State private var zipExpanded = false
     @State private var htmlURL: URL?
     @State private var errorText: String?
+    @State private var savedFileName: String?
 
     init(item: CloudDeliverable, sessionId: String, accent: Color) {
         self.item = item
@@ -33,6 +34,11 @@ struct CloudFileCardView: View {
                 zipList
             }
             actions
+            if let savedFileName {
+                Label("已存到文件：\(savedFileName)", systemImage: "checkmark.circle.fill")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("deliverableSavedLocation")
+            }
             if case .running(let f) = dl.state {
                 ProgressView(value: f).tint(accent)
                     .accessibilityLabel("下载进度")
@@ -88,7 +94,10 @@ struct CloudFileCardView: View {
             }
         }
         .sheet(item: Binding(get: { exportURL.map(IdentifiedURL.init) }, set: { exportURL = $0?.url })) { wrapped in
-            CloudFileExport(url: wrapped.url) { exportURL = nil }
+            CloudFileExport(url: wrapped.url) { destination in
+                if let destination { savedFileName = destination.lastPathComponent }
+                exportURL = nil
+            }
         }
         .alert("打不开这个文件", isPresented: Binding(get: { errorText != nil }, set: { if !$0 { errorText = nil } })) {
             Button("好", role: .cancel) {}
@@ -275,7 +284,7 @@ struct CloudLocalWebView: UIViewRepresentable {
 /// 把文件交到「文件」App（UIDocumentPicker 导出）
 struct CloudFileExport: UIViewControllerRepresentable {
     let url: URL
-    var onDismiss: () -> Void
+    var onDismiss: (URL?) -> Void
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let vc = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
@@ -285,10 +294,10 @@ struct CloudFileExport: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: UIDocumentPickerViewController, context: Context) {}
     func makeCoordinator() -> Coord { Coord(onDismiss: onDismiss) }
     final class Coord: NSObject, UIDocumentPickerDelegate {
-        let onDismiss: () -> Void
-        init(onDismiss: @escaping () -> Void) { self.onDismiss = onDismiss }
-        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { onDismiss() }
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { onDismiss() }
+        let onDismiss: (URL?) -> Void
+        init(onDismiss: @escaping (URL?) -> Void) { self.onDismiss = onDismiss }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { onDismiss(nil) }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { onDismiss(urls.first) }
     }
 }
 

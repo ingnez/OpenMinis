@@ -15,10 +15,20 @@ struct ProviderInstance: Identifiable {
  var customUserAgent: String? { nil }
  func resolvedBaseURL(default value: String) -> (url: String, appendV1: Bool) { (value, true) }
 }
-struct CloudTestProviderConfig { var instances: [ProviderInstance] = [] }
+struct CloudTestModelEntry {
+ let providerInstanceId: String
+ let model: LLMModel
+ let isHidden: Bool
+}
+struct CloudTestProviderConfig {
+ var instances: [ProviderInstance] = []
+ var modelEntries: [CloudTestModelEntry] = []
+}
 final class ProviderConfigStore: ObservableObject {
  static let shared = ProviderConfigStore()
  @Published var config = CloudTestProviderConfig()
+ var configRevision: UInt = 0
+ @Published var authRevision: UInt = 0
  func instance(for id: String) -> ProviderInstance? { config.instances.first { $0.id == id } }
 }
 enum ProviderKeychainHelper { static func loadAPIKey(instanceId: String) -> String? { nil } }

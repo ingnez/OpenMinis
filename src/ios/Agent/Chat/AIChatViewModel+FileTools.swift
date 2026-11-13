@@ -714,9 +714,9 @@ extension AIChatViewModel {
             let relative = String(path.dropFirst(prefix.count))
             guard !relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }),
                   !pendingDeliveries.contains(where: { $0.path == relative }),
-                  let sid = sessionId,
+                  let sid = sessionId, let workspaceOwner = fsSessionId,
                   let url = await resolvePathForDirectRead(path) else { continue }
-            let workspace = Self.minisWorkspacePersistentDir(for: sid).resolvingSymlinksInPath()
+            let workspace = Self.minisWorkspacePersistentDir(for: workspaceOwner).resolvingSymlinksInPath()
             let resolved = url.resolvingSymlinksInPath()
             guard sessionId == sid, resolved.path.hasPrefix(workspace.path + "/"),
                   let values = try? resolved.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
@@ -728,12 +728,46 @@ extension AIChatViewModel {
     }
 
     func flushDeliveries(after historyCount: Int) async {
-        guard let message = messages.last(where: { $0.role == .assistant }),
+        guard let sid = sessionId, let message = messages.last(where: { $0.role == .assistant }),
               let raw = agentHistory.dropFirst(historyCount).last(where: { $0.role == .assistant && $0.dbMessageId != nil }),
               let rowId = raw.dbMessageId else { return }
-        let items = pendingDeliveries + CloudLinkExtract.links(in: message.content)
-        guard !items.isEmpty else { return }
+        let items = pendingDeliveries + (await completedChildDeliveries(after: historyCount))
+            + CloudLinkExtract.links(in: message.content)
+        guard !items.isEmpty, sessionId == sid, !isRetiredByReset else { return }
         message.addLocalDeliveries(items)
         await ChatStore.shared.saveLocalDeliveries(messageId: rowId, items: message.deliverables)
+        // The core loop has already ended its streaming subscriptions. Publish
+        // the final block structure so newly attached cards get collection rows.
+        if let index = messages.firstIndex(where: { $0.id == message.id }) {
+            messages[index] = message
+        }
+    }
+
+    private func completedChildDeliveries(after historyCount: Int) async -> [CloudDeliverable] {
+        guard let sid = sessionId else { return [] }
+        var childIds = Set<String>()
+        if let callback = messages.last(where: { $0.role == .user && !$0.isQueued })?.agentCallback,
+           callback.kind == .finished, let childId = callback.childSessionId {
+            childIds.insert(childId)
+        }
+        for raw in agentHistory.dropFirst(historyCount) {
+            for part in raw.parts {
+                if case .toolResult(_, let name, let content, _, _, _, _, _, _) = part,
+                   name == SubAgentDefinition.toolName || name == "spawn_task",
+                   let data = content.data(using: .utf8),
+                   let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let childId = result["child_session_id"] as? String {
+                    childIds.insert(childId)
+                }
+            }
+        }
+        var items: [CloudDeliverable] = []
+        for childId in childIds.sorted() {
+            guard let child = await ChatStore.shared.getSession(childId), child.parentSessionId == sid else { continue }
+            let deliveries = await ChatStore.shared.localDeliveries(sessionId: childId)
+            let rows = await ChatStore.shared.loadMessages(sessionId: childId)
+            items += rows.flatMap { deliveries[$0.id] ?? [] }
+        }
+        return sessionId == sid ? items : []
     }
 }
