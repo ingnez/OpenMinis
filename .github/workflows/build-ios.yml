@@ -1175,8 +1175,10 @@ jobs:
         run: |
           # iOS 26.5 on the hosted image repeatedly failed system data migration.
           # Prefer the installed 26.4 runtime and still require a verified clean boot.
+          # MinisUITests has IPHONEOS_DEPLOYMENT_TARGET = 26.2.
           DEV=$(python3 scripts/pick_ios_simulator.py --prepare \
             --preferred-runtime com.apple.CoreSimulator.SimRuntime.iOS-26-4 \
+            --minimum-os 26.2 \
             --project src/ios/Minis.xcodeproj \
             --scheme Minis \
             --configuration Debug \

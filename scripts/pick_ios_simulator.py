@@ -92,7 +92,11 @@ def simctl(*args: str, timeout: int = 20) -> subprocess.CompletedProcess[str]:
     )
 
 
-def prepare_iphone_simulator(dests: list[dict[str, str]], preferred_runtime: str | None = None) -> str:
+def prepare_iphone_simulator(
+    dests: list[dict[str, str]],
+    preferred_runtime: str | None = None,
+    minimum_os: str = "0",
+) -> str:
     inventory = simctl("list", "-j")
     inventory.check_returncode()
     data = json.loads(inventory.stdout)
@@ -106,11 +110,14 @@ def prepare_iphone_simulator(dests: list[dict[str, str]], preferred_runtime: str
                     configs[device["udid"]] = (device_type, runtime)
 
     candidates = {}
+    minimum_version = parse_os(minimum_os)
     for dest in ranked_iphones(dests):
+        if parse_os(dest.get("OS", "0")) < minimum_version:
+            continue
         if config := configs.get(dest["id"]):
             candidates.setdefault(config, dest)
     if not candidates:
-        raise SystemExit("Xcode 没有可创建的 iPhone 模拟器配置")
+        raise SystemExit(f"Xcode 没有可创建的 iPhone 模拟器配置（要求 iOS {minimum_os} 或更新版本）")
     primary = next(
         (config for config in candidates if config[1] == preferred_runtime),
         next(iter(candidates)),
@@ -135,16 +142,10 @@ def prepare_iphone_simulator(dests: list[dict[str, str]], preferred_runtime: str
             boot_log = result.stdout + result.stderr
             if re.search(r"Data Migration Failed|Status=3, isTerminal=YES", boot_log):
                 raise RuntimeError("iOS 系统数据迁移失败")
-            # The bootstatus terminal success covers migration and system app readiness.
-            # Spawning launchctl inside the guest can hang after a successful boot.
+            # Terminal bootstatus success covers migration and system app readiness.
+            # Additional simctl requests can hang even after that successful boot.
             if not re.search(r"^\s*Finished\s*$", boot_log, re.MULTILINE):
                 raise RuntimeError("bootstatus 未报告系统启动完成")
-            devices = simctl("list", "devices", "booted", "-j")
-            devices.check_returncode()
-            if not any(device["udid"] == udid and device["state"] == "Booted"
-                       for runtime_devices in json.loads(devices.stdout)["devices"].values()
-                       for device in runtime_devices):
-                raise RuntimeError("CoreSimulator 未报告设备已启动")
             ready = True
             print(f"模拟器已就绪：{udid}", file=sys.stderr, flush=True)
             return udid
@@ -251,41 +252,54 @@ def self_test() -> None:
 
     primary_runtime = "com.apple.CoreSimulator.SimRuntime.iOS-26-5"
     older_runtime = "com.apple.CoreSimulator.SimRuntime.iOS-26-4"
+    minimum_runtime = "com.apple.CoreSimulator.SimRuntime.iOS-26-2"
+    incompatible_runtime = "com.apple.CoreSimulator.SimRuntime.iOS-26-1"
     eligible = [
         {"name": "iPhone Air", "OS": "26.5", "id": "newest", "platform": "iOS Simulator"},
         {"name": "iPhone Air", "OS": "26.4.1", "id": "older", "platform": "iOS Simulator"},
     ]
+    hosted = [
+        {"name": "iPhone SE", "OS": "26.2", "id": "minimum", "platform": "iOS Simulator"},
+        {"name": "iPhone 16", "OS": "26.2", "id": "fallback", "platform": "iOS Simulator"},
+        {"name": "iPhone SE", "OS": "26.1", "id": "incompatible", "platform": "iOS Simulator"},
+    ]
     inventory = {"devicetypes": [], "devices": {
         primary_runtime: [{"udid": "newest", "deviceTypeIdentifier": "air"}],
         older_runtime: [{"udid": "older", "deviceTypeIdentifier": "air"}],
+        minimum_runtime: [{"udid": "minimum", "deviceTypeIdentifier": "se"},
+                          {"udid": "fallback", "deviceTypeIdentifier": "iphone16"}],
+        incompatible_runtime: [{"udid": "incompatible", "deviceTypeIdentifier": "se"}],
     }}
 
-    def run_preparation(preferred_runtime: str, fail_first_boot: bool) -> list[str]:
+    def run_preparation(dests: list[dict[str, str]], preferred_runtime: str,
+                        fail_first_boot: bool) -> list[str]:
         attempted = []
 
         def mock_simctl(*args: str, timeout: int = 20) -> subprocess.CompletedProcess[str]:
             if args == ("list", "-j"):
                 output = json.dumps(inventory)
-            elif args == ("list", "devices", "booted", "-j"):
-                output = json.dumps({"devices": {"runtime": [{"udid": f"fresh-{len(attempted)}", "state": "Booted"}]}})
             elif args[0] == "create":
                 attempted.append(args[-1])
                 output = f"fresh-{len(attempted)}"
             elif args[0] == "bootstatus":
                 output = "Data Migration Failed" if fail_first_boot and len(attempted) == 1 else "\tFinished\n"
-            else:
+            elif args[0] in {"spawn", "shutdown", "delete"}:
                 output = ""
+            else:
+                raise AssertionError(f"Unexpected simctl command: {args}")
             return subprocess.CompletedProcess(args, 0, output, "")
 
         with patch(__name__ + ".simctl", side_effect=mock_simctl):
-            assert prepare_iphone_simulator(eligible, preferred_runtime) == (
+            assert prepare_iphone_simulator(dests, preferred_runtime, "26.2") == (
                 "fresh-2" if fail_first_boot else "fresh-1"
             )
         return attempted
 
-    assert run_preparation(older_runtime, False) == [older_runtime]
-    assert run_preparation(older_runtime, True) == [older_runtime, primary_runtime]
-    assert run_preparation("unavailable", False) == [primary_runtime]
+    assert run_preparation(eligible, older_runtime, False) == [older_runtime]
+    assert run_preparation(eligible, older_runtime, True) == [older_runtime, primary_runtime]
+    assert run_preparation(eligible, "unavailable", False) == [primary_runtime]
+    assert run_preparation(hosted, incompatible_runtime, False) == [minimum_runtime]
+    assert run_preparation(hosted, minimum_runtime, True) == [minimum_runtime, minimum_runtime]
     print("self-test ok", file=sys.stderr)
 
 
@@ -298,6 +312,7 @@ def main() -> None:
     parser.add_argument("--cloned-source-packages")
     parser.add_argument("--prepare", action="store_true", help="Create and boot a clean CI simulator")
     parser.add_argument("--preferred-runtime", help="Prefer this installed runtime when preparing a clean device")
+    parser.add_argument("--minimum-os", default="0", help="Minimum iOS version when preparing a clean device")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -310,7 +325,7 @@ def main() -> None:
         fail_no_destination(dests)
     assert picked is not None
     if args.prepare:
-        print(prepare_iphone_simulator(dests, args.preferred_runtime))
+        print(prepare_iphone_simulator(dests, args.preferred_runtime, args.minimum_os))
         return
     print(f"选中模拟器：{format_dest(picked)}", file=sys.stderr)
     print(picked["id"])
