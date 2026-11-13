@@ -1584,7 +1584,7 @@ struct CloudSessionView: View {
                     font: (typography?.design ?? .current).styled(
                         UIFontMetrics(forTextStyle: .body).scaledFont(for: .systemFont(ofSize: 17),
                             compatibleWith: UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(typography?.inputTypeSize ?? typeSize))),
-                        boldText: typography?.boldText ?? FontSettings.shared.systemBoldText))
+                        boldText: typography?.boldText ?? UIAccessibility.isBoldTextEnabled))
                 Button { toggleDictation() } label: {
                     Image(systemName: dictation.isRecording ? "stop.circle.fill" : "mic").font(.system(size: 17))
                         .foregroundStyle(dictation.isRecording ? Color.red : Color.secondary)
