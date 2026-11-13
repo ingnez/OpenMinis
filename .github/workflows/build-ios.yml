@@ -1721,7 +1721,7 @@ jobs:
             cloud-connection-typecheck.log
           retention-days: 14
 
-      - name: 清理本次新建的 CI 模拟器
+      - name: 清空专用 CI 模拟器的测试数据
         if: ${{ always() && steps.simulator.outputs.udid != '' }}
         env:
           DEV: ${{ steps.simulator.outputs.udid }}
@@ -1732,8 +1732,8 @@ jobs:
           try:
               subprocess.run(['xcrun', 'simctl', 'shutdown', device], timeout=30, capture_output=True)
           finally:
-              subprocess.run(['xcrun', 'simctl', 'delete', device], timeout=30, check=True)
-          print('Deleted only the simulator created by this CI job.')
+              subprocess.run(['xcrun', 'simctl', 'erase', device], timeout=90, check=True)
+          print('Erased test data only on this job’s dedicated OpenMinis CI simulator.')
           PY
 
       - name: Agent 回归必须通过（先保存定向 UI 诊断证据再判定）

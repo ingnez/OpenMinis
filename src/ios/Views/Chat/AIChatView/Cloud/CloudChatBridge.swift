@@ -237,6 +237,7 @@ public final class CloudChatBridge: ObservableObject {
             "instructions": instructions,
             "history": history
         ]
+        try CloudExperience.prepare(&messagePayload)
         if !messageParts.isEmpty {
             messagePayload["message_parts"] = messageParts
         }

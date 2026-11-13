@@ -14,10 +14,15 @@ import UniformTypeIdentifiers
 /// UIKit share sheet wrapper for sharing a single URL (file or link).
 struct MinisShareSheet: UIViewControllerRepresentable {
     let url: URL
+    var onCompletion: (() -> Void)? = nil
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
         let safeURL = MinisShareSheet.sanitizedShareURL(url) ?? url
-        return UIActivityViewController(activityItems: [safeURL], applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: [safeURL], applicationActivities: nil)
+        controller.completionWithItemsHandler = { _, _, _, _ in
+            DispatchQueue.main.async { onCompletion?() }
+        }
+        return controller
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}

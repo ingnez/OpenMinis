@@ -149,6 +149,7 @@ final class CloudOutbox {
     static func encode(_ body: [String: Any], providerInstanceId: String? = nil) -> Data? {
         guard body["message_parts"] == nil else { return nil }
         var payload = body
+        payload.removeValue(forKey: "execution_profiles")
         if var provider = payload["provider"] as? [String: Any], provider["api_key"] != nil {
             guard providerInstanceId != nil else { return nil }
             provider.removeValue(forKey: "api_key")

@@ -54,7 +54,12 @@ final class ChatMessage: ObservableObject {
  @Published var adoptedMark = false
  init(role: ChatMessageRole, content: String, blocks: [AssistantBlock] = []) { self.role=role; self.content=content; self.blocks=blocks }
 }
-struct ModelEntry { let providerInstanceId: String; let model: LLMModel }
+struct ModelEntry: Identifiable {
+ let providerInstanceId: String
+ let model: LLMModel
+ var isHidden: Bool = false
+ var id: String { providerInstanceId + "/" + model.id }
+}
 @MainActor
 final class AIChatViewModel: ObservableObject {
  nonisolated static func minisWorkspacePersistentDir(for sid: String) -> URL { FileManager.default.temporaryDirectory.appendingPathComponent(sid) }

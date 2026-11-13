@@ -99,6 +99,9 @@ import cloud_bots
 import cloud_admin
 import cloud_vault
 import cloud_workers
+import cloud_workorders
+import cloud_experience
+import cloud_experience_runtime
 import cloud_approval_grant
 import cloud_secret_refs
 import cloud_reply
@@ -359,6 +362,8 @@ def init_db():
     cloud_admin.ensure_schema(conn)
     cloud_vault.ensure_schema(conn)
     cloud_workers.ensure_schema(conn)
+    cloud_workorders.ensure_schema(conn)
+    cloud_experience.ensure_schema(conn)
     cloud_approval_grant.ensure_schema(conn)
     cloud_secret_refs.ensure_schema(conn)
     cloud_secret_refs.set_loader(get_db_connection)
@@ -723,7 +728,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.57.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.58.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -1193,6 +1198,7 @@ def log_event(task_id, etype, payload):
     conn.close()
     with EVENT_COND:
         EVENT_COND.notify_all()
+    return c.lastrowid
 
 def normalize_tool_call_ids(tool_calls, seen):
     """有的中转站不给工具调用 id，或每轮都用同一个 id（如 call_0）。
@@ -1239,6 +1245,15 @@ def inbox_push(task_id, content, nonce):
     插话不会批准任何等待中的风险操作——审批只能走 /approvals 接口。"""
     if isinstance(content, str):
         content, _ = cloud_secret_refs.mask_pasted(content)
+    if cloud_workorders.stop_all_requested(content):
+        ec = get_db_connection()
+        try:
+            row = ec.execute("SELECT session_id FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        finally:
+            ec.close()
+        stopped = experience_stop_message(row[0], content, nonce) if row else None
+        if stopped:
+            return stopped
     with INBOX_LOCK:
         conn = get_db_connection()
         try:
@@ -1262,6 +1277,14 @@ def inbox_push(task_id, content, nonce):
             return 409, {"error": "任务已经结束，请作为新消息发送", "status": row[0]}
         box = INBOX.setdefault(task_id, {"closed": False, "items": []})
         box["items"].append({"content": content, "nonce": nonce})
+    if task_id in EXPERIENCE_TASKS:
+        ec = get_db_connection()
+        try:
+            cloud_workorders.register_request(ec, row[1], nonce, content)
+            cloud_workorders.reconcile(ec, row[1])
+            cloud_experience.learn_correction(ec, row[1], content)
+        finally:
+            ec.close()
     log_event(task_id, "user_message", {"content": content, "nonce": nonce, "state": "pending"})
     return 202, {"task_id": task_id, "accepted": True, "state": "queued"}
 
@@ -3105,6 +3128,9 @@ def _post_when_idle(session_id, text, timeout=1800, meta=None):
         time.sleep(1.0)
 
 # ---------- 后台任务（worker）：前台聊天，后台干活 ----------
+EXPERIENCE_REQUESTS = {}    # currently applied request per front task
+EXPERIENCE_TASKS = {}       # task_id -> ephemeral phone-owned role profiles
+EXPERIENCE_REVIEWERS = {}   # worker_id -> ephemeral reviewer profile
 WORKER_RUNTIME = {}          # worker_id -> (model, provider)：排队的任务开跑时用；重启后丢失（中断的任务由前台 task_resume 带上新的）
 WORKER_LOCK = threading.Lock()
 
@@ -3138,6 +3164,13 @@ def worker_view(w):
     w["can_pause"] = w["status"] in ("queued", "running")
     w["can_resume"] = w["status"] == "paused"
     w["can_retry"] = cloud_workers.can_retry(w["status"])
+    conn = get_db_connection()
+    try:
+        contract = cloud_workorders.get(conn, w["worker_id"])
+        if contract:
+            w["workorder"] = contract
+    finally:
+        conn.close()
     for k in ("context", "checkpoint", "runtime"):
         w.pop(k, None)
     return w
@@ -3243,7 +3276,9 @@ def _worker_launch(wid):
         conn = get_db_connection()
         try:
             w = cloud_workers.get(conn, wid)
-            if not w or w["status"] != "queued" or cloud_workers.running_count(conn, w["bot_id"]) >= cloud_workers.SOFT_CAP:
+            cfg = cloud_experience.settings(conn, w["front_session"]) if w else None
+            cap = cloud_workorders.concurrency(cfg) if cfg else cloud_workers.SOFT_CAP
+            if not w or w["status"] != "queued" or cloud_workers.running_count(conn, w["bot_id"]) >= cap:
                 return False
             runtime = WORKER_RUNTIME.get(wid)
             if not runtime:
@@ -3256,6 +3291,12 @@ def _worker_launch(wid):
                          (tid, w["worker_session"], model, now))
             has_user = conn.execute("SELECT 1 FROM messages WHERE session_id = ? AND role = 'user'", (w["worker_session"],)).fetchone()
             prompt = cloud_workers.worker_prompt(w) if not has_user else "继续完成这个任务（上次没做完）。" + ("\n补充：" + note if note else "")
+            contract = cloud_workorders.get(conn, wid)
+            if contract:
+                prompt += "\n【当前工单】" + json.dumps({k: contract[k] for k in cloud_workorders.FIELDS}, ensure_ascii=False)
+                prompt += "\n每条验收标准都要实际验证。工具结果中 evidence_event_id 可用于 record_evidence。未验证的内容只称草稿。"
+                if note:
+                    prompt += "\n审核反馈：" + note
             conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (w["worker_session"], prompt, now))
             conn.commit()
             cloud_workers.set_status(conn, wid, "running", task_id=tid, started_at=now, finished_at=None)
@@ -3298,7 +3339,29 @@ def _worker_finish(wid, tid, started):
                     if isinstance(failure, str) and failure.strip():
                         failure = scrub_text(sanitize_err(failure))[:600]
                         result = failure + ("\n\n已产生的内容\n" + result if result else "")
-            cloud_workers.set_status(conn, wid, status, result=result, finished_at=time.time())
+            contract = cloud_workorders.get(conn, wid)
+            if contract and status == "completed":
+                cloud_workers.set_status(conn, wid, "running", last_step="核验交付依据")
+                verified = cloud_experience_runtime.verify(sys.modules[__name__], conn, dict(w, result=result))
+                if not verified:
+                    checkpoint = json.loads(w.get("checkpoint") or "{}")
+                    retries = checkpoint.get("review_retries", 0)
+                    review = (cloud_workorders.get(conn, wid) or {}).get("review") or {}
+                    feedback = "；".join(map(str, review.get("unmet") or [])) or "每条标准都需要相关的实际工具验证依据"
+                    if retries < 2 and not is_task_cancelled(tid):
+                        status = "queued"
+                        runtime = WORKER_RUNTIME.get(wid)
+                        if runtime:
+                            WORKER_RUNTIME[wid] = (runtime[0], runtime[1], feedback)
+                        conn.execute("UPDATE bot_workers SET checkpoint=? WHERE worker_id=?",
+                                     (json.dumps({"review_retries": retries + 1}), wid))
+                    else:
+                        status = "failed"
+                        result = "待验证草稿：" + feedback + ("\n\n" + result if result else "")
+            cloud_workers.set_status(conn, wid, status, result=result, finished_at=None if status == "queued" else time.time())
+            if contract:
+                cloud_workorders.reconcile(conn, w["front_session"])
+                cloud_experience.checkpoint(conn, wid, status)
             w = cloud_workers.get(conn, wid)
             _worker_post(conn, w)
         bot_id = w["bot_id"] if w else None
@@ -3309,7 +3372,9 @@ def _worker_finish(wid, tid, started):
     for q in queued:
         if not _worker_launch(q):
             break
-    WORKER_RUNTIME.pop(wid, None)
+    if wid not in queued:
+        WORKER_RUNTIME.pop(wid, None)
+        EXPERIENCE_REVIEWERS.pop(wid, None)
 
 def _worker_post(_conn, w):
     """结果作为 Bot 的消息发回前台（台账去重：只发一次），并走通知路由。前台正在回话时等它说完再写，不插在工具调用中间（另开线程等）。"""
@@ -3604,6 +3669,14 @@ def tool_runmodel(task_id, session_id, name, args, model, provider_config, depth
             text = args.get("text")
             if not isinstance(text, str) or not text.strip():
                 return {"error": "text 不能为空"}
+            order = cloud_workorders.get(conn, w["worker_id"])
+            if order:
+                try:
+                    if not cloud_workorders.milestone(conn, w["worker_id"], args.get("kind"), text):
+                        return {"posted": False, "note": "这个节点已经汇报过"}
+                    cloud_experience.checkpoint(conn, w["worker_id"], args["kind"])
+                except cloud_workorders.WorkOrderError as exc:
+                    return {"error": str(exc)}
             n = conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ? AND meta LIKE ?",
                              (w["front_session"], f'%"milestone": "{w["worker_id"]}"%')).fetchone()[0]
             cloud_workers.set_status(conn, w["worker_id"], w["status"], last_step=text.strip()[:200])
@@ -3665,8 +3738,43 @@ def tool_runmodel(task_id, session_id, name, args, model, provider_config, depth
                 "timezone": tz, "note": "已创建。回复里用一句话告诉用户什么时候会运行。"}
     return {"error": "unknown tool"}
 
+def experience_stop_message(sid, content, nonce):
+    """Deterministic stop path, independent of model/network availability."""
+    conn = get_db_connection()
+    try:
+        if not cloud_experience.settings(conn, sid):
+            return None
+        if nonce:
+            old = conn.execute("SELECT task_id FROM tasks WHERE session_id=? AND client_nonce=?", (sid, nonce)).fetchone()
+            if old:
+                return 200, {"task_id": old[0], "session_id": sid, "status": "completed", "idempotent_replayed": True}
+        running = conn.execute("SELECT task_id FROM tasks WHERE session_id=? AND status IN ('running','waiting_user')", (sid,)).fetchall()
+        for row in running:
+            set_task_cancelled(row[0])
+            conn.execute("UPDATE tasks SET status='cancelled' WHERE task_id=?", (row[0],))
+        conn.commit()
+        stopped = cloud_experience_runtime.stop_all(sys.modules[__name__], sid)
+        text = "已停止：" + "、".join(w["title"] for w in stopped) if stopped else "当前没有正在进行的后台任务。"
+        tid, now = "task_" + uuid.uuid4().hex[:12], time.time()
+        conn.execute("INSERT INTO tasks(task_id,session_id,client_nonce,status,model,created_at) VALUES (?,?,?,'completed','',?)", (tid,sid,nonce,now))
+        conn.execute("INSERT INTO messages(session_id,role,content,timestamp,meta) VALUES (?,'user',?,?,?)", (sid,content,now,json.dumps({"client_nonce":nonce})))
+        conn.execute("INSERT INTO messages(session_id,role,content,timestamp) VALUES (?,'assistant',?,?)", (sid,text,now))
+        conn.commit()
+        rid = cloud_workorders.register_request(conn,sid,nonce,content)
+        cloud_workorders.answer_request(conn,rid,sid,text)
+        log_event(tid,"task_result",{"status":"completed","content":text,"stopped":stopped})
+        return 202, {"task_id":tid,"session_id":sid,"status":"completed"}
+    finally:
+        conn.close()
+
+
 def tool_worker(task_id, session_id, name, args, model, provider_config):
     args = args if isinstance(args, dict) else {}
+    if name == "dispatch_workorder":
+        try:
+            return cloud_experience_runtime.dispatch(sys.modules[__name__], task_id, session_id, args, model, provider_config)
+        except (cloud_workorders.WorkOrderError, ValueError) as exc:
+            return {"error": str(exc), "note": "补齐工单字段后重试；当前没有派发成功。"}
     if name == "spawn_task":
         conn = get_db_connection()
         try:
@@ -5111,7 +5219,7 @@ TOOL_DEFINITIONS.extend([
         "description": "Continue an interrupted, failed or stopped background task in its own context (optionally with an extra note).",
         "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "note": {"type": "string"}}, "required": ["id"]}}},
 ])
-WORKER_FRONT_TOOLS = {"spawn_task", "task_status", "task_message", "task_stop", "task_resume"}
+WORKER_FRONT_TOOLS = {"dispatch_workorder", "spawn_task", "task_status", "task_message", "task_stop", "task_resume"}
 
 _SCHEDULE_SCHEMA = {"type": "object", "description": "kind=cron {expr:'0 9 * * 1-5'}（按用户时区）｜once {at:'2026-11-11T08:00'（用户时区）或 UNIX 秒}｜interval {seconds}；"
                     "window_minutes 可选：在这之后的若干分钟内随机挑一个时间（不用卡准点）",
@@ -5139,7 +5247,8 @@ TOOL_DEFINITIONS.extend([
         "name": "report_progress",
         "description": "Background tasks only: post a brief milestone into the user's chat (max 3 per task; e.g. 'found 12 candidates, comparing now'). "
                        "Not for step-by-step narration.",
-        "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}},
+        "parameters": {"type": "object", "properties": {"text": {"type": "string"},
+            "kind": {"type": "string", "enum": ["result", "decision", "blocked", "plan_changed"]}}, "required": ["text"]}}},
     {"type": "function", "function": {
         "name": "routine_create",
         "description": "Create a routine for this bot: a scheduled prompt (daily digest, weekly check), a one-off reminder, or a monitor "
@@ -5188,7 +5297,7 @@ def session_tools(session_id, depth):
     tools = tools_for_depth(depth, is_admin_session(session_id, depth))
     if depth >= 1 or not session_is_front(session_id):
         tools = [t for t in tools if t["function"]["name"] not in WORKER_FRONT_TOOLS]
-    return tools
+    return tools + ([cloud_experience.EVIDENCE_TOOL] if depth == 0 and session_is_worker(session_id) else [])
 
 def session_is_worker(session_id):
     conn = get_db_connection()
@@ -5437,8 +5546,15 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     front_session = depth == 0 and session_is_front(session_id)
     reply = reply_plan(session_id, model) if front_session else None
     instant = bool(reply and reply["mode"] == "instant")
+    experience_profiles = EXPERIENCE_TASKS.get(task_id) if front_session else None
     if instant:
-        system_text += cloud_reply.FRONT_INSTANT_NOTE
+        system_text += cloud_experience.NOTE if experience_profiles else cloud_reply.FRONT_INSTANT_NOTE
+        if experience_profiles:
+            _ec = get_db_connection()
+            try:
+                system_text += cloud_experience.memory_note(_ec, session_id, initial_content)
+            finally:
+                _ec.close()
     elif front_session:
         system_text += FRONT_NOTE
     deliver_enabled = not session_incognito(session_id)
@@ -5538,6 +5654,20 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     # 主模型连续失败（5xx / 429 / 超时 / 断连）：先原地重试一次，再按资源设置里的 failover 依次换用备用服务商
     route = {"url": chat_url, "key": api_key, "model": model, "chain": list(rs_perf.get("failover") or [])}
     main_model = model
+    back_provider = provider_config
+    front_route = None
+    if instant and experience_profiles:
+        front_route = cloud_experience.route(experience_profiles["front"])
+        fallback_route = cloud_experience.route(experience_profiles["back"])
+        back_provider = experience_profiles["back"]["provider"]
+        reply["front_model"] = front_route["model"]
+        reply["back_model"] = fallback_route["model"]
+        main_model = fallback_route["model"]
+        route.update(front_route)
+        model = front_route["model"]
+        perf["auto_model"] = model
+        route["front_active"] = True
+        effort = "off"
     if instant:
         # 秒回：前台用快模型马上回话；真正干活的后台任务用后台模型（没填就是主模型）
         REPLY_BACK_MODEL[task_id] = reply["back_model"]
@@ -5640,7 +5770,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         retried = False
         while True:
             deadline = front_deadline
-            if deadline is not None and route["model"] == reply["front_model"] and route["model"] != main_model:
+            if deadline is not None and ((front_route and route.get("front_active")) or (not front_route and route["model"] == reply["front_model"] and route["model"] != main_model)):
                 deadline = min(deadline, time.monotonic() + cloud_reply.FRONT_FAST_ATTEMPT_TIMEOUT)
             try:
                 return call_chat(route["url"], {"Content-Type": "application/json", "Authorization": f"Bearer {route['key']}"}, {
@@ -5666,9 +5796,12 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     if not route_vision("error"):
                         vision["blocked"] = True
                     raise VisionRetry()
-                if perf.get("auto_model") and route["model"] == perf["auto_model"]:
+                if (front_route and route.get("front_active")) or (not front_route and perf.get("auto_model") and route["model"] == perf["auto_model"]):
                     # 快速模型不行（不存在 / 出错）：本任务直接换回主模型，不算失败
                     log_event(task_id, "status", {"message": f"快速模型不可用（{sanitize_err(e)[:60]}），改用 {main_model}"})
+                    if front_route:
+                        route.update(fallback_route)
+                        route["front_active"] = False
                     route["model"] = model = main_model
                     if instant:
                         live_clear(task_id)
@@ -5728,6 +5861,12 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                         cloud_vision.expand_attachment_images(messages, _resolve_att, recent=1)
                     except Exception as e:
                         print(f"injected images failed: {type(e).__name__}", flush=True)
+                if experience_profiles:
+                    ec = get_db_connection()
+                    try:
+                        EXPERIENCE_REQUESTS[task_id] = cloud_workorders.register_request(ec, session_id, item["nonce"], item["content"])
+                    finally:
+                        ec.close()
                 log_event(task_id, "user_message_applied", {"nonce": item["nonce"], "separate_reply": instant})
             return bool(items)
 
@@ -5735,6 +5874,15 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             nonlocal answered, turns, loop_guard, front_deadline, model
             if not instant:
                 return inbox_close(task_id)
+            if experience_profiles and answered and not front_handoffs:
+                ec = get_db_connection()
+                try:
+                    rid = EXPERIENCE_REQUESTS.get(task_id)
+                    answer = cloud_workers.last_answer(ec, session_id, perf["started_at"])
+                    if rid and answer:
+                        cloud_workorders.answer_request(ec, rid, session_id, answer)
+                finally:
+                    ec.close()
             while inbox_close(task_id):
                 # 检查队列后，用户可能恰好撤回。只有真正取到下一条才开启新回合。
                 if not take_injected(limit=1):
@@ -5744,6 +5892,9 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 front_deadline = None
                 route.update(url=chat_url, key=api_key, model=reply["front_model"] or main_model,
                              chain=list(rs_perf.get("failover") or []))
+                if front_route:
+                    route.update(front_route)
+                    route["front_active"] = True
                 model = route["model"]
                 turns = 0
                 loop_guard = cloud_runmodel.LoopGuard()
@@ -5822,7 +5973,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 if mention_hint or dynamic_note:
                     send_msgs = _append_note(send_msgs, (mention_hint or "") + dynamic_note)
                 if instant:
-                    tools = cloud_reply.front_tools(session_tools(session_id, depth))   # 前台不拿干活的工具，全部交给后台
+                    tools = (cloud_experience.front_tools if experience_profiles else cloud_reply.front_tools)(session_tools(session_id, depth))   # 前台不拿干活的工具，全部交给后台
                 else:
                     tools, _omitted = cloud_llm.select_tools(session_tools(session_id, depth) + plugin_defs, send_msgs, extra_tools,
                                                               always_all=not rs_perf.get("lazy_tools", True))
@@ -5935,10 +6086,14 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                         return (tc_id, fn_name, blocked, 0)
                     if instant:
                         front_err = cloud_reply.front_blocked(fn_name)
+                        if experience_profiles and fn_name == "spawn_task":
+                            front_err = {"error": "请调用 dispatch_workorder，补齐五字段工单后才能派发"}
                         if front_err:
+                            if experience_profiles:
+                                return (tc_id, fn_name, {"error": "前台不能直接执行操作；请调用 dispatch_workorder 并填写完整验收标准。"}, 0)
                             handed = instant_auto_handoff(
                                 task_id, session_id, fn_name, current_user_content,
-                                REPLY_BACK_MODEL.get(task_id) or main_model, provider_config)
+                                REPLY_BACK_MODEL.get(task_id) or main_model, back_provider)
                             return (tc_id, fn_name, handed, 0)
                     if fn_name in ("browser_action", "desktop_action") and isinstance(fn_args, dict):
                         cloud_replay.note_action(task_id, fn_name, fn_args)     # 录屏回放：记下这一步做了什么（不含输入原文）
@@ -6006,10 +6161,23 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     elif fn_name == "list_bots": res = tool_list_bots(task_id, session_id, fn_args)
                     elif fn_name in VAULT_TOOLS: res = tool_vault(task_id, session_id, fn_name, fn_args)
                     elif fn_name in RUNMODEL_TOOLS: res = tool_runmodel(task_id, session_id, fn_name, fn_args, model, provider_config, depth)
+                    elif fn_name == "record_evidence":
+                        ec = get_db_connection()
+                        try:
+                            ew = cloud_workers.by_session(ec, session_id)
+                            if not ew:
+                                res = {"error": "只有后台任务能记录验证依据"}
+                            else:
+                                res = cloud_workorders.record_evidence(ec, ew["worker_id"], fn_args.get("criterion"),
+                                    fn_args.get("event_id"), fn_args.get("kind"), fn_args.get("summary", ""))
+                        except cloud_workorders.WorkOrderError as exc:
+                            res = {"error": str(exc)}
+                        finally:
+                            ec.close()
                     elif fn_name in WORKER_FRONT_TOOLS:
                         res = tool_worker(task_id, session_id, fn_name, fn_args, REPLY_BACK_MODEL.get(task_id) or main_model, provider_config) \
                             if depth == 0 and session_is_front(session_id) else {"error": "这里不能派后台任务，直接完成"}
-                        if instant and fn_name == "spawn_task" and isinstance(res, dict) and res.get("id"):
+                        if instant and fn_name in ("spawn_task", "dispatch_workorder") and isinstance(res, dict) and res.get("id"):
                             with INSTANT_HANDOFF_LOCK:
                                 INSTANT_HANDED.add(task_id)
                     elif fn_name in ADMIN_TOOLS:
@@ -6036,17 +6204,19 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     return (tc_id, fn_name, res, int((time.time() - started_at) * 1000))
 
                 def post_tool(tc_id, fn_name, res, duration_ms=None):
-                    if (instant and (fn_name == "spawn_task" or cloud_reply.front_blocked(fn_name))
+                    if (instant and (fn_name in ("spawn_task", "dispatch_workorder") or cloud_reply.front_blocked(fn_name))
                             and isinstance(res, dict) and res.get("id") and res.get("title")
                             and res.get("status") in ("running", "queued")):
                         front_handoffs.append(res)
                     if fn_name == "request_tools" and isinstance(res, dict) and res.get("enabled"):
                         extra_tools.update(res["enabled"])
                     live_update(task_id, tool=None)
-                    log_event(task_id, "tool_result", {"id": tc_id, "tool": fn_name, "result": res, "duration_ms": duration_ms,
+                    evidence_id = log_event(task_id, "tool_result", {"id": tc_id, "tool": fn_name, "result": res, "duration_ms": duration_ms,
                                                        "preview": step_preview(session_id, fn_name, res)})
                     
                     # Tool result formatting: If screenshot produced, include attachment path and format
+                    if isinstance(res, dict) and is_worker:
+                        res = dict(res, evidence_event_id=evidence_id)
                     tool_content_str = spill_tool_output(session_id, tc_id, cloud_vault.redact(json.dumps(res, ensure_ascii=False)))
                     messages.append({"role": "tool", "tool_call_id": tc_id, "content": tool_content_str})
 
@@ -6169,7 +6339,11 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
         c = conn.cursor()
         c.execute("UPDATE tasks SET status = ? WHERE task_id = ? AND status IN ('running', 'waiting_user')", (final_status, task_id))
         conn.commit()
+        if experience_profiles:
+            cloud_workorders.reconcile(conn, session_id)
         conn.close()
+        EXPERIENCE_TASKS.pop(task_id, None)
+        EXPERIENCE_REQUESTS.pop(task_id, None)
         inbox_drop(task_id)     # 状态改完再拆：之后的插话按「任务已结束」返回 409
         with active_tasks_lock:
             active_tasks.pop(task_id, None)
@@ -7239,6 +7413,20 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed_url.path
         query_params = parse_qs(parsed_url.query)
 
+        m_experience = re.fullmatch(r"/v1/sessions/(sess_[a-f0-9]{12})/experience", path)
+        if m_experience:
+            ec = get_db_connection()
+            try:
+                sid = m_experience.group(1)
+                if not ec.execute("SELECT 1 FROM sessions WHERE session_id=?", (sid,)).fetchone():
+                    self._send(404, {"error": "Session not found"})
+                    return
+                self._send(200, {"settings": cloud_experience.settings(ec,sid),
+                                 "requests": cloud_workorders.reconcile(ec,sid),
+                                 "today_tokens": cloud_usage.total_for_day(ec)})
+            finally:
+                ec.close()
+            return
         if path == "/livez":
             self._send(200, {"status": "ok", "agent_version": AGENT_VERSION})
             return
@@ -7252,6 +7440,7 @@ class Handler(BaseHTTPRequestHandler):
                 "agent_version": AGENT_VERSION,
                 "desktop": _desktop_health_brief(),
                 "capabilities": {
+                    "experience_workorders": True,
                     "shell": True,
                     "files": True,
                     "browser": cloud_browser.is_browser_available(),
@@ -8380,6 +8569,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if method == "POST" and len(parts) == 4 and parts[3] in ("resume", "retry"):
             body = body or {}
+            if body.get("execution_profiles") is not None:
+                try:
+                    roles = cloud_experience.profiles(body["execution_profiles"], body.get("model") or "", body.get("provider") or {})
+                    body["model"], body["provider"] = roles["back"]["model"], roles["back"]["provider"]
+                    EXPERIENCE_REVIEWERS[w["worker_id"]] = roles["reviewer"]
+                except ValueError as exc:
+                    self._send(400, {"error": str(exc)})
+                    return
             code, res = worker_resume(w["worker_id"], body.get("model"), body.get("provider"), body.get("note"))
             self._send(code, res)
             return
@@ -9113,6 +9310,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         req_json = self._read_json_body()
         if req_json is None:
+            return
+        m_experience = re.fullmatch(r"/v1/sessions/(sess_[a-f0-9]{12})/experience", path)
+        if m_experience:
+            ec = get_db_connection()
+            try:
+                sid = m_experience.group(1)
+                if not ec.execute("SELECT 1 FROM sessions WHERE session_id=?", (sid,)).fetchone():
+                    self._send(404, {"error": "Session not found"})
+                    return
+                self._send(200, {"settings": cloud_experience.configure(ec, sid, req_json)})
+            except ValueError as exc:
+                self._send(400, {"error": str(exc)})
+            finally:
+                ec.close()
             return
         m_session_delete = BOT_SESSION_DELETE_ROUTE.fullmatch(path)
         if m_session_delete:
@@ -9935,6 +10146,11 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 db_user_content = content
 
+            if cloud_workorders.stop_all_requested(content):
+                stopped = experience_stop_message(sid, content, req_json.get("client_nonce"))
+                if stopped:
+                    self._send(*stopped)
+                    return
             model = req_json.get("model", "gpt-4o")
             client_effort = req_json.get("reasoning_effort")
             if client_effort not in (None, "") and client_effort not in cloud_bots.EFFORTS:
@@ -9952,6 +10168,23 @@ class Handler(BaseHTTPRequestHandler):
             if p_err:
                 self._send(p_status, {"error": p_err})
                 return
+            execution_profiles = None
+            if req_json.get("experience") is not None:
+                try:
+                    if req_json["experience"].get("version") != 1:
+                        raise ValueError("体验协议版本必须为 1")
+                    execution_profiles = cloud_experience.profiles(req_json.get("execution_profiles") or {}, model, provider)
+                    ec = get_db_connection()
+                    try:
+                        if not ec.execute("SELECT 1 FROM sessions WHERE session_id=?", (sid,)).fetchone():
+                            self._send(404, {"error": "Session not found"})
+                            return
+                        cloud_experience.configure(ec, sid, req_json["experience"])
+                    finally:
+                        ec.close()
+                except (ValueError, TypeError, AttributeError) as exc:
+                    self._send(400, {"error": str(exc)})
+                    return
             blocked = usage_blocked()
             if blocked:
                 self._send(429, {"error": blocked, "error_kind": "daily_cap"})
@@ -10047,6 +10280,16 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
+            if req_json.get("experience") is not None:
+                ec = get_db_connection()
+                try:
+                    cloud_experience.configure(ec, sid, req_json["experience"])
+                    EXPERIENCE_REQUESTS[tid] = cloud_workorders.register_request(ec, sid, client_nonce, content)
+                    cloud_workorders.reconcile(ec, sid)
+                    cloud_experience.learn_correction(ec, sid, content)
+                finally:
+                    ec.close()
+                EXPERIENCE_TASKS[tid] = execution_profiles
             with active_tasks_lock:
                 active_tasks[tid] = {"process": None, "cancelled": False, "pid": None}
             if client_effort and not (bot and bot.get("reasoning_effort")):

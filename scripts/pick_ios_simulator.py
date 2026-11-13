@@ -138,9 +138,20 @@ def prepare_iphone_simulator(
         udid = None
         ready = False
         try:
-            created = simctl("create", f"OpenMinis CI {attempt}", device_type, runtime)
-            created.check_returncode()
-            udid = created.stdout.strip()
+            # One dedicated device per runtime. Erase its test data between runs;
+            # CoreSimulator on Mac-58 can refuse to move a device into Deleting-*
+            # even after a successful shutdown (NSCocoaErrorDomain 513).
+            name = f"OpenMinis CI {runtime.rsplit('.', 1)[-1]} {attempt}"
+            existing = next((d for d in data["devices"].get(runtime, [])
+                             if d.get("name") == name and d.get("isAvailable", True)), None)
+            if existing:
+                udid = existing["udid"]
+                simctl("shutdown", udid)
+                simctl("erase", udid, timeout=90).check_returncode()
+            else:
+                created = simctl("create", name, device_type, runtime)
+                created.check_returncode()
+                udid = created.stdout.strip()
             if not udid:
                 raise RuntimeError("simctl create 未返回设备 UDID")
             result = simctl("bootstatus", udid, "-b", timeout=180)

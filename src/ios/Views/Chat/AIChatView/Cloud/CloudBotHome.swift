@@ -1108,6 +1108,7 @@ struct CloudBotChatView: View {
     @State private var showDetail = false
     @State private var showComputer = false
     @State private var showFilesPage = false
+    @State private var showRequestLedger = false
 
     @ObservedObject private var lock = CloudBotLock.shared
     /// 当前是无痕对话时记下它和之前的对话，结束后删掉并回到原来的对话
@@ -1213,6 +1214,7 @@ struct CloudBotChatView: View {
         .navigationDestination(isPresented: $showComputer) {
             CloudComputerView(botId: botId, sessionId: sessionId, reason: nil)
         }
+        .sheet(isPresented: $showRequestLedger) { CloudExperienceLedgerView(sessionID: sessionId ?? "") }
         .navigationDestination(isPresented: $showFilesPage) {
             CloudChatFilesPage(sessionId: sessionId ?? "", botName: model.bot(botId)?.name)
         }
@@ -1262,6 +1264,10 @@ struct CloudBotChatView: View {
         }
         Button { showHistory = true } label: { Label("历史对话", systemImage: "clock.arrow.circlepath") }
             .disabled(changingSession || lock.needsUnlock(botId))
+        if CloudExperience.enabled, sessionId != nil, !lock.needsUnlock(botId) {
+            Button { showRequestLedger = true } label: { Label("请求台账", systemImage: "checklist") }
+                .accessibilityIdentifier("experienceLedgerMenu")
+        }
         if let sid = sessionId, !lock.needsUnlock(botId) {
             Button { speakLatest(sid) } label: { Label("朗读最新回复", systemImage: "speaker.wave.2") }
             Button { showComputer = true } label: { Label("电脑", systemImage: "display") }

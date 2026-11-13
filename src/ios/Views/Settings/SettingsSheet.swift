@@ -55,6 +55,7 @@ struct SettingsSheet: View {
                 Section {
                     HomeModeRow(current: HomeMode.from(homeMode), dismiss: { dismiss() })
                 }
+                CloudExperienceSection()
                 if homeMode == "local" {
                     LocalReplyModeSection()
                 }

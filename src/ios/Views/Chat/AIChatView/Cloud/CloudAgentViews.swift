@@ -39,6 +39,7 @@ struct CloudAgentSettingsView: View {
 
     var body: some View {
         Form {
+            CloudExperienceSection()
             Section {
                 NavigationLink(destination: CloudServersView()) {
                     Label("多台云电脑（切换 · 测负载）", systemImage: "server.rack")
@@ -2159,6 +2160,7 @@ struct CloudSessionView: View {
         var body = rawBody
         let nonce = body["client_nonce"] as? String ?? UUID().uuidString
         body["client_nonce"] = nonce
+        CloudExperience.capture(&body)
         let items = attachments
         attachments = []
         inputPrompt = ""
@@ -2478,6 +2480,7 @@ struct CloudSessionView: View {
 
     private func postSessionMessage(_ item: CloudDeliveryBox.Item, retryBusy: Bool = true) async throws -> DeliveryResult {
         var body = item.body
+        try CloudExperience.prepare(&body)
         if let instanceId = item.providerInstanceId,
            var provider = body["provider"] as? [String: Any], provider["api_key"] == nil {
             guard let inst = ProviderConfigStore.shared.instance(for: instanceId), inst.isEnabled,

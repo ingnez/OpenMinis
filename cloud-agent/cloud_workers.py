@@ -233,7 +233,11 @@ def recover(conn, post_prompt=None):
             f"SELECT {', '.join(COLS)} FROM bot_workers WHERE status IN ('queued', 'running')"
     ).fetchall()]:
         st = conn.execute("SELECT status FROM tasks WHERE task_id = ?", (w["task_id"],)).fetchone() if w["task_id"] else None
-        if st and st[0] == "completed":
+        strict = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='worker_workorders'").fetchone()
+        verified = None
+        if strict:
+            verified = conn.execute("SELECT verification FROM worker_workorders WHERE worker_id=?", (w["worker_id"],)).fetchone()
+        if st and st[0] == "completed" and (not verified or verified[0] == "verified"):
             result = last_answer(conn, w["worker_session"], w["started_at"] or 0)
             set_status(conn, w["worker_id"], "completed", result=result, finished_at=time.time(),
                        stop_reason=None, pause_requested=0)

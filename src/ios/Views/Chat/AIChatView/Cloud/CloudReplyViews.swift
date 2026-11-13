@@ -50,12 +50,15 @@ enum CloudReplyService {
 
     static func resume(_ wid: String, note: String = "") async throws {
         var body: [String: Any] = [:]
+        try CloudExperience.prepare(&body)
         if !note.isEmpty { body["note"] = note }
         _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/workers/\(wid)/resume", body: body)
     }
 
     static func retry(_ wid: String) async throws {
-        _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/workers/\(wid)/retry", body: [:])
+        var body: [String: Any] = [:]
+        try CloudExperience.prepare(&body)
+        _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/workers/\(wid)/retry", body: body)
     }
 
     static func message(_ wid: String, _ text: String) async throws {

@@ -81,7 +81,7 @@ struct CloudFileCardView: View {
             }
         }
         .sheet(item: Binding(get: { shareURL.map(IdentifiedURL.init) }, set: { shareURL = $0?.url })) { wrapped in
-            MinisShareSheet(url: wrapped.url)
+            MinisShareSheet(url: wrapped.url, onCompletion: { shareURL = nil })
         }
         .sheet(item: Binding(get: { linkURL.map(IdentifiedURL.init) }, set: { linkURL = $0?.url })) { wrapped in
             MinisSafariView(url: wrapped.url, localFile: false)

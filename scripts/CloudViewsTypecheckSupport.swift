@@ -15,11 +15,7 @@ struct ProviderInstance: Identifiable {
  var customUserAgent: String? { nil }
  func resolvedBaseURL(default value: String) -> (url: String, appendV1: Bool) { (value, true) }
 }
-struct CloudTestModelEntry {
- let providerInstanceId: String
- let model: LLMModel
- let isHidden: Bool
-}
+typealias CloudTestModelEntry = ModelEntry
 struct CloudTestProviderConfig {
  var instances: [ProviderInstance] = []
  var modelEntries: [CloudTestModelEntry] = []
@@ -103,6 +99,7 @@ struct MessageImageGallery: View {
 // App shell views used by deliverable previews and sharing.
 struct MinisShareSheet: View {
     let url: URL
+    var onCompletion: (() -> Void)? = nil
     var body: some View { EmptyView() }
 }
 

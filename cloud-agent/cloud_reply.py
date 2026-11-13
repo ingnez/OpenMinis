@@ -19,7 +19,7 @@ DEFAULT_MODE = "instant"
 MODEL_RE = re.compile(r"^[A-Za-z0-9_./:@+-]{1,128}$")
 
 # 前台在秒回模式下能用的工具：派活、查进度、转话、停止、继续，外加表情 / 选项卡 / 记忆这类不耗时的
-FRONT_TOOLS = frozenset({"spawn_task", "task_status", "task_message", "task_stop", "task_resume",
+FRONT_TOOLS = frozenset({"dispatch_workorder", "spawn_task", "task_status", "task_message", "task_stop", "task_resume",
                          "react", "ask_choice", "memory_search", "memory_write", "recall_snapshot"})
 
 FRONT_INSTANT_NOTE = (

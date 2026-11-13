@@ -28,7 +28,7 @@ enum CloudReplyMode: String, CaseIterable, Identifiable {
     case verbose
 
     /// 秒回时前台派活 / 转话用的工具：对话里不画成步骤（进度在底部状态行）
-    static let handoffTools: Set<String> = ["spawn_task", "task_status", "task_message", "task_stop", "task_resume"]
+    static let handoffTools: Set<String> = ["dispatch_workorder", "spawn_task", "task_status", "task_message", "task_stop", "task_resume"]
 
     var id: String { rawValue }
     var label: String { self == .instant ? "秒回" : "详细" }
