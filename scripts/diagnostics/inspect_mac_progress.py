@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import time
 import zipfile
 
 repo = os.environ['GITHUB_REPOSITORY']
@@ -26,7 +27,8 @@ if job['status'] in ('queued', 'waiting', 'pending'):
     print(json.dumps(summary))
     raise SystemExit(0)
 with Path('mac-live.log').open('wb') as out:
-    result = subprocess.run(['gh', 'api', '--allow-escape-sequences', 'repos/'+repo+'/actions/jobs/'+job_id+'/logs'],
+    result = subprocess.run(['gh', 'api', '--allow-escape-sequences', '-H', 'Cache-Control: no-cache',
+                             'repos/'+repo+'/actions/jobs/'+job_id+'/logs?openminis_observed='+str(time.time_ns())],
                             stdout=out, stderr=subprocess.PIPE)
 if result.returncode:
     message = result.stderr.decode(errors='replace')
