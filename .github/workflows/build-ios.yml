@@ -715,6 +715,9 @@ jobs:
       - name: 使用 runner 工具目录内的 CI Python 3.13
         run: bash scripts/prepare_mac_python.sh
 
+      - name: 复用独立的 CI 编译缓存
+        run: python3 scripts/prepare_mac_build_cache.py device
+
       - name: iOS 16 API 兼容预检
         run: |
           # 部署目标是 iOS 16：禁止双参数 onChange（iOS 17+）；云端页面里禁止未加 #available 的 iOS 17 专属 API
@@ -1128,6 +1131,9 @@ jobs:
 
       - name: 使用 runner 工具目录内的 CI Python 3.13
         run: bash scripts/prepare_mac_python.sh
+
+      - name: 复用独立的 CI 编译缓存
+        run: python3 scripts/prepare_mac_build_cache.py simulator
 
       - name: iOS 16 API 兼容预检
         run: |
@@ -1678,6 +1684,21 @@ jobs:
             cloud-agent-test.log
             cloud-connection-typecheck.log
           retention-days: 14
+
+      - name: 清理本次新建的 CI 模拟器
+        if: ${{ always() && steps.simulator.outputs.udid != '' }}
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          device = os.environ['DEV']
+          try:
+              subprocess.run(['xcrun', 'simctl', 'shutdown', device], timeout=30, capture_output=True)
+          finally:
+              subprocess.run(['xcrun', 'simctl', 'delete', device], timeout=30, check=True)
+          print('Deleted only the simulator created by this CI job.')
+          PY
 
       - name: Agent 回归必须通过（先保存定向 UI 诊断证据再判定）
         if: ${{ always() && steps.agent_regression.outcome == 'failure' }}
