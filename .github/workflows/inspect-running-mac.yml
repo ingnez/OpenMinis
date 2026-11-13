@@ -25,6 +25,7 @@ jobs:
           name: current-mac-progress
           path: |
             mac-job.json
+            mac-live.log
             mac-progress.json
             mac-live-tail.log
             mac-operation-tail.log
