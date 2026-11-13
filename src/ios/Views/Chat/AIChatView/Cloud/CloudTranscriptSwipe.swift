@@ -30,8 +30,10 @@ final class CloudTranscriptTimes: ObservableObject {
 /// or one message transform. It never changes a message's layout or content.
 @MainActor
 final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognizerDelegate {
-    static let timeWidth: CGFloat = 64
-    fileprivate static let replyThreshold: CGFloat = 54
+    static let timeWidth: CGFloat = 68
+    fileprivate static let replyThreshold: CGFloat = 34
+    fileprivate static let replyCueStart: CGFloat = 6
+    private static let replyOvershoot: CGFloat = 20
 
     let timeOffset = CloudTranscriptOffset()
     let times = CloudTranscriptTimes()
@@ -123,14 +125,14 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
                 let left = max(0, -distance)
                 if pan.state == .began { replyRow?.offset.showingReply = true }
                 if let offset = replyRow?.offset {
-                    let x = -min(left, 78)
+                    let excess = max(0, left - Self.replyThreshold)
+                    let resistance = min(Self.replyOvershoot, 2 * excess.squareRoot())
+                    let x = -(min(left, Self.replyThreshold) + resistance)
                     if offset.x != x { offset.x = x }
                 }
                 let reached = left >= Self.replyThreshold
-                if reached && !armed {
-                    armed = true
-                    CloudHaptics.selection()
-                }
+                if reached && !armed { CloudHaptics.selection() }
+                armed = reached
             }
         case .ended, .cancelled, .failed:
             let row = replyRow
@@ -260,10 +262,14 @@ private struct CloudTranscriptReplyCue: View {
 
     var body: some View {
         if offset.showingReply {
+            let start = CloudTranscriptSwipe.replyCueStart
+            let span = CloudTranscriptSwipe.replyThreshold - start
+            let progress = min(1, max(0, (-offset.x - start) / span))
             Image(systemName: "arrowshape.turn.up.left")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .opacity(min(1, Double(-offset.x / CloudTranscriptSwipe.replyThreshold)))
+                .opacity(Double(progress))
+                .scaleEffect(0.5 + 0.5 * progress)
                 .padding(.trailing, 10)
                 .accessibilityHidden(true)
                 .allowsHitTesting(false)
