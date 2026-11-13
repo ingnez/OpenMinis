@@ -8,7 +8,7 @@ permissions:
   contents: read
 env:
   TARGET_BRANCH: grokbot-phase2-combined-20261113
-  EXPECTED_SHA: 93d5dd7bd71b6c1105144d9dded19b0f281068f1
+  EXPECTED_SHA: c2ca18ed778e1a0dbc599271c24842881c53d82a
 jobs:
   dispatch:
     if: github.repository == 'ingnez/OpenMinis'
@@ -34,7 +34,7 @@ jobs:
             exit 0
           fi
           runs="$repo/actions/workflows/build-ios.yml/runs?branch=$TARGET_BRANCH&head_sha=$EXPECTED_SHA&event=workflow_dispatch&per_page=10"
-          last_id=43421316696
+          last_id=43421886860
           completed_checks=0
           while true; do
             result=$(gh api "$runs" --jq '(.workflow_runs[0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
