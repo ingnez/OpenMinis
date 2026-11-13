@@ -629,6 +629,7 @@
 		RCL000120 /* BackupCategoryIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000220 /* BackupCategoryIcon.swift */; };
 		RCL000121 /* BackupHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000221 /* BackupHUD.swift */; };
 		C10D00000000000000000001 /* cloud-agent-bundle.tar.gz in Resources */ = {isa = PBXBuildFile; fileRef = C10D00000000000000000002 /* cloud-agent-bundle.tar.gz */; };
+		C10D00000000000000000003 /* cloud_workspace_tools.py in Resources */ = {isa = PBXBuildFile; fileRef = C10D00000000000000000004 /* cloud_workspace_tools.py */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1462,6 +1463,7 @@
 		RCL000220 /* BackupCategoryIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupCategoryIcon.swift; sourceTree = "<group>"; };
 		RCL000221 /* BackupHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupHUD.swift; sourceTree = "<group>"; };
 		C10D00000000000000000002 /* cloud-agent-bundle.tar.gz */ = {isa = PBXFileReference; lastKnownFileType = archive.gzip; name = "cloud-agent-bundle.tar.gz"; path = "Resources/cloud-agent-bundle.tar.gz"; sourceTree = "<group>"; };
+		C10D00000000000000000004 /* cloud_workspace_tools.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; name = cloud_workspace_tools.py; path = ../../cloud-agent/cloud_workspace_tools.py; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -1739,6 +1741,7 @@
 				E5V000012 /* AlternateIcons */,
 				E5D00060 /* models-dev-api.json */,
 				C10D00000000000000000002 /* cloud-agent-bundle.tar.gz */,
+				C10D00000000000000000004 /* cloud_workspace_tools.py */,
 				E5JB00014 /* jieba.dict.utf8 */,
 				E5VC0001B /* zh_background_wordfreq.txt */,
 				E5JB00015 /* hmm_model.utf8 */,
@@ -3052,6 +3055,7 @@
 				E54300002 /* test-data-health.json in Resources */,
 				E5D00050 /* models-dev-api.json in Resources */,
 				C10D00000000000000000001 /* cloud-agent-bundle.tar.gz in Resources */,
+				C10D00000000000000000003 /* cloud_workspace_tools.py in Resources */,
 				E5JB00003 /* jieba.dict.utf8 in Resources */,
 				E5VC0000C /* zh_background_wordfreq.txt in Resources */,
 				E5JB00004 /* hmm_model.utf8 in Resources */,

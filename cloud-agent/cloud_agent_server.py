@@ -86,6 +86,7 @@ import cloud_memory
 import cloud_skills
 import cloud_notify
 import cloud_pages
+import cloud_workspace_tools
 import cloud_telegram
 import cloud_bots
 import cloud_admin
@@ -2031,6 +2032,9 @@ SERVER_TOOL_NOTES = (
     "profile（用户本人）/ rules（偏好与约定）/ people（人物）/ workstreams（项目进展）/ note（其他）。不要写入密码、密钥等凭据。"
     "\n[页面库] 报告、表格、看板、可交互的小工具等适合长期查看的成果，用 page_write 保存为完整 HTML 页面（可内联 CSS/JS，不能依赖外部登录态），"
     "用户可在手机“云端页面库”中打开；更新同一页面时传回 page_id。"
+    "\n[结构化成果] 工作区占用用 workspace_scan。报告、表格、图表用 workspace_report，传真实数据，结果沿用页面卡片。"
+    "\n[iPhone 待办] 用户明确要写入苹果提醒事项时，用 reminder_draft 生成草稿。手机用户保存后才会写入系统。"
+    "\n[快捷指令] 用户要求苹果快捷指令时，用 shortcut_draft 生成下载卡片。草稿仍须在可信设备签名后导入。"
     "\n[子代理] 可拆分、互不依赖的子任务可用 subagent_task 交给独立会话的子代理执行，它返回最终结论；子代理不能再派生子代理。"
     "\n[生成图片] 用户要图片时调用 image_generate，图片保存在工作区 attachments/。"
     "\n[发消息] send_message 可经 Telegram 或推送给用户发消息；每次都会先作为草稿请用户确认，被拒绝时不要重试同一内容。"
@@ -2593,9 +2597,59 @@ def tool_page_write(task_id, session_id, args):
         return {"error": f"page_id 不存在：{args.get('page_id')}"}
     finally:
         conn.close()
-    TURN_FLAGS.setdefault(task_id, {}).setdefault("pages", []).append({"page_id": page["page_id"], "title": page["title"]})
+    with TURN_LOCK:
+        TURN_FLAGS.setdefault(task_id, {}).setdefault("pages", []).append({"page_id": page["page_id"], "title": page["title"]})
     return {"status": "ok", "page_id": page["page_id"], "title": page["title"], "version": page["version"], "size": page["size"],
             "note": "页面已保存，聊天里会显示成页面卡片；回复只写一两句结论，不要把页面内容再贴一遍。"}
+
+def tool_workspace_report(task_id, session_id, args):
+    if is_task_cancelled(task_id):
+        return {"error": "Cancelled"}
+    try:
+        html = cloud_workspace_tools.render_report(args.get("title"), args.get("blocks"), args.get("summary"))
+    except ValueError as error:
+        return {"error": str(error)}
+    return tool_page_write(task_id, session_id, {"title": args["title"], "html": html, "page_id": args.get("page_id")})
+
+
+def tool_workspace_scan(task_id, session_id, args):
+    if is_task_cancelled(task_id):
+        return {"error": "Cancelled"}
+    try:
+        return cloud_workspace_tools.scan_workspace(get_session_workspace(session_id), args.get("path", "."), args.get("limit", 15))
+    except ValueError as error:
+        return {"error": str(error)}
+    except OSError:
+        return {"error": "Workspace is unavailable"}
+
+
+def tool_reminder_draft(task_id, _session_id, args):
+    if is_task_cancelled(task_id):
+        return {"error": "Cancelled"}
+    try:
+        draft = cloud_workspace_tools.reminder_draft(args)
+    except ValueError as error:
+        return {"error": str(error)}
+    with TURN_LOCK:
+        TURN_FLAGS.setdefault(task_id, {})["reminder_draft"] = draft
+    return {"status": "draft", **draft, "note": "待办草稿已生成。用户在 iPhone 确认保存后才会写入提醒事项。"}
+
+
+def tool_shortcut_draft(task_id, session_id, args):
+    if is_task_cancelled(task_id):
+        return {"error": "Cancelled"}
+    try:
+        data = cloud_workspace_tools.shortcut_draft(args)
+        draft = save_upload(session_id, "OpenMinis-shortcut.xml", data)
+    except ValueError as error:
+        return {"error": str(error)}
+    except OSError:
+        return {"error": "Could not save the shortcut draft"}
+    draft["title"] = args["title"].strip()
+    with TURN_LOCK:
+        TURN_FLAGS.setdefault(task_id, {})["shortcut_draft"] = draft
+    return {"status": "unsigned_draft", **draft}
+
 
 SUBAGENT_MAX_PER_TASK = int(os.environ.get("OPENMINIS_SUBAGENT_MAX", "8"))
 SUBAGENT_INSTRUCTIONS = (
@@ -3143,12 +3197,21 @@ def _flush_ack(task_id, session_id):
         insert_message(session_id, "assistant", ack, meta={"ack": True})
 
 def _turn_meta(task_id, meta):
-    """最终回复上挂本轮写的页面（App 显示页面卡片）。"""
-    pages = (TURN_FLAGS.get(task_id) or {}).pop("pages", None)
-    if not pages:
+    """Attach artifacts to the final message."""
+    with TURN_LOCK:
+        flags = TURN_FLAGS.get(task_id) or {}
+        pages = flags.pop("pages", None)
+        reminder = flags.pop("reminder_draft", None)
+        shortcut = flags.pop("shortcut_draft", None)
+    if not pages and not reminder and not shortcut:
         return meta
     meta = dict(meta or {})
-    meta["page"] = pages[-1]
+    if pages:
+        meta["page"] = pages[-1]
+    if reminder:
+        meta["reminder_draft"] = reminder
+    if shortcut:
+        meta["shortcut_draft"] = shortcut
     return meta
 
 def _post_turn_card(task_id, session_id):
@@ -4369,6 +4432,75 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "workspace_report",
+            "description": "Render a report with supplied facts and publish it as a viewable page. Use table, chart, timeline, records, cards, or text blocks.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "page_id": {"type": "string"},
+                    "blocks": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "enum": ["table", "chart", "timeline", "records", "cards", "text"]},
+                            "title": {"type": "string"},
+                            "text": {"type": "string"},
+                            "columns": {"type": "array", "items": {"type": "string"}},
+                            "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+                            "items": {"type": "array", "items": {"type": "object", "properties": {
+                                "label": {"type": "string"}, "value": {"type": "number"},
+                                "title": {"type": "string"}, "text": {"type": "string"},
+                            }}},
+                        },
+                        "required": ["type"],
+                    }},
+                },
+                "required": ["title", "blocks"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "workspace_scan",
+            "description": "Read only. List the largest files and directories in this Bot's workspace, without following symbolic links. Sizes are logical bytes.",
+            "parameters": {"type": "object", "properties": {
+                "path": {"type": "string", "description": "Directory relative to this workspace, defaults to ."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            }},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reminder_draft",
+            "description": "Create an editable draft for Apple Reminders. The user must save it on their iPhone. Use only when asked for Apple Reminders, and omit dates the user did not provide.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "notes": {"type": "string"},
+                    "due": {"type": "string", "description": "Local YYYY-MM-DD or YYYY-MM-DDTHH:MM."},
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "shortcut_draft",
+            "description": "Build a basic unsigned Apple Shortcut XML draft for download. Provide text to display/share or an HTTP(S) URL to open.",
+            "parameters": {"type": "object", "properties": {
+                "title": {"type": "string"}, "text": {"type": "string"}, "url": {"type": "string"},
+                "action": {"type": "string", "enum": ["show", "share"]},
+            }, "required": ["title"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "subagent_task",
             "description": "Delegate one self-contained sub task to a sub agent with its own fresh session and the same tools; blocks until it finishes and returns its final answer.",
             "parameters": {
@@ -5411,6 +5543,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     elif fn_name == "recall_snapshot": res = tool_recall_snapshot(session_id, fn_args)
                     elif fn_name == "skill_load": res = tool_skill_load(task_id, session_id, fn_args)
                     elif fn_name == "page_write": res = tool_page_write(task_id, session_id, fn_args)
+                    elif fn_name == "workspace_report": res = tool_workspace_report(task_id, session_id, fn_args)
+                    elif fn_name == "workspace_scan": res = tool_workspace_scan(task_id, session_id, fn_args)
+                    elif fn_name == "reminder_draft": res = tool_reminder_draft(task_id, session_id, fn_args)
+                    elif fn_name == "shortcut_draft": res = tool_shortcut_draft(task_id, session_id, fn_args)
                     elif fn_name == "subagent_task": res = tool_subagent_task(task_id, session_id, fn_args, model, provider_config, depth)
                     elif fn_name == "list_bots": res = tool_list_bots(task_id, session_id, fn_args)
                     elif fn_name in VAULT_TOOLS: res = tool_vault(task_id, session_id, fn_name, fn_args)

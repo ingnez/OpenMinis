@@ -153,6 +153,7 @@ _TOOL_PHRASE = {
     "shell_execute": "运行命令", "background_jobs": "查看后台程序", "file_read": "阅读文件", "file_write": "写文件",
     "file_edit": "修改文件", "memory_search": "翻看记忆", "memory_write": "记下要点", "recall_snapshot": "回顾之前的对话",
     "skill_load": "加载技能", "skill_save": "保存技能", "page_write": "整理成页面", "image_generate": "生成图片",
+    "workspace_report": "生成报告", "workspace_scan": "统计工作区占用", "reminder_draft": "准备待办草稿", "shortcut_draft": "准备快捷指令草稿",
     "subagent_task": "分派子任务", "delegate_task": "请其他 Bot 帮忙", "send_to_bot": "联系其他 Bot", "list_bots": "查看 Bot 列表",
     "vault_list": "查找保管库", "vault_fill": "填写登录信息", "vault_totp": "填写验证码", "send_message": "起草消息",
     "request_user_takeover": "等你接手云电脑", "report_progress": "汇报进展", "ask_choice": "等你决定",

@@ -307,12 +307,16 @@ class RootfsManager {
         var fileCount = 0
         var copyTotalMs: Double = 0
         var metaDbTotalMs: Double = 0
-        while let fileURL = enumerator.nextObject() as? URL {
+        var files = enumerator.compactMap { $0 as? URL }
+        let workspaceTools = Bundle.main.url(forResource: "cloud_workspace_tools", withExtension: "py")
+        if let workspaceTools { files.append(workspaceTools) }
+        for fileURL in files {
             guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
                   values.isRegularFile == true else { continue }
 
-            // relativePath e.g. "/etc/pip/pip.conf"
-            let relativePath = fileURL.path.replacingOccurrences(of: overlayURL.path, with: "")
+            let relativePath = fileURL == workspaceTools
+                ? "/usr/local/lib/openminis-workspace/cloud_workspace_tools.py"
+                : fileURL.path.replacingOccurrences(of: overlayURL.path, with: "")
             let destURL = dataPath.appendingPathComponent(relativePath)
 
             do {
@@ -348,7 +352,7 @@ class RootfsManager {
                 // the every-boot overwrite still updates them on app upgrade.
                 // Scoped to this lib subtree ONLY; the sh wrapper under
                 // /usr/local/bin/ stays 0o755 (handled by binDirs above).
-                if relativePath.hasPrefix(Self.mcpCliLibPrefix) {
+                if relativePath.hasPrefix(Self.mcpCliLibPrefix) || fileURL == workspaceTools {
                     posixMode = 0o444
                 }
                 let fakefsMode: UInt32 = 0o100000 | UInt32(posixMode)

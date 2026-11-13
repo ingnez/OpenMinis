@@ -189,6 +189,18 @@ class WorkerTests(CloudServerTestCase):
         self.assertFalse(tool_names(wreq) & self.srv.WORKER_FRONT_TOOLS)
         self.assertNotIn("[前台对话]", system_of(wreq))
 
+    def test_worker_delivers_reminder_draft_to_front(self):
+        def worker(request):
+            if not fresh_tools(request):
+                return tool_call("draft1", "reminder_draft", {"title": "复核构建", "due": "2026-11-14"})
+            return {"role": "assistant", "content": "待办草稿已准备"}
+
+        FakeModelHandler.scripts["worker-reminder"] = self._front_script(worker)
+        sid = self.new_session()
+        self._say(sid, "查一下并准备苹果提醒事项", "worker-reminder")
+        result = self._wait_results(sid)[0]
+        self.assertEqual(result["reminder_draft"], {"title": "复核构建", "notes": "", "due": "2026-11-14"})
+
     def test_01b_worker_waits_for_front_and_notifies_once(self):
         front_entered, front_release = threading.Event(), threading.Event()
 

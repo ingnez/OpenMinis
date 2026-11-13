@@ -13,6 +13,10 @@ struct CloudCardView: View {
             CloudChoiceCard(card: card, accent: accent)
         case .page:
             CloudPageCard(pageId: card.payload["page_id"] as? String ?? "", title: card.payload["title"] as? String ?? "页面", accent: accent)
+        case .reminder:
+            CloudReminderDraftCard(card: card)
+        case .shortcut:
+            CloudShortcutDraftCard(card: card)
         case .milestone:
             Label((card.payload["text"] as? String ?? "").replacingOccurrences(of: "⏳ ", with: ""), systemImage: "flag.checkered")
                 .font(.footnote).foregroundStyle(.secondary)

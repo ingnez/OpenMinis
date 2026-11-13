@@ -1837,6 +1837,9 @@ struct CloudSessionView: View {
             if let outcome = turn.workerOutcome {
                 CloudWorkerOutcomeRow(outcome: outcome)
                     .modifier(CloudTranscriptMessage(date: CloudHistoryAdapter.MessageLocation(turn.raw).date))
+                ForEach(CloudCards.cards(in: turn.raw), id: \.kind) { card in
+                    CloudCardView(card: card, accent: theme.accent)
+                }
             } else if msg.role == .user {
                 let location = CloudHistoryAdapter.MessageLocation(turn.raw)
                 cloudUserTurn(turn, accent: theme.accent)

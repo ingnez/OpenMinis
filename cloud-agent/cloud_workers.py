@@ -166,10 +166,29 @@ def post_result(conn, w, defer_while_front_active=False):
                 "SELECT 1 FROM tasks WHERE session_id = ? AND status IN ('queued', 'running', 'waiting_user')",
                 (current["front_session"],)).fetchone():
             return None
+        meta = {"worker_id": current["worker_id"], "worker_status": current["status"],
+                "worker_title": current["title"]}
+        if current["status"] == "completed":
+            pending = {"page", "reminder_draft", "shortcut_draft"}
+            rows = conn.execute(
+                "SELECT meta FROM messages WHERE session_id = ? AND role = 'assistant' "
+                "AND timestamp >= ? AND meta IS NOT NULL ORDER BY id DESC",
+                (current["worker_session"], current["started_at"] or 0),
+            )
+            for (raw,) in rows:
+                try:
+                    row = json.loads(raw)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(row, dict):
+                    for key in pending.intersection(row):
+                        meta[key] = row[key]
+                        pending.remove(key)
+                if not pending:
+                    break
         conn.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'assistant', ?, ?, ?)",
                      (current["front_session"], result_text(current), time.time(),
-                      json.dumps({"worker_id": current["worker_id"], "worker_status": current["status"],
-                                  "worker_title": current["title"]}, ensure_ascii=False)))
+                      json.dumps(meta, ensure_ascii=False)))
         conn.execute("UPDATE bot_workers SET reported = 1 WHERE worker_id = ?", (current["worker_id"],))
         return True
 

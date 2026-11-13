@@ -326,6 +326,10 @@
 - **GET /v1/pages**: `{"pages": [{"page_id", "title", "summary", "session_id", "task_id", "version", "created_at", "updated_at", "size"}]}`（按更新时间倒序，不含 HTML）。**GET /v1/pages/{id}** 附带 `html`；**GET /v1/pages/{id}/html** 直接返回 `text/html`，带 `Content-Security-Policy: sandbox allow-scripts; default-src 'none'…`（不能联网、不能读取同源接口）。**DELETE /v1/pages/{id}**。
 - **iOS**: 云电脑设置 → “云端页面库”，在非持久化、无 baseURL 的 WKWebView 中渲染；外部链接交给系统浏览器；可分享 HTML。
 
+- **结构化报告** `workspace_report {title, summary?, blocks, page_id?}`：支持 table、chart、timeline、records、cards、text。模型传实际数据，服务端生成不依赖外部资源的 HTML，并沿用页面卡片与页面库。
+- **工作区占用** `workspace_scan {path?, limit?}`：路径相对当前会话工作区，返回文件逻辑字节数、排行、跳过条目和截断状态。扫描不读文件内容或跟随符号链接。
+- **iPhone 草稿** `reminder_draft {title, notes?, due?}` 和 `shortcut_draft {title, text?, url?, action?}`：在最终消息的 `reminder_draft` 和 `shortcut_draft` 字段交付，秒回 Bot 的后台任务也会把卡片发回前台。提醒支持日期或当地日期时间，在手机预览、选列表、保存。快捷指令提供未签名 XML 附件，支持显示文字、打开分享菜单和打开网页。
+
 ### 5.2 云端子代理 (Sub agents)
 - **工具** `subagent_task {task, title?}`：在新会话（标题“子代理：…”）中以相同模型、凭据与工具运行子任务，阻塞到结束，返回 `{"status", "result", "subagent_task_id", "subagent_session_id"}`。子代理看不到父对话；工具列表中没有 `subagent_task`（深度上限 1）；每个父任务最多 `OPENMINIS_SUBAGENT_MAX`（默认 8）个。父任务取消时子代理一起取消；子代理命中审批规则同样挂起。父任务事件流新增 `subagent_started` / `subagent_finished`。子代理结束不单独推送。
 
