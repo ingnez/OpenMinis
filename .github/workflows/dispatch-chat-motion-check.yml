@@ -8,7 +8,7 @@ permissions:
   contents: read
 env:
   TARGET_BRANCH: grokbot-phase2-minisskills
-  EXPECTED_SHA: 0fa7c6a56ebc4ab6cdef5c00983613822593e16c
+  EXPECTED_SHA: f4bc6d76462466559e2ec1140249c966bf2a938b
 jobs:
   dispatch:
     if: github.repository == 'ingnez/OpenMinis'
@@ -30,9 +30,9 @@ jobs:
             echo "A newer revision superseded $EXPECTED_SHA"
             exit 0
           fi
-          previous="$repo/actions/runs/43373155382"
+          previous="$repo/actions/runs/43381666126"
           while [ "$(gh api "$previous" --jq .status)" != completed ]; do
-            echo "Waiting for the previous simulator run 43373155382 to finish"
+            echo "Waiting for the previous simulator run 43381666126 to finish"
             sleep 45
           done
           if [ "$(gh api "$ref" --jq '.object.sha')" != "$EXPECTED_SHA" ]; then
