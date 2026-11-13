@@ -730,6 +730,9 @@ jobs:
           echo "iOS 16 API 预检通过"
 
       - name: 云端 Agent 服务集成验证与资源打包
+        env:
+          NO_PROXY: localhost,127.0.0.1,::1
+          no_proxy: localhost,127.0.0.1,::1
         run: |
           set -o pipefail
           python3 -m unittest discover -s cloud-agent -p 'test*.py' -v 2>&1 | tee cloud-agent-test.log
@@ -953,13 +956,6 @@ jobs:
         run: |
           bash scripts/prepare_mac_build_tools.sh
 
-      - name: Ensure Metal toolchain
-        run: |
-          if ! xcrun --sdk iphoneos metal --version; then
-            xcodebuild -downloadComponent MetalToolchain
-          fi
-          xcrun --sdk iphoneos metal --version
-
       - name: Prepare build config
         run: |
           cp src/ios/Configs/ProviderCustomization.xcconfig.example \
@@ -1075,6 +1071,7 @@ jobs:
             cloud-chat-test.log
             cloud-model-test.log
             cloud-agent-test.log
+            agent-entry.log
             cloud-connection-typecheck.log
             storage-test.log
           retention-days: 30
@@ -1092,6 +1089,7 @@ jobs:
             cloud-chat-test.log
             cloud-model-test.log
             cloud-agent-test.log
+            agent-entry.log
             cloud-connection-typecheck.log
             storage-test.log
             reset-test.log
@@ -1212,13 +1210,28 @@ jobs:
           PYTHON
 
       - name: 云端 Agent 服务回归
+        env:
+          NO_PROXY: localhost,127.0.0.1,::1
+          no_proxy: localhost,127.0.0.1,::1
         id: agent_regression
-        # A targeted UI diagnostic may collect its evidence independently;
-        # the final step still makes this job fail if this regression failed.
-        continue-on-error: ${{ inputs.only_testing != '' }}
+        if: ${{ inputs.only_testing == '' }}
         run: |
           set -o pipefail
           python3 -m unittest discover -s cloud-agent -p 'test*.py' -v 2>&1 | tee cloud-agent-test.log
+
+      - name: 定向诊断先验证本机流式与可执行交付入口
+        id: agent_entry
+        if: ${{ inputs.only_testing != '' }}
+        timeout-minutes: 3
+        env:
+          NO_PROXY: localhost,127.0.0.1,::1
+          no_proxy: localhost,127.0.0.1,::1
+        run: |
+          set -o pipefail
+          cd cloud-agent
+          python3 -m unittest -v \
+            test_phase9_speed.LLMClientTests.test_stream_parse_and_keepalive \
+            test_phase63_deliver.DeliverExecutableTests 2>&1 | tee ../agent-entry.log
 
       - name: 云端 Agent 服务集成验证与资源打包
         run: |
@@ -1416,13 +1429,6 @@ jobs:
         run: |
           bash scripts/prepare_mac_build_tools.sh
 
-      - name: Ensure Metal toolchain
-        run: |
-          if ! xcrun --sdk iphoneos metal --version; then
-            xcodebuild -downloadComponent MetalToolchain
-          fi
-          xcrun --sdk iphoneos metal --version
-
       - name: Prepare build config
         run: |
           cp src/ios/Configs/ProviderCustomization.xcconfig.example \
@@ -1457,6 +1463,9 @@ jobs:
         run: ./deps/prepare_alpine_rootfs.sh
 
       - name: 启动本地云端 Agent + 假模型（给端到端流程用）
+        env:
+          NO_PROXY: localhost,127.0.0.1,::1
+          no_proxy: localhost,127.0.0.1,::1
         run: |
           python3 scripts/e2e_cloud_stack.py "$RUNNER_TEMP/openminis-e2e" > e2e-cloud-stack.log 2>&1 &
           for i in $(seq 1 60); do grep -q "E2E 云端就绪" e2e-cloud-stack.log && break; sleep 1; done
@@ -1523,6 +1532,7 @@ jobs:
           retention-days: 7
 
       - name: XCUITest 端到端冒烟（模拟器）
+        id: ui_e2e
         # 累积版本覆盖所有功能批次；保留每项测试限时，给完整编译和串行回归留足时间。
         # 不用并行克隆模拟器（克隆冷启动「Timed out while launching application」，且假云端栈不能同时给两台模拟器用）；失败的流程自动重试一次，汇总里注明重试次数
         timeout-minutes: 150
@@ -1639,8 +1649,19 @@ jobs:
             rclone-simulator.log
             hang-samples
             cloud-agent-test.log
+            agent-entry.log
             cloud-connection-typecheck.log
           retention-days: 7
+
+      - name: 定向 UI 通过后的 Agent 完整回归
+        id: agent_diagnostic_regression
+        if: ${{ inputs.only_testing != '' && steps.ui_e2e.outcome == 'success' }}
+        env:
+          NO_PROXY: localhost,127.0.0.1,::1
+          no_proxy: localhost,127.0.0.1,::1
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s cloud-agent -p 'test*.py' -v 2>&1 | tee cloud-agent-test.log
 
       - name: iOS 单元测试 MinisTests（模拟器，MinisUnitTests 方案）
         id: unit
@@ -1682,6 +1703,7 @@ jobs:
             simulator-boot.log
             unit-tests.log
             cloud-agent-test.log
+            agent-entry.log
             cloud-connection-typecheck.log
           retention-days: 14
 
@@ -1701,7 +1723,7 @@ jobs:
           PY
 
       - name: Agent 回归必须通过（先保存定向 UI 诊断证据再判定）
-        if: ${{ always() && steps.agent_regression.outcome == 'failure' }}
+        if: ${{ always() && (steps.agent_regression.outcome == 'failure' || steps.agent_diagnostic_regression.outcome == 'failure' || steps.agent_entry.outcome == 'failure') }}
         run: |
           echo '::error::Agent regression failed; UI diagnostic evidence does not make this job pass.'
           exit 1
