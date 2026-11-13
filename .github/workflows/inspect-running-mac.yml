@@ -6,6 +6,13 @@ on:
       - .github/workflows/inspect-running-mac.yml
       - scripts/diagnostics/inspect_mac_progress.py
   workflow_dispatch:
+    inputs:
+      job_id:
+        type: string
+        default: '131954557726'
+      expected_sha:
+        type: string
+        default: 'a41f897c2ff96ee55cb7cf22d5879f0f4bfc55fb'
 permissions:
   contents: read
   actions: read
@@ -18,6 +25,8 @@ jobs:
       - name: Read current Mac metadata and log tail
         env:
           GH_TOKEN: ${{ github.token }}
+          INSPECT_JOB_ID: ${{ inputs.job_id }}
+          INSPECT_EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: python3 scripts/diagnostics/inspect_mac_progress.py
       - uses: actions/upload-artifact@v4
         if: always()
@@ -31,4 +40,5 @@ jobs:
             mac-operation-tail.log
             mac-test-results.log
             mac-failure-context.log
+            mac-entry-failure.log
           retention-days: 7

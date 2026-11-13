@@ -8,8 +8,9 @@ import subprocess
 import zipfile
 
 repo = os.environ['GITHUB_REPOSITORY']
-job_id = '131892608182'
-expected = 'a5a2b7c9230026e5df6f9d6a77eafba306f99977'
+job_id = os.environ.get('INSPECT_JOB_ID') or '131954557726'
+expected = os.environ.get('INSPECT_EXPECTED_SHA') or 'a41f897c2ff96ee55cb7cf22d5879f0f4bfc55fb'
+assert job_id.isdecimal() and re.fullmatch(r'[0-9a-f]{40}', expected)
 
 def api(path):
     return json.loads(subprocess.check_output(['gh', 'api', 'repos/'+repo+path]))
@@ -18,6 +19,12 @@ job = api('/actions/jobs/'+job_id)
 run = api('/actions/runs/'+str(job['run_id']))
 assert run['head_sha'] == expected, 'Unexpected source SHA'
 Path('mac-job.json').write_text(json.dumps(job, indent=2))
+if job['status'] in ('queued', 'waiting', 'pending'):
+    summary = {'job_id': job_id, 'source_sha': expected, 'job_status': job['status'],
+               'job_conclusion': job.get('conclusion'), 'log_not_available_yet': True}
+    Path('mac-progress.json').write_text(json.dumps(summary, indent=2))
+    print(json.dumps(summary))
+    raise SystemExit(0)
 with Path('mac-live.log').open('wb') as out:
     result = subprocess.run(['gh', 'api', '--allow-escape-sequences', 'repos/'+repo+'/actions/jobs/'+job_id+'/logs'],
                             stdout=out, stderr=subprocess.PIPE)
@@ -50,6 +57,9 @@ markers = [line for line in lines if re.search(r'Test Case|Test case|Test Suite|
 Path('mac-operation-tail.log').write_text('\n'.join(markers[-60:])+'\n')
 results = [line for line in lines if re.search(r'Test [Cc]ase .*\b(passed|failed|skipped)\b',line)]
 Path('mac-test-results.log').write_text('\n'.join(results)+'\n')
+entry = next((i for i, line in enumerate(lines) if 'OPENMINIS_UI_ENTRY_FAILURE:' in line), None)
+if entry is not None:
+    Path('mac-entry-failure.log').write_text('\n'.join(lines[entry:entry+250])[:50000]+'\n')
 started = [line for line in lines if re.search(r'Test Case .* started|Test case .* started|Testing started',line)]
 errors = [line for line in lines if re.search(r'\.swift:\d+:\d+: error:|\*\* TEST FAILED|Testing failed:',line)]
 failure_indexes = set()
