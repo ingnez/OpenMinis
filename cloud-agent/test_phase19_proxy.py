@@ -256,7 +256,12 @@ class ProxyApiTests(CloudServerTestCase):
             self.assertFalse(st["running"])
             self.assertIn("sing-box", st["error"])
             self.assertEqual(self.srv.proxy_env(), {})           # 代理没跑：不给终端设一个连不上的代理
-            self.assertNotIn("HTTPS_PROXY", self.srv.task_env("nope"))
+            task_env = self.srv.task_env("nope")
+            for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+                # A stopped sing-box must leave any host proxy unchanged. Avoid
+                # including the complete task environment in assertion output.
+                self.assertTrue(task_env.get(key) == os.environ.get(key),
+                                f"{key} should retain its inherited value when sing-box is unavailable")
         finally:
             del self.mgr.binary
         self.assertEqual(self.request("PUT", "/v1/proxy", {"mode": "nope"})[0], 400)

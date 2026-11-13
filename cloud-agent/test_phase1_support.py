@@ -226,8 +226,11 @@ class CloudServerTestCase(unittest.TestCase):
             headers["Authorization"] = "Bearer " + token
         body = json.dumps(data).encode("utf-8") if data is not None else None
         req = urllib.request.Request(f"http://127.0.0.1:{self.api_port}{path}", data=body, headers=headers, method=method)
+        # Fixture API calls stay on loopback, including when a test overrides
+        # proxy_bypass to exercise Telegram's explicitly configured proxy.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with opener.open(req, timeout=15) as resp:
                 raw = resp.read().decode("utf-8")
                 return resp.status, (json.loads(raw) if raw else {})
         except urllib.error.HTTPError as e:

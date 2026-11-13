@@ -10,7 +10,12 @@ PBX = os.path.join(ROOT, "Minis.xcodeproj", "project.pbxproj")
 # 不属于任何 target 的目录（脚本、示例等）
 IGNORE_DIRS = {"Minis.xcodeproj", "build", "Pods", "DerivedData"}
 # 上游本来就不编译的旧文件 / 示例
-KNOWN_UNBUILT = {"ISHCommandExecutionExample.swift", "Views/Chat/AIChatView.swift"}
+KNOWN_UNBUILT = {
+    "ISHCommandExecutionExample.swift",
+    "Views/Chat/AIChatView.swift",
+    # Optional watch extension; see src/ios/MinisWatchWidgets/README.md.
+    "MinisWatchWidgets/WatchStatusWidget.swift",
+}
 
 
 def main():
