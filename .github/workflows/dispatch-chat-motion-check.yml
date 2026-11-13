@@ -15,8 +15,8 @@ jobs:
       - name: Run simulator regressions, then dispatch the IPA
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_BRANCH: grokbot-phase2-message-menu
-          EXPECTED_SHA: 7e800a544d9da65b8adf3600fa39aad487312281
+          TARGET_BRANCH: grokbot-phase2-minisskills
+          EXPECTED_SHA: fb20bb4f836bfce92b4b5b20cd1e9c85fbec49fb
           TESTS: MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport,MinisUITests/E2EFlowsUITests/test40_cloudMessageSwipeQuotesExactReply,MinisUITests/E2EFlowsUITests/test04_markdownBoldInQuoteCJK,MinisUITests/E2EFlowsUITests/test20_localMarkdownBoldInQuoteCJK
         run: |
           set -euo pipefail
@@ -26,9 +26,9 @@ jobs:
             echo "A newer revision superseded $EXPECTED_SHA"
             exit 0
           fi
-          previous="$repo/actions/runs/43369277825"
+          previous="$repo/actions/runs/43371300308"
           while [ "$(gh api "$previous" --jq .status)" != completed ]; do
-            echo "Waiting for the previous simulator run 43369277825 to finish"
+            echo "Waiting for the previous simulator run 43371300308 to finish"
             sleep 45
           done
           if [ "$(gh api "$ref" --jq '.object.sha')" != "$EXPECTED_SHA" ]; then
@@ -40,7 +40,7 @@ jobs:
           last_id=
           completed_checks=0
           while true; do
-            result=$(gh api "$runs" --jq '([.workflow_runs[] | select(.id > 43369277825)][0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
+            result=$(gh api "$runs" --jq '([.workflow_runs[] | select(.id > 43371300308)][0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
             IFS=$'\t' read -r test_id status conclusion <<< "$result"
             if [ "$test_id" != "$last_id" ]; then
               echo "Simulator run: $test_id"
