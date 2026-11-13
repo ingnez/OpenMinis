@@ -9,10 +9,10 @@ on:
     inputs:
       job_id:
         type: string
-        default: '131972251247'
+        default: '132171378942'
       expected_sha:
         type: string
-        default: 'ebde3ea659b98ef5a2c17181185c4a1ae89bf3aa'
+        default: '413e929f02e89fe983fe81362f1badf0ad3c254f'
 permissions:
   contents: read
   actions: read

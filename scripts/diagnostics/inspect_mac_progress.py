@@ -8,8 +8,8 @@ import subprocess
 import zipfile
 
 repo = os.environ['GITHUB_REPOSITORY']
-job_id = os.environ.get('INSPECT_JOB_ID') or '131972251247'
-expected = os.environ.get('INSPECT_EXPECTED_SHA') or 'ebde3ea659b98ef5a2c17181185c4a1ae89bf3aa'
+job_id = os.environ.get('INSPECT_JOB_ID') or '132171378942'
+expected = os.environ.get('INSPECT_EXPECTED_SHA') or '413e929f02e89fe983fe81362f1badf0ad3c254f'
 assert job_id.isdecimal() and re.fullmatch(r'[0-9a-f]{40}', expected)
 
 def api(path):
@@ -53,6 +53,26 @@ if result.returncode:
         raise SystemExit('Could not retrieve current logs; exact API errors were preserved')
 
 path = Path('mac-live.log')
+# A live job's plain-log redirect can lag while its per-step run archive
+# already has newer blocks. Read both without touching the running Mac.
+with Path('mac-run-progress.zip').open('wb') as out:
+    archive_result = subprocess.run(['gh', 'api', '--allow-escape-sequences',
+        'repos/'+repo+'/actions/runs/'+str(job['run_id'])+'/logs'], stdout=out, stderr=subprocess.PIPE)
+def last_stamp(value):
+    stamps = re.findall(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}', value, re.M)
+    return max(stamps, default='')
+log_source = 'job'
+if archive_result.returncode == 0 and zipfile.is_zipfile('mac-run-progress.zip'):
+    with zipfile.ZipFile('mac-run-progress.zip') as archive:
+        names = [n for n in archive.namelist() if 'ui-tests' in n and n.endswith('.txt')]
+        candidates = [archive.read(n).decode('utf-8-sig', errors='replace') for n in names]
+        if candidates:
+            joined = '\n'.join(candidates)
+            old = path.read_text(encoding='utf-8-sig', errors='replace')
+            if last_stamp(joined) > last_stamp(old):
+                path.write_text(joined)
+                log_source = 'run archive'
+print('Log source:', log_source, '; run archive available:', archive_result.returncode == 0)
 log = path.read_text(encoding='utf-8-sig', errors='replace')
 lines = log.splitlines()
 Path('mac-live-tail.log').write_text('\n'.join(lines[-180:])[-90000:]+'\n')
@@ -71,7 +91,7 @@ for index, line in enumerate(lines):
         failure_indexes.update(range(max(0,index-7),min(len(lines),index+5)))
 Path('mac-failure-context.log').write_text('\n'.join(lines[i] for i in sorted(failure_indexes))[:250000]+'\n')
 warning_files = collections.Counter(re.findall(r'/([^/\n]+\.swift):\d+:\d+: warning:',log))
-summary = {'job_id':job_id,'source_sha':expected,'job_status':job['status'],
+summary = {'job_id':job_id,'source_sha':expected,'job_status':job['status'],'log_source':log_source,
     'job_conclusion':job.get('conclusion'),'log_bytes':path.stat().st_size,
     'first_line':lines[0] if lines else '', 'last_line':lines[-1] if lines else '',
     'test_start_records':len(started),'passed_records':sum(' passed ' in l for l in results),
