@@ -10,6 +10,7 @@ import struct
 import sys
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler
 
 import cloud_telegram
@@ -168,7 +169,9 @@ class TelegramProxyTests(CloudServerTestCase):
     def test_http_proxy(self):
         proxy_server, pport = _serve(HTTPProxy)
         try:
-            status, res = self.request("PUT", "/v1/telegram", self.base(api_base=f"http://127.0.0.1:{self.tg_port}", proxy=f"http://127.0.0.1:{pport}"))
+            with patch("urllib.request.proxy_bypass", return_value=False):
+                status, res = self.request("PUT", "/v1/telegram", self.base(
+                    api_base=f"http://127.0.0.1:{self.tg_port}", proxy=f"http://127.0.0.1:{pport}"))
             self.assertEqual(status, 200, res)
             self.assertTrue(any("/getMe" in p for p in HTTPProxy.used))
         finally:
