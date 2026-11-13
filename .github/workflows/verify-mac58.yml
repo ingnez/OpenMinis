@@ -6,6 +6,10 @@ on:
         type: boolean
         default: false
         description: Prepare the required OpenMinis build tools after routing verification
+      diagnose_agent:
+        type: boolean
+        default: false
+        description: Diagnose the single fake-data Agent startup process
   push:
     branches: [grokbot-phase2-combined-20261113]
     paths: [.github/workflows/verify-mac58.yml]
@@ -65,3 +69,18 @@ jobs:
       - name: Prepare the CI Python interpreter
         if: ${{ inputs.prepare_dependencies }}
         run: bash scripts/prepare_mac_python.sh
+      - name: Diagnose only the Agent startup
+        if: ${{ inputs.diagnose_agent }}
+        timeout-minutes: 3
+        env:
+          no_proxy: localhost,127.0.0.1,::1
+        run: |
+          set -o pipefail
+          python3 scripts/diagnose_mac_agent_startup.py 2>&1 | tee agent-startup-diagnostic.log
+      - name: Preserve the sanitized startup diagnostic
+        if: ${{ always() && inputs.diagnose_agent }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mac-Agent-startup-diagnostic
+          path: agent-startup-diagnostic.log
+          retention-days: 7
