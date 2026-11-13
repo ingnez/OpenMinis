@@ -1167,6 +1167,22 @@ jobs:
           done
           exit 1
 
+      - name: 创建并验证干净的 iPhone 模拟器
+        id: simulator
+        timeout-minutes: 12
+        run: |
+          DEV=$(python3 scripts/pick_ios_simulator.py --prepare \
+            --project src/ios/Minis.xcodeproj \
+            --scheme Minis \
+            --configuration Debug \
+            --derived-data build \
+            --cloned-source-packages "$GITHUB_WORKSPACE/build/SourcePackages" \
+            2> >(tee simulator-boot.log >&2))
+          echo "udid=$DEV" >> "$GITHUB_OUTPUT"
+          # Dismiss the system keyboard tutorial that can cover the test controls.
+          xcrun simctl spawn "$DEV" defaults write com.apple.keyboard.preferences DidShowContinuousPathIntroduction -bool true || true
+          xcrun simctl spawn "$DEV" defaults write com.apple.Preferences DidShowContinuousPathIntroduction -bool true || true
+
       - name: 验证启动修复和本轮功能
         run: |
           set -euo pipefail
@@ -1202,17 +1218,24 @@ jobs:
           cp src/ios/Configs/ProviderCustomization.xcconfig.example \
              src/ios/Configs/ProviderCustomization.xcconfig
 
-      - name: Build LAME
-        run: ./deps/build_lame.sh --simulator
-
       - name: Cache FFmpeg source tarball
         uses: actions/cache@v4
         with:
           path: deps/.cache/ffmpeg-6.1.2.tar.xz
           key: ffmpeg-src-6.1.2-3b624649
 
-      - name: Build FFmpeg
-        run: ./deps/build_ffmpeg.sh --simulator
+      - name: Build LAME and FFmpeg alongside rclone (simulator)
+        run: |
+          # FFmpeg links against LAME. rclone has separate sources and outputs.
+          (./deps/build_lame.sh --simulator && ./deps/build_ffmpeg.sh --simulator) > ffmpeg-simulator.log 2>&1 &
+          ffmpeg_pid=$!
+          GOMAXPROCS=2 ./deps/build_rclone_ios.sh > rclone-simulator.log 2>&1 &
+          rclone_pid=$!
+          failed=0
+          wait "$ffmpeg_pid" || failed=1
+          wait "$rclone_pid" || failed=1
+          cat ffmpeg-simulator.log rclone-simulator.log
+          exit "$failed"
 
       - name: Build iSH
         run: |
@@ -1222,9 +1245,6 @@ jobs:
 
       - name: Prepare Alpine rootfs
         run: ./deps/prepare_alpine_rootfs.sh
-
-      - name: Build rclone
-        run: ./deps/build_rclone_ios.sh
 
       - name: 启动本地云端 Agent + 假模型（给端到端流程用）
         run: |
@@ -1239,6 +1259,7 @@ jobs:
         timeout-minutes: 80
         env:
           ONLY_TESTING: ${{ inputs.only_testing }}
+          DEV: ${{ steps.simulator.outputs.udid }}
         run: |
           set -o pipefail
           DEFAULT_ONLY_TESTING="MinisUITests/MinisSmokeUITests
@@ -1268,20 +1289,7 @@ jobs:
             exit 1
           fi
           echo "本次 -only-testing：${ONLY_FLAGS[*]}"
-          # 用 xcodebuild -showdestinations 选这套 scheme 真正能用的 iPhone 模拟器，
-          # 不要只信 simctl：设备可能列得出、也能 boot，但 scheme（Minis 排除了模拟器 x86_64）并不接受。
-          DEV=$(python3 scripts/pick_ios_simulator.py \
-            --project src/ios/Minis.xcodeproj \
-            --scheme Minis \
-            --configuration Debug \
-            --derived-data build \
-            --cloned-source-packages "$GITHUB_WORKSPACE/build/SourcePackages")
           echo "模拟器：$DEV"
-          xcrun simctl boot "$DEV" || true
-          # 关掉系统键盘的「滑行输入」新手引导（Speed up your typing… Continue），它会盖住下半屏挡住后面的点按
-          xcrun simctl bootstatus "$DEV" -b || true
-          xcrun simctl spawn "$DEV" defaults write com.apple.keyboard.preferences DidShowContinuousPathIntroduction -bool true || true
-          xcrun simctl spawn "$DEV" defaults write com.apple.Preferences DidShowContinuousPathIntroduction -bool true || true
           # Minis 方案里挂着的 MinisTests 只依赖 MinisTestHost、不依赖 Minis（设计上走 MinisUnitTests 方案、先单独编 App，
           # 见 scripts/ios-unit-tests.sh），并行编译时扫描不到 Minis 模块就报「Unable to resolve module dependency: 'Minis'」，
           # -only-testing 也挡不住它被编译。这里只在运行机上生成一个不含它的方案跑 UI 流程；单元测试在下一步按它自己的方案跑。
@@ -1309,6 +1317,7 @@ jobs:
             -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
             -scmProvider system \
             -disableAutomaticPackageResolution \
+            -showBuildTimingSummary \
             "${ONLY_FLAGS[@]}" \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 150 \
@@ -1342,26 +1351,21 @@ jobs:
             ui-tests-tests.json
             e2e-shots
             e2e-cloud-stack.log
+            simulator-boot.log
+            ffmpeg-simulator.log
+            rclone-simulator.log
             hang-samples
           retention-days: 7
 
       - name: iOS 单元测试 MinisTests（模拟器，MinisUnitTests 方案）
         id: unit
-        if: ${{ always() && inputs.only_testing == '' }}
+        if: ${{ always() && steps.simulator.outcome == 'success' && inputs.only_testing == '' }}
         continue-on-error: true
         timeout-minutes: 30
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
         run: |
           set -o pipefail
-          # 和 UI 测试同一台模拟器（上一步结束后它可能已被关掉，所以不按「已启动」找）
-          # 用 xcodebuild -showdestinations 选这套 scheme 真正能用的 iPhone 模拟器，
-          # 不要只信 simctl：设备可能列得出、也能 boot，但 scheme（Minis 排除了模拟器 x86_64）并不接受。
-          DEV=$(python3 scripts/pick_ios_simulator.py \
-            --project src/ios/Minis.xcodeproj \
-            --scheme Minis \
-            --configuration Debug \
-            --derived-data build \
-            --cloned-source-packages "$GITHUB_WORKSPACE/build/SourcePackages")
-          xcrun simctl boot "$DEV" 2>/dev/null || true
           echo "模拟器：$DEV"
           # Minis.app（带 Minis.debug.dylib）上一步已经编进 build/；MinisTests 链接它，跑在 MinisTestHost 里
           xcodebuild test \
@@ -1390,6 +1394,7 @@ jobs:
             ui-tests-tests.json
             e2e-shots
             e2e-cloud-stack.log
+            simulator-boot.log
             unit-tests.log
           retention-days: 14
 

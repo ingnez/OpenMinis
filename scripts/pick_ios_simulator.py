@@ -11,12 +11,13 @@
 
 This script asks xcodebuild for the scheme's destinations and prints the
 UDID of the newest available iPhone (no paired-Watch combos, no
-placeholders). Details go to stderr. Exit 1 if none are usable.
+placeholders). With --prepare it creates a clean device using a supported
+configuration and checks its boot status. Details go to stderr.
 """
 from __future__ import annotations
 
 import argparse
-import os
+import json
 import platform
 import re
 import subprocess
@@ -67,11 +68,15 @@ def is_concrete_iphone_simulator(dest: dict[str, str]) -> bool:
 
 
 def pick_iphone_simulator(dests: Iterable[dict[str, str]]) -> dict[str, str] | None:
-    cands = [d for d in dests if is_concrete_iphone_simulator(d)]
-    if not cands:
-        return None
-    cands.sort(key=lambda d: (parse_os(d.get("OS", "0")), d.get("name", "")), reverse=True)
-    return cands[0]
+    return next(iter(ranked_iphones(dests)), None)
+
+
+def ranked_iphones(dests: Iterable[dict[str, str]]) -> list[dict[str, str]]:
+    return sorted(
+        (d for d in dests if is_concrete_iphone_simulator(d)),
+        key=lambda d: (parse_os(d.get("OS", "0")), d.get("name", "")),
+        reverse=True,
+    )
 
 
 def format_dest(dest: dict[str, str]) -> str:
@@ -79,6 +84,82 @@ def format_dest(dest: dict[str, str]) -> str:
         f"{dest.get('name', '?')} OS={dest.get('OS', '?')} "
         f"arch={dest.get('arch', '?')} id={dest.get('id', '?')}"
     )
+
+
+def simctl(*args: str, timeout: int = 20) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["xcrun", "simctl", *args], capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def prepare_iphone_simulator(dests: list[dict[str, str]]) -> str:
+    inventory = simctl("list", "-j")
+    inventory.check_returncode()
+    data = json.loads(inventory.stdout)
+    types_by_name = {entry["name"]: entry["identifier"] for entry in data["devicetypes"]}
+    configs = {}
+    for runtime, devices in data["devices"].items():
+        for device in devices:
+            if device.get("isAvailable", True):
+                device_type = device.get("deviceTypeIdentifier") or types_by_name.get(device["name"])
+                if device_type:
+                    configs[device["udid"]] = (device_type, runtime)
+
+    candidates = {}
+    for dest in ranked_iphones(dests):
+        if config := configs.get(dest["id"]):
+            candidates.setdefault(config, dest)
+    if not candidates:
+        raise SystemExit("Xcode 没有可创建的 iPhone 模拟器配置")
+    primary = next(iter(candidates))
+    alternatives = [config for config in candidates if config != primary]
+    alternatives.sort(key=lambda config: config[1] == primary[1])
+    for attempt, config in enumerate([primary, *alternatives[:1]], 1):
+        device_type, runtime = config
+        print(f"创建干净模拟器：{format_dest(candidates[config])}，runtime={runtime}",
+              file=sys.stderr, flush=True)
+        udid = None
+        ready = False
+        try:
+            created = simctl("create", f"OpenMinis CI {attempt}", device_type, runtime)
+            created.check_returncode()
+            udid = created.stdout.strip()
+            if not udid:
+                raise RuntimeError("simctl create 未返回设备 UDID")
+            result = simctl("bootstatus", udid, "-b", timeout=180)
+            result.check_returncode()
+            print(result.stdout, result.stderr, file=sys.stderr, flush=True)
+            if re.search(r"Data Migration Failed|Status=3, isTerminal=YES", result.stdout + result.stderr):
+                raise RuntimeError("iOS 系统数据迁移失败")
+            probe = simctl("spawn", udid, "launchctl", "list")
+            probe.check_returncode()
+            ready = True
+            print(f"模拟器已就绪：{udid}", file=sys.stderr, flush=True)
+            return udid
+        except (subprocess.SubprocessError, RuntimeError) as error:
+            print(f"模拟器启动失败：{error}", file=sys.stderr, flush=True)
+            if isinstance(error, (subprocess.TimeoutExpired, subprocess.CalledProcessError)):
+                for output in (error.stdout, error.stderr):
+                    if output:
+                        print(output.decode(errors="replace") if isinstance(output, bytes) else output,
+                              file=sys.stderr, flush=True)
+            if udid:
+                try:
+                    details = simctl(
+                        "spawn", udid, "log", "show", "--last", "5m", "--style", "compact",
+                        "--predicate", 'process == "data_migrator" OR eventMessage CONTAINS[c] "migration"',
+                    )
+                    print(details.stdout, details.stderr, file=sys.stderr, flush=True)
+                except subprocess.TimeoutExpired:
+                    print("读取模拟器系统日志超时", file=sys.stderr, flush=True)
+        finally:
+            if udid and not ready:
+                for action in ("shutdown", "delete"):
+                    try:
+                        simctl(action, udid)
+                    except subprocess.TimeoutExpired:
+                        print(f"清理测试模拟器超时：{action} {udid}", file=sys.stderr, flush=True)
+    raise SystemExit("没有通过启动和数据迁移检查的 iPhone 模拟器")
 
 
 def run_showdestinations(args: argparse.Namespace) -> str:
@@ -161,6 +242,7 @@ def main() -> None:
     parser.add_argument("--configuration")
     parser.add_argument("--derived-data")
     parser.add_argument("--cloned-source-packages")
+    parser.add_argument("--prepare", action="store_true", help="Create and boot a clean CI simulator")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -172,6 +254,9 @@ def main() -> None:
     if picked is None:
         fail_no_destination(dests)
     assert picked is not None
+    if args.prepare:
+        print(prepare_iphone_simulator(dests))
+        return
     print(f"选中模拟器：{format_dest(picked)}", file=sys.stderr)
     print(picked["id"])
 
