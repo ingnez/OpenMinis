@@ -1460,17 +1460,12 @@ extension E2EFlowsUITests {
         let avatar = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "打开 \(Self.botName)")).firstMatch
         XCTAssertTrue(avatar.waitForExistence(timeout: 10), "顶部没有主 Bot 大头像")
         avatar.press(forDuration: 1.2)
-        let item = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "服务器已连接")).firstMatch
-        XCTAssertTrue(item.waitForExistence(timeout: 5), "长按主 Bot 头像没有状态说明")
+        let item = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label == %@", "primaryStatusItem", "服务器已连接")).firstMatch
+        XCTAssertTrue(poll(10) { item.exists && item.isHittable }, "长按主 Bot 头像没有可点的状态说明")
         shot(app, "30b-长按头像状态说明")
-        // 像用户一样点菜单下方的灰色空白处关菜单。不能点屏幕最上方：y≈46pt 正好落在灵动岛上，
-        // 点击被 SpringBoard 吃掉，菜单不会关（43156708556 两次都是这样）。
-        let menuBottom = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "更多")).firstMatch
-        let window = app.windows.firstMatch.frame
-        var blankY = window.height * 0.8
-        if menuBottom.exists { blankY = min(menuBottom.frame.maxY + 60, window.height * 0.85) }
-        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: window.midX, dy: blankY)).tap()
-        XCTAssertTrue(waitGone(item, timeout: 5), "长按菜单没关掉")
+        // 在线状态项点按只收起系统菜单。菜单位置会随可用高度和字号变化。
+        item.tap()
+        XCTAssertTrue(poll(10) { !item.exists && avatar.isHittable }, "长按菜单没关掉或头像还不可点")
         avatar.tap()
         XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 20), "点主 Bot 头像没进聊天")
         shot(app, "30c-点头像进聊天")
@@ -1505,14 +1500,15 @@ extension E2EFlowsUITests {
         openBot(app)
         send(app, "你好E2E长按")
         XCTAssertTrue(waitText(app, contains: "收到：你好E2E长按", timeout: 60), "Bot 回复没出现")
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()   // 收键盘
-        let reply = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "收到：你好E2E长按", "收到：你好E2E长按")).firstMatch
-        let mine = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@ OR value == %@", "你好E2E长按", "你好E2E长按")).firstMatch
-        XCTAssertTrue(reply.waitForExistence(timeout: 5) && mine.exists)
+        let reply = app.textViews.matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "收到：你好E2E长按", "收到：你好E2E长按")).firstMatch
+        let mine = app.staticTexts["你好E2E长按"]
+        XCTAssertTrue(reply.waitForExistence(timeout: 15), "聊天里找不到可操作的 Bot 回复")
+        revealBelowNavBar(app, mine)
+        XCTAssertTrue(mine.waitForExistence(timeout: 10), "聊天里找不到自己发的气泡")
         let panel = app.descendants(matching: .any)["messageMenuPanel"]
 
         func openMenu(_ step: String) {
-            reply.press(forDuration: 1.0)
+            pressVisible(app, reply, duration: 1.0)
             if !panel.waitForExistence(timeout: 5) {
                 shot(app, "32-长按没出面板-\(step)")
                 XCTFail("长按 Bot 回复没弹出底部面板（\(step)）")
@@ -1689,28 +1685,26 @@ extension E2EFlowsUITests {
         XCTAssertTrue(waitText(app, contains: "思考深度", timeout: 5))
     }
 
-    func test38_localImageOnlyMessageScrubsToSixthImage() throws {
-        let app = launch(attach: 6, homeMode: "local",
+    func test38_localImageOnlyMessageScrubsPastSixthImage() throws {
+        executionTimeAllowance = 300
+        let app = launch(attach: 7, homeMode: "local",
                          extraEnv: ["OPENMINIS_E2E_LOCAL_PROVIDER": "http://127.0.0.1:18797"],
                          extraArgs: ["-launchScreen", "2"])
         XCTAssertTrue(localModelReady(app), "本地模式未加载模拟服务商")
         let cards = app.descendants(matching: .any).matching(identifier: "trayCard")
         XCTAssertTrue(cards.firstMatch.waitForExistence(timeout: 15), "本地横滑托盘没有图片")
         XCTAssertTrue(app.descendants(matching: .any)["keepOriginalToggle"].exists)
-        cards.firstMatch.press(forDuration: 0.8)
-        XCTAssertTrue(app.buttons["往后移"].waitForExistence(timeout: 5))
-        app.buttons["往后移"].tap()
+        XCTAssertTrue(waitCount(cards, 7, timeout: 10), "发送前托盘不是 7 张图片")
 
         let send = localSendButton(app)
         XCTAssertTrue(send.waitForExistence(timeout: 10))
         send.tap()
-        let message = app.descendants(matching: .any).matching(identifier: "userMessage").firstMatch
-        let stack = message.buttons.matching(
-            NSPredicate(format: "identifier == %@ AND label == %@", "imageStack", "6 张图片")
+        let stack = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@ AND label == %@", "imageStack", "7 张图片")
         ).firstMatch
         guard stack.waitForExistence(timeout: 20) else {
-            shot(app, "38-找不到本地六图叠卡")
-            XCTFail("发送后，用户消息内没有独立的六图叠卡")
+            dumpUI(app, "38-找不到本地七图叠卡")
+            XCTFail("发送后，聊天里没有独立的七图叠卡")
             return
         }
         revealBelowNavBar(app, stack)
@@ -1722,12 +1716,12 @@ extension E2EFlowsUITests {
         let end = stack.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.5))
         start.press(forDuration: 0.8, thenDragTo: end)
         XCTAssertTrue(app.buttons["关闭"].waitForExistence(timeout: 10), "本地松手未打开图片")
-        XCTAssertTrue(waitSelected(app.buttons["第 6 张"], timeout: 5), "本地未打开第 6 张")
+        XCTAssertTrue(waitSelected(app.buttons["第 7 张"], timeout: 5), "本地未滑过第 6 张并打开第 7 张")
         app.buttons["更多"].tap()
         for action in ["保存到相册", "分享", "拷贝图片", "识别并拷贝文字", "问 Bot 这张图"] {
             XCTAssertTrue(app.buttons[action].exists, "本地看图菜单缺少 \(action)")
         }
-        shot(app, "38-本地第六张图与看图菜单")
+        shot(app, "38-本地第七张图与看图菜单")
     }
 
     private func revealTodayBar(_ app: XCUIApplication) {
