@@ -1,0 +1,61 @@
+name: Validate and build the latest OpenMinis fixes
+on:
+  push:
+    branches: [grokbot-phase2-chat-motion-ci]
+    paths: [.github/workflows/dispatch-chat-motion-check.yml]
+permissions:
+  actions: write
+  contents: read
+jobs:
+  dispatch:
+    if: github.repository == 'ingnez/OpenMinis'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Run simulator regressions, then dispatch the IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: grokbot-phase2-message-menu
+          EXPECTED_SHA: daa48a7176d0901adfcf99c1dbd3594eefd447ba
+          TESTS: MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport
+        run: |
+          set -euo pipefail
+          repo="repos/$GITHUB_REPOSITORY"
+          ref="$repo/git/ref/heads/$TARGET_BRANCH"
+          if [ "$(gh api "$ref" --jq '.object.sha')" != "$EXPECTED_SHA" ]; then
+            echo "A newer revision superseded $EXPECTED_SHA"
+            exit 0
+          fi
+          previous="$repo/actions/runs/43339964236"
+          while [ "$(gh api "$previous" --jq .status)" != completed ]; do
+            echo "Waiting for the previous simulator run 43339964236 to finish"
+            sleep 45
+          done
+          if [ "$(gh api "$ref" --jq '.object.sha')" != "$EXPECTED_SHA" ]; then
+            echo "A newer revision superseded $EXPECTED_SHA"
+            exit 0
+          fi
+          gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$TARGET_BRANCH" -f ui_tests=true -f mac_runner=macos-26 -f only_testing="$TESTS"
+          runs="$repo/actions/workflows/build-ios.yml/runs?branch=$TARGET_BRANCH&head_sha=$EXPECTED_SHA&event=workflow_dispatch&per_page=10"
+          last_id=
+          completed_checks=0
+          while true; do
+            result=$(gh api "$runs" --jq '(.workflow_runs[0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
+            IFS=$'\t' read -r test_id status conclusion <<< "$result"
+            if [ "$test_id" != "$last_id" ]; then
+              echo "Simulator run: $test_id"
+              completed_checks=0
+              last_id="$test_id"
+            fi
+            if [ "$status" = completed ]; then
+              if [ "$conclusion" = success ]; then break; fi
+              completed_checks=$((completed_checks + 1))
+              if [ "$completed_checks" -ge 3 ]; then echo "Simulator tests: $conclusion"; exit 1; fi
+            fi
+            sleep 45
+          done
+          if [ "$(gh api "$ref" --jq '.object.sha')" != "$EXPECTED_SHA" ]; then
+            echo "A newer revision superseded $EXPECTED_SHA"
+            exit 0
+          fi
+          gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$TARGET_BRANCH" -f mac_runner=macos-15-intel
