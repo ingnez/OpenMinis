@@ -145,8 +145,8 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
         let velocity = pan.velocity(in: scrollView.window)
         let axis = abs(shift.x) + abs(shift.y) > 1 ? shift : velocity
         guard abs(axis.x) > 1.35 * abs(axis.y) else { return false }
-        if axis.x > 0 {
-            // Finger right: reveal times on the left and move with the finger.
+        if axis.x < 0 {
+            // Finger left: reveal times on the right and move with the finger.
             direction = .timestamps
             return true
         }
@@ -169,22 +169,22 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
             case .timestamps:
                 hideTimes?.cancel()
                 if !times.visible { times.visible = true }
-                let x = min(Self.timeWidth, max(0, distance))
+                let x = -min(Self.timeWidth, max(0, -distance))
                 pendingOffset = x
             case .reply:
-                let left = max(0, -distance)
+                let right = max(0, distance)
                 if pan.state == .began { replyRow?.offset.showingReply = true }
-                let excess = max(0, left - Self.replyThreshold)
+                let excess = max(0, right - Self.replyThreshold)
                 let resistance = min(Self.replyOvershoot, 2 * excess.squareRoot())
-                pendingOffset = -(min(left, Self.replyThreshold) + resistance)
-                let reached = left >= Self.replyThreshold
+                pendingOffset = min(right, Self.replyThreshold) + resistance
+                let reached = right >= Self.replyThreshold
                 if reached && !armed { CloudHaptics.selection() }
                 armed = reached
             }
             if pan.state == .began { applyPendingOffset() }
         case .ended, .cancelled, .failed:
             let row = replyRow
-            let reply = direction == .reply && pan.state == .ended && -distance >= Self.replyThreshold
+            let reply = direction == .reply && pan.state == .ended && distance >= Self.replyThreshold
             stopFrameUpdates()
             self.direction = nil
             replyRow = nil
@@ -234,7 +234,7 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
         let offset = direction == .timestamps ? timeOffset : replyRow?.offset
         if let offset, offset.x != pendingOffset { offset.x = pendingOffset }
         #if DEBUG
-        if direction == .timestamps, pendingOffset == Self.timeWidth, CloudE2E.token != nil, !times.didReveal {
+        if direction == .timestamps, pendingOffset == -Self.timeWidth, CloudE2E.token != nil, !times.didReveal {
             times.revealedOffset = pendingOffset
             times.didReveal = true
         }
@@ -358,13 +358,13 @@ private struct CloudTranscriptReplyCue: View {
         if offset.showingReply {
             let start = CloudTranscriptSwipe.replyCueStart
             let span = CloudTranscriptSwipe.replyThreshold - start
-            let progress = min(1, max(0, (-offset.x - start) / span))
+            let progress = min(1, max(0, (offset.x - start) / span))
             Image(systemName: "arrowshape.turn.up.left")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .opacity(Double(progress))
                 .scaleEffect(0.5 + 0.5 * progress)
-                .padding(.trailing, 10)
+                .padding(.leading, 10)
                 .accessibilityHidden(true)
                 .allowsHitTesting(false)
         }
@@ -382,8 +382,8 @@ private struct CloudTranscriptTimeLabel: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-                .frame(width: CloudTranscriptSwipe.timeWidth, alignment: .leading)
-                .offset(x: -CloudTranscriptSwipe.timeWidth)
+                .frame(width: CloudTranscriptSwipe.timeWidth, alignment: .trailing)
+                .offset(x: CloudTranscriptSwipe.timeWidth)
                 .accessibilityIdentifier("botMessageTime")
         }
     }
@@ -408,10 +408,10 @@ struct CloudTranscriptMessage: ViewModifier {
                     }
                 }
                 .modifier(CloudTranscriptShift(offset: offset))
-                .overlay(alignment: .leading) {
+                .overlay(alignment: .trailing) {
                     if let date { CloudTranscriptTimeLabel(times: swipe.times, date: date).allowsHitTesting(false) }
                 }
-                .overlay(alignment: .trailing) {
+                .overlay(alignment: .leading) {
                     if replyID != nil { CloudTranscriptReplyCue(offset: offset) }
                 }
         } else {

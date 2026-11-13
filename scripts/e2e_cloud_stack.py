@@ -631,7 +631,7 @@ def main():
                         now = time.time()
                         rows = [
                             (sid[0], "user", "E2E先问两个问题", now - 180),
-                            (sid[0], "assistant", "E2E左滑要引用第一条", now - 120),
+                            (sid[0], "assistant", "E2E右滑要引用第一条", now - 120),
                             (sid[0], "assistant", "E2E第二条需要独立定位", now - 60),
                         ]
                         db.executemany("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)", rows)
