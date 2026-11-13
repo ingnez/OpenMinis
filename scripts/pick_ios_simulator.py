@@ -96,6 +96,7 @@ def prepare_iphone_simulator(
     dests: list[dict[str, str]],
     preferred_runtime: str | None = None,
     minimum_os: str = "0",
+    maximum_os: str | None = None,
 ) -> str:
     inventory = simctl("list", "-j")
     inventory.check_returncode()
@@ -111,19 +112,25 @@ def prepare_iphone_simulator(
 
     candidates = {}
     minimum_version = parse_os(minimum_os)
+    maximum_version = parse_os(maximum_os) if maximum_os else None
     for dest in ranked_iphones(dests):
         if parse_os(dest.get("OS", "0")) < minimum_version:
             continue
+        if maximum_version and parse_os(dest.get("OS", "0")) > maximum_version:
+            continue
         if config := configs.get(dest["id"]):
             candidates.setdefault(config, dest)
+    for config, destination in candidates.items():
+        print(f"可用配置：{format_dest(destination)} runtime={config[1]}", file=sys.stderr, flush=True)
     if not candidates:
         raise SystemExit(f"Xcode 没有可创建的 iPhone 模拟器配置（要求 iOS {minimum_os} 或更新版本）")
     primary = next(
         (config for config in candidates if config[1] == preferred_runtime),
-        next(iter(candidates)),
+        min(candidates, key=lambda config: ("-iPhone" in config[1], parse_os(candidates[config].get("OS", "0")))),
     )
     alternatives = [config for config in candidates if config != primary]
-    alternatives.sort(key=lambda config: config[1] == primary[1])
+    alternatives.sort(key=lambda config: (config[1] == primary[1], "-iPhone" in config[1],
+                                          parse_os(candidates[config].get("OS", "0"))))
     for attempt, config in enumerate([primary, *alternatives[:1]], 1):
         device_type, runtime = config
         print(f"创建干净模拟器：{format_dest(candidates[config])}，runtime={runtime}",
@@ -272,7 +279,7 @@ def self_test() -> None:
     }}
 
     def run_preparation(dests: list[dict[str, str]], preferred_runtime: str,
-                        fail_first_boot: bool) -> list[str]:
+                        fail_first_boot: bool, maximum_os: str | None = None) -> list[str]:
         attempted = []
 
         def mock_simctl(*args: str, timeout: int = 20) -> subprocess.CompletedProcess[str]:
@@ -290,16 +297,20 @@ def self_test() -> None:
             return subprocess.CompletedProcess(args, 0, output, "")
 
         with patch(__name__ + ".simctl", side_effect=mock_simctl):
-            assert prepare_iphone_simulator(dests, preferred_runtime, "26.2") == (
+            assert prepare_iphone_simulator(dests, preferred_runtime, "26.2", maximum_os) == (
                 "fresh-2" if fail_first_boot else "fresh-1"
             )
         return attempted
 
     assert run_preparation(eligible, older_runtime, False) == [older_runtime]
     assert run_preparation(eligible, older_runtime, True) == [older_runtime, primary_runtime]
-    assert run_preparation(eligible, "unavailable", False) == [primary_runtime]
+    assert run_preparation(eligible, "unavailable", False) == [older_runtime]
     assert run_preparation(hosted, incompatible_runtime, False) == [minimum_runtime]
     assert run_preparation(hosted, minimum_runtime, True) == [minimum_runtime, minimum_runtime]
+    beta_runtime = "com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4"
+    inventory["devices"][beta_runtime] = [{"udid": "duo", "deviceTypeIdentifier": "duo"}]
+    beta = {"name": "iPhone Duo", "OS": "27.2", "id": "duo", "platform": "iOS Simulator"}
+    assert run_preparation([beta, *hosted], "unavailable", False, "26.4") == [minimum_runtime]
     print("self-test ok", file=sys.stderr)
 
 
@@ -313,6 +324,7 @@ def main() -> None:
     parser.add_argument("--prepare", action="store_true", help="Create and boot a clean CI simulator")
     parser.add_argument("--preferred-runtime", help="Prefer this installed runtime when preparing a clean device")
     parser.add_argument("--minimum-os", default="0", help="Minimum iOS version when preparing a clean device")
+    parser.add_argument("--maximum-os", help="Maximum approved iOS runtime version for a clean CI device")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -325,7 +337,7 @@ def main() -> None:
         fail_no_destination(dests)
     assert picked is not None
     if args.prepare:
-        print(prepare_iphone_simulator(dests, args.preferred_runtime, args.minimum_os))
+        print(prepare_iphone_simulator(dests, args.preferred_runtime, args.minimum_os, args.maximum_os))
         return
     print(f"选中模拟器：{format_dest(picked)}", file=sys.stderr)
     print(picked["id"])

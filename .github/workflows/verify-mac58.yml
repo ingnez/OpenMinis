@@ -1,0 +1,45 @@
+name: Verify OpenMinis routing to Mac-58
+on:
+  workflow_dispatch:
+  push:
+    branches: [grokbot-phase2-combined-20261113]
+    paths: [.github/workflows/verify-mac58.yml]
+permissions:
+  contents: read
+jobs:
+  register-manual-check:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'The Mac routing check is registered; it runs on the Mac only when manually dispatched.'
+  verify-mac58:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: [self-hosted, macOS, openminis-mac]
+    timeout-minutes: 5
+    concurrency:
+      group: ${{ github.repository }}-macos
+      cancel-in-progress: false
+    steps:
+      - name: Confirm the exact runner
+        env:
+          EXPECTED_RUNNER: Mac-58
+        run: |
+          test "$RUNNER_NAME" = "$EXPECTED_RUNNER"
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          echo "Confirmed runner: $RUNNER_NAME (macOS ARM64)"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Select the installed Xcode for this job
+        run: python3 scripts/select_mac58_xcode.py
+      - name: Verify the installed SDK and simulator runtime
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+          python3 scripts/prepare_ios_runtime.py
+          python3 - <<'PY'
+          import shutil
+          for tool in ('python3', 'go', 'ninja', 'pkg-config', 'meson'):
+              print(tool + ': ' + ('available' if shutil.which(tool) else 'not installed'))
+          PY
