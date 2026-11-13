@@ -149,6 +149,8 @@ class CloudServerTestCase(unittest.TestCase):
         import cloud_agent_server as srv
         cls.srv = srv
         srv.DB_PATH = os.path.join(td, "agent.db")
+        with srv._resource_lock:
+            srv._resource_cache["value"] = None
         srv.SYSNAP_ETC = os.path.join(td, "etc")      # 系统快照只打包测试用的假 /etc
         os.makedirs(srv.SYSNAP_ETC, exist_ok=True)
         srv.GLOBAL_WORKSPACE = os.path.join(td, "workspace")
