@@ -22,6 +22,7 @@ import platform
 import re
 import subprocess
 import sys
+import uuid
 from typing import Iterable
 
 DEST_RE = re.compile(r"\{([^{}]+)\}")
@@ -147,14 +148,26 @@ def prepare_iphone_simulator(
             if existing:
                 udid = existing["udid"]
                 simctl("shutdown", udid)
-                simctl("erase", udid, timeout=90).check_returncode()
-            else:
+                erased = simctl("erase", udid, timeout=90)
+                if erased.returncode:
+                    print("旧 CI 设备无法清空，改建独立的新设备：" + (erased.stderr or "")[:1500], file=sys.stderr, flush=True)
+                    udid = None
+                    name += " " + uuid.uuid4().hex[:8]
+            if not udid:
                 created = simctl("create", name, device_type, runtime)
                 created.check_returncode()
                 udid = created.stdout.strip()
             if not udid:
                 raise RuntimeError("simctl create 未返回设备 UDID")
-            result = simctl("bootstatus", udid, "-b", timeout=180)
+            for boot_attempt in range(2):
+                result = simctl("bootstatus", udid, "-b", timeout=180)
+                boot_log = result.stdout + result.stderr
+                valid = result.returncode == 0 and re.search(r"^\s*Finished\s*$", boot_log, re.MULTILINE) \
+                    and not re.search(r"Data Migration Failed|Status=3, isTerminal=YES", boot_log)
+                if valid or boot_attempt:
+                    break
+                print("首次启动未完成，重新启动同一 CI 设备后再核验一次：" + boot_log[-2000:], file=sys.stderr, flush=True)
+                simctl("shutdown", udid)
             result.check_returncode()
             print(result.stdout, result.stderr, file=sys.stderr, flush=True)
             boot_log = result.stdout + result.stderr
@@ -180,7 +193,7 @@ def prepare_iphone_simulator(
                         "spawn", udid, "log", "show", "--last", "5m", "--style", "compact",
                         "--predicate", 'process == "data_migrator" OR eventMessage CONTAINS[c] "migration"',
                     )
-                    print(details.stdout, details.stderr, file=sys.stderr, flush=True)
+                    print(details.stdout[-15000:], details.stderr[-3000:], file=sys.stderr, flush=True)
                 except subprocess.TimeoutExpired:
                     print("读取模拟器系统日志超时", file=sys.stderr, flush=True)
         finally:
@@ -322,6 +335,30 @@ def self_test() -> None:
     inventory["devices"][beta_runtime] = [{"udid": "duo", "deviceTypeIdentifier": "duo"}]
     beta = {"name": "iPhone Duo", "OS": "27.2", "id": "duo", "platform": "iOS Simulator"}
     assert run_preparation([beta, *hosted], "unavailable", False, "26.4") == [minimum_runtime]
+    # A self-hosted runner can boot its dedicated device but cannot move the
+    # protected system data into CoreSimulator's Deleting-* directory.
+    # Recover by making a fresh device, then genuinely recheck first-boot failure.
+    blocked_inventory = {"devicetypes": [], "devices": {minimum_runtime: [
+        {"udid": "minimum", "deviceTypeIdentifier": "se"},
+        {"udid": "blocked-ci", "deviceTypeIdentifier": "se", "name": "OpenMinis CI iOS-26-2 1"}]}}
+    commands = []
+    def denied_erase(*args, timeout=20):
+        commands.append(args)
+        output, code, error = "", 0, ""
+        if args == ("list", "-j"):
+            output = json.dumps(blocked_inventory)
+        elif args[0] == "erase":
+            code, error = 1, "NSCocoaErrorDomain 513: data could not move to Deleting-*"
+        elif args[0] == "create":
+            output = "fresh-permission-recovery"
+        elif args[0] == "bootstatus":
+            output = "Data Migration Failed" if sum(c[0] == "bootstatus" for c in commands) == 1 else "Finished\n"
+        return subprocess.CompletedProcess(args, code, output, error)
+    with patch(__name__ + ".simctl", side_effect=denied_erase):
+        assert prepare_iphone_simulator(hosted[:1], minimum_runtime, "26.2", "26.4") == "fresh-permission-recovery"
+    assert sum(c[0] == "create" for c in commands) == 1
+    assert sum(c[0] == "bootstatus" for c in commands) == 2
+    assert not any(c[0] == "delete" and "blocked-ci" in c for c in commands)
     print("self-test ok", file=sys.stderr)
 
 

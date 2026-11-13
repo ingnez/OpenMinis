@@ -1837,20 +1837,11 @@ jobs:
             watch-preflight.log
           retention-days: 14
 
-      - name: 清空专用 CI 模拟器的测试数据
+      - name: 清理专用 CI 模拟器的测试应用
         if: ${{ always() && steps.simulator.outputs.udid != '' }}
         env:
           DEV: ${{ steps.simulator.outputs.udid }}
-        run: |
-          python3 - <<'PY'
-          import os, subprocess
-          device = os.environ['DEV']
-          try:
-              subprocess.run(['xcrun', 'simctl', 'shutdown', device], timeout=30, capture_output=True)
-          finally:
-              subprocess.run(['xcrun', 'simctl', 'erase', device], timeout=90, check=True)
-          print('Erased test data only on this job’s dedicated OpenMinis CI simulator.')
-          PY
+        run: python3 scripts/cleanup_ci_simulator.py "$DEV"
 
       - name: Agent 回归必须通过（先保存定向 UI 诊断证据再判定）
         if: ${{ always() && (steps.agent_regression.outcome == 'failure' || steps.agent_diagnostic_regression.outcome == 'failure' || steps.agent_entry.outcome == 'failure') }}
