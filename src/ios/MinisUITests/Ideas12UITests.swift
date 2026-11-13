@@ -103,6 +103,15 @@ final class Ideas12UITests: XCTestCase {
         openBot(app)
         XCTAssertTrue(app.descendants(matching: .any)["oneHandComposer"].waitForExistence(timeout: 15),
                       "单手模式没有把输入/发送/语音集中到右下角")
+        let field = app.descendants(matching: .any)["botComposerField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "单手容器覆盖了输入框的独立标识")
+        field.tap()
+        dismissKeyboardIntro(app)
+        field.typeText("单手模式E2E文字")
+        let send = app.buttons["发送"]
+        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        send.tap()
+        XCTAssertTrue(waitText(app, contains: "收到：单手模式E2E文字", timeout: 60), "单手模式没有正常发送并收到回复")
         shot(app, "i6-单手模式")
     }
 

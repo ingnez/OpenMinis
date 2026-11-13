@@ -1590,6 +1590,9 @@ struct CloudSessionView: View {
                              onPushToTalk: { on in pushToTalk(on, theme: theme) })
                 .accessibilityIdentifier("composerVoiceButton")
         }
+        // Keep the row's identifier on its container rather than propagating
+        // it over the text field and each independently accessible control.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(compact ? "oneHandComposer" : "standardComposer")
     }
 
