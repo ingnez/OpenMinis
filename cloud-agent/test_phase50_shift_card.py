@@ -33,7 +33,34 @@ class ShiftCardTests(unittest.TestCase):
         self.assertEqual(by["s2"]["state"], "unanswered"); self.assertEqual(by["s2"]["last_user"], "去甲 0.1 换算 ml/h")
         self.assertEqual(by["s5"]["state"], "running")
         self.assertNotIn("s3", by); self.assertNotIn("s4", by)
-        self.assertEqual(card["totals"], {"sessions": 3, "running": 1, "waiting_you": 0, "unanswered": 1})
+        self.assertEqual({k: card["totals"][k] for k in ("sessions", "running", "waiting_you", "unanswered")}, {"sessions": 3, "running": 1, "waiting_you": 0, "unanswered": 1})
+        self.assertEqual(card["totals"]["unfinished"], 2)
+        self.assertEqual(card["totals"]["grants"], 0)
+        self.assertEqual(card["totals"]["approvals"], 0)
+
+    def test_grants_and_watch(self):
+        c, now = db(), 1_000_000.0
+        c.execute("CREATE TABLE approval_grants (grant_id TEXT, task_id TEXT, tool TEXT, args_hash TEXT, scope TEXT, used INTEGER, created_at REAL, expires_at REAL)")
+        c.execute("CREATE TABLE approvals (approval_id TEXT, task_id TEXT, tool_call_id TEXT, tool TEXT, arguments TEXT, rule_id TEXT, category TEXT, reason TEXT, status TEXT, note TEXT, created_at REAL, expires_at REAL, decided_at REAL)")
+        c.execute("CREATE TABLE routines (routine_id TEXT, name TEXT, prompt TEXT, enabled INTEGER, last_status TEXT, persona_id TEXT)")
+        c.execute("INSERT INTO approval_grants VALUES ('grn_1','t1','shell','h','task',0,?,?)", (now-10, now+3600))
+        c.execute("INSERT INTO approval_grants VALUES ('grn_old','t2','shell','h','once',0,?,?)", (now-10, now-1))  # expired
+        c.execute("INSERT INTO approvals VALUES ('ap1','t3',NULL,'browser',NULL,NULL,NULL,'等你看一眼','pending',NULL,?,NULL,NULL)", (now,))
+        c.execute("INSERT INTO routines VALUES ('r1','盯化验','有变化就提醒',1,'ok','b-icu')")
+        c.execute("INSERT INTO sessions VALUES ('s5','在跑')")
+        c.execute("INSERT INTO tasks VALUES ('t5','s5','running',?)", (now,))
+        card = sc.build(c, 12, lambda sid: None, now=now)
+        self.assertEqual(card["totals"]["grants"], 1)
+        self.assertEqual(card["totals"]["approvals"], 1)
+        self.assertGreaterEqual(card["totals"]["watch"], 2)
+        self.assertEqual(card["grants"][0]["grant_id"], "grn_1")
+        self.assertTrue(any(w["title"] == "盯化验" for w in card["watch"]))
+        self.assertTrue(any(w["kind"] == "task" for w in card["watch"]))
+
+    def test_utterance(self):
+        self.assertTrue(sc.is_utterance("交班"))
+        self.assertTrue(sc.is_utterance("交班。"))
+        self.assertFalse(sc.is_utterance("交班要点怎么写"))
 
     def test_hours_clamped(self):
         self.assertEqual(sc.build(db(), 999, lambda s: None)["hours"], 48)

@@ -23,6 +23,7 @@ import uuid
 from urllib.parse import urlparse, parse_qs, unquote
 
 import cloud_secrets
+import cloud_secret_refs
 
 KINDS = ("login", "card", "contact", "note")
 ID_RE = re.compile(r"^v_[a-f0-9]{10}$")
@@ -450,14 +451,18 @@ def _invalidate():
 
 def _variants(kind, key, value):
     v = str(value)
+    out = set(cloud_secret_refs.encoded_variants(v))
+    out.add(v)
     if key == "number":
-        return [v, " ".join(v[i:i + 4] for i in range(0, len(v), 4)), "-".join(v[i:i + 4] for i in range(0, len(v), 4))]
+        out.add(" ".join(v[i:i + 4] for i in range(0, len(v), 4)))
+        out.add("-".join(v[i:i + 4] for i in range(0, len(v), 4)))
     if key == "totp":
         try:
-            return [v, totp_secret(v)]
+            out.update(cloud_secret_refs.encoded_variants(totp_secret(v)))
+            out.add(totp_secret(v))
         except VaultError:
-            return [v]
-    return [v]
+            pass
+    return [x for x in out if x and len(x) >= 4]
 
 
 def _secret_values():
@@ -490,10 +495,11 @@ def _secret_values():
 def redact(text):
     if not text or not isinstance(text, str):
         return text
+    # 先按长短替换保管库里的机密及其编码变体，再遮罩命名密钥
     for v in _secret_values():
         if v in text:
             text = text.replace(v, MASK)
-    return text
+    return cloud_secret_refs.redact_known(text)
 
 
 # ---------- CSV 导入（Chrome / 1Password / Bitwarden / Safari） ----------

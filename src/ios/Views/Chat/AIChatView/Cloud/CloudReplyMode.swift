@@ -112,9 +112,13 @@ struct CloudReplyWorker: Equatable, Identifiable {
     var needsDecision: Bool
     var result: String
     var createdAt: Double
+    var canPause: Bool
+    var canResume: Bool
+    var canRetry: Bool
 
     init(id: String, title: String = "后台任务", status: String = "running", phrase: String = "", elapsed: Double = 0,
-         eta: Int? = nil, steps: Int = 0, needsDecision: Bool = false, result: String = "", createdAt: Double = 0) {
+         eta: Int? = nil, steps: Int = 0, needsDecision: Bool = false, result: String = "", createdAt: Double = 0,
+         canPause: Bool? = nil, canResume: Bool? = nil, canRetry: Bool = false) {
         self.id = id
         self.title = title
         self.status = status
@@ -125,6 +129,9 @@ struct CloudReplyWorker: Equatable, Identifiable {
         self.needsDecision = needsDecision
         self.result = result
         self.createdAt = createdAt
+        self.canPause = canPause ?? (status == "queued" || status == "running")
+        self.canResume = canResume ?? (status == "paused")
+        self.canRetry = canRetry
     }
 
     init?(json d: [String: Any]) {
@@ -141,9 +148,13 @@ struct CloudReplyWorker: Equatable, Identifiable {
         needsDecision = d["needs_decision"] as? Bool ?? false
         result = d["result"] as? String ?? ""
         createdAt = (d["created_at"] as? NSNumber)?.doubleValue ?? 0
+        canPause = d["can_pause"] as? Bool ?? (status == "queued" || status == "running")
+        canResume = d["can_resume"] as? Bool ?? (status == "paused")
+        canRetry = d["can_retry"] as? Bool ?? ["failed", "cancelled", "interrupted", "limit_reached"].contains(status)
     }
 
     var active: Bool { status == "queued" || status == "running" }
+    var inTray: Bool { active || status == "paused" || needsDecision }
 }
 
 enum CloudReplyText {
@@ -195,6 +206,7 @@ enum CloudReplyText {
     static func phrase(_ w: CloudReplyWorker) -> String {
         if w.needsDecision { return "等你决定" }
         if w.status == "queued" { return "排队等待开始" }
+        if w.status == "paused" { return w.phrase.isEmpty ? "已暂停，进度已保存" : w.phrase }
         return w.phrase.isEmpty ? startPhrase : w.phrase
     }
 
@@ -205,6 +217,16 @@ enum CloudReplyText {
     }
 
     /// 实时语音通话里念出来的进度（一句话）
+    static func spoken(_ w: CloudReplyWorker) -> String {
+        if w.needsDecision { return "后台有件事需要你决定。" }
+        switch w.status {
+        case "completed": return "后台的事做完了，结果发在对话里。"
+        case "failed", "interrupted", "limit_reached": return "后台的事没做完，详情在对话里。"
+        case "cancelled": return "后台任务已经停了。"
+        case "paused": return "后台任务已暂停，进度已保存。"
+        default: return "后台正在\(phrase(w))。"
+        }
+    }
 }
 
 /// 提示音 / 轻震：只在状态真的变了的那一刻响一次；第一次看到的（打开对话时已经做完的旧任务）不响
@@ -251,7 +273,7 @@ enum CloudReplyRow {
     /// 进行中的，加上刚结束、还要停留几秒打勾的
     static func visible(_ workers: [CloudReplyWorker], finishedAt: [String: Date] = [:], now: Date = Date()) -> [CloudReplyWorker] {
         workers.filter { w in
-            w.active || finishedAt[w.id].map { now.timeIntervalSince($0) < lingerSeconds } ?? false
+            w.active || w.status == "paused" || finishedAt[w.id].map { now.timeIntervalSince($0) < lingerSeconds } ?? false
         }.sorted { $0.createdAt < $1.createdAt }
     }
 

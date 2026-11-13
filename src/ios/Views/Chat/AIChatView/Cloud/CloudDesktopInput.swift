@@ -499,6 +499,10 @@ enum CloudLowBandwidth {
         lowBandwidth ? CloudStreamQuality.saver : adaptive
     }
 
+    static func shouldDefer(bytes: Int, setting: String, expensive: Bool, threshold: Int = 512 * 1024) -> Bool {
+        bytes >= threshold && active(setting: setting, expensive: expensive)
+    }
+
     static func bytesText(_ n: Int) -> String {
         if n < 1024 { return "\(n) B" }
         if n < 1024 * 1024 { return String(format: "%.0f KB", Double(n) / 1024) }

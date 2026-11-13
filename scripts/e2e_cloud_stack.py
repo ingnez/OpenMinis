@@ -108,6 +108,8 @@ def script(data):
         return {"role": "assistant", "content": "群里收到：大家好"}
     if "@E2E工匠" in text or "@工匠" in text or "做海报" in text:
         return {"role": "assistant", "content": "工匠在群里：海报可以做"}
+    if "危险删除" in text and not tool_turns(data):
+        return tool_call("c3", "shell_execute", {"command": "rm -rf /tmp/openminis-e2e-fake-dir && echo e2e-rm-ok"})
     if "加粗" in text:
         return {"role": "assistant", "content": "> 这是**结论：**引用里的中文加粗，还有**「重点」**和**加粗的中文**。\n\n正文第二段。"}
     if "生成交付物" in text:
@@ -289,7 +291,7 @@ def set_reply(mode):
     if mode:
         _api("PUT", f"/v1/bots/{BOT_ID}/reply", {"mode": mode, "front_model": FRONT_MODEL, "back_model": BACK_MODEL})
         for w in _api("GET", f"/v1/workers?bot={BOT_ID}").get("workers", []):
-            if w.get("status") in ("queued", "running", "waiting_user"):
+            if w.get("status") in ("queued", "running", "waiting_user", "paused"):
                 try:
                     _api("POST", f"/v1/workers/{w['id']}/stop", {})
                 except Exception:
@@ -302,6 +304,23 @@ def set_reply(mode):
     overrides = {r[0]: r[1] for r in db.execute("SELECT session_id, mode FROM session_reply")}
     db.close()
     return {"bot": _api("GET", f"/v1/bots/{BOT_ID}/reply").get("reply"), "overrides": overrides}
+
+
+def set_approval(mode):
+    """探针 /_e2e/approval?mode=ask|auto：只改 E2E Bot 的覆盖，不改产品默认（新产品仍是先问我）。"""
+    if mode in ("ask", "auto"):
+        _api("PUT", "/v1/resources", {"bot_overrides": {BOT_ID: {"approval_mode": mode}}})
+    import cloud_isolation
+    live = _api("GET", "/v1/resources")
+    return {"mode": mode, "bot": (live.get("settings") or {}).get("bot_overrides", {}).get(BOT_ID, {}),
+            "defaults": cloud_isolation.DEFAULTS["bot_defaults"]}
+
+
+def simulate_restart():
+    """探针 /_e2e/restart：模拟云端进程重启（进行中的后台任务改为暂停并询问是否继续）。"""
+    import cloud_agent_server as srv
+    srv.init_db()
+    return {"ok": True}
 
 
 REALTIME_PORT = 18796
@@ -709,6 +728,29 @@ def main():
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if urlparse(self.path).path == "/_e2e/approval":
+                try:
+                    out = set_approval((parse_qs(urlparse(self.path).query).get("mode") or [""])[0])
+                    code = 200
+                except Exception as e:
+                    out, code = {"error": str(e)}, 500
+                body = json.dumps(out, ensure_ascii=False).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if urlparse(self.path).path == "/_e2e/defaults":
+                import cloud_isolation
+                out = {"defaults": {"bot_defaults": cloud_isolation.DEFAULTS["bot_defaults"]}}
+                body = json.dumps(out, ensure_ascii=False).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if urlparse(self.path).path == "/_e2e/feed":
                 # 首页「今日」卡片：塞一条假 Bot 的「主动消息」结果，正文带 Markdown 加粗（测预览不露星号）
                 import sqlite3
@@ -723,6 +765,18 @@ def main():
                 db.close()
                 body = b'{"ok": true}'
                 self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if urlparse(self.path).path == "/_e2e/restart":
+                try:
+                    out, code = simulate_restart(), 200
+                except Exception as e:
+                    out, code = {"error": str(e)}, 500
+                body = json.dumps(out, ensure_ascii=False).encode()
+                self.send_response(code)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -789,6 +843,9 @@ def main():
     call("PUT", "/v1/credentials/e2e", {"api_key": "sk-e2e-fake-000000000000", "base_url": model_base})
     call("PUT", f"/v1/bots/{BOT_ID}", {"name": BOT_NAME, "instructions": "端到端测试 Bot", "model": MODEL, "credential": "e2e"})
     call("PUT", f"/v1/bots/{MAKER_ID}", {"name": MAKER_NAME, "instructions": "端到端测试工匠 Bot，擅长做海报", "model": MODEL, "credential": "e2e"})
+    # E2E 流程本身一律批准，避免老用例卡在审批卡；产品默认仍是 ask（/_e2e/defaults 可读到）
+    call("PUT", "/v1/resources", {"bot_defaults": {"approval_mode": "auto"},
+                                  "bot_overrides": {BOT_ID: {"approval_mode": "auto"}}})
     set_reply("verbose")
     plugins = call("GET", "/v1/plugins")
     ids = [c["id"] for c in (plugins.get("catalog") or [])]

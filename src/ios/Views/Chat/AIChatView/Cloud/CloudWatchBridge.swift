@@ -25,9 +25,12 @@ final class CloudWatchBridge: NSObject, WCSessionDelegate {
         let resolved = resolvedCurrent(currentId, in: bots)
         let rows = bots.filter { !$0.hidden }.map { b -> WatchBotRow in
             let locked = CloudBotLock.shared.isLocked(b.id)
-            return WatchBotRow(id: b.id, name: b.name, working: locked ? nil : b.activity?.subtitle,
+            let working = locked ? nil : b.activity?.subtitle
+            let steps = WatchComplicationText.stepsLeft(running: working == nil ? 0 : 1, queued: 0, working: working != nil)
+            return WatchBotRow(id: b.id, name: b.name, working: working,
                                preview: locked ? "已上锁" : b.lastPreview, at: b.lastAt,
-                               color: CloudBotAvatarSpec.of(b).color)
+                               color: CloudBotAvatarSpec.of(b).color,
+                               stepsLeft: steps)
         }
         guard rows != lastSent || resolved != lastCurrentId else { return }
         // 干完的 Bot 给手表一下按颜色区分的轻触（手表 App 不可达就不发：不排队，过时的震动没意义）
@@ -40,6 +43,9 @@ final class CloudWatchBridge: NSObject, WCSessionDelegate {
         lastSent = rows
         lastCurrentId = resolved
         try? s.updateApplicationContext(WatchBotRow.encode(rows, currentId: resolved))
+        if let defaults = UserDefaults(suiteName: WatchWidgetStore.suite) {
+            WatchWidgetStore.save(WatchWidgetStore.snapshot(rows: rows, currentId: resolved), defaults: defaults)
+        }
     }
 
     private func resolvedCurrent(_ currentId: String?, in bots: [CloudBot]) -> String? {
@@ -55,6 +61,11 @@ final class CloudWatchBridge: NSObject, WCSessionDelegate {
         }
         if let voice = WatchVoiceRequest(message) {
             CloudBotEntry.openVoice(bot: voice.botId)
+            return
+        }
+        if let control = WatchControlRequest(message) {
+            // 手表点暂停 / 批准：打开对应 Bot；真正改任务状态走手机上已有的托盘 / 审批卡。
+            CloudBotEntry.open(bot: control.botId, text: nil, send: false)
         }
     }
 

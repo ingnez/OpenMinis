@@ -17,8 +17,11 @@ import cloud_deliver
 SOFT_CAP = 4
 ID_RE = re.compile(r"^wk_[a-f0-9]{10}$")
 ACTIVE = ("queued", "running")
+OPEN = ("queued", "running", "paused")  # 托盘里仍要展示（暂停后可继续）
+TERMINAL = ("completed", "failed", "cancelled", "interrupted", "limit_reached")
 COLS = ("worker_id", "bot_id", "front_session", "worker_session", "task_id", "title", "goal", "context", "status",
-        "result", "last_step", "reported", "created_at", "started_at", "finished_at")
+        "result", "last_step", "reported", "created_at", "started_at", "finished_at",
+        "stop_reason", "pause_requested", "checkpoint", "runtime")
 
 
 class WorkerError(ValueError):
@@ -29,13 +32,23 @@ def ensure_schema(conn):
     conn.execute("CREATE TABLE IF NOT EXISTS bot_workers (worker_id TEXT PRIMARY KEY, bot_id TEXT, front_session TEXT NOT NULL, "
                  "worker_session TEXT NOT NULL, task_id TEXT, title TEXT NOT NULL, goal TEXT NOT NULL, context TEXT, "
                  "status TEXT NOT NULL, result TEXT, last_step TEXT, reported INTEGER NOT NULL DEFAULT 0, "
-                 "created_at REAL NOT NULL, started_at REAL, finished_at REAL)")
+                 "created_at REAL NOT NULL, started_at REAL, finished_at REAL, "
+                 "stop_reason TEXT, pause_requested INTEGER NOT NULL DEFAULT 0, checkpoint TEXT, runtime TEXT)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_workers_front ON bot_workers(front_session, created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_workers_session ON bot_workers(worker_session)")
     if "client_nonce" not in {row[1] for row in conn.execute("PRAGMA table_info(bot_workers)")}:
         conn.execute("ALTER TABLE bot_workers ADD COLUMN client_nonce TEXT")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_workers_nonce ON bot_workers(front_session, client_nonce) "
                  "WHERE client_nonce IS NOT NULL")
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(bot_workers)")}
+    for name, decl in (
+        ("stop_reason", "TEXT"),
+        ("pause_requested", "INTEGER NOT NULL DEFAULT 0"),
+        ("checkpoint", "TEXT"),
+        ("runtime", "TEXT"),
+    ):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE bot_workers ADD COLUMN {name} {decl}")
     conn.commit()
 
 
@@ -44,6 +57,7 @@ def _row(r):
         return None
     d = dict(zip(COLS, r))
     d["reported"] = bool(d["reported"])
+    d["pause_requested"] = bool(d.get("pause_requested"))
     end = d["finished_at"] or time.time()
     d["elapsed_s"] = round(end - (d["started_at"] or d["created_at"]), 1) if d["status"] != "queued" else 0
     return d
@@ -115,7 +129,7 @@ def set_status(conn, worker_id, status, **extra):
     sets = ["status = ?"]
     args = [status]
     for k, v in extra.items():
-        if k in ("task_id", "result", "last_step", "started_at", "finished_at"):
+        if k in ("task_id", "result", "last_step", "started_at", "finished_at", "stop_reason", "pause_requested", "checkpoint", "runtime"):
             sets.append(f"{k} = ?")
             args.append(v)
     conn.execute(f"UPDATE bot_workers SET {', '.join(sets)} WHERE worker_id = ?", args + [worker_id])
@@ -127,7 +141,7 @@ def summary_note(workers, limit=6):
     rows = [w for w in workers if w["status"] in ACTIVE or (time.time() - (w["finished_at"] or 0)) < 6 * 3600][:limit]
     if not rows:
         return ""
-    label = {"queued": "排队中", "running": "进行中", "completed": "已完成", "failed": "失败", "cancelled": "已停止",
+    label = {"queued": "排队中", "running": "进行中", "paused": "已暂停", "completed": "已完成", "failed": "失败", "cancelled": "已停止",
              "interrupted": "中断", "limit_reached": "达到步数上限"}
     lines = []
     for w in rows:
@@ -161,7 +175,7 @@ def post_result(conn, w, defer_while_front_active=False):
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         current = get(conn, w["worker_id"])
-        if (not current or current["reported"] or current["status"] in ACTIVE
+        if (not current or current["reported"] or current["status"] in OPEN
                 or current["finished_at"] != w["finished_at"]):
             return False
         if defer_while_front_active and conn.execute(
@@ -209,18 +223,116 @@ def post_result(conn, w, defer_while_front_active=False):
         return True
 
 
-def recover(conn):
-    """服务器重启：进行中 / 排队的任务如实标记。任务其实已经写完答案的算完成，否则标记中断并告诉用户。"""
+def recover(conn, post_prompt=None):
+    """服务器重启：已经写出答案的算完成；其余进行中 / 排队的任务改成暂停并保存进度，
+    通过 post_prompt(conn, worker) 在前台对话里问用户要不要继续（不要只靠用户在聊天里说「继续」）。
+    同一任务不会因为重复调用而再发一张卡（checkpoint 里记了 asked）。
+    """
     out = []
-    for w in [_row(r) for r in conn.execute(f"SELECT {', '.join(COLS)} FROM bot_workers WHERE status IN ('queued', 'running')").fetchall()]:
+    for w in [_row(r) for r in conn.execute(
+            f"SELECT {', '.join(COLS)} FROM bot_workers WHERE status IN ('queued', 'running')"
+    ).fetchall()]:
         st = conn.execute("SELECT status FROM tasks WHERE task_id = ?", (w["task_id"],)).fetchone() if w["task_id"] else None
-        status = "completed" if st and st[0] == "completed" else "interrupted"
-        result = last_answer(conn, w["worker_session"], w["started_at"] or 0) if status == "completed" else None
-        set_status(conn, w["worker_id"], status, result=result, finished_at=time.time())
+        if st and st[0] == "completed":
+            result = last_answer(conn, w["worker_session"], w["started_at"] or 0)
+            set_status(conn, w["worker_id"], "completed", result=result, finished_at=time.time(),
+                       stop_reason=None, pause_requested=0)
+            w.update(status="completed", result=result)
+            post_result(conn, w)
+            out.append(w["worker_id"])
+            continue
+        if w["task_id"]:
+            conn.execute(
+                "UPDATE tasks SET status = 'paused' WHERE task_id = ? AND status IN ('running', 'queued', 'waiting_user')",
+                (w["task_id"],),
+            )
+        cp = load_checkpoint(w) or {}
+        cp.update({"reason": "restart", "task_id": w.get("task_id"), "saved_at": time.time()})
+        set_status(conn, w["worker_id"], "paused", stop_reason="restart", pause_requested=0,
+                   checkpoint=json.dumps(cp, ensure_ascii=False), finished_at=None)
+        w = get(conn, w["worker_id"])
+        if post_prompt and not cp.get("asked"):
+            try:
+                post_prompt(conn, w)
+                cp["asked"] = True
+                conn.execute("UPDATE bot_workers SET checkpoint = ? WHERE worker_id = ?",
+                             (json.dumps(cp, ensure_ascii=False), w["worker_id"]))
+                conn.commit()
+            except Exception:
+                pass
         out.append(w["worker_id"])
     # 已完成但在等前台回话的结果也会在重启后补交。
     pending = conn.execute(f"SELECT {', '.join(COLS)} FROM bot_workers WHERE reported = 0 "
-                           "AND status NOT IN ('queued', 'running') ORDER BY finished_at, created_at").fetchall()
+                           "AND status NOT IN ('queued', 'running', 'paused') ORDER BY finished_at, created_at").fetchall()
     for row in pending:
         post_result(conn, _row(row))
     return out
+
+
+def load_checkpoint(w):
+    raw = (w or {}).get("checkpoint")
+    if not raw:
+        return None
+    try:
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+def save_checkpoint(conn, worker_id, data):
+    conn.execute("UPDATE bot_workers SET checkpoint = ? WHERE worker_id = ?",
+                 (json.dumps(data, ensure_ascii=False), worker_id))
+    conn.commit()
+
+
+def public_runtime(model, provider):
+    """只保存恢复任务所需的非机密字段（模型名、凭据代号、协议），不要 API Key。"""
+    provider = provider if isinstance(provider, dict) else {}
+    out = {"model": model or ""}
+    for k in ("credential", "protocol"):
+        v = provider.get(k)
+        if isinstance(v, str) and v:
+            out[k] = v
+    return out
+
+
+def set_runtime(conn, worker_id, model, provider):
+    conn.execute("UPDATE bot_workers SET runtime = ? WHERE worker_id = ?",
+                 (json.dumps(public_runtime(model, provider), ensure_ascii=False), worker_id))
+    conn.commit()
+
+
+def request_pause(conn, worker_id):
+    """排队中的任务立刻暂停；运行中的打上标记，等当前工具跑完（安全点）再停。"""
+    w = get(conn, worker_id)
+    if not w:
+        return None
+    if w["status"] == "queued":
+        set_status(conn, worker_id, "paused", stop_reason="user", pause_requested=0)
+        return get(conn, worker_id)
+    if w["status"] == "running":
+        set_status(conn, worker_id, "running", pause_requested=1, stop_reason=None)
+        return get(conn, worker_id)
+    return w
+
+
+def park(conn, worker_id, reason, checkpoint=None):
+    """在安全点把运行中的任务改成暂停，并保存检查点。"""
+    w = get(conn, worker_id)
+    if not w:
+        return None
+    data = checkpoint if isinstance(checkpoint, dict) else (load_checkpoint(w) or {})
+    data.update({"reason": reason, "task_id": w.get("task_id"), "saved_at": time.time()})
+    if w.get("task_id"):
+        conn.execute(
+            "UPDATE tasks SET status = 'paused' WHERE task_id = ? AND status IN ('running', 'waiting_user')",
+            (w["task_id"],),
+        )
+    set_status(conn, worker_id, "paused", stop_reason=reason, pause_requested=0,
+               checkpoint=json.dumps(data, ensure_ascii=False), finished_at=None)
+    return get(conn, worker_id)
+
+
+def can_retry(status):
+    return status in ("failed", "cancelled", "interrupted", "limit_reached")

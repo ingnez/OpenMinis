@@ -607,6 +607,11 @@ struct CloudBotHomeScreen: View {
             ZStack(alignment: .bottom) {
                 ScrollView {
                     VStack(spacing: 0) {
+                        if CloudWardTodo.e2eForced, search.isEmpty {
+                            NavigationLink(destination: CloudLazyDestination { CloudWardTodoPage() }) {
+                                CloudWardTodoHomeBox(items: CloudWardTodo.e2eItems())
+                            }
+                        }
                         CloudLinkBanner(onOpenSettings: openCloudSettings)
                             .padding(.horizontal, 16).padding(.bottom, 8)
                         if let until = CloudDutyMode.until(dutyUntil: model.dutyUntil) {
@@ -792,8 +797,14 @@ struct CloudBotHomeScreen: View {
         .overlay { CloudMiniDesktopOverlay() }
         .modifier(CloudNightModeModifier(dutyUntil: model.dutyUntil))
         .onReceive(NotificationCenter.default.publisher(for: .cloudFocusFilterChanged)) { _ in model.objectWillChange.send() }
-        .onAppear { CloudColdStart.markHomeVisible(hasContent: !model.bots.isEmpty) }
-        .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
+        .onAppear {
+            CloudColdStart.markHomeVisible(hasContent: !model.bots.isEmpty)
+            if CloudShiftPin.shouldShow { showShiftCard = true }
+            else { Task { if await CloudShiftServerPin.isPending() { showShiftCard = true } } }
+        }
+        .background {
+            Color.clear.sheet(isPresented: $showShiftCard, onDismiss: { CloudShiftPin.consume() }) { CloudShiftCardSheet() }
+        }
         .sheet(item: $model.shiftSpeechBot) { bot in
             CloudShiftSpeechSheet(bot: bot, onDone: { model.shiftSpeechBot = nil })
         }
@@ -880,7 +891,8 @@ struct CloudBotHomeScreen: View {
             Menu {
                 Button { showConnectApps = true } label: { Label("连接应用", systemImage: "square.grid.2x2") }
                 Button { showWorkbench = true } label: { Label("工作台（在跑的任务）", systemImage: "rectangle.stack.badge.play") }
-                Button { showShiftCard = true } label: { Label("交班卡", systemImage: "list.clipboard") }
+                Button { showShiftCard = true } label: { Label("交班", systemImage: "list.clipboard") }
+                    .accessibilityIdentifier("shiftCardButton")
                 Button { path = ["hidden"] } label: {
                     Label(model.hiddenBots.isEmpty ? "已隐藏对话" : "已隐藏对话（\(model.hiddenBots.count)）", systemImage: "eye.slash")
                 }
@@ -1049,6 +1061,21 @@ struct CloudBotHubView: View {
                 NavigationLink(destination: CloudIPAChecklistView()) { Label("测试清单（已测流程 / 需真机验证）", systemImage: "checklist") }
                     .accessibilityIdentifier("ipaChecklistRow")
                 NavigationLink(destination: CloudReplayListView()) { Label("录屏回放（Bot 用浏览器 / 桌面的截图）", systemImage: "play.rectangle") }
+                    .accessibilityIdentifier("replayListRow")
+                NavigationLink(destination: CloudPocketModePage()) { Label("口袋模式", systemImage: "headphones") }
+                    .accessibilityIdentifier("pocketModeRow")
+                NavigationLink(destination: CloudLazyDestination { CloudNightModePage() }) { Label("夜间护眼", systemImage: "moon.stars") }
+                    .accessibilityIdentifier("nightEyeCareRow")
+                NavigationLink(destination: CloudLazyDestination { CloudDataSaverPage() }) { Label("省流模式", systemImage: "antenna.radiowaves.left.and.right") }
+                    .accessibilityIdentifier("dataSaverRow")
+                NavigationLink(destination: CloudLazyDestination { CloudQuietHoursView() }) { Label("静默时段", systemImage: "moon.zzz") }
+                    .accessibilityIdentifier("quietHoursRow")
+                NavigationLink(destination: CloudLazyDestination { CloudWatchComplicationPage() }) { Label("手表表盘小组件", systemImage: "applewatch") }
+                    .accessibilityIdentifier("watchComplicationRow")
+                NavigationLink(destination: CloudLazyDestination { CloudLockApprovalPage() }) { Label("锁屏审批与口令", systemImage: "lock.iphone") }
+                    .accessibilityIdentifier("lockApprovalRow")
+                NavigationLink(destination: CloudLazyDestination { CloudWardTodoPage() }) { Label("查房待办箱", systemImage: "checklist") }
+                    .accessibilityIdentifier("wardTodoRow")
                 NavigationLink(destination: CloudLiveStatsView()) { Label("实时资源（CPU / 内存 / 网速）", systemImage: "gauge.with.dots.needle.33percent") }
                 NavigationLink(destination: CloudSystemSnapshotsView()) { Label("系统快照（装软件前自动拍）", systemImage: "camera.metering.matrix") }
             }

@@ -94,6 +94,15 @@ func check(_ ok: Bool, _ m: String) { if !ok { print("FAIL: " + m); exit(1) } }
         check(CloudReplyRow.current([done], finishedAt: [w.id: now.addingTimeInterval(-10)], now: now) == nil, "过了就收起")
         check(CloudReplyRow.current([done]) == nil, "没记结束时间不显示")
         check(CloudReplyRow.shouldStop(translation: -120) && !CloudReplyRow.shouldStop(translation: -40) && !CloudReplyRow.shouldStop(translation: 200), "横滑停止阈值")
+        var parked = w; parked.status = "paused"; parked.phrase = "已暂停，进度已保存"; parked.canPause = false; parked.canResume = true
+        check(!parked.active && parked.inTray && parked.canResume && !parked.canPause, "暂停中仍在托盘")
+        check(CloudReplyText.phrase(parked) == "已暂停，进度已保存", CloudReplyText.phrase(parked))
+        check(CloudReplyRow.current([done, parked])?.id == parked.id, "没有进行中时托盘显示暂停的任务")
+        check(CloudReplyRow.current([w, parked])?.id == w.id, "进行中的优先于暂停")
+        check(CloudReplyText.spoken(parked) == "后台任务已暂停，进度已保存。", CloudReplyText.spoken(parked))
+        let flags = CloudReplyWorker(json: ["worker_id": "wk_0000000009", "status": "paused",
+                                            "can_pause": false, "can_resume": true, "can_retry": false])!
+        check(flags.canResume && !flags.canPause && flags.inTray, "解析 can_resume")
 
         // 首字时间
         var l = CloudReplyLatency()

@@ -15,10 +15,10 @@ struct CloudReplyLiveBar: View {
         if items.isEmpty {
             EmptyView()
         } else if items.count == 1, let w = items.first {
-            CloudReplyStatusRow(worker: w, count: 1, fetchedAt: status.fetchedAt, theme: theme,
-                                decision: status.lastDecision,
-                                onExpand: { status.expanded = w }, onStop: { status.stop(w) },
-                                onInterject: { status.interjecting = w })
+            CloudReplyTaskTray(worker: w, count: 1, fetchedAt: status.fetchedAt, theme: theme,
+                               onExpand: { status.expanded = w }, onStop: { status.stop(w) },
+                               onPause: { status.pause(w) }, onResume: { status.resume(w) },
+                               onRetry: { status.retry(w) }, onInterject: { status.interjecting = w })
         } else {
             CloudReplyCapsuleStrip(workers: shown(items), selectedId: selectedBinding(items),
                                    overflow: CloudReplyRow.overflowCount(items.count),

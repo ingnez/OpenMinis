@@ -97,9 +97,14 @@ import cloud_bots
 import cloud_admin
 import cloud_vault
 import cloud_workers
+import cloud_approval_grant
+import cloud_secret_refs
 import cloud_reply
 import cloud_runmodel
 import cloud_shift_card
+import cloud_quiet_hours
+import cloud_bot_relay
+import cloud_ward_todos
 import cloud_workbench
 import cloud_desktop_files
 import cloud_deliver
@@ -352,11 +357,16 @@ def init_db():
     cloud_admin.ensure_schema(conn)
     cloud_vault.ensure_schema(conn)
     cloud_workers.ensure_schema(conn)
+    cloud_approval_grant.ensure_schema(conn)
+    cloud_secret_refs.ensure_schema(conn)
+    cloud_secret_refs.set_loader(get_db_connection)
     cloud_reply.ensure_schema(conn)
     cloud_runmodel.ensure_schema(conn)
     cloud_vision.ensure_schema(conn)
     cloud_botthreads.ensure_schema(conn)
     cloud_duty.ensure_schema(conn)
+    cloud_quiet_hours.ensure_schema(conn)
+    cloud_ward_todos.ensure_schema(conn)
     cloud_exams.ensure_schema(conn)
     cloud_events.ensure_schema(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS feed_feedback (run_id TEXT PRIMARY KEY, liked INTEGER NOT NULL DEFAULT 0, "
@@ -387,12 +397,31 @@ def init_db():
                    "AND m.content IS NOT NULL AND TRIM(m.content) != '' AND m.timestamp >= tasks.created_at "
                    "AND m.id = (SELECT MAX(id) FROM messages WHERE session_id = tasks.session_id AND role IN ('user', 'assistant') "
                    "AND (content IS NOT NULL AND TRIM(content) != '')))")
-    cursor.execute("UPDATE tasks SET status = 'interrupted' WHERE status IN ('running', 'queued', 'waiting_user')")
+    # 不属于后台 worker 的任务仍标记中断；worker 的任务由 recover 改成「暂停，进度已保存」，再问用户要不要继续
+    cursor.execute("UPDATE tasks SET status = 'interrupted' WHERE status IN ('running', 'queued', 'waiting_user') "
+                   "AND session_id NOT IN (SELECT worker_session FROM bot_workers WHERE worker_session IS NOT NULL)")
     cursor.execute("UPDATE approvals SET status = 'expired', decided_at = ? WHERE status = 'pending'", (time.time(),))
     cursor.execute("UPDATE routine_runs SET status = 'interrupted', finished_at = ? WHERE status IN ('running', 'waiting_user')", (time.time(),))
     conn.commit()
-    cloud_workers.recover(conn)      # 后台任务：重启前没做完的如实标记中断，并在前台对话里说一声
+    cloud_workers.recover(conn, post_prompt=_resume_prompt)
     conn.close()
+
+
+def _resume_prompt(conn, w):
+    """重启后在前台对话放一张选项卡，问要不要继续已暂停的后台任务。"""
+    title = (w.get("title") or "后台任务")[:40]
+    choice = cloud_runmodel.validate_choice({
+        "question": "服务重启了，任务「%s」已暂停，进度已保存。要继续吗？" % title,
+        "options": ["继续", "先不用"],
+        "allow_custom": False,
+    })
+    meta = json.dumps({"choice": choice, "worker_id": w["worker_id"], "resume_prompt": True}, ensure_ascii=False)
+    conn.execute(
+        "INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'assistant', ?, ?, ?)",
+        (w["front_session"], choice["question"], time.time(), meta),
+    )
+    conn.commit()
+
 
 init_db()
 
@@ -442,6 +471,36 @@ def is_task_cancelled(task_id):
             task_id = entry.get("parent")
             seen += 1
         return False
+
+def set_task_pause_requested(task_id):
+    """请在下一个安全点（当前工具调用结束后）暂停。不打断正在跑的命令或写文件。"""
+    with active_tasks_lock:
+        if task_id in active_tasks:
+            active_tasks[task_id]["pause"] = True
+        else:
+            active_tasks[task_id] = {"process": None, "cancelled": False, "pause": True, "pid": None}
+
+
+def is_task_pause_requested(task_id):
+    with active_tasks_lock:
+        return bool(active_tasks.get(task_id, {}).get("pause"))
+
+
+def _inject_secret_args(args):
+    """把 {{secret:NAME}} 换成真实值。缺名字时返回错误，不执行工具。"""
+    names = cloud_secret_refs.refs_in(args)
+    if not names:
+        return args, None
+    conn = get_db_connection()
+    try:
+        mapping = cloud_secret_refs.values(conn, names)
+    finally:
+        conn.close()
+    injected, missing = cloud_secret_refs.inject(args, mapping)
+    if missing:
+        return args, {"error": "没有名为 %s 的密钥。请先在保管库的命名密钥里保存（模型只能写占位符，看不到值）。" % "、".join(missing)}
+    return injected, None
+
 
 SHARED_WORKSPACE = os.path.join(GLOBAL_WORKSPACE, "shared")
 ACTIVE_SLOTS = {}   # session_id -> 同一 Bot 的并发槽（>0 时用独立子工作区 / 屏幕）
@@ -662,7 +721,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.55.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.56.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -741,6 +800,8 @@ def user_notify(cfg, event, title, body, session_id=None, bot_id=None):
             title, body = "OpenMinis", "有一条新消息（已上锁的 Bot）"
     except Exception as e:
         print(f"notify privacy check failed: {type(e).__name__}", flush=True)
+    if _quiet_maybe_hold(event, title, body, bot_id=bot_id, session_id=session_id):
+        return False
     _duty_record("notify", title, body, bot_id=bot_id, session_id=session_id)
     # 先决定走哪条路：App 进程还活着 → 只进 App 通知流（App 用系统本地通知显示）；
     # App 不在了 → 按设置走 Bark / ntfy / Telegram，并在通知流里标记已推送，App 回来后不再弹一次
@@ -1027,14 +1088,16 @@ def request_approval(task_id, session_id, tool_call_id, tool_name, args, rule, t
     conn = get_db_connection()
     try:
         c = conn.cursor()
-        c.execute("INSERT INTO approvals (approval_id, task_id, tool_call_id, tool, arguments, rule_id, category, reason, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-                  (approval_id, task_id, tool_call_id, tool_name, json.dumps(args, ensure_ascii=False), rule["id"], rule["category"], rule["reason"], now, expires_at))
+        args_h = cloud_approval_grant.args_hash(args)
+        c.execute("INSERT INTO approvals (approval_id, task_id, tool_call_id, tool, arguments, rule_id, category, reason, status, created_at, expires_at, args_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                  (approval_id, task_id, tool_call_id, tool_name, json.dumps(args, ensure_ascii=False), rule["id"], rule["category"], rule["reason"], now, expires_at, args_h))
         c.execute("UPDATE tasks SET status = 'waiting_user' WHERE task_id = ? AND status = 'running'", (task_id,))
         conn.commit()
     finally:
         conn.close()
     approval = {"approval_id": approval_id, "tool_call_id": tool_call_id, "tool": tool_name, "arguments": args,
-                "rule_id": rule["id"], "category": rule["category"], "reason": rule["reason"], "expires_at": expires_at}
+                "rule_id": rule["id"], "category": rule["category"], "reason": rule["reason"], "expires_at": expires_at,
+                "args_hash": args_h}
     log_event(task_id, "approval_required", approval)
     try:
         on_approval_required(task_id, session_id, approval)
@@ -1051,28 +1114,40 @@ def request_approval(task_id, session_id, tool_call_id, tool_name, args, rule, t
             decision = "expired"
     with pending_approvals_lock:
         pending_approvals.pop(approval_id, None)
+    scope = waiter.get("scope")
     conn = get_db_connection()
     try:
         c = conn.cursor()
-        c.execute("UPDATE approvals SET status = ?, note = ?, decided_at = ? WHERE approval_id = ? AND status = 'pending'",
-                  (decision, waiter.get("note"), time.time(), approval_id))
+        c.execute("UPDATE approvals SET status = ?, note = ?, decided_at = ?, scope = ? WHERE approval_id = ? AND status = 'pending'",
+                  (decision, waiter.get("note"), time.time(), scope, approval_id))
         if decision != "cancelled":
             c.execute("UPDATE tasks SET status = 'running' WHERE task_id = ? AND status = 'waiting_user'", (task_id,))
+        # 「批准一次」只放行当前这次挂起的调用，不留可复用记录；本任务 / 本班次才写入后续可消耗的记录。
+        if decision == "approved" and scope in (cloud_approval_grant.SCOPE_TASK, cloud_approval_grant.SCOPE_SHIFT):
+            bot = session_bot(session_id) or {}
+            bot_id = bot.get("bot_id") or bot.get("id") or bot.get("persona_id")
+            expires = None
+            if scope == cloud_approval_grant.SCOPE_SHIFT:
+                expires = cloud_approval_grant.shift_expires(time.time(), (resource_settings() or {}).get("duty_until"))
+            cloud_approval_grant.record(conn, task_id, tool_name, args, scope, bot_id=bot_id, expires_at=expires)
         conn.commit()
     finally:
         conn.close()
-    log_event(task_id, "approval_resolved", {"approval_id": approval_id, "tool_call_id": tool_call_id, "decision": decision})
+    log_event(task_id, "approval_resolved", {"approval_id": approval_id, "tool_call_id": tool_call_id,
+                                             "decision": decision, "scope": scope})
     return decision
 
-def resolve_approval(task_id, approval_id, decision, note=None):
-    """返回 (http_status, body)。"""
+def resolve_approval(task_id, approval_id, decision, note=None, scope=None):
+    """返回 (http_status, body)。decision 是 approved / denied。scope 是 once / task（仅批准时有意义）。
+    聊天原文不会走到这里——必须由审批接口调用。"""
     with pending_approvals_lock:
         waiter = pending_approvals.get(approval_id)
         if waiter and waiter["task_id"] == task_id and waiter["decision"] is None:
             waiter["decision"] = decision
             waiter["note"] = note
+            waiter["scope"] = scope
             waiter["event"].set()
-            return 200, {"approval_id": approval_id, "task_id": task_id, "status": decision}
+            return 200, {"approval_id": approval_id, "task_id": task_id, "status": decision, "scope": scope}
     conn = get_db_connection()
     try:
         c = conn.cursor()
@@ -1158,7 +1233,10 @@ def inbox_receipt(conn, session_id, nonce):
                         (session_id, nonce)).fetchone()
 
 def inbox_push(task_id, content, nonce):
-    """返回 (状态码, 结果)。同一个 nonce 只收一次。任务已经收尾（不再看新消息）时返回 409，手机改为发新消息。"""
+    """返回 (状态码, 结果)。同一个 nonce 只收一次。任务已经收尾（不再看新消息）时返回 409，手机改为发新消息。
+    插话不会批准任何等待中的风险操作——审批只能走 /approvals 接口。"""
+    if isinstance(content, str):
+        content, _ = cloud_secret_refs.mask_pasted(content)
     with INBOX_LOCK:
         conn = get_db_connection()
         try:
@@ -2151,11 +2229,11 @@ def purge_stale_incognito(conn, now=None):
 
 
 def approval_mode_for(session_id):
-    """这个对话所属 Bot 的风险操作处理方式：auto = 一律批准（默认），ask = 按规则先问我。"""
+    """这个对话所属 Bot 的风险操作处理方式：ask = 按规则先问我（产品默认），auto = 一律批准。"""
     try:
-        return iso.bot_settings(resource_settings(), session_persona_id(session_id)).get("approval_mode") or "auto"
+        return iso.bot_settings(resource_settings(), session_persona_id(session_id)).get("approval_mode") or "ask"
     except Exception:
-        return "auto"
+        return "ask"
 
 
 def session_persona_id(session_id):
@@ -2332,6 +2410,136 @@ def mention_note(session_id, content):
 
 def session_bot(session_id):
     return get_persona(session_persona_id(session_id))
+
+
+def shift_card_build(hours=12, now=None):
+    conn = get_db_connection()
+    try:
+        return cloud_shift_card.build(conn, hours, lambda sid: session_bot(sid), now=now, skip_session=session_incognito)
+    finally:
+        conn.close()
+
+
+def shift_card_pin(hours=12, now=None):
+    card = shift_card_build(hours, now=now)
+    pin = {"show_on_open": True, "pinned_at": now or time.time(), "hours": card["hours"], "card": card}
+    _settings_put("shift_card_pin", pin)
+    return pin
+
+
+def shift_card_pending():
+    pin = _settings_get("shift_card_pin") or {}
+    if not isinstance(pin, dict):
+        return {"show_on_open": False, "card": None}
+    return {"show_on_open": bool(pin.get("show_on_open")), "pinned_at": pin.get("pinned_at"),
+            "hours": pin.get("hours"), "card": pin.get("card")}
+
+
+def shift_card_ack():
+    pin = _settings_get("shift_card_pin") or {}
+    if isinstance(pin, dict):
+        pin["show_on_open"] = False
+        _settings_put("shift_card_pin", pin)
+    return {"show_on_open": False}
+
+
+def quiet_cfg():
+    raw = _settings_get("quiet_hours")
+    try:
+        return cloud_quiet_hours.validate({}, raw if isinstance(raw, dict) else None)
+    except cloud_quiet_hours.QuietError:
+        return dict(cloud_quiet_hours.DEFAULT)
+
+
+def _quiet_maybe_hold(event, title, body, bot_id=None, session_id=None, now=None):
+    """静默时段内把完成类通知攒起来，到期再汇总。失败不影响通知本身。"""
+    try:
+        cfg = quiet_cfg()
+        if not cloud_quiet_hours.should_hold(cfg, event, now):
+            return False
+        conn = get_db_connection()
+        try:
+            cloud_quiet_hours.record(conn, event or "notify", title, body, bot_id=bot_id, session_id=session_id, now=now)
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception as e:
+        print(f"quiet hold failed: {type(e).__name__}", flush=True)
+        return False
+
+
+_quiet_lock = threading.Lock()
+
+
+def quiet_hours_check(now=None):
+    """调度器每轮调用：上班窗结束时把攒下的完成通知汇总推送。"""
+    now = time.time() if now is None else now
+    with _quiet_lock:
+        cfg = quiet_cfg()
+        state = _settings_get("quiet_state") or {}
+        new, window = cloud_quiet_hours.transition(state, cfg, now)
+        if new != state:
+            _settings_put("quiet_state", new)
+        if not window:
+            return None
+        conn = get_db_connection()
+        try:
+            digest = cloud_quiet_hours.finish(conn, window[0], window[1], now=now, cfg=cfg)
+            conn.commit()
+        finally:
+            conn.close()
+    if digest["count"]:
+        user_notify(current_notify_config(), "quiet_digest", "下班了：静默时段攒下的通知", digest["text"])
+    return digest
+
+
+def start_bot_relay(req):
+    """把一个 Bot 的结果交给另一个 Bot 继续做。"""
+    cleaned = cloud_bot_relay.clean(req)
+    target_id = cleaned["to_bot"]
+    bot = get_persona(target_id)
+    if not bot:
+        raise cloud_bot_relay.RelayError(f"没有这个 Bot：{target_id}")
+    from_bot = cleaned.get("from_bot")
+    from_name = None
+    if from_bot:
+        src = get_persona(from_bot)
+        from_name = (src or {}).get("name") or from_bot
+    if bot.get("model") and bot.get("credential"):
+        run_model = bot["model"]
+        provider, _st, err = resolve_provider({"protocol": "chat", "credential": bot["credential"]})
+    else:
+        run_model = req.get("model") if isinstance(req.get("model"), str) and req.get("model") else None
+        provider, _st, err = resolve_provider(req.get("provider") or {})
+    if err or not provider or not run_model:
+        raise cloud_bot_relay.RelayError(f"{bot.get('name') or target_id} 没有可用的模型：{err or '请在 Bot 设置里选模型'}")
+    title = "接力：" + (cleaned["fields"].get("goal") or cleaned["fields"].get("result") or "")[:40]
+    sid = _handoff_session(target_id, title)
+    content = cloud_bot_relay.compose(cleaned["fields"], from_name, redact=cloud_vault.redact)
+    now = time.time()
+    tid = "task_" + uuid.uuid4().hex[:12]
+    nonce = cleaned.get("client_nonce")
+    conn = get_db_connection()
+    try:
+        if nonce:
+            row = conn.execute("SELECT task_id, session_id FROM tasks WHERE client_nonce = ?", (nonce,)).fetchone()
+            if row:
+                return {"session_id": row[1], "task_id": row[0], "bot_id": target_id,
+                        "bot_name": bot.get("name") or target_id, "deduped": True}
+        conn.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, ?, 'running', ?, ?)",
+                     (tid, sid, nonce, run_model, now))
+        conn.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'user', ?, ?, ?)",
+                     (sid, content, now, json.dumps({"relay": {"from_bot": from_bot, "to_bot": target_id}}, ensure_ascii=False)))
+        conn.commit()
+    finally:
+        conn.close()
+    with active_tasks_lock:
+        active_tasks[tid] = {"process": None, "cancelled": False, "pid": None}
+    log_event(tid, "status", {"message": f"已接手 {from_name or '上一个 Bot'} 的工作"})
+    threading.Thread(target=run_agent_task, args=(tid, sid, content, run_model, provider, ""), daemon=True, name="bot-relay").start()
+    return {"session_id": sid, "task_id": tid, "bot_id": target_id, "bot_name": bot.get("name") or target_id, "deduped": False}
+
 
 def server_tool_notes(session_id):
     """追加到 system 消息的服务端工具说明（客户端 instructions 不了解服务端新增工具）与技能索引。"""
@@ -2925,7 +3133,11 @@ def worker_view(w):
             pass
         w["steps"] = steps
     w.update(worker_status_extras(w))
-    w.pop("context", None)
+    w["can_pause"] = w["status"] in ("queued", "running")
+    w["can_resume"] = w["status"] == "paused"
+    w["can_retry"] = cloud_workers.can_retry(w["status"])
+    for k in ("context", "checkpoint", "runtime"):
+        w.pop(k, None)
     return w
 
 def worker_status_extras(w):
@@ -3005,6 +3217,24 @@ def instant_auto_handoff(task_id, session_id, fn_name, goal, model, provider_con
     return res
 
 
+def _park_running_task(task_id, session_id, reason):
+    """当前工具已跑完：把对应的后台任务在安全点暂停并写下检查点。"""
+    log_event(task_id, "paused", {"reason": reason, "message": "已在安全点暂停，进度已保存"})
+    conn = get_db_connection()
+    try:
+        w = cloud_workers.by_session(conn, session_id)
+        if not w:
+            conn.execute("UPDATE tasks SET status = 'paused' WHERE task_id = ? AND status IN ('running', 'waiting_user')", (task_id,))
+            conn.commit()
+            return
+        steps = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND event_type = 'tool_result'", (task_id,)
+        ).fetchone()[0]
+        cloud_workers.park(conn, w["worker_id"], reason, {"task_id": task_id, "steps": steps})
+    finally:
+        conn.close()
+
+
 def _worker_launch(wid):
     """名额够就开跑（同一 Bot 最多 SOFT_CAP 个），不够就留在队列里，等前面的任务结束再开。返回是否开跑。"""
     with WORKER_LOCK:
@@ -3017,6 +3247,7 @@ def _worker_launch(wid):
             if not runtime:
                 return False
             model, provider, note = runtime
+            cloud_workers.set_runtime(conn, wid, model, provider)
             tid = "task_" + uuid.uuid4().hex[:12]
             now = time.time()
             conn.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
@@ -3046,9 +3277,12 @@ def _worker_finish(wid, tid, started):
     conn = get_db_connection()
     try:
         st = (conn.execute("SELECT status FROM tasks WHERE task_id = ?", (tid,)).fetchone() or ["failed"])[0]
-        status = st if st in ("completed", "failed", "cancelled", "limit_reached", "interrupted") else "failed"
         w = cloud_workers.get(conn, wid)
-        if w and w["status"] == "running":
+        status = st if st in ("completed", "failed", "cancelled", "limit_reached", "interrupted", "paused") else "failed"
+        if w and w["status"] == "running" and status == "paused":
+            cloud_workers.park(conn, wid, w.get("stop_reason") or "user", {"task_id": tid})
+            w = cloud_workers.get(conn, wid)
+        elif w and w["status"] == "running":
             result = cloud_workers.last_answer(conn, w["worker_session"], started) if status != "cancelled" else None
             if status in ("failed", "limit_reached"):
                 error_row = conn.execute("SELECT payload FROM task_events WHERE task_id = ? AND event_type IN ('error', 'limit_reached') "
@@ -3103,16 +3337,113 @@ def worker_stop(wid):
         if not w:
             return None
         if w["status"] == "queued":
-            cloud_workers.set_status(conn, wid, "cancelled", finished_at=time.time())
+            cloud_workers.set_status(conn, wid, "cancelled", finished_at=time.time(), pause_requested=0, stop_reason="user")
+            _worker_post(conn, cloud_workers.get(conn, wid))
+        elif w["status"] == "paused":
+            if w.get("task_id"):
+                conn.execute("UPDATE tasks SET status = 'cancelled' WHERE task_id = ? AND status = 'paused'", (w["task_id"],))
+            cloud_workers.set_status(conn, wid, "cancelled", finished_at=time.time(), pause_requested=0, stop_reason="user")
             _worker_post(conn, cloud_workers.get(conn, wid))
         elif w["status"] == "running" and w.get("task_id"):
             set_task_cancelled(w["task_id"])
-            conn.execute("UPDATE tasks SET status = 'cancelled' WHERE task_id = ? AND status IN ('running', 'waiting_user')", (w["task_id"],))
+            conn.execute("UPDATE tasks SET status = 'cancelled' WHERE task_id = ? AND status IN ('running', 'waiting_user', 'paused')", (w["task_id"],))
             conn.commit()
             log_event(w["task_id"], "cancelled", {"message": "后台任务已停止"})
         return cloud_workers.get(conn, wid)
     finally:
         conn.close()
+
+def worker_pause(wid):
+    conn = get_db_connection()
+    try:
+        w = cloud_workers.request_pause(conn, wid)
+    finally:
+        conn.close()
+    if not w:
+        return None
+    if w["status"] == "running" and w.get("task_id"):
+        set_task_pause_requested(w["task_id"])
+    return w
+
+
+def worker_resume(wid, model=None, provider=None, note=""):
+    """继续或重试一个已暂停 / 失败 / 停止的后台任务。模型与凭据优先用请求里的，否则用上次保存的（不含密钥）。"""
+    conn = get_db_connection()
+    try:
+        w = cloud_workers.get(conn, wid)
+        if not w:
+            return 404, {"error": "没有这个后台任务"}
+        if w["status"] in cloud_workers.ACTIVE:
+            return 409, {"error": "任务还在进行", "status": w["status"]}
+        if w["status"] != "paused" and not cloud_workers.can_retry(w["status"]):
+            return 409, {"error": "这个任务现在不能继续", "status": w["status"]}
+        runtime = {}
+        if w.get("runtime"):
+            try:
+                runtime = json.loads(w["runtime"]) or {}
+            except Exception:
+                runtime = {}
+        model = model or runtime.get("model")
+        provider = dict(provider) if isinstance(provider, dict) else {}
+        if not provider.get("credential") and runtime.get("credential"):
+            provider = {"credential": runtime["credential"], "protocol": runtime.get("protocol") or "chat"}
+        if not model or not provider.get("credential"):
+            bot = get_persona(w.get("bot_id")) if w.get("bot_id") else None
+            if bot:
+                model = model or bot.get("model")
+                if not provider.get("credential") and bot.get("credential"):
+                    provider = {"credential": bot["credential"], "protocol": bot.get("protocol") or "chat"}
+        if not model:
+            return 409, {"error": "没有保存可用的模型，请在对话里让 Bot 继续"}
+        if provider.get("credential") and "api_key" not in provider:
+            prov, st, err = resolve_provider(provider)
+            if err:
+                return st, {"error": err}
+            provider = prov
+        if w.get("task_id"):
+            conn.execute("UPDATE tasks SET status = 'interrupted' WHERE task_id = ? AND status = 'paused'", (w["task_id"],))
+        conn.execute(
+            "UPDATE bot_workers SET status = 'queued', reported = 0, result = NULL, finished_at = NULL, "
+            "pause_requested = 0, stop_reason = NULL WHERE worker_id = ?",
+            (wid,),
+        )
+        conn.commit()
+        cloud_workers.set_runtime(conn, wid, model, provider)
+    finally:
+        conn.close()
+    WORKER_RUNTIME[wid] = (model, provider, note if isinstance(note, str) else "")
+    started = _worker_launch(wid)
+    conn = get_db_connection()
+    try:
+        return 200, {"worker": worker_view(cloud_workers.get(conn, wid)), "started": started}
+    finally:
+        conn.close()
+
+
+def _maybe_resume_from_choice(conn, session_id, ca):
+    """选项卡若是重启后的「要继续吗」，点「继续」就直接恢复任务，不必等模型去调 task_resume，也不靠用户打「继续」。"""
+    if not isinstance(ca, dict) or ca.get("dismissed"):
+        return
+    mid = ca.get("message_id")
+    row = conn.execute("SELECT meta FROM messages WHERE id = ? AND session_id = ?", (mid, session_id)).fetchone()
+    if not row or not row[0]:
+        return
+    try:
+        meta = json.loads(row[0])
+    except Exception:
+        return
+    if not meta.get("resume_prompt") or not meta.get("worker_id"):
+        return
+    labels = {str(s) for s in (ca.get("selected") or [])}
+    for o in (meta.get("choice") or {}).get("options") or []:
+        if isinstance(o, dict) and (o.get("id") in labels or o.get("label") in labels):
+            labels.add(o.get("label") or "")
+    if "继续" in labels:
+        try:
+            worker_resume(meta["worker_id"])
+        except Exception as e:
+            print(f"resume from choice failed: {type(e).__name__}", flush=True)
+
 
 def worker_message(wid, text):
     conn = get_db_connection()
@@ -5451,6 +5782,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             if is_task_cancelled(task_id):
                 final_status = "cancelled"
                 break
+            if is_task_pause_requested(task_id):
+                _park_running_task(task_id, session_id, "user")
+                final_status = "paused"
+                break
             if vision["blocked"]:
                 # 没有能看图的模型：立刻如实回复，不让主模型去装 OCR 之类的东西
                 log_event(task_id, "thought", {"content": cloud_vision.NO_VISION_REPLY})
@@ -5620,11 +5955,32 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                                                              "category": hit.get("category")})
                         decision = "approved"
                     elif hit:
-                        decision = request_approval(task_id, session_id, tc_id, fn_name, fn_args, hit, policy.get("timeout_seconds", 1800))
-                        if decision == "cancelled" or is_task_cancelled(task_id):
-                            return None
+                        gconn = get_db_connection()
+                        try:
+                            bot = session_bot(session_id) or {}
+                            grant = cloud_approval_grant.consume(
+                                gconn, task_id, fn_name, fn_args,
+                                bot_id=bot.get("bot_id") or bot.get("id") or bot.get("persona_id"))
+                        finally:
+                            gconn.close()
+                        if grant:
+                            log_event(task_id, "approval_grant", {"tool": fn_name, "scope": grant.get("scope"),
+                                                                 "args_hash": grant.get("args_hash"), "grant_id": grant.get("grant_id")})
+                            decision = "approved"
+                        else:
+                            decision = request_approval(task_id, session_id, tc_id, fn_name, fn_args, hit, policy.get("timeout_seconds", 1800))
+                            if decision == "cancelled" or is_task_cancelled(task_id):
+                                return None
 
-                    if hit and decision != "approved":
+                    secret_err = None
+                    if not hit or decision == "approved":
+                        injected, secret_err = _inject_secret_args(fn_args)
+                        if not secret_err:
+                            fn_args = injected
+
+                    if secret_err:
+                        res = secret_err
+                    elif hit and decision != "approved":
                         label = {"denied": "用户拒绝", "expired": "审批超时未获批准"}.get(decision, decision)
                         res = {"error": f"{label}，未执行：{hit['reason']}", "approval": decision, "rule_id": hit["id"]}
                     elif fn_name == "shell_execute": res = tool_shell_execute(task_id, session_id, fn_args)
@@ -5745,6 +6101,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                         post_tool(*outcome)
 
                 if final_status == "cancelled":
+                    break
+                if is_task_pause_requested(task_id):
+                    _park_running_task(task_id, session_id, "user")
+                    final_status = "paused"
                     break
                 tf = TURN_FLAGS.get(task_id) or {}
                 if tf.get("answered"):
@@ -6381,6 +6741,11 @@ def _scheduler_main():
             sys.stderr.write(f"[duty] check error: {sanitize_err(e)}\n")
             note_server_error("duty", e)
         try:
+            quiet_hours_check()
+        except Exception as e:
+            sys.stderr.write(f"[quiet] check error: {sanitize_err(e)}\n")
+            note_server_error("quiet_hours", e)
+        try:
             events_check()
         except Exception as e:
             sys.stderr.write(f"[events] check error: {sanitize_err(e)}\n")
@@ -6518,6 +6883,8 @@ def _telegram_safe_send(cfg, chat_id, text, reply_markup=None):
         return False
 
 def telegram_start_task(cfg, chat_id, sid, text):
+    if isinstance(text, str):
+        text, _ = cloud_secret_refs.mask_pasted(text)
     bot = get_persona(cfg.get("_channel")) if cfg.get("_channel") else None
     if bot and bot.get("model") and bot.get("credential"):
         # Bot 自己选了模型：它的 Telegram 渠道也跟着用（思考深度由 session 所属 Bot 决定）
@@ -6622,7 +6989,7 @@ def telegram_handle_callback(cfg, cq):
     data = cq.get("data") or ""
     chat_id = ((cq.get("message") or {}).get("chat") or {}).get("id")
     answer = "无效操作"
-    if chat_id in cfg.get("allowed_chat_ids", []) and re.match(r"^ap:(appr_[a-f0-9]{12}):(y|n)$", data):
+    if chat_id in cfg.get("allowed_chat_ids", []) and re.match(r"^ap:(appr_[a-f0-9]{12}):([ynt])$", data):
         _, aid, yn = data.split(":")
         conn = get_db_connection()
         try:
@@ -6630,13 +6997,14 @@ def telegram_handle_callback(cfg, cq):
         finally:
             conn.close()
         if row and telegram_chat_for_task(row[0]) == chat_id and telegram_channel_for_task(row[0]) == (cfg.get("_channel") or ""):
-            code, body = resolve_approval(row[0], aid, "approved" if yn == "y" else "denied", "via Telegram")
-            answer = ("已批准" if yn == "y" else "已拒绝") if code == 200 else "该审批已处理或已过期"
+            status, scope = ("denied", None) if yn == "n" else ("approved", "task" if yn == "t" else "once")
+            code, body = resolve_approval(row[0], aid, status, "via Telegram", scope)
+            answer = {"y": "已批准一次", "t": "已批准（本任务内）", "n": "已拒绝"}.get(yn, "已处理") if code == 200 else "该审批已处理或已过期"
     try:
         cloud_telegram.call(cfg, "answerCallbackQuery", {"callback_query_id": cq.get("id"), "text": answer}, timeout=10)
     except cloud_telegram.TelegramAPIError:
         pass
-    if answer in ("已批准", "已拒绝"):
+    if answer.startswith("已批准") or answer == "已拒绝":
         _telegram_safe_send(cfg, chat_id, answer + "。")
 
 def telegram_notify_approval(task_id, approval):
@@ -6648,8 +7016,11 @@ def telegram_notify_approval(task_id, approval):
         return False
     args = json.dumps(approval.get("arguments"), ensure_ascii=False)
     text = f"⚠️ 需要你的审批：{approval.get('reason')}\n工具：{approval.get('tool')}\n参数：{args[:800]}"
-    markup = {"inline_keyboard": [[{"text": "批准", "callback_data": f"ap:{approval['approval_id']}:y"},
-                                   {"text": "拒绝", "callback_data": f"ap:{approval['approval_id']}:n"}]]}
+    markup = {"inline_keyboard": [[
+        {"text": "批准一次", "callback_data": f"ap:{approval['approval_id']}:y"},
+        {"text": "本任务内都批准", "callback_data": f"ap:{approval['approval_id']}:t"},
+        {"text": "拒绝", "callback_data": f"ap:{approval['approval_id']}:n"},
+    ]]}
     return _telegram_safe_send(cfg, chat_id, text, markup)
 
 def telegram_poll_once(cfg):
@@ -7024,6 +7395,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Plugin not found"})
             return
 
+        if path == "/v1/named-secrets" or path.startswith("/v1/named-secrets/"):
+            self._named_secrets("GET", path, None)
+            return
         if path == "/v1/vault" or path.startswith("/v1/vault/"):
             self._vault("GET", path, query_params, None)
             return
@@ -7098,18 +7472,39 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/shift-card":
-            # 交班卡：最近 N 小时（默认 12）各 Bot 的对话、在跑 / 等你 / 没回的事（纯查库，不调模型）
+            # 交班卡：最近 N 小时各 Bot 的未完成任务、未收回授权、待盯事项（纯查库，不调模型）
+            if (query_params.get("pending") or ["0"])[0] in ("1", "true", "yes"):
+                self._send(200, shift_card_pending())
+                return
             try:
                 hours = int((query_params.get("hours") or ["12"])[0])
             except ValueError:
                 self._send(400, {"error": "hours 必须是整数"})
                 return
+            self._send(200, shift_card_build(hours))
+            return
+
+        if path == "/v1/quiet-hours":
+            cfg = quiet_cfg()
+            self._send(200, {"quiet_hours": cfg, "active": cloud_quiet_hours.is_active(cfg)})
+            return
+        if path == "/v1/quiet-hours/digest":
             conn = get_db_connection()
             try:
-                card = cloud_shift_card.build(conn, hours, lambda sid: session_bot(sid), skip_session=session_incognito)
+                self._send(200, {"digest": cloud_quiet_hours.latest(conn),
+                                 "active": cloud_quiet_hours.is_active(quiet_cfg())})
             finally:
                 conn.close()
-            self._send(200, card)
+            return
+
+        if path == "/v1/ward-todos":
+            conn = get_db_connection()
+            try:
+                include_done = (query_params.get("done") or ["1"])[0] not in ("0", "false", "no")
+                items = cloud_ward_todos.list_items(conn, include_done=include_done)
+                self._send(200, {"todos": items, "totals": cloud_ward_todos.totals(items)})
+            finally:
+                conn.close()
             return
 
         if path == "/v1/notifications":
@@ -7954,7 +8349,7 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
 
     def _workers(self, method, path, query, body):
-        """后台任务：GET /v1/workers?session_id=|bot=、GET /v1/workers/<id>（含过程事件）、POST /v1/workers/<id>/stop|message。"""
+        """后台任务：GET /v1/workers?session_id=|bot=、GET /v1/workers/<id>、POST /v1/workers/<id>/stop|pause|resume|retry|message。"""
         parts = path.strip("/").split("/")
         conn = get_db_connection()
         try:
@@ -7976,6 +8371,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if method == "POST" and len(parts) == 4 and parts[3] == "stop":
             self._send(200, {"worker": worker_view(worker_stop(w["worker_id"]))})
+            return
+        if method == "POST" and len(parts) == 4 and parts[3] == "pause":
+            got = worker_pause(w["worker_id"])
+            self._send(200, {"worker": worker_view(got)})
+            return
+        if method == "POST" and len(parts) == 4 and parts[3] in ("resume", "retry"):
+            body = body or {}
+            code, res = worker_resume(w["worker_id"], body.get("model"), body.get("provider"), body.get("note"))
+            self._send(code, res)
             return
         if method == "POST" and len(parts) == 4 and parts[3] == "message":
             code, res = worker_message(w["worker_id"], (body or {}).get("text"))
@@ -8018,6 +8422,33 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Not found"})
         except cloud_vault.VaultError as e:
             self._send(404 if "没有这一项" in str(e) else 400, {"error": str(e)})
+        except cloud_secrets.SecretStoreUnavailable as e:
+            self._send(503, {"error": "加密存储不可用：" + str(e)})
+        except cloud_secrets.SecretDecryptError as e:
+            self._send(500, {"error": str(e)})
+        finally:
+            conn.close()
+
+    def _named_secrets(self, method, path, body):
+        """命名密钥只存元数据和密文。取值只在工具真正执行时注入，接口从不回传明文。"""
+        conn = get_db_connection()
+        try:
+            item_m = re.match(r"^/v1/named-secrets/([A-Z][A-Z0-9_]{0,63})$", path)
+            if method == "GET" and path == "/v1/named-secrets":
+                ok, reason = cloud_secrets.status()
+                self._send(200, {"items": cloud_secret_refs.list_names(conn), "available": ok,
+                                 **({} if ok else {"reason": reason})})
+            elif method in ("POST", "PUT") and path == "/v1/named-secrets":
+                item = cloud_secret_refs.put(conn, (body or {}).get("name"), (body or {}).get("value"),
+                                            (body or {}).get("description") or "")
+                self._send(200 if item.get("updated") else 201, {"item": {k: item[k] for k in ("name", "description", "updated")}})
+            elif item_m and method == "DELETE":
+                cloud_secret_refs.delete(conn, item_m.group(1))
+                self._send(200, {"deleted": True})
+            else:
+                self._send(404, {"error": "Not found"})
+        except cloud_secret_refs.SecretRefError as e:
+            self._send(404 if "没有" in str(e) else 400, {"error": str(e)})
         except cloud_secrets.SecretStoreUnavailable as e:
             self._send(503, {"error": "加密存储不可用：" + str(e)})
         except cloud_secrets.SecretDecryptError as e:
@@ -8210,6 +8641,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"timezone": tz})
             return
 
+        if path == "/v1/quiet-hours":
+            try:
+                cfg = cloud_quiet_hours.validate(req_json or {}, quiet_cfg())
+            except cloud_quiet_hours.QuietError as e:
+                self._send(400, {"error": str(e)})
+                return
+            _settings_put("quiet_hours", cfg)
+            try:
+                quiet_hours_check()
+            except Exception as e:
+                print(f"quiet check failed: {type(e).__name__}", flush=True)
+            self._send(200, {"quiet_hours": cfg, "active": cloud_quiet_hours.is_active(cfg)})
+            return
+
         if path.startswith("/v1/bots/") and path.endswith("/telegram"):
             bid = path[len("/v1/bots/"):-len("/telegram")]
             if not get_persona(bid):
@@ -8231,6 +8676,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Plugin not found"})
             return
 
+        if path == "/v1/named-secrets" or path.startswith("/v1/named-secrets/"):
+            self._named_secrets("PUT", path, req_json)
+            return
         if path.startswith("/v1/vault/"):
             self._vault("PUT", path, {}, req_json)
             return
@@ -8446,6 +8894,19 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
             self._send(200 if ok else 404, {"deleted": ok})
             return
+        m_ward = re.match(r"^/v1/ward-todos/(todo_[a-f0-9]{12})$", path)
+        if m_ward:
+            conn = get_db_connection()
+            try:
+                cloud_ward_todos.delete(conn, m_ward.group(1))
+                conn.commit()
+            except cloud_ward_todos.WardTodoError as e:
+                self._send(404, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            self._send(200, {"deleted": m_ward.group(1)})
+            return
         m_px = re.match(r"^/v1/proxy/(nodes|subscriptions)/([0-9a-f]{6,64})$", path)
         if m_px:
             if m_px.group(1) == "nodes":
@@ -8499,6 +8960,9 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 conn.close()
             self._send(200 if ok else 404, {"deleted": True} if ok else {"error": "Group not found"})
+            return
+        if path.startswith("/v1/named-secrets/"):
+            self._named_secrets("DELETE", path, None)
             return
         if path.startswith("/v1/vault/"):
             self._vault("DELETE", path, query_params, None)
@@ -8655,6 +9119,9 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/v1/proxy/"):
             self._proxy_post(path, req_json)
             return
+        if path == "/v1/named-secrets" or path.startswith("/v1/named-secrets/"):
+            self._named_secrets("POST", path, req_json)
+            return
         if path == "/v1/vault" or path.startswith("/v1/vault/"):
             self._vault("POST", path, {}, req_json)
             return
@@ -8670,6 +9137,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, start_handoff(req_json))
             except cloud_handoff.HandoffError as e:
                 self._send(400, {"error": str(e)})
+            return
+        if path == "/v1/relay":
+            try:
+                self._send(200, start_bot_relay(req_json or {}))
+            except cloud_bot_relay.RelayError as e:
+                self._send(400, {"error": str(e)})
+                return
             return
         m_react = re.match(r"^/v1/sessions/(sess_[a-f0-9]{12})/messages/(\d{1,12})/reaction$", path)
         if m_react:
@@ -9438,6 +9912,14 @@ class Handler(BaseHTTPRequestHandler):
                 db_user_content = json.dumps(message_parts, ensure_ascii=False)
             # 只带附件路径的图片（2.47.0 起手机都这样发）：数据库里存文字，调用模型时再读上传的文件补成图片
 
+            content, pasted = cloud_secret_refs.mask_pasted(content)
+            if message_parts is not None:
+                message_parts, hit = cloud_secret_refs.mask_value(message_parts)
+                pasted = pasted or hit
+                db_user_content = json.dumps(message_parts, ensure_ascii=False)
+            else:
+                db_user_content = content
+
             model = req_json.get("model", "gpt-4o")
             client_effort = req_json.get("reasoning_effort")
             if client_effort not in (None, "") and client_effort not in cloud_bots.EFFORTS:
@@ -9473,6 +9955,7 @@ class Handler(BaseHTTPRequestHandler):
                                                          ca.get("custom") if isinstance(ca.get("custom"), str) else None, bool(ca.get("dismissed")))
                     db_user_content = content
                     user_meta["choice_answer"] = ca["message_id"]
+                    _maybe_resume_from_choice(rconn, sid, ca)
             except cloud_runmodel.RunModelError as e:
                 self._send(400, {"error": str(e)})
                 return
@@ -9611,6 +10094,75 @@ class Handler(BaseHTTPRequestHandler):
             self._send(201 if created else 200, dict(entry, created=created))
             return
 
+        if path == "/v1/shift-card":
+            try:
+                hours = int((req_json or {}).get("hours") or 12)
+            except (TypeError, ValueError):
+                self._send(400, {"error": "hours 必须是整数"})
+                return
+            self._send(200, shift_card_pin(hours))
+            return
+        if path == "/v1/shift-card/ack":
+            self._send(200, shift_card_ack())
+            return
+        if path == "/v1/quiet-hours":
+            try:
+                cfg = cloud_quiet_hours.validate(req_json or {}, quiet_cfg())
+            except cloud_quiet_hours.QuietError as e:
+                self._send(400, {"error": str(e)})
+                return
+            _settings_put("quiet_hours", cfg)
+            try:
+                quiet_hours_check()
+            except Exception as e:
+                print(f"quiet check failed: {type(e).__name__}", flush=True)
+            self._send(200, {"quiet_hours": cfg, "active": cloud_quiet_hours.is_active(cfg)})
+            return
+        if path == "/v1/quiet-hours/flush":
+            # 测试或手动：立刻把当前攒下的通知汇总（即使窗还没结束）
+            cfg = quiet_cfg()
+            now = time.time()
+            started, ended = cloud_quiet_hours.window_bounds(cfg, now)
+            conn = get_db_connection()
+            try:
+                digest = cloud_quiet_hours.finish(conn, started, ended, now=now, cfg=cfg)
+                conn.commit()
+            finally:
+                conn.close()
+            _settings_put("quiet_state", {"active": False, "started": started, "until": ended})
+            if digest["count"]:
+                user_notify(current_notify_config(), "quiet_digest", "下班了：静默时段攒下的通知", digest["text"])
+            self._send(200, {"digest": digest})
+            return
+        if path == "/v1/ward-todos":
+            conn = get_db_connection()
+            try:
+                item = cloud_ward_todos.add(conn, (req_json or {}).get("title"),
+                                            detail=(req_json or {}).get("detail") or "",
+                                            bed=(req_json or {}).get("bed") or "")
+                conn.commit()
+            except cloud_ward_todos.WardTodoError as e:
+                self._send(400, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            self._send(201, {"todo": item})
+            return
+        m_ward_done = re.match(r"^/v1/ward-todos/(todo_[a-f0-9]{12})/done$", path)
+        if m_ward_done:
+            conn = get_db_connection()
+            try:
+                done = (req_json or {}).get("done", True)
+                item = cloud_ward_todos.set_done(conn, m_ward_done.group(1), bool(done))
+                conn.commit()
+            except cloud_ward_todos.WardTodoError as e:
+                self._send(404, {"error": str(e)})
+                return
+            finally:
+                conn.close()
+            self._send(200, {"todo": item})
+            return
+
         if path == "/v1/routines":
             try:
                 fields = validate_routine_fields(req_json)
@@ -9637,15 +10189,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "Not found"})
                 return
             tid, aid = parts[3], parts[5]
-            decision = req_json.get("decision")
-            if decision not in ("approve", "deny"):
-                self._send(400, {"error": "decision must be 'approve' or 'deny'"})
+            status, scope = cloud_approval_grant.parse_decision(req_json.get("decision"))
+            if not status:
+                self._send(400, {"error": "decision must be 'approve'、'approve_once'、'approve_task'、'approve_shift' 或 'deny'"})
                 return
             note = req_json.get("note")
             if note is not None and (not isinstance(note, str) or len(note) > 1000):
                 self._send(400, {"error": "note must be a string (max 1000)"})
                 return
-            code, body = resolve_approval(tid, aid, "approved" if decision == "approve" else "denied", note)
+            code, body = resolve_approval(tid, aid, status, note, scope)
             self._send(code, body)
             return
 

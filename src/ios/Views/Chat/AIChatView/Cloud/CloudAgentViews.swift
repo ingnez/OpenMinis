@@ -747,6 +747,10 @@ struct CloudSessionView: View {
     @State private var showScanner = false
     @State private var showCaseNote = false
     @State private var showOralStruct = false
+    @State private var showTemplates = false
+    @State private var showShiftCard = false
+    @State private var showRelay = false
+    @State private var showReplayList = false
     @State private var showFiles = false
     @State private var showVoiceCall = false
     /// 顶部浮动胶囊的实时通话（Bot 模式）
@@ -960,6 +964,13 @@ struct CloudSessionView: View {
         .fullScreenCover(isPresented: $showScanner) { CloudDocumentScanner { attachments.append($0) }.ignoresSafeArea() }
         .sheet(isPresented: $showCaseNote) { CloudCaseNoteSheet { inputPrompt = $0 } }
         .sheet(isPresented: $showOralStruct) { CloudOralStructSheet { inputPrompt = $0 } }
+        .sheet(isPresented: $showTemplates) { CloudPromptTemplateSheet(text: $inputPrompt, onDismiss: { showTemplates = false }) }
+        .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
+        .sheet(isPresented: $showReplayList) { NavigationStack { CloudReplayListView() } }
+        .sheet(isPresented: $showRelay) {
+            CloudBotRelaySheet(fromBot: theme.botId, fromSession: sessionId,
+                               result: lastAssistantText(), context: "", excludeId: theme.botId)
+        }
         .sheet(isPresented: $showFiles) { CloudFilePicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showVoiceCall) {
             if let theme {
@@ -1518,6 +1529,8 @@ struct CloudSessionView: View {
                 Button { oneHandMode.toggle() } label: {
                     Label(oneHandMode ? "关闭单手模式" : "单手模式（控件靠右）", systemImage: "hand.point.up.left")
                 }
+                Button { showTemplates = true } label: { Label("一键模板", systemImage: "text.badge.plus") }
+                Button { showShiftCard = true } label: { Label("交班卡", systemImage: "list.clipboard") }
                 Button { showPins = true } label: { Label("要点板", systemImage: "pin") }
                 Button { showRealtimeSettings = true } label: { Label("实时语音设置", systemImage: "waveform") }
                 Button { if !inputPrompt.hasPrefix("/") { inputPrompt = "/" } } label: { Label("斜杠命令", systemImage: "slash.circle") }
@@ -1580,6 +1593,14 @@ struct CloudSessionView: View {
         .accessibilityLabel(label)
     }
 
+    private func lastAssistantText() -> String {
+        for turn in turns.reversed() where turn.message.role == .assistant {
+            let trimmed = turn.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return CloudBotRelay.clip(trimmed, 2000) }
+        }
+        return inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func runSlash(_ id: String, theme: CloudBotChatTheme) {
         CloudHaptics.selection()
         inputPrompt = ""
@@ -1588,6 +1609,7 @@ struct CloudSessionView: View {
         case "/电脑": showComputer = true
         case "/通话": openVoiceCall()
         case "/照片": showPhotos = true
+        case "/交班": showShiftCard = true
         case "/文件": showFiles = true
         case "/记住": inputPrompt = "记住："
         case "/总结": inputPrompt = "请总结一下我们这段对话的要点和待办"; sendTask()
@@ -1985,6 +2007,9 @@ struct CloudSessionView: View {
             }
             if row.id == historyRows.last?.id, msg.role == .assistant, turn.workerOutcome == nil, activeTaskStatus != "running" {
                 CloudSmartReplyBar(text: msg.content, accent: theme.accent, onPick: quickSend)
+                CloudTaskActionBar(taskId: loadedTaskId, hasReplay: loadedTaskId != nil,
+                                   result: msg.content, fromBot: theme.botId, fromSession: sessionId,
+                                   accent: theme.accent, showReplay: $showReplayList, showRelay: $showRelay)
             }
             ForEach(threadsByTurn[row.id] ?? []) { CloudBotThreadCollapsedRow(item: $0) }
             ForEach(callsByTurn[row.id] ?? []) { CloudCallDividerRow(seconds: $0.seconds) }
@@ -2203,8 +2228,18 @@ struct CloudSessionView: View {
 
     private func sendTask() {
         var content = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let masked = CloudSecretMask.maskPasted(content)
+        if masked != content {
+            inputPrompt = masked
+            content = masked
+        }
         if let hit = CloudLastRef.hit(for: content, messages: messages) {
             content = CloudLastRef.annotate(content, hit: hit)
+        }
+        if CloudShiftIntent.isUtterance(content), attachments.isEmpty {
+            inputPrompt = ""
+            showShiftCard = true
+            return
         }
         guard !content.isEmpty || !attachments.isEmpty else { return }
         switch CloudInCallSend.route(inCall: call.active, text: content, hasAttachments: !attachments.isEmpty) {

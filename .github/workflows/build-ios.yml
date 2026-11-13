@@ -276,6 +276,12 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReplay.swift scripts/CloudReplayTests.swift -o /tmp/cloud-replay-tests
           /tmp/cloud-replay-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudShiftSupport.swift scripts/CloudShiftSupportTests.swift -o /tmp/cloud-shift-support-tests
+          /tmp/cloud-shift-support-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPocketMode.swift scripts/CloudPocketModeTests.swift -o /tmp/cloud-pocket-mode-tests
+          /tmp/cloud-pocket-mode-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPromptTemplates.swift scripts/CloudPromptTemplatesTests.swift -o /tmp/cloud-prompt-templates-tests
+          /tmp/cloud-prompt-templates-tests
       - name: 病例脱敏测试
         run: |
           set -o pipefail
@@ -396,6 +402,39 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNightMode.swift scripts/CloudNightModeTests.swift -o /tmp/cloud_nightmode_tests
           /tmp/cloud_nightmode_tests
+      - name: 交班卡、口袋模式与一键模板单测
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudShiftSupport.swift scripts/CloudShiftSupportTests.swift -o /tmp/cloud-shift-support-tests
+          /tmp/cloud-shift-support-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPocketMode.swift scripts/CloudPocketModeTests.swift -o /tmp/cloud-pocket-mode-tests
+          /tmp/cloud-pocket-mode-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPromptTemplates.swift scripts/CloudPromptTemplatesTests.swift -o /tmp/cloud-prompt-templates-tests
+          /tmp/cloud-prompt-templates-tests
+      - name: 省流、静默时段、多 Bot 接力与夜间护眼单测
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDataSaver.swift scripts/CloudDataSaverTests.swift -o /tmp/cloud-datasaver-tests
+          /tmp/cloud-datasaver-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudQuietHours.swift scripts/CloudQuietHoursTests.swift -o /tmp/cloud-quiet-hours-tests
+          /tmp/cloud-quiet-hours-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotRelay.swift scripts/CloudBotRelayTests.swift -o /tmp/cloud-bot-relay-tests
+          /tmp/cloud-bot-relay-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudNightMode.swift scripts/CloudNightModeTests.swift -o /tmp/cloud_nightmode_tests
+          /tmp/cloud_nightmode_tests
+      - name: 口令、查房待办、本班次审批与表盘小组件单测
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDataSaver.swift scripts/CloudDataSaverTests.swift -o /tmp/cloud-datasaver-tests
+          /tmp/cloud-datasaver-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudLockPassphrase.swift scripts/CloudLockPassphraseTests.swift -o /tmp/cloud-lock-passphrase-tests
+          /tmp/cloud-lock-passphrase-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudWardTodo.swift scripts/CloudWardTodoTests.swift -o /tmp/cloud-ward-todo-tests
+          /tmp/cloud-ward-todo-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudApprovalActions.swift scripts/CloudApprovalActionsTests.swift -o /tmp/cloud-approval-actions-tests
+          /tmp/cloud-approval-actions-tests
+          swiftc -swift-version 5 -parse-as-library src/ios/WatchShared/WatchPayload.swift src/ios/WatchShared/WatchComplicationLogic.swift scripts/WatchComplicationTests.swift -o /tmp/watch-complication-tests
+          /tmp/watch-complication-tests
       - name: 病区隐私自查单测
         run: |
           set -o pipefail
@@ -436,6 +475,16 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReplyMode.swift scripts/CloudReplyModeTests.swift -o /tmp/cloud-reply-mode-tests
           /tmp/cloud-reply-mode-tests
+      - name: 误贴假密钥遮罩测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudSecretMask.swift scripts/CloudSecretMaskTests.swift -o /tmp/cloud-secret-mask-tests
+          /tmp/cloud-secret-mask-tests
+      - name: 审批卡一次/本任务选项测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudApprovalActions.swift scripts/CloudApprovalActionsTests.swift -o /tmp/cloud-approval-actions-tests
+          /tmp/cloud-approval-actions-tests
       - name: Spotlight 搜 Bot 规则测试
         run: |
           set -o pipefail
@@ -779,6 +828,18 @@ jobs:
           /tmp/cloud-caseredact-tests | tee cloud-caseredact-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReplay.swift scripts/CloudReplayTests.swift -o /tmp/cloud-replay-tests
           /tmp/cloud-replay-tests | tee cloud-replay-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudShiftSupport.swift scripts/CloudShiftSupportTests.swift -o /tmp/cloud-shift-support-tests
+          /tmp/cloud-shift-support-tests | tee cloud-shift-support-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPocketMode.swift scripts/CloudPocketModeTests.swift -o /tmp/cloud-pocket-mode-tests
+          /tmp/cloud-pocket-mode-tests | tee cloud-pocket-mode-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPromptTemplates.swift scripts/CloudPromptTemplatesTests.swift -o /tmp/cloud-prompt-templates-tests
+          /tmp/cloud-prompt-templates-tests | tee cloud-prompt-templates-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDataSaver.swift scripts/CloudDataSaverTests.swift -o /tmp/cloud-datasaver-tests
+          /tmp/cloud-datasaver-tests | tee cloud-datasaver-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudQuietHours.swift scripts/CloudQuietHoursTests.swift -o /tmp/cloud-quiet-hours-tests
+          /tmp/cloud-quiet-hours-tests | tee cloud-quiet-hours-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotRelay.swift scripts/CloudBotRelayTests.swift -o /tmp/cloud-bot-relay-tests
+          /tmp/cloud-bot-relay-tests | tee cloud-bot-relay-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudLiveStats.swift scripts/CloudLiveStatsTests.swift -o /tmp/cloud-livestats-tests
           /tmp/cloud-livestats-tests | tee cloud-livestats-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPhotoRouter.swift scripts/CloudPhotoRouterTests.swift -o /tmp/cloud-photo-router-tests
@@ -799,7 +860,7 @@ jobs:
           /tmp/cloud-editpatch-tests | tee cloud-editpatch-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudAvatarPalette.swift scripts/CloudAvatarPaletteTests.swift -o /tmp/cloud-avatar-tests
           /tmp/cloud-avatar-tests | tee cloud-avatar-test.log
-          swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudCardsStub.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTaskPump.swift src/ios/Views/Chat/AIChatView/Cloud/CloudEventLedger.swift src/ios/Views/Chat/AIChatView/Cloud/CloudStepFeed.swift -o /tmp/cloud-chat-tests
+          swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudCardsStub.swift src/ios/Views/Chat/AIChatView/Cloud/CloudSecretMask.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTaskPump.swift src/ios/Views/Chat/AIChatView/Cloud/CloudEventLedger.swift src/ios/Views/Chat/AIChatView/Cloud/CloudStepFeed.swift -o /tmp/cloud-chat-tests
           /tmp/cloud-chat-tests | tee cloud-chat-test.log
           xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift src/ios/WatchShared/*.swift 2>&1 | tee cloud-connection-typecheck.log
 
@@ -1177,6 +1238,18 @@ jobs:
           /tmp/cloud-caseredact-tests | tee cloud-caseredact-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudReplay.swift scripts/CloudReplayTests.swift -o /tmp/cloud-replay-tests
           /tmp/cloud-replay-tests | tee cloud-replay-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudShiftSupport.swift scripts/CloudShiftSupportTests.swift -o /tmp/cloud-shift-support-tests
+          /tmp/cloud-shift-support-tests | tee cloud-shift-support-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPocketMode.swift scripts/CloudPocketModeTests.swift -o /tmp/cloud-pocket-mode-tests
+          /tmp/cloud-pocket-mode-tests | tee cloud-pocket-mode-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPromptTemplates.swift scripts/CloudPromptTemplatesTests.swift -o /tmp/cloud-prompt-templates-tests
+          /tmp/cloud-prompt-templates-tests | tee cloud-prompt-templates-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudDataSaver.swift scripts/CloudDataSaverTests.swift -o /tmp/cloud-datasaver-tests
+          /tmp/cloud-datasaver-tests | tee cloud-datasaver-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudQuietHours.swift scripts/CloudQuietHoursTests.swift -o /tmp/cloud-quiet-hours-tests
+          /tmp/cloud-quiet-hours-tests | tee cloud-quiet-hours-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudBotRelay.swift scripts/CloudBotRelayTests.swift -o /tmp/cloud-bot-relay-tests
+          /tmp/cloud-bot-relay-tests | tee cloud-bot-relay-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudLiveStats.swift scripts/CloudLiveStatsTests.swift -o /tmp/cloud-livestats-tests
           /tmp/cloud-livestats-tests | tee cloud-livestats-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudPhotoRouter.swift scripts/CloudPhotoRouterTests.swift -o /tmp/cloud-photo-router-tests
@@ -1197,7 +1270,7 @@ jobs:
           /tmp/cloud-editpatch-tests | tee cloud-editpatch-test.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudAvatarPalette.swift scripts/CloudAvatarPaletteTests.swift -o /tmp/cloud-avatar-tests
           /tmp/cloud-avatar-tests | tee cloud-avatar-test.log
-          swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudCardsStub.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTaskPump.swift src/ios/Views/Chat/AIChatView/Cloud/CloudEventLedger.swift src/ios/Views/Chat/AIChatView/Cloud/CloudStepFeed.swift -o /tmp/cloud-chat-tests
+          swiftc -swift-version 5 scripts/CloudChatTypecheckSupport.swift scripts/CloudCardsStub.swift src/ios/Views/Chat/AIChatView/Cloud/CloudSecretMask.swift scripts/CloudChatBridgeTests.swift src/ios/Views/Chat/AIChatView/Cloud/CloudChatBridge.swift src/ios/Views/Chat/AIChatView/Cloud/CloudTaskPump.swift src/ios/Views/Chat/AIChatView/Cloud/CloudEventLedger.swift src/ios/Views/Chat/AIChatView/Cloud/CloudStepFeed.swift -o /tmp/cloud-chat-tests
           /tmp/cloud-chat-tests | tee cloud-chat-test.log
           xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift src/ios/WatchShared/*.swift 2>&1 | tee cloud-connection-typecheck.log
 
@@ -1363,7 +1436,11 @@ jobs:
           MinisUITests/ComposerVoiceButtonUITests
           MinisUITests/E2EFlowsUITests
           MinisUITests/MiscControlsUITests
-          MinisUITests/ReplyModeUITests"
+          MinisUITests/ReplyModeUITests
+          MinisUITests/FrogP0UITests
+          MinisUITests/Frog1850UITests
+          MinisUITests/Frog1850Chunk2UITests
+          MinisUITests/Frog1850Chunk3UITests"
           ONLY_SRC="${ONLY_TESTING:-}"
           if [ -z "$(printf '%s' "$ONLY_SRC" | tr -d '[:space:]')" ]; then
             ONLY_SRC="$DEFAULT_ONLY_TESTING"

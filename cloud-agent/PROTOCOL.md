@@ -793,3 +793,29 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 云电脑默认触控板模式，弹出系统键盘（含中文输入法）：拼音组字中不发，上屏后以 UTF-8 走服务器 type，汉字不拆成 Latin-1 键码，避免乱码。复用已有 `CloudTrackpad` / `CloudIMECommit` / `CloudTypeOrder`。
 - 离开云电脑页时保存光标等断点（24 小时内有效）；首页和云电脑页提示「从断点继续」，不必从头开始。后台任务本身的 `task_resume` 仍可用。
 - 每个 IPA 在包内和构建产物里附 `测试清单.md`（已测流程 / 需真机验证）；设置里也可查看。不触发 macOS CI 时清单仍可由 `scripts/build_ipa_checklist.py` 在 Linux 上生成。
+
+## 交班卡、口袋模式、任务回放、一键模板（18:50 第 1、2、5、6 项）
+
+- 交班卡汇总未完成任务、未收回授权（`approval_grants` 未过期）和待盯事项（例行监控 / 在跑任务）。说「交班」或点「交班」会钉住，下次打开 App 先看到（`POST /v1/shift-card` / `GET ?pending=1` / `POST /v1/shift-card/ack`）。
+- 口袋模式：iOS 不开放音量键，设置页如实说明。可用耳机播放键、操作按钮或 `minis://bot/?pocket=1` 快捷指令说话；回复走耳机播放和/或手表震动。
+- 任务回放沿用已有截图时间线，可逐步查看并从某一帧重做；设置入口带截图钩子。
+- 长按输入框或「+」菜单打开一键模板（常用指令按钮，可增删改排序）。
+- 18:50 的断网离线队列与值班/夜班只震动不在此重复实现（见 ideas12）。
+
+
+## 省流、静默时段、多 Bot 接力、夜间护眼（18:50 第 7–10 项）
+
+- 省流模式复用已有「省流量」三档钥匙：蜂窝或常开时云电脑改最省画质；超过 512 KB 的附件推迟，连上 Wi-Fi 后再发（队列只存文件名和大小）。
+- 静默时段（`GET/PUT /v1/quiet-hours`，`GET /v1/quiet-hours/digest`，`POST /v1/quiet-hours/flush`）：上班时间内完成类通知先攒着，审批卡仍立刻出现；窗口结束后汇总推送。与 ideas12 值班（夜班只震动、不外推）不是同一件事。
+- 多 Bot 接力：对话里「交给其他 Bot」或任务结束后的动作条，`POST /v1/relay` 在对方会话里开新任务（`client_nonce` 去重）。
+- 夜间护眼：在已有夜班暗色暖光、大字、不震动、通知静音之上，增加「每天按时间表」和可调起止小时。
+- 例行任务在静默窗内仍可能继续跑，只是完成通知会攒到下班汇总；不会拦你自己发的消息。
+
+
+## 省流 Wi-Fi 重传，以及锁屏审批、本班次授权、查房待办箱、表盘小组件
+
+- 推迟的大文件会写到本机 Caches（只按安全文件名），连上 Wi-Fi 或关掉省流后自动 `POST /v1/sessions/<id>/upload`。旧队列没有缓存文件的条目无法重传。
+- 审批卡增加「本班次都批准」（`approve_shift`）：优先在 `duty_until` 到期，否则 12 小时；同一 Bot、同一工具和参数哈希可跨任务复用。交班卡会列出未过期的班次授权。
+- 锁屏 / 灵动岛审批：本机保存待审批快照；设置页有预览和语音口令（只存摘要）。真机实时活动尚未改现有 `AgentWidgetExtension`，以免主 IPA 编不过。
+- 查房待办箱：`GET/POST /v1/ward-todos`、`POST .../done`、`DELETE /v1/ward-todos/<id>`。不要写入姓名或住院号。
+- 手表表盘小组件源码在 `src/ios/MinisWatchWidgets/`，scheme 为 `MinisWatchWidgets`。没有挂进 Minis / MinisWatch，主 IPA 流水线不变。验收走 App 预览页和 Linux 单测。

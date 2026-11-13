@@ -414,6 +414,17 @@ enum CloudAttachmentKit {
             for (i, item) in items.enumerated() {
                 group.addTask {
                     await progress?(item.id, .uploading(nil))
+                    let setting = UserDefaults.standard.string(forKey: CloudLowBandwidth.key) ?? "auto"
+                    if CloudLowBandwidth.shouldDefer(bytes: item.data.count, setting: setting, expensive: CloudDataSaver.expensiveNetwork) {
+                        var queued = CloudDataSaverItem(id: item.id.uuidString, filename: item.filename,
+                                                        bytes: item.data.count, sessionId: sessionId,
+                                                        createdAt: Date().timeIntervalSince1970, localName: nil)
+                        queued.localName = try? CloudDataSaver.writePayload(item.data, id: queued.id, filename: item.filename,
+                                                                            base: CloudDataSaver.defaultCacheBase())
+                        CloudDataSaver.enqueue(queued, defaults: .standard)
+                        await progress?(item.id, .failed)
+                        throw CloudDataSaverError.deferred
+                    }
                     let resp: [String: Any]
                     do {
                         resp = try await CloudConnection.shared.request(method: "POST", path: "/v1/sessions/\(sessionId)/upload",

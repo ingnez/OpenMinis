@@ -2,7 +2,7 @@
 //  CloudApprovalBridge.swift
 //  Minis - 云端风险操作审批卡
 //  VPS 在执行命中审批规则的工具前把任务挂起为 waiting_user，并发出 approval_required 事件；
-//  这里复用 UserAskCenter 的确认卡（含后台通知），用户选择后回传 approve / deny。
+//  这里复用 UserAskCenter 的确认卡（含后台通知），用户选择后回传 approve_once / approve_task / deny。聊天里说「同意」不会批准。
 //  服务端是审批状态的唯一来源：卡片只是界面，重连后由事件重放重新挂出仍待处理的审批。
 //
 
@@ -33,25 +33,7 @@ enum CloudApprovalBridge {
     }
 
     static func question(for payload: [String: Any]) -> [String: Any] {
-        let tool = payload["tool"] as? String ?? "tool"
-        let args = payload["arguments"] as? [String: Any] ?? [:]
-        let detail: String
-        if let command = args["command"] as? String {
-            detail = command
-        } else if let data = try? JSONSerialization.data(withJSONObject: args, options: [.sortedKeys]),
-                  let text = String(data: data, encoding: .utf8) {
-            detail = text
-        } else {
-            detail = tool
-        }
-        let reason = payload["reason"] as? String ?? "命中云端审批规则"
-        return [
-            "type": "confirm",
-            "header": "云电脑审批",
-            "question": "允许云电脑执行 \(tool)：\(String(detail.prefix(600)))",
-            "impact": "\(reason)。拒绝后该步骤不会执行，任务会继续并告知模型。",
-            "risk": "high"
-        ]
+        CloudApprovalActions.question(for: payload)
     }
 
     private static func present(_ payload: [String: Any], taskId: String, localSessionId: String,
@@ -61,6 +43,13 @@ enum CloudApprovalBridge {
         let args = ["questions": [question(for: payload)]]
         guard case .success(let request) = UserAskParser.parse(args) else { return }
         inFlight.insert(approvalId)
+        CloudLockApprovalSnapshot.save(CloudLockApprovalSnapshot(
+            approvalId: approvalId, taskId: taskId, botId: payload["bot_id"] as? String ?? "",
+            botName: payload["bot_name"] as? String ?? "", tool: payload["tool"] as? String ?? "",
+            summary: CloudLockApprovalSnapshot.summary(tool: payload["tool"] as? String ?? "",
+                                                       reason: payload["reason"] as? String ?? ""),
+            createdAt: Date().timeIntervalSince1970
+        ), defaults: .standard)
 
         let block: AssistantBlock
         if let existing = message.blocks.first(where: { $0.toolUseId == toolUseId }) {
@@ -94,13 +83,14 @@ enum CloudApprovalBridge {
                 onUpdate()  // settle 已写入服务端结论
                 return
             }
-            let approved = UserAskCenter.shared.asks[requestId]?.resultStatuses.first == .approved
+            let decision = CloudApprovalActions.decision(fromResult: result)
+            let approved = decision != CloudApprovalActions.denyDecision
             block.content = result
             var submitError: String?
             do {
                 if !CloudConnection.shared.isConnected { try await CloudConnection.shared.connect() }
                 _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/tasks/\(taskId)/approvals/\(approvalId)",
-                                                             body: ["decision": approved ? "approve" : "deny"])
+                                                             body: ["decision": decision])
             } catch {
                 // 409 表示服务端已处理（超时或其他设备），以随后的 approval_resolved 事件为准
                 if !error.localizedDescription.contains("HTTP 409") { submitError = error.localizedDescription }
@@ -118,6 +108,7 @@ enum CloudApprovalBridge {
     /// 服务端已有结论（批准、拒绝、超时或取消）：关闭仍在等待的卡片。
     private static func settle(approvalId: String, decision: String, message: ChatMessage,
                                onUpdate: @escaping @MainActor () -> Void) {
+        CloudLockApprovalSnapshot.save(nil, defaults: .standard)
         let toolUseId = toolUseIdPrefix + approvalId
         let wasPending: Bool
         if let requestId = requestIdByApproval[approvalId] ?? UserAskCenter.shared.ask(forToolUseId: toolUseId)?.requestId,

@@ -290,6 +290,7 @@ final class CloudDesktopController: ObservableObject {
                 defer { self.lastPath = sig }
                 if self.expensiveNetwork != expensive {
                     self.expensiveNetwork = expensive
+                    CloudDataSaver.expensiveNetwork = expensive
                     if self.pinnedQuality == nil, self.lowBandwidth { self.setQuality(CloudStreamQuality.saver) }
                 }
                 // 只在换网（Wi-Fi ↔ 蜂窝、断网恢复）时立刻重连，第一次回调不算

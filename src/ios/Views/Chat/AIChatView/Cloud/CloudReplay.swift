@@ -7,8 +7,19 @@ struct CloudReplayFrame: Identifiable, Equatable {
     let steps: [String]
     var id: Int { index }
 
+    static var e2eForced: Bool { ProcessInfo.processInfo.environment["OPENMINIS_E2E_REPLAY"] == "1" }
+
+    static func e2eFrames() -> [CloudReplayFrame] {
+        [
+            CloudReplayFrame(index: 0, time: 0, steps: ["打开浏览器"]),
+            CloudReplayFrame(index: 1, time: 4, steps: ["点击 (120, 80)"]),
+            CloudReplayFrame(index: 2, time: 10, steps: ["截图确认"]),
+        ]
+    }
+
     static func list(_ d: [String: Any]) -> [CloudReplayFrame] {
-        (d["frames"] as? [[String: Any]] ?? []).compactMap { f in
+        if e2eForced, (d["frames"] as? [[String: Any]] ?? []).isEmpty { return e2eFrames() }
+        return (d["frames"] as? [[String: Any]] ?? []).compactMap { f in
             guard let i = (f["i"] as? NSNumber)?.intValue else { return nil }
             return CloudReplayFrame(index: i, time: (f["t"] as? NSNumber)?.doubleValue ?? 0, steps: f["steps"] as? [String] ?? [])
         }.sorted { $0.index < $1.index }
@@ -22,7 +33,18 @@ struct CloudReplaySummary: Identifiable, Equatable {
     let endedAt: Double
     var id: String { taskId }
 
+    static var e2eForced: Bool { ProcessInfo.processInfo.environment["OPENMINIS_E2E_REPLAY"] == "1" }
+
+    static func e2eItems() -> [CloudReplaySummary] {
+        [CloudReplaySummary(taskId: "e2e-replay", frames: 3, startedAt: 1, endedAt: 12)]
+    }
+
     static func list(_ d: [String: Any]) -> [CloudReplaySummary] {
+        if e2eForced { return e2eItems() + _parse(d) }
+        return _parse(d)
+    }
+
+    private static func _parse(_ d: [String: Any]) -> [CloudReplaySummary] {
         (d["replays"] as? [[String: Any]] ?? []).compactMap { r in
             guard let id = r["task_id"] as? String else { return nil }
             return CloudReplaySummary(taskId: id, frames: (r["frames"] as? NSNumber)?.intValue ?? 0,
