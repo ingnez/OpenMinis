@@ -19,9 +19,10 @@ enum CloudFollowUpScheduler {
         content.title = "回头提醒"
         // 上锁的 Bot：锁屏上不露内容
         content.body = botLocked ? "到时间了（已上锁的 Bot）" : "\(plan.what)（\(CloudFollowUp.label(plan.seconds))前你说的）"
+        let duty = CloudDutyMode.isOn(dutyUntil: CloudBotHomeModel.shared.dutyUntil)
         let night = CloudNightMode.notifyStyle()
-        content.sound = night.sound ? .default : nil
-        content.interruptionLevel = night.interrupt ? .timeSensitive : .passive
+        content.sound = CloudDutyMode.allowSound(onDuty: duty, nightSound: night.sound) ? .default : nil
+        content.interruptionLevel = (duty || !night.interrupt) ? .passive : .timeSensitive
         var info: [String: Any] = ["cloud_kind": "follow_up", "cloud_session_id": sessionId]
         if let botId { info["cloud_bot_id"] = botId }
         content.userInfo = info

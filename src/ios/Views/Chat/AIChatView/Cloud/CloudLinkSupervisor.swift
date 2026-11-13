@@ -11,7 +11,7 @@ import BackgroundTasks
 final class CloudLinkSupervisor: ObservableObject {
     static let shared = CloudLinkSupervisor()
     /// App 内置的服务器 Agent 版本（与 cloud_agent_server.AGENT_VERSION 一致，测试会核对）
-    static let bundledAgentVersion = "2.54.0"
+    static let bundledAgentVersion = "2.55.0"
     nonisolated static let refreshTaskId = "com.openminis.app.cloud-refresh"
     nonisolated static let barkFallbackKey = "OpenMinisCloud_barkFallback"   // "auto" / "on" / "off"
 
@@ -355,9 +355,13 @@ final class CloudLinkSupervisor: ObservableObject {
                 content.title = "OpenMinis"
                 content.body = "有一条新消息（已上锁的 Bot）"
             }
+            let duty = CloudDutyMode.isOn(dutyUntil: CloudBotHomeModel.shared.dutyUntil)
             let night = CloudNightMode.notifyStyle()
-            content.sound = night.sound ? .default : nil
-            if !night.interrupt { content.interruptionLevel = .passive }
+            content.sound = CloudDutyMode.allowSound(onDuty: duty, nightSound: night.sound) ? .default : nil
+            if duty || !night.interrupt { content.interruptionLevel = .passive }
+            if CloudDutyMode.shouldVibrate(onDuty: duty, nightHapticsMuted: CloudNightMode.hapticsMuted) {
+                CloudHaptics.warning()
+            }
             content.threadIdentifier = "cloud-" + (item["bot_id"] as? String ?? sid ?? "main")
             var info: [String: Any] = ["cloud_kind": item["kind"] as? String ?? ""]
             if let sid { info["cloud_session_id"] = sid }

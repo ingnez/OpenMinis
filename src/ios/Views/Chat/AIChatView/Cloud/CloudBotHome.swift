@@ -53,6 +53,8 @@ final class CloudBotHomeModel: ObservableObject {
     @Published private(set) var bots: [CloudBot] = []
     @Published private(set) var groups: [CloudGroup] = []
     @Published private(set) var loaded = false
+    @Published private(set) var syncing = false
+    @Published var shiftSpeechBot: CloudBot?
     @Published private(set) var connecting = false
     @Published var bannerText: String?
     /// 首页分组（服务器保存）
@@ -366,6 +368,8 @@ final class CloudBotHomeModel: ObservableObject {
     func refresh(forceReconnect: Bool = false) async {
         let conn = CloudConnection.shared
         let link = CloudLinkSupervisor.shared
+        if !bots.isEmpty { syncing = true }
+        defer { syncing = false }
         guard conn.canAutoConnect || conn.isConnected else {
             bannerText = "还没有连接云电脑：点左上角齿轮 › 云电脑设置，填写 VPS 并点「安装 / 更新服务器 Agent 服务」"
             loaded = true
@@ -482,6 +486,10 @@ struct CloudBotHomeRow: View {
             .overlay(alignment: .bottomTrailing) { CloudPresenceBadge(presence: presence, size: 13) }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(bot.name)，\(presence.accessibilityText)")
+            .accessibilityIdentifier("homeBotAvatar-\(bot.id)")
+            .onLongPressGesture {
+                CloudBotHomeModel.shared.shiftSpeechBot = bot
+            }
             VStack(alignment: .leading, spacing: 4) {
                 titleLayout {
                     // 系统字体样式，跟着「更大字体」缩放（以前写死 17pt）
@@ -601,19 +609,37 @@ struct CloudBotHomeScreen: View {
                     VStack(spacing: 0) {
                         CloudLinkBanner(onOpenSettings: openCloudSettings)
                             .padding(.horizontal, 16).padding(.bottom, 8)
-                        if let until = model.dutyUntil, until > Date() {
+                        if let until = CloudDutyMode.until(dutyUntil: model.dutyUntil) {
                             HStack(spacing: 8) {
                                 Image(systemName: "cross.case.fill").foregroundStyle(.red)
-                                Text("值班中 · 到 \(until.formatted(date: .omitted, time: .shortened))：回答极简，主动消息攒到下班汇总")
+                                Text(CloudDutyMode.bannerText(until: until))
                                     .font(.footnote)
                                 Spacer()
                                 Button("结束") { Task { await model.setDuty(hours: nil) } }.font(.footnote)
                             }
                             .padding(.vertical, 4).padding(.horizontal, 16)
+                            .accessibilityIdentifier("dutyModeBanner")
                         }
                         if let digest = model.dutyDigest {
                             CloudDutyDigestCard(text: digest.text, onDismiss: model.dismissDutyDigest)
                                 .padding(.horizontal, 16).padding(.bottom, 8)
+                        }
+                        if let cp = CloudDesktopCheckpoint.load() {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "desktopcomputer.trianglebadge.exclamationmark")
+                                Text(cp.bannerText).font(.footnote)
+                            }
+                            .padding(.vertical, 4).padding(.horizontal, 16)
+                            .accessibilityIdentifier("desktopResumeBanner")
+                        }
+                        if model.syncing {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.mini)
+                                Text("正在同步…").font(.caption).foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.bottom, 6)
+                            .accessibilityIdentifier("homeSyncingBanner")
                         }
                         if let banner = model.bannerText {
                             Button { Task { await model.refresh(forceReconnect: true) } } label: {
@@ -768,6 +794,9 @@ struct CloudBotHomeScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: .cloudFocusFilterChanged)) { _ in model.objectWillChange.send() }
         .onAppear { CloudColdStart.markHomeVisible(hasContent: !model.bots.isEmpty) }
         .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
+        .sheet(item: $model.shiftSpeechBot) { bot in
+            CloudShiftSpeechSheet(bot: bot, onDone: { model.shiftSpeechBot = nil })
+        }
         .sheet(isPresented: $showWorkbench) { CloudWorkbenchSheet() }
         .sheet(isPresented: $showHub) {
             NavigationStack {
@@ -1017,6 +1046,8 @@ struct CloudBotHubView: View {
                 NavigationLink(destination: FaceIDProtectionSettingsView()) { Label("Face ID 锁（打开 App 先验证）", systemImage: "faceid") }
                 NavigationLink(destination: CloudExamListView()) { Label("考试倒计时", systemImage: "calendar.badge.clock") }
                 NavigationLink(destination: CloudErrorLogView()) { Label("导出错误日志", systemImage: "ladybug") }
+                NavigationLink(destination: CloudIPAChecklistView()) { Label("测试清单（已测流程 / 需真机验证）", systemImage: "checklist") }
+                    .accessibilityIdentifier("ipaChecklistRow")
                 NavigationLink(destination: CloudReplayListView()) { Label("录屏回放（Bot 用浏览器 / 桌面的截图）", systemImage: "play.rectangle") }
                 NavigationLink(destination: CloudLiveStatsView()) { Label("实时资源（CPU / 内存 / 网速）", systemImage: "gauge.with.dots.needle.33percent") }
                 NavigationLink(destination: CloudSystemSnapshotsView()) { Label("系统快照（装软件前自动拍）", systemImage: "camera.metering.matrix") }

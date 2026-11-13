@@ -53,6 +53,7 @@ struct CloudComputerView: View {
         .overlay(alignment: .topTrailing) { if immersive { exitImmersive } }
         .overlay(alignment: .bottomTrailing) { if !immersive, !ctl.controlling, sessionId != nil, phase == .live { pointButton } }
         .overlay(alignment: .top) { toastView }
+        .overlay(alignment: .top) { resumeBanner }
         .overlay(alignment: .topLeading) { CloudMacroBar(ctl: ctl, onSaved: { show($0) }).padding(.top, immersive ? 12 : 64).padding(.leading, 12) }
         .background(CloudComputerAux(ctl: ctl, sessionId: sessionId, live: phase == .live, keyboardFocused: $keyboardFocused,
                                      onPassword: { show("这是密码框：从保管库选一项填进去（值不经过手机和 Bot）"); showVault = true }))
@@ -203,6 +204,27 @@ struct CloudComputerView: View {
         .padding(10)
     }
 
+    @ViewBuilder private var resumeBanner: some View {
+        if let cp = CloudDesktopCheckpoint.load() {
+            HStack(alignment: .top, spacing: 8) {
+                Text(cp.bannerText).font(.footnote).foregroundStyle(.white)
+                    .multilineTextAlignment(.leading)
+                Button("从断点继续") {
+                    ctl.trackpad.place(at: CGPoint(x: cp.cursorX, y: cp.cursorY))
+                    if !CloudDesktopCheckpoint.e2eForced { CloudDesktopCheckpoint.clear() }
+                    show("已回到断点（\(cp.cursorLabel)）")
+                }
+                .font(.footnote.weight(.semibold))
+                .accessibilityIdentifier("desktopResumeButton")
+            }
+            .padding(10)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .padding(.top, immersive ? 12 : 70)
+            .padding(.horizontal, 12)
+            .accessibilityIdentifier("desktopResumeBanner")
+        }
+    }
+
     @ViewBuilder private var toastView: some View {
         if let toast {
             Text(toast).font(.footnote).foregroundStyle(.black)
@@ -252,6 +274,19 @@ struct CloudComputerView: View {
     }
 
     private func tearDown() {
+        if phase == .live {
+            CloudDesktopCheckpoint.save(CloudDesktopCheckpoint(
+                workerId: nil,
+                title: reason ?? (bot.map { "\($0.name) 的云电脑" } ?? "云电脑"),
+                lastStep: nil,
+                cursorX: ctl.trackpad.cursor.x,
+                cursorY: ctl.trackpad.cursor.y,
+                screenW: ctl.trackpad.screen.width,
+                screenH: ctl.trackpad.screen.height,
+                botId: botId,
+                savedAt: Date()
+            ))
+        }
         ctl.stopMonitoring()
         if ctl.controlling { holdControl(false) }
         lease?.cancel()

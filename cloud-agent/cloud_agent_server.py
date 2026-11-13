@@ -657,7 +657,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.54.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.55.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -744,6 +744,8 @@ def user_notify(cfg, event, title, body, session_id=None, bot_id=None):
         pref = resource_settings().get("bark_fallback", "auto")
         fallback = None if pref == "auto" else pref == "on"
         external = APP_FEED is None or APP_FEED.should_bark(True, fallback)
+    if not allow_external_push(event):
+        external = False
     try:
         if APP_FEED is not None:
             APP_FEED.add(event, title, body, session_id=session_id, external=external,
@@ -3731,13 +3733,18 @@ PARALLEL_SAFE_TOOLS = {"file_read", "memory_search", "skill_load", "list_bots", 
 INCOGNITO_NOTE = "\n[无痕对话] 这次对话结束后会被删除：不要写入长期记忆，也不要把内容带到别的对话里。"
 VISION_NOTE = ("\n\n[看图] 用户这次发的图片已经直接给你了（作为图片，或由看图模型读成的「图片内容」文字）：直接据此回答（排班表、截图等先逐字读出要用的内容）。"
                "不要用 OCR、安装工具、打开或在电脑上查看图片文件来识别；真的看不清就直接说哪里看不清。")
-DUTY_NOTE = ("\n[值班模式] 用户正在值班（临床一线，随时被打断）：回答极简，先给结论、数字和要做的动作，"
+DUTY_NOTE = ("\n[值班模式] 用户正在值班（临床一线，随时被打断）：回答极简，先给一句结论，数字必须带单位，再写要做的动作，"
              "用短句或要点，不寒暄、不铺垫；涉及剂量 / 换算时写明单位并提醒核对医嘱与说明书。")
 
 
 def on_duty(rs=None):
     rs = rs or resource_settings()
     return float(rs.get("duty_until") or 0) > time.time()
+
+
+def allow_external_push(event):
+    """值班中不外推（Bark / ntfy 等），下班汇总例外；本机通知流仍记，由 App 仅震动。"""
+    return event == "duty_digest" or not on_duty()
 
 
 _duty_lock = threading.Lock()

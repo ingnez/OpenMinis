@@ -523,6 +523,11 @@ public final class CloudConnection: ObservableObject {
         return false
     }
     public func request(method: String, path: String, body: [String: Any]? = nil) async throws -> [String: Any] {
+        #if DEBUG
+        if CloudE2EOffline.forced, method == "POST", path.hasSuffix("/messages") {
+            throw URLError(.notConnectedToInternet)
+        }
+        #endif
         if !isConnected || Date().timeIntervalSince(lastOK) > 20 {
             guard isConnected || canAutoConnect else { throw failure("云端连接已断开，请返回设置重新连接；VPS 上已接受的任务仍会继续") }
             try await ensureConnected()

@@ -244,5 +244,14 @@ func typeOrderTests() {
         check(CloudPinchPolicy.followAnchor(numberOfTouches: 2), "两指跟锚点平移")
         check(CloudPinchPolicy.shouldFlushScaleOnEnd(2.5), "ended 时还有未消耗的 scale 要补上")
         check(!CloudPinchPolicy.shouldFlushScaleOnEnd(1), "scale 已归 1 不用再补")
+    let han = CloudTypeOrder.serverPayload(.text("你好，云电脑"))
+    check(han["action"] as? String == "type" && han["text"] as? String == "你好，云电脑", "中文原文进 type，不拆成 Latin-1 键码")
+    guard let data = try? JSONSerialization.data(withJSONObject: han, options: []),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        check(false, "中文请求能做 UTF-8 JSON")
+        return
+    }
+    check(obj["text"] as? String == "你好，云电脑", "JSON 编解码后仍是汉字，不是乱码")
+    check(CloudKey.keysym(for: "你") == nil && CloudKey.keysym(for: "好") == nil && CloudKey.keysym(for: "，") == nil, "汉字和中文标点没有 Latin-1 keysym")
 }
 

@@ -693,6 +693,7 @@ struct CloudSessionView: View {
     @State private var isSubmitting = false
     @StateObject private var delivery = CloudDeliveryBox()
     @State private var canStoreOutbox = false
+    @State private var outboxReceipt: CloudOutboxReceipt?
     @State private var failedSends: [UUID: CloudDeliveryBox.Item] = [:]
     @AppStorage(CloudWardVoice.doubleTapKey) private var doubleTapVoice = false
     @State private var watchedTasks: Set<String> = []
@@ -745,6 +746,7 @@ struct CloudSessionView: View {
     @State private var showCamera = false
     @State private var showScanner = false
     @State private var showCaseNote = false
+    @State private var showOralStruct = false
     @State private var showFiles = false
     @State private var showVoiceCall = false
     /// 顶部浮动胶囊的实时通话（Bot 模式）
@@ -767,6 +769,7 @@ struct CloudSessionView: View {
     @State private var liveReasoning = ""
     @State private var liveTool: CloudLiveTool?
     @AppStorage(CloudSteerMode.key) private var steerInterrupt = true
+    @AppStorage(CloudOneHandMode.key) private var oneHandMode = false
     @State private var isInjecting = false
     @State private var liveSeq = -1
     @State private var eventCursor = 0
@@ -811,6 +814,22 @@ struct CloudSessionView: View {
                 CloudCallCapsule(call: call, name: theme.name,
                                  avatar: CloudBotAvatarView(spec: theme.spec, size: 34))
                     .padding(.vertical, 4)
+            }
+            if !hasLoadedSessionDetail, !messages.isEmpty {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("正在同步…").font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+                .accessibilityIdentifier("chatSyncingBanner")
+            }
+            if !incognito, let rec = outboxReceipt {
+                Text(CloudOutbox.flushedLabel(createdAt: rec.createdAt, flushedAt: rec.flushedAt))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                    .accessibilityIdentifier("outboxFlushedBanner")
             }
 
             // Messages & Event Log area
@@ -912,6 +931,9 @@ struct CloudSessionView: View {
         .modifier(CloudSessionExtras(followUp: $followUpNotice, outboxCount: outboxCount, privacyHits: $privacyHits,
                                      onDiscard: discardOutbox, onRedact: sendRedacted, onSend: sendAnyway,
                                      onAppear: resumeOutbox, onDisappear: pauseOutbox))
+        .onReceive(NotificationCenter.default.publisher(for: CloudE2EOffline.flushNotification)) { _ in
+            resumeOutbox()
+        }
         .onAppear {
             callDividers = CloudCallDivider.load(sessionId)
             if !CloudE2E.attachWhenBusy { injectE2EAttachments() }
@@ -937,6 +959,7 @@ struct CloudSessionView: View {
         .fullScreenCover(isPresented: $showCamera) { CloudCameraPicker { attachments.append($0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showScanner) { CloudDocumentScanner { attachments.append($0) }.ignoresSafeArea() }
         .sheet(isPresented: $showCaseNote) { CloudCaseNoteSheet { inputPrompt = $0 } }
+        .sheet(isPresented: $showOralStruct) { CloudOralStructSheet { inputPrompt = $0 } }
         .sheet(isPresented: $showFiles) { CloudFilePicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showVoiceCall) {
             if let theme {
@@ -1450,6 +1473,13 @@ struct CloudSessionView: View {
                               })
                     .padding(.horizontal, 28)
             } else {
+                if let hit = CloudLastRef.hit(for: inputPrompt, messages: messages) {
+                    Label(hit.chip, systemImage: "quote.bubble")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 12)
+                        .frame(maxWidth: .infinity, alignment: CloudOneHandMode.isOn(stored: oneHandMode) ? .trailing : .leading)
+                        .accessibilityIdentifier("lastRefChip")
+                }
                 VStack(alignment: .leading, spacing: 8) {
                     if !attachments.isEmpty {
                         CloudAttachmentTray(attachments: $attachments, states: [:], onRetry: { sendTask() })
@@ -1471,7 +1501,9 @@ struct CloudSessionView: View {
     }
 
     private func botComposerInputRow(_ theme: CloudBotChatTheme, working: Bool) -> some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        let compact = CloudOneHandMode.isOn(stored: oneHandMode)
+        return HStack(alignment: .bottom, spacing: 8) {
+            if compact { Spacer(minLength: 24) }
             Menu {
                 Button { showPhotos = true } label: { Label("照片或视频", systemImage: "photo.on.rectangle") }
                 Button { showCamera = true } label: { Label("拍照", systemImage: "camera") }
@@ -1480,6 +1512,12 @@ struct CloudSessionView: View {
                 }
                 Button { showFiles = true } label: { Label("选择文件", systemImage: "folder") }
                 Button { showCaseNote = true } label: { Label("口述病例（脱敏后复盘）", systemImage: "stethoscope") }
+                Button { showOralStruct = true } label: {
+                    Label("口述转结构化（交班单 / 病例摘要）", systemImage: "list.clipboard")
+                }
+                Button { oneHandMode.toggle() } label: {
+                    Label(oneHandMode ? "关闭单手模式" : "单手模式（控件靠右）", systemImage: "hand.point.up.left")
+                }
                 Button { showPins = true } label: { Label("要点板", systemImage: "pin") }
                 Button { showRealtimeSettings = true } label: { Label("实时语音设置", systemImage: "waveform") }
                 Button { if !inputPrompt.hasPrefix("/") { inputPrompt = "/" } } label: { Label("斜杠命令", systemImage: "slash.circle") }
@@ -1516,6 +1554,7 @@ struct CloudSessionView: View {
                 .accessibilityIdentifier("botDictationButton")
             }
             .background(Capsule().fill(Color(.systemGray6)))
+            .frame(maxWidth: compact ? CloudOneHandMode.fieldMaxWidth : .infinity)
             // 最右边一个会变形的圆按钮：没字 = 声波（实时语音，长按按住说话），有字 = 发送；干活时有字 = 插话 / 排队。底色是头像色
             CloudMorphButton(action: CloudBotComposerAction.of(hasDraft: hasDraft, working: working,
                                                                submitting: false, steerInterrupt: steerInterrupt),
@@ -1529,6 +1568,7 @@ struct CloudSessionView: View {
                 .accessibilityIdentifier("composerVoiceButton")
         }
         .padding(.horizontal, attachments.isEmpty ? 0 : 8)
+        .accessibilityIdentifier(compact ? "oneHandComposer" : "standardComposer")
     }
 
     private func composerIcon(_ icon: String, label: String, action: @escaping () -> Void) -> some View {
@@ -2162,7 +2202,10 @@ struct CloudSessionView: View {
     }
 
     private func sendTask() {
-        let content = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        var content = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let hit = CloudLastRef.hit(for: content, messages: messages) {
+            content = CloudLastRef.annotate(content, hit: hit)
+        }
         guard !content.isEmpty || !attachments.isEmpty else { return }
         switch CloudInCallSend.route(inCall: call.active, text: content, hasAttachments: !attachments.isEmpty) {
         case .realtimeSpeak:
@@ -2323,7 +2366,14 @@ struct CloudSessionView: View {
                 case .queued:
                     delivery.retrying.remove(item.nonce)
                     attempt = 0
-                case .sent, .cancelled:
+                case .sent:
+                    if canStoreOutbox, delivery.retrying.contains(item.nonce) {
+                        CloudOutbox.shared.recordFlush(nonce: item.nonce, sessionId: sessionId, content: "", createdAt: item.createdAt)
+                        outboxReceipt = CloudOutbox.shared.receipt(nonce: item.nonce)
+                    }
+                    finishPendingSend(item.nonce)
+                    attempt = 0
+                case .cancelled:
                     finishPendingSend(item.nonce)
                     attempt = 0
                 case .failed(let reason):
@@ -2515,6 +2565,9 @@ struct CloudSessionView: View {
     }
 
     private func resumeOutbox() {
+        CloudOutboxNetwork.start()
+        outboxReceipt = CloudOutbox.shared.receipts(for: sessionId).last
+        // 「和 Bot 语音」快捷指令 / 操作按钮打开的：直接开通话
         if let theme, CloudBotEntry.pendingVoiceBot == theme.botId {
             CloudBotEntry.pendingVoiceBot = nil
             openVoiceCall()
@@ -2525,6 +2578,7 @@ struct CloudSessionView: View {
             guard item.nonce != delivery.inFlightNonce, !queued.contains(item.nonce), delivery.remoteQueue[item.nonce] == nil,
                   let body = CloudOutbox.decode(item.body) else { return nil }
             showPendingSend(content: item.content, nonce: item.nonce, createdAt: item.createdAt)
+            delivery.retrying.insert(item.nonce)
             return .init(content: item.content, nonce: item.nonce, body: body,
                          providerInstanceId: item.providerInstanceId, createdAt: item.createdAt)
         }
