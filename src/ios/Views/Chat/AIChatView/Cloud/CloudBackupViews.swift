@@ -61,7 +61,8 @@ struct CloudBackupView: View {
                         .accessibilityIdentifier("backupSaveFiles")
                     Button("存到 iCloud 云盘") { save(result, to: .icloud) }
                         .accessibilityIdentifier("backupSaveICloud")
-                    if let url = URL(fileURLWithPath: result.path), FileManager.default.fileExists(atPath: url.path) {
+                    if !result.path.isEmpty, FileManager.default.fileExists(atPath: result.path) {
+                        let url = URL(fileURLWithPath: result.path)
                         ShareLink(item: url) { Label("分享", systemImage: "square.and.arrow.up") }
                             .accessibilityIdentifier("backupShare")
                         Button("在文件中打开") { open(url) }

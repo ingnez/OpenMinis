@@ -795,7 +795,7 @@ struct CloudSessionView: View {
         return (last?["payload"] as? [String: Any])?["reason"] as? String
     }
 
-    var body: some View {
+    private var sessionContent: some View {
         VStack(spacing: 0) {
             if let err = errorMessage {
                 HStack {
@@ -846,7 +846,7 @@ struct CloudSessionView: View {
                 messagesArea
             }
 
-            Divider()
+            if theme == nil { Divider() }
 
             // Active Task Status Bar if running
             if theme == nil && (activeTaskStatus == "running" || activeTaskStatus == "waiting_user") {
@@ -913,6 +913,10 @@ struct CloudSessionView: View {
             .background(Color(.systemBackground))
             }
         }
+    }
+
+    private var sessionSheets: some View {
+        sessionContent
         .tint(theme?.accent)
         .background { if let theme { theme.backdrop.fill(accent: theme.accent).ignoresSafeArea() } }
         .sheet(isPresented: $showModelPicker) {
@@ -971,8 +975,10 @@ struct CloudSessionView: View {
         .sheet(isPresented: $showShiftCard) { CloudShiftCardSheet() }
         .sheet(isPresented: $showReplayList) { NavigationStack { CloudReplayListView() } }
         .sheet(isPresented: $showRelay) {
-            CloudBotRelaySheet(fromBot: theme.botId, fromSession: sessionId,
-                               result: lastAssistantText(), context: "", excludeId: theme.botId)
+            if let theme {
+                CloudBotRelaySheet(fromBot: theme.botId, fromSession: sessionId,
+                                   result: lastAssistantText(), context: "", excludeId: theme.botId)
+            }
         }
         .sheet(isPresented: $showFiles) { CloudFilePicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
         .fullScreenCover(isPresented: $showVoiceCall) {
@@ -995,6 +1001,10 @@ struct CloudSessionView: View {
                 }
             }
         }
+    }
+
+    var body: some View {
+        sessionSheets
         .onChange(of: messages.count) { _ in
             // 语音对话中（轮流模式）：Bot 回复后按它的语音设置朗读；实时模式由实时模型转述
             guard showVoiceCall, voiceMode == "turns", let theme, let last = messages.last, last["role"] as? String == "assistant",
@@ -1419,6 +1429,8 @@ struct CloudSessionView: View {
             if let r = replyTarget {
                 CloudReplyBanner(excerpt: r.excerpt) { replyTarget = nil }
                     .accessibilityIdentifier("botReplyBanner")
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .padding(.horizontal, 24)
             }
             if !attachments.isEmpty {
                 if dictation.isRecording {
@@ -1500,18 +1512,14 @@ struct CloudSessionView: View {
                     }
                     botComposerInputRow(theme, working: working)
                 }
-                .padding(.vertical, attachments.isEmpty ? 0 : 8)
-                .background {
-                    if !attachments.isEmpty {
-                        RoundedRectangle(cornerRadius: 22).fill(Color(.secondarySystemBackground))
-                    }
-                }
+                .padding(6)
+                .modifier(CloudBotComposerSurface())
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier(attachments.isEmpty ? "botComposer" : "composerAttachCard")
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 24)
             }
         }
         .padding(.vertical, 8)
-        .background(theme.backdrop.fill(accent: theme.accent))
     }
 
     private func botComposerInputRow(_ theme: CloudBotChatTheme, working: Bool) -> some View {
@@ -1548,7 +1556,7 @@ struct CloudSessionView: View {
                 .accessibilityHint("当前：\(theme.chipText)")
             } label: {
                 Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).foregroundStyle(.primary)
-                    .frame(width: 40, height: 40).background(Circle().fill(Color(.systemGray6)))
+                    .frame(width: 38, height: 38).background(Circle().fill(Color.primary.opacity(0.06)))
             }
             .accessibilityLabel("添加附件与聊天选项")
             .accessibilityIdentifier("botComposerMenu")
@@ -1559,17 +1567,16 @@ struct CloudSessionView: View {
                     .accessibilityIdentifier("botComposerField")
                     .focused($botComposerFocused)
                     .lineLimit(1...6)
-                    .padding(.vertical, 10).padding(.leading, 14)
-                    .frame(minHeight: 44)
+                    .padding(.vertical, 8)
+                    .frame(minHeight: 38)
                 Button { toggleDictation() } label: {
                     Image(systemName: dictation.isRecording ? "stop.circle.fill" : "mic").font(.system(size: 17))
                         .foregroundStyle(dictation.isRecording ? Color.red : Color.secondary)
-                        .frame(width: 34, height: 40)
+                        .frame(width: 32, height: 38)
                 }
                 .accessibilityLabel(dictation.isRecording ? "停止听写" : "听写")
                 .accessibilityIdentifier("botDictationButton")
             }
-            .background(Capsule().fill(Color(.systemGray6)))
             .frame(maxWidth: compact ? CloudOneHandMode.fieldMaxWidth : .infinity)
             // 最右边一个会变形的圆按钮：没字 = 声波（实时语音，长按按住说话），有字 = 发送；干活时有字 = 插话 / 排队。底色是头像色
             CloudMorphButton(action: CloudBotComposerAction.of(hasDraft: hasDraft, working: working,
@@ -1583,7 +1590,6 @@ struct CloudSessionView: View {
                              onPushToTalk: { on in pushToTalk(on, theme: theme) })
                 .accessibilityIdentifier("composerVoiceButton")
         }
-        .padding(.horizontal, attachments.isEmpty ? 0 : 8)
         .accessibilityIdentifier(compact ? "oneHandComposer" : "standardComposer")
     }
 

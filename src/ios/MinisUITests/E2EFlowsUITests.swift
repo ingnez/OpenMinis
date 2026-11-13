@@ -1710,6 +1710,59 @@ extension E2EFlowsUITests {
         XCTAssertTrue(localModel.waitForExistence(timeout: 8), "收起后无法再次展开")
     }
 
+    func test42_botComposerFloatsWithControlsInsideWhenKeyboardOpens() throws {
+        let app = launch()
+        openBot(app)
+        assertFloatingBotComposer(app)
+        shot(app, "42a-悬浮胶囊输入栏")
+        let field = app.descendants(matching: .any)["botComposerField"]
+        field.tap()
+        dismissKeyboardIntro(app)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
+        field.typeText("E2E多行草稿\n第二行")
+        assertFloatingBotComposer(app)
+        let capsule = app.descendants(matching: .any)["botComposer"]
+        XCTAssertLessThanOrEqual(capsule.frame.maxY, app.keyboards.firstMatch.frame.minY + 1,
+                                 "键盘盖住了输入胶囊")
+        shot(app, "42b-键盘上方多行胶囊")
+        app.buttons["composerVoiceButton"].tap()
+        XCTAssertTrue(poll(60) { lastProbe(containing: "E2E多行草稿")?.text.contains("第二行") == true },
+                      "改版后多行文字没有完整发给模型")
+    }
+
+    func test43_botComposerKeepsAttachmentsInsideFloatingSurface() throws {
+        let app = launch(attach: 3)
+        openBot(app)
+        assertFloatingBotComposer(app, attachments: true)
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "trayCard").count, 3)
+        shot(app, "43-附图悬浮胶囊")
+        send(app, "E2E胶囊附三张图")
+        XCTAssertTrue(waitText(app, contains: "收到 3 张图片", timeout: 60))
+        XCTAssertEqual(lastProbe(containing: "E2E胶囊附三张图")?.images, 3)
+        assertFloatingBotComposer(app)
+    }
+
+    private func assertFloatingBotComposer(_ app: XCUIApplication, attachments: Bool = false,
+                                           file: StaticString = #filePath, line: UInt = #line) {
+        let capsule = app.descendants(matching: .any)[attachments ? "composerAttachCard" : "botComposer"]
+        XCTAssertTrue(capsule.waitForExistence(timeout: 10), file: file, line: line)
+        let frame = capsule.frame
+        let screen = app.windows.firstMatch.frame
+        XCTAssertGreaterThanOrEqual(frame.minX - screen.minX, 20, "输入栏左边没有留白", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(screen.maxX - frame.maxX, 20, "输入栏右边没有留白", file: file, line: line)
+        for id in ["botComposerMenu", "botComposerField", "botDictationButton", "composerVoiceButton"] {
+            let control = app.descendants(matching: .any)[id]
+            XCTAssertTrue(control.exists && control.isHittable, "\(id) 无法点击", file: file, line: line)
+            XCTAssertTrue(frame.insetBy(dx: -1, dy: -1).contains(control.frame),
+                          "\(id) 落在胶囊外面", file: file, line: line)
+        }
+        if attachments {
+            let card = app.descendants(matching: .any).matching(identifier: "trayCard").firstMatch
+            XCTAssertTrue(frame.insetBy(dx: -1, dy: -1).contains(card.frame),
+                          "首张附件卡片落在输入面板外面", file: file, line: line)
+        }
+    }
+
     func test38_localImageOnlyMessageScrubsPastSixthImage() throws {
         executionTimeAllowance = 300
         let app = launch(attach: 7, homeMode: "local",
@@ -1825,6 +1878,7 @@ extension E2EFlowsUITests {
         drag(from: 0.35, to: 0.65)
         let revealed = app.descendants(matching: .any)["botMessageTimesRevealed"]
         XCTAssertTrue(revealed.waitForExistence(timeout: 8), "右滑没有拉出时间栏")
+        XCTAssertEqual(revealed.value as? String, "68", "右滑时消息没有跟随手指向右移动")
         let times = app.staticTexts.matching(identifier: "botMessageTime")
         XCTAssertTrue(waitGone(times.firstMatch, timeout: 5), "松手后时间栏未收回")
         XCTAssertFalse(cancel.exists, "右滑误触发引用")

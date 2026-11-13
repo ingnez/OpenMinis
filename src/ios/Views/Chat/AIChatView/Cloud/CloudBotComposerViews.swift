@@ -1,6 +1,19 @@
 import SwiftUI
 import UIKit
 
+/// The input and all four controls share one floating surface, including when
+/// the draft grows or attachments are added. The surrounding footer stays clear.
+struct CloudBotComposerSurface: ViewModifier {
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
+        content
+            .background(.regularMaterial, in: shape)
+            .overlay { shape.strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5) }
+            .clipShape(shape)
+            .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+    }
+}
+
 extension Color {
     /// 头像色上的图标颜色：亮底用深色、暗底用白色
     var cloudGlyph: Color {

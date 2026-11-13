@@ -210,7 +210,7 @@ struct CloudComputerView: View {
                 Text(cp.bannerText).font(.footnote).foregroundStyle(.white)
                     .multilineTextAlignment(.leading)
                 Button("从断点继续") {
-                    ctl.trackpad.place(at: CGPoint(x: cp.cursorX, y: cp.cursorY))
+                    ctl.restoreCursor(at: CGPoint(x: cp.cursorX, y: cp.cursorY))
                     if !CloudDesktopCheckpoint.e2eForced { CloudDesktopCheckpoint.clear() }
                     show("已回到断点（\(cp.cursorLabel)）")
                 }

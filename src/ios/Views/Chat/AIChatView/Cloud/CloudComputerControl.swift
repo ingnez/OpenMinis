@@ -143,6 +143,12 @@ final class CloudDesktopController: ObservableObject {
         js("window.om&&om.ptr(\(Int(trackpad.cursor.x)),\(Int(trackpad.cursor.y)),\(buttons))")
     }
 
+    func restoreCursor(at point: CGPoint) {
+        trackpad.place(at: point)
+        if controlling { sendPointer() }
+        if zoom.follow(toView(trackpad.cursor), viewport: viewport) { applyView() }
+    }
+
     func move(by delta: CGSize, speed: CGFloat) {
         guard controlling else { return }
         trackpad.move(by: delta, speed: speed, zoom: zoom.scale, pointsToPixels: pixelsPerPoint)

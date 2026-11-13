@@ -23,6 +23,7 @@ final class CloudTranscriptTimes: ObservableObject {
     @Published var visible = false
     #if DEBUG
     @Published var didReveal = false
+    @Published var revealedOffset: CGFloat = 0
     #endif
 }
 
@@ -138,11 +139,14 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard let scrollView else { return false }
-        let shift = pan.translation(in: scrollView)
-        let velocity = pan.velocity(in: scrollView)
+        // Use the physical screen direction, independent of transcript offsets
+        // or any transformed ancestor of the message text.
+        let shift = pan.translation(in: scrollView.window)
+        let velocity = pan.velocity(in: scrollView.window)
         let axis = abs(shift.x) + abs(shift.y) > 1 ? shift : velocity
         guard abs(axis.x) > 1.35 * abs(axis.y) else { return false }
         if axis.x > 0 {
+            // Finger right: reveal times on the left and move with the finger.
             direction = .timestamps
             return true
         }
@@ -157,7 +161,7 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
 
     @objc private func dragged(_ pan: UIPanGestureRecognizer) {
         guard let scrollView, let direction else { return }
-        let distance = pan.translation(in: scrollView).x
+        let distance = pan.translation(in: scrollView.window).x
         switch pan.state {
         case .began, .changed:
             if pan.state == .began { startFrameUpdates(in: scrollView) }
@@ -165,7 +169,7 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
             case .timestamps:
                 hideTimes?.cancel()
                 if !times.visible { times.visible = true }
-                let x = -min(Self.timeWidth, max(0, distance))
+                let x = min(Self.timeWidth, max(0, distance))
                 pendingOffset = x
             case .reply:
                 let left = max(0, -distance)
@@ -230,7 +234,8 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
         let offset = direction == .timestamps ? timeOffset : replyRow?.offset
         if let offset, offset.x != pendingOffset { offset.x = pendingOffset }
         #if DEBUG
-        if direction == .timestamps, pendingOffset == -Self.timeWidth, CloudE2E.token != nil, !times.didReveal {
+        if direction == .timestamps, pendingOffset == Self.timeWidth, CloudE2E.token != nil, !times.didReveal {
+            times.revealedOffset = pendingOffset
             times.didReveal = true
         }
         #endif
@@ -263,6 +268,7 @@ struct CloudTranscriptTimeTestStatus: View {
             Color.clear.frame(width: 1, height: 1)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("时间栏已滑出")
+                .accessibilityValue(String(Int(times.revealedOffset)))
                 .accessibilityIdentifier("botMessageTimesRevealed")
                 .allowsHitTesting(false)
         }
@@ -376,8 +382,8 @@ private struct CloudTranscriptTimeLabel: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-                .frame(width: CloudTranscriptSwipe.timeWidth, alignment: .trailing)
-                .offset(x: CloudTranscriptSwipe.timeWidth)
+                .frame(width: CloudTranscriptSwipe.timeWidth, alignment: .leading)
+                .offset(x: -CloudTranscriptSwipe.timeWidth)
                 .accessibilityIdentifier("botMessageTime")
         }
     }
@@ -402,8 +408,10 @@ struct CloudTranscriptMessage: ViewModifier {
                     }
                 }
                 .modifier(CloudTranscriptShift(offset: offset))
-                .overlay(alignment: .trailing) {
+                .overlay(alignment: .leading) {
                     if let date { CloudTranscriptTimeLabel(times: swipe.times, date: date).allowsHitTesting(false) }
+                }
+                .overlay(alignment: .trailing) {
                     if replyID != nil { CloudTranscriptReplyCue(offset: offset) }
                 }
         } else {

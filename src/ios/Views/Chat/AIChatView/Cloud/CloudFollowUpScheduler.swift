@@ -9,6 +9,7 @@ enum CloudFollowUpScheduler {
 
     /// 返回给界面显示的一句话（定好了才有）
     @discardableResult
+    @MainActor
     static func schedule(text: String, sessionId: String, botId: String?, botLocked: Bool) async -> String? {
         guard enabled, let plan = CloudFollowUp.parse(text) else { return nil }
         let center = UNUserNotificationCenter.current()
