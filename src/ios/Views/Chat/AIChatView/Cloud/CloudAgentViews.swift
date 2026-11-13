@@ -596,7 +596,7 @@ private struct CloudChatScrollTracking: ViewModifier {
                         if !isUserScrolling { isUserScrolling = true }
                     case .idle where isUserScrolling:
                         let geometry = context.geometry
-                        followLatest = geometry.contentSize.height - geometry.visibleRect.maxY <= 64
+                        followLatest = geometry.contentSize.height - geometry.visibleRect.maxY <= 4
                         isUserScrolling = false
                     default:
                         break
@@ -1800,6 +1800,7 @@ struct CloudSessionView: View {
                 proxy.scrollTo("chat-bottom", anchor: .bottom)
             }
             .onAppear {
+                transcriptSwipe.onScrollSettled = { followLatest = $0 }
                 transcriptSwipe.onReply = { id, text, role in
                     let shown = CloudMessageText.display(text)
                     let preview = shown.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
@@ -1819,7 +1820,10 @@ struct CloudSessionView: View {
                       !transcriptSwipe.isVerticallyScrolling else { return }
                 proxy.scrollTo("chat-bottom", anchor: .bottom)
             }
-            .onDisappear { transcriptSwipe.onReply = nil }
+            .onDisappear {
+                transcriptSwipe.onReply = nil
+                transcriptSwipe.onScrollSettled = nil
+            }
         }
         // 看图页「问问这张图」：图片放回附件，输入框起个头
         .environment(\.cloudAskImage, askAboutImage)

@@ -168,6 +168,7 @@ final class CodeBlockAttachment: NSTextAttachment {
         if offset != scrollView.contentOffset { scrollView.contentOffset = offset }
     }
 
+    @MainActor
     func makeView(width: CGFloat) -> UIView {
         let wrapper = UIView()
         wrapper.backgroundColor = .clear
@@ -194,7 +195,7 @@ final class CodeBlockAttachment: NSTextAttachment {
         }
 
         // Scrollable code area (own the pan gesture here for reliable horizontal scroll)
-        let scrollView = UIScrollView()
+        let scrollView = MarkdownCodeScrollView()
         scrollView.showsHorizontalScrollIndicator = true
         scrollView.showsVerticalScrollIndicator = true
         scrollView.alwaysBounceHorizontal = true
@@ -256,7 +257,7 @@ final class CodeBlockAttachment: NSTextAttachment {
                                scrollHeight: scrollHeight)
 
         // Auto-scroll to bottom during streaming
-        let bottomY = scrollView.contentSize.height - scrollView.bounds.height
+        let bottomY = scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom
         if bottomY > 0 {
             scrollView.contentOffset = CGPoint(x: 0, y: bottomY)
         }
@@ -326,11 +327,14 @@ final class CodeBlockAttachment: NSTextAttachment {
     }
 
     /// Update the code text in an existing view created by `makeView(width:)` without recreating.
+    @MainActor
     func updateExistingView(_ wrapper: UIView) {
         guard let container = wrapper.subviews.first else { return }
         guard let scrollView = container.subviews.first(where: { $0 is UIScrollView }) as? UIScrollView else { return }
         guard let codeTextView = scrollView.subviews.first(where: { $0 is UITextView }) as? UITextView else { return }
 
+        let shouldFollowCode = !ChatScrollInteraction.isMoving(scrollView)
+            && ChatScrollInteraction.distanceFromBottom(of: scrollView) <= 4
         let codeStyle = NSMutableParagraphStyle()
         codeStyle.lineSpacing = 4
         codeStyle.lineBreakMode = .byClipping
@@ -384,10 +388,17 @@ final class CodeBlockAttachment: NSTextAttachment {
             applyChildFrames()
         }
 
-        // Auto-scroll to bottom during streaming
-        let bottomY = scrollView.contentSize.height - scrollView.bounds.height
-        if bottomY > 0 {
+        // Keep following only if the reader was already at the end of the code.
+        let bottomY = scrollView.contentSize.height - newScrollFrame.height + scrollView.adjustedContentInset.bottom
+        if shouldFollowCode && bottomY > 0 && abs(scrollView.contentOffset.y - bottomY) > 0.5 {
             scrollView.contentOffset = CGPoint(x: scrollView.contentOffset.x, y: bottomY)
         }
+    }
+}
+
+private final class MarkdownCodeScrollView: UIScrollView {
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        ChatScrollInteraction.registerNestedScroll(self, attached: window != nil)
     }
 }

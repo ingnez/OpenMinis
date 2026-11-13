@@ -186,8 +186,7 @@ extension CollectionViewMessageListV3.Coordinator {
             vm.scrollToBottomSignal
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] in
-                    guard let self, self.scrollMode == .autoScrolling else { return }
-                    self.scrollToBottomNow()
+                    self?.followBottomIfIdle()
                 }
                 .store(in: &subscriptions)
 

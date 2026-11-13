@@ -1171,7 +1171,10 @@ jobs:
         id: simulator
         timeout-minutes: 12
         run: |
+          # iOS 26.5 on the hosted image repeatedly failed system data migration.
+          # Prefer the installed 26.4 runtime and still require a verified clean boot.
           DEV=$(python3 scripts/pick_ios_simulator.py --prepare \
+            --preferred-runtime com.apple.CoreSimulator.SimRuntime.iOS-26-4 \
             --project src/ios/Minis.xcodeproj \
             --scheme Minis \
             --configuration Debug \

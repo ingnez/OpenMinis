@@ -234,7 +234,8 @@ struct CollectionViewMessageListV3: UIViewControllerRepresentable {
             // 78pt short of the bottom). Shrink needs it to hide the clamp. The
             // follow-intent gate is unchanged, so a user who has scrolled away is
             // still never yanked to the bottom by a composer resize.
-            if coord.scrollMode == .autoScrolling || wasNearBottomBefore {
+            if (coord.scrollMode == .autoScrolling || wasNearBottomBefore),
+               !ChatScrollInteraction.blocksAutomaticScroll(in: cv) {
                 if !wasSmaller {
                     AppLogger(category: "ScrollDiag").info("[ScrollDiag][baseInsetShrink] \(String(format: "%.2f", previousBase))→\(String(format: "%.2f", bottomPad)) inputBar=\(String(format: "%.2f", inputBarHeight)) offset=\(String(format: "%.1f", cv.contentOffset.y)) — re-pinning to hide the UIKit clamp")
                 }
@@ -289,7 +290,7 @@ struct CollectionViewMessageListV3: UIViewControllerRepresentable {
             coord.lastInputFocused = inputFocused
             if wasNearBottom {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak coord] in
-                    coord?.scrollToBottomNow(animated: true)
+                    coord?.followBottomIfIdle(animated: true)
                 }
             }
         }

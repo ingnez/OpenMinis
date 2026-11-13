@@ -130,6 +130,16 @@ extension CollectionViewMessageListV3.Coordinator {
                 }
                 #endif
 
+                // A pan can be active before the delegate switches to browsing.
+                // This also covers a drag consumed by a code block in the transcript.
+                if ChatScrollInteraction.blocksAutomaticScroll(in: cv) {
+                    if self.clampAfterSessionLoad && Date() >= self.clampDeadline {
+                        self.clampAfterSessionLoad = false
+                    }
+                    self.vm?.contentSizeDeltaSignal.send(delta)
+                    return
+                }
+
                 // Session load stability: keep pinning to bottom until layout settles.
                 // Use time-based deadline only — fire-count was too fragile on iPad
                 // where width changes (sidebar) and async image loads produce many
@@ -156,10 +166,6 @@ extension CollectionViewMessageListV3.Coordinator {
                     } else {
                         let maxOff = newH - cv.bounds.height + cv.adjustedContentInset.bottom
                         if maxOff > 0 {
-                            // [DIAG-3] If tracking/decel, auto-scroll mode is fighting user gesture
-                            if cv.isTracking || cv.isDecelerating {
-                                AppLogger(category: "StreamDiag").info("[KVO] ⚠️ PIN-WHILE-SCROLLING contentSize grew +\(String(format: "%.0f", delta)) offset \(String(format: "%.0f", cv.contentOffset.y))→\(String(format: "%.0f", maxOff)) tracking=\(cv.isTracking) decel=\(cv.isDecelerating) — MODE SHOULD BE userBrowsing")
-                            }
                             cv.contentOffset.y = max(cv.contentOffset.y, maxOff)
                         }
                     }

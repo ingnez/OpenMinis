@@ -199,6 +199,13 @@ extension CollectionViewMessageListV3.Coordinator {
                 // Same follow-ups willBeginDragging performs for a touch drag.
                 lastJumpedUserId = nil
                 viewController?.messageListLayout?.deferSelfSizing = true
+            } else if scrollMode == .autoScrolling, !isAnimatingScrollToBottom,
+                      offsetY < lastDidScrollOffsetY - indirectScrollExitThreshold,
+                      ChatScrollInteraction.hasMovingChild(in: scrollView) {
+                // A child can move the transcript at its edge without a list drag.
+                scrollMode = .userBrowsing
+                clampAfterSessionLoad = false
+                lastJumpedUserId = nil
             }
             lastDidScrollOffsetY = offsetY
 

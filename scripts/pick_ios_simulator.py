@@ -92,7 +92,7 @@ def simctl(*args: str, timeout: int = 20) -> subprocess.CompletedProcess[str]:
     )
 
 
-def prepare_iphone_simulator(dests: list[dict[str, str]]) -> str:
+def prepare_iphone_simulator(dests: list[dict[str, str]], preferred_runtime: str | None = None) -> str:
     inventory = simctl("list", "-j")
     inventory.check_returncode()
     data = json.loads(inventory.stdout)
@@ -111,7 +111,10 @@ def prepare_iphone_simulator(dests: list[dict[str, str]]) -> str:
             candidates.setdefault(config, dest)
     if not candidates:
         raise SystemExit("Xcode 没有可创建的 iPhone 模拟器配置")
-    primary = next(iter(candidates))
+    primary = next(
+        (config for config in candidates if config[1] == preferred_runtime),
+        next(iter(candidates)),
+    )
     alternatives = [config for config in candidates if config != primary]
     alternatives.sort(key=lambda config: config[1] == primary[1])
     for attempt, config in enumerate([primary, *alternatives[:1]], 1):
@@ -180,7 +183,10 @@ def run_showdestinations(args: argparse.Namespace) -> str:
             "-disableAutomaticPackageResolution",
         ]
     print("选择模拟器：" + " ".join(cmd), file=sys.stderr)
-    proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired as error:
+        raise SystemExit("xcodebuild -showdestinations 在 120 秒内未返回") from error
     text = (proc.stdout or "") + "\n" + (proc.stderr or "")
     if proc.returncode != 0 and "Available destinations" not in text:
         sys.stderr.write(text)
@@ -232,6 +238,43 @@ def self_test() -> None:
         """
     )
     assert pick_iphone_simulator(placeholders) is None
+    from unittest.mock import patch
+
+    primary_runtime = "com.apple.CoreSimulator.SimRuntime.iOS-26-5"
+    older_runtime = "com.apple.CoreSimulator.SimRuntime.iOS-26-4"
+    eligible = [
+        {"name": "iPhone Air", "OS": "26.5", "id": "newest", "platform": "iOS Simulator"},
+        {"name": "iPhone Air", "OS": "26.4.1", "id": "older", "platform": "iOS Simulator"},
+    ]
+    inventory = {"devicetypes": [], "devices": {
+        primary_runtime: [{"udid": "newest", "deviceTypeIdentifier": "air"}],
+        older_runtime: [{"udid": "older", "deviceTypeIdentifier": "air"}],
+    }}
+
+    def run_preparation(preferred_runtime: str, fail_first_boot: bool) -> list[str]:
+        attempted = []
+
+        def mock_simctl(*args: str, timeout: int = 20) -> subprocess.CompletedProcess[str]:
+            if args[0] == "list":
+                output = json.dumps(inventory)
+            elif args[0] == "create":
+                attempted.append(args[-1])
+                output = f"fresh-{len(attempted)}"
+            elif args[0] == "bootstatus" and fail_first_boot and len(attempted) == 1:
+                output = "Data Migration Failed"
+            else:
+                output = ""
+            return subprocess.CompletedProcess(args, 0, output, "")
+
+        with patch(__name__ + ".simctl", side_effect=mock_simctl):
+            assert prepare_iphone_simulator(eligible, preferred_runtime) == (
+                "fresh-2" if fail_first_boot else "fresh-1"
+            )
+        return attempted
+
+    assert run_preparation(older_runtime, False) == [older_runtime]
+    assert run_preparation(older_runtime, True) == [older_runtime, primary_runtime]
+    assert run_preparation("unavailable", False) == [primary_runtime]
     print("self-test ok", file=sys.stderr)
 
 
@@ -243,6 +286,7 @@ def main() -> None:
     parser.add_argument("--derived-data")
     parser.add_argument("--cloned-source-packages")
     parser.add_argument("--prepare", action="store_true", help="Create and boot a clean CI simulator")
+    parser.add_argument("--preferred-runtime", help="Prefer this installed runtime when preparing a clean device")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -255,7 +299,7 @@ def main() -> None:
         fail_no_destination(dests)
     assert picked is not None
     if args.prepare:
-        print(prepare_iphone_simulator(dests))
+        print(prepare_iphone_simulator(dests, args.preferred_runtime))
         return
     print(f"选中模拟器：{format_dest(picked)}", file=sys.stderr)
     print(picked["id"])

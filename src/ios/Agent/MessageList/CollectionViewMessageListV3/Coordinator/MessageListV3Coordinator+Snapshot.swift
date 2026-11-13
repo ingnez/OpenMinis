@@ -97,7 +97,7 @@ extension CollectionViewMessageListV3.Coordinator {
                 // window, re-pin to bottom — the corrected
                 // heights shift the content offset and otherwise
                 // leave the user looking at the wrong region.
-                if self.clampAfterSessionLoad {
+                if self.clampAfterSessionLoad && !ChatScrollInteraction.blocksAutomaticScroll(in: cv) {
                     self.scrollToLastItem()
                 }
             }
@@ -1238,12 +1238,13 @@ extension CollectionViewMessageListV3.Coordinator {
                 // [T-send-composer-shrink-absorb] The sent bubble and the
                 // typing row land here: let them take the space the composer
                 // is giving up before the pin below scrolls for them.
-                if scrollMode == .autoScrolling && newItems.count >= oldCount {
+                let canAdjustOffset = !ChatScrollInteraction.blocksAutomaticScroll(in: cv)
+                if canAdjustOffset && scrollMode == .autoScrolling && newItems.count >= oldCount {
                     absorbPendingComposerShrink(caller: "snapshot")
                 }
                 let rawMaxOff = cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom
                 let maxOff = max(0, rawMaxOff)
-                if newItems.count < oldCount && cv.contentOffset.y > maxOff {
+                if canAdjustOffset && newItems.count < oldCount && cv.contentOffset.y > maxOff {
                     cv.setContentOffset(CGPoint(x: 0, y: maxOff), animated: false)
                     // After shrink, content may fall into the sub-viewport
                     // overflow region — re-evaluate compensation so any
@@ -1253,7 +1254,7 @@ extension CollectionViewMessageListV3.Coordinator {
                     // and would leave a permanent blank gap at the bottom.
                     // forceRelax bypasses the monotonic guard.
                     applySubViewportCompensation(caller: "snapshot-shrink", forceRelax: true)
-                } else if scrollMode == .autoScrolling && maxOff > 0 {
+                } else if canAdjustOffset && scrollMode == .autoScrolling && maxOff > 0 {
                     cv.contentOffset.y = maxOff
                     // Deferred pin-to-bottom: UIHostingConfiguration self-sizing may
                     // complete asynchronously after layoutIfNeeded(), updating contentSize

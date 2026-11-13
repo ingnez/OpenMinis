@@ -191,10 +191,7 @@ extension CollectionViewMessageListV3.Coordinator {
         func scheduleCoalescedScroll() {
             pendingScrollWork?.cancel()
             let work = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                let isTracking = self.viewController?.collectionView?.isTracking ?? false
-                if self.scrollMode != .autoScrolling || isTracking { return }
-                self.scrollToBottomNow()
+                self?.followBottomIfIdle()
             }
             pendingScrollWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)

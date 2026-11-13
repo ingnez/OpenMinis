@@ -55,16 +55,21 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
     private var frameLink: CADisplayLink?
     private var pendingOffset: CGFloat?
     var onReply: ((Int, String, String) -> Void)?
+    var onScrollSettled: ((Bool) -> Void)?
+    private var scrollSettleTask: Task<Void, Never>?
     var isInteracting: Bool { direction != nil }
     var isVerticallyScrolling: Bool {
         guard let scrollView else { return false }
-        return scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating
+        return ChatScrollInteraction.blocksAutomaticScroll(in: scrollView) || scrollSettleTask != nil
     }
 
     func attach(to scroll: UIScrollView?, reduceMotion: Bool) {
         self.reduceMotion = reduceMotion
         guard scrollView !== scroll else { return }
         scrollView?.removeGestureRecognizer(pan)
+        scrollView?.panGestureRecognizer.removeTarget(self, action: #selector(trackVerticalPan(_:)))
+        scrollSettleTask?.cancel()
+        scrollSettleTask = nil
         stopFrameUpdates()
         hideTimes?.cancel()
         if timeOffset.x != 0 { timeOffset.x = 0 }
@@ -78,6 +83,34 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
         armed = false
         scrollView = scroll
         scroll?.addGestureRecognizer(pan)
+        if #unavailable(iOS 18) {
+            scroll?.panGestureRecognizer.addTarget(self, action: #selector(trackVerticalPan(_:)))
+        }
+    }
+
+    // SwiftUI exposes scroll phases starting in iOS 18. On older versions,
+    // watch the existing pan recognizer and wait for UIKit's momentum to end.
+    @objc private func trackVerticalPan(_ recognizer: UIPanGestureRecognizer) {
+        switch recognizer.state {
+        case .began:
+            scrollSettleTask?.cancel()
+            scrollSettleTask = nil
+        case .ended, .cancelled:
+            scrollSettleTask?.cancel()
+            scrollSettleTask = Task { @MainActor [weak self] in
+                repeat {
+                    try? await Task.sleep(for: .milliseconds(50))
+                    guard !Task.isCancelled, let self, let scroll = self.scrollView else { return }
+                    if !ChatScrollInteraction.isMoving(scroll) {
+                        self.scrollSettleTask = nil
+                        self.onScrollSettled?(ChatScrollInteraction.distanceFromBottom(of: scroll) <= 4)
+                        return
+                    }
+                } while !Task.isCancelled
+            }
+        default:
+            break
+        }
     }
 
     fileprivate func register(_ row: CloudTranscriptHitView) { rows.add(row) }

@@ -323,7 +323,8 @@ extension CollectionViewMessageListV3.Coordinator {
         /// Returns true if compensation is currently active.
         @discardableResult
         func applySubViewportCompensation(caller: String = "?", forceRelax: Bool = false) -> Bool {
-            guard let cv = viewController?.collectionView else { return false }
+            guard let cv = viewController?.collectionView,
+                  !ChatScrollInteraction.blocksAutomaticScroll(in: cv) else { return false }
             let safeAreaTop = cv.safeAreaInsets.top
             // Use baseBottomInset (set by updateUIViewController) as the truth
             // for the non-compensated bottom. Reading cv.adjustedContentInset.bottom
@@ -468,7 +469,7 @@ extension CollectionViewMessageListV3.Coordinator {
             baseBottomInset += give
             if wasPlain { cv.contentInset.bottom = baseBottomInset }
             AppLogger(category: "ScrollDiag").info("[ScrollDiag][composerShrinkRelease] gave=\(String(format: "%.1f", give)) live=\(String(format: "%.1f", live)) committed=\(String(format: "%.1f", composerShrink.committed)) base=\(String(format: "%.1f", baseBottomInset))")
-            if scrollMode == .autoScrolling { scrollToBottomNow(animated: false) }
+            followBottomIfIdle()
         }
 
         /// A pinned list just followed a composer shrink: `contentOffset` is
@@ -489,6 +490,12 @@ extension CollectionViewMessageListV3.Coordinator {
             glide.duration = 0.25
             glide.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             cv.layer.add(glide, forKey: "composerShrinkGlide")
+        }
+
+        func followBottomIfIdle(animated: Bool = false) {
+            guard scrollMode == .autoScrolling, let cv = viewController?.collectionView,
+                  !ChatScrollInteraction.blocksAutomaticScroll(in: cv) else { return }
+            scrollToBottomNow(animated: animated)
         }
 
         func scrollToBottomNow(animated: Bool = false) {

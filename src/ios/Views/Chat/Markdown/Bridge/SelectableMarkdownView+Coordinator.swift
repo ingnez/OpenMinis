@@ -25,6 +25,8 @@ extension SelectableMarkdownView {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var lastMarkdown: String = ""
+        var lastRenderWasFinal = false
+        var lastRenderHadAttachments = false
         var lastRenderedContentHash: Int? = nil
         /// [T-ios-reuse-cachewipe] Identity of the content this coordinator's
         /// text view is currently showing — `blockId` when the caller renders

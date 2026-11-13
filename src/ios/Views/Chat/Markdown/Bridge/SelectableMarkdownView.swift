@@ -257,6 +257,9 @@ struct SelectableMarkdownView: UIViewRepresentable {
         textView.setContentHuggingPriority(.required, for: .vertical)
         textView.setContentCompressionResistancePriority(.required, for: .vertical)
         context.coordinator.lastMarkdown = ""
+        context.coordinator.lastRenderWasFinal = false
+        context.coordinator.lastRenderHadAttachments = false
+        context.coordinator.lastRenderedContentHash = nil
         context.coordinator.openURL = openURL
         textView.onTapBlank = onTapBlank
         textView.blankTapEligible = blankTapEligible
@@ -317,6 +320,8 @@ struct SelectableMarkdownView: UIViewRepresentable {
             key: messageId.flatMap { mid in blockId.map { ChatSearchUnitKey(messageId: mid, blockId: $0, field: .body) } },
             dimmed: searchDimmed)
 
+        let _isFinalised = cachedAttributedString != nil || cachedContent != nil || cachesFinishedMarkdown
+        let finalizationChanged = context.coordinator.lastRenderWasFinal != _isFinalised
         let currentFontSize = renderedFontSize
         let fontChanged = context.coordinator.lastFontSize != currentFontSize
             || context.coordinator.renderer.fontDesign != renderedDesign
@@ -346,7 +351,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         let _curW = textView.textContainer.size.width
         let _prevW = context.coordinator.lastRenderedWidth
         let _widthChanged = _curW > 1 && _prevW > 1 && abs(_curW - _prevW) > 0.5
-        if _widthChanged && markdown == context.coordinator.lastMarkdown && !fontChanged {
+        if _widthChanged && markdown == context.coordinator.lastMarkdown && !fontChanged && !finalizationChanged {
             // [WordFade] Width change (rotation) re-lays-out everything; snap
             // any mid-fade words to full opacity so none stick translucent.
             context.coordinator.fadeAnimator.cancelAll()
@@ -373,10 +378,11 @@ struct SelectableMarkdownView: UIViewRepresentable {
         if _curW > 1 {
             context.coordinator.lastRenderedWidth = _curW
         }
-        guard markdown != context.coordinator.lastMarkdown || fontChanged else {
-            let shouldRecover = textView.window != nil
-                && textView.needsAttachmentRecovery
+        guard markdown != context.coordinator.lastMarkdown || fontChanged || finalizationChanged else {
+            let shouldRecover = context.coordinator.lastRenderHadAttachments
+                && textView.window != nil
                 && !textView.hasScheduledRecoveryForCurrentContent
+                && textView.needsAttachmentRecovery
 
             if shouldRecover {
                 textView.hasScheduledRecoveryForCurrentContent = true
@@ -440,6 +446,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         }
         let oldMarkdown = context.coordinator.lastMarkdown
         context.coordinator.lastMarkdown = markdown
+        context.coordinator.lastRenderWasFinal = _isFinalised
 
         if fontChanged {
             context.coordinator.renderer.fontDesign = renderedDesign
@@ -568,7 +575,6 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // point cmark must see the full markdown so a trailing
         // un-terminated `|...|` final row (no trailing `\n`) is still
         // rendered as a real table row.
-        let _isFinalised = cachedAttributedString != nil || cachedContent != nil || cachesFinishedMarkdown
         let _splitForUpdate = _isFinalised ? (prefix: markdown, plainSuffix: "") : splitStreamingTableTail(markdown)
         let _hasPlainSuffix = !_splitForUpdate.plainSuffix.isEmpty
         // If we split off a suffix, the prebuilt cache (which was rendered
@@ -596,9 +602,15 @@ struct SelectableMarkdownView: UIViewRepresentable {
         }
 
         var hasher = Hasher()
-        hasher.combine(cachedContent != nil ? cachedContent!.blocks.hashValue : markdown.hashValue)
+        if let cachedContent, !_hasPlainSuffix {
+            hasher.combine(cachedContent.blocks)
+        } else {
+            hasher.combine(markdown)
+        }
         hasher.combine(currentFontSize)
+        hasher.combine(_isFinalised)
         let contentHash: Int = hasher.finalize()
+        textView.rawMarkdown = markdown
         if contentHash == context.coordinator.lastRenderedContentHash {
             // [DIAG-RENDER-3] Content hash matches — skip re-render.
             // If text was already set correctly, this is fine. But if
@@ -606,7 +618,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
             if !markdown.isEmpty && (textView.attributedText?.length ?? 0) == 0 {
                 AppLogger(category: "StreamDiag").info("[RENDER] ⚠️ HASH-MATCH-BUT-EMPTY markdown len=\(markdown.count) hash=\(contentHash) attrText len=0 — SKIPPING RENDER OF NON-EMPTY CONTENT")
             }
-            if textView.textContainer.size.width > 1 {
+            if context.coordinator.lastRenderHadAttachments && textView.textContainer.size.width > 1 {
                 textView.updateAttachmentViews()
             }
             return
@@ -686,9 +698,12 @@ struct SelectableMarkdownView: UIViewRepresentable {
         //      rewritten since the attachment last loaded (size+mtime
         //      fingerprint mismatch). Skips the on-disk stat for
         //      non-minis schemes.
+        var hasAttachments = false
         attributed.enumerateAttribute(.attachment,
                                       in: NSRange(location: 0, length: attributed.length),
                                       options: []) { value, _, _ in
+            guard let value else { return }
+            hasAttachments = true
             guard let att = value as? ImageAttachment else { return }
             if let messageId { att.messageId = messageId }
             if let loadedFp = att.loadedFingerprint {
@@ -698,6 +713,15 @@ struct SelectableMarkdownView: UIViewRepresentable {
                     att.invalidateLoadedImage()
                 }
             }
+        }
+        let hadAttachments = context.coordinator.lastRenderHadAttachments
+        context.coordinator.lastRenderHadAttachments = hasAttachments
+        // Markdown syntax can change while the attributed output stays identical.
+        // Keep the laid-out storage and selection when there are no mutable attachments.
+        if !hasAttachments && !hadAttachments && !isDifferentContent && !_widthChanged && !fontChanged,
+           textView.textStorage.length == attributed.length,
+           textView.textStorage.isEqual(to: attributed) {
+            return
         }
         let renderElapsed = (CFAbsoluteTimeGetCurrent() - renderStart) * 1000
 
@@ -772,7 +796,6 @@ struct SelectableMarkdownView: UIViewRepresentable {
             context.coordinator.fadeAnimator.scheduleAnimation(for: revealRange, in: liveStorage)
         }
         let assignElapsed = (CFAbsoluteTimeGetCurrent() - assignStart) * 1000
-        textView.rawMarkdown = markdown
         textView.resetAttachmentRecoveryState()
         // [HangRepro] Record the full markdown just assigned to this
         // textView so a subsequent main-thread hang (caught by
@@ -790,7 +813,8 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // character ranges in the layout manager. With identity-stable
         // attachments TextKit otherwise keeps the cached attachment-bounds
         // (and therefore the wrong rendered height) for the table.
-        if let storage = textView.textStorage as? NSTextStorage {
+        var tableLayoutChanged = false
+        if hasAttachments, let storage = textView.textStorage as? NSTextStorage {
             let storageLen = storage.length
             if storageLen > 0 {
                 storage.enumerateAttribute(.attachment,
@@ -799,6 +823,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
                     if let table = value as? TableAttachment, table.needsLayoutInvalidation {
                         textView.layoutManager.invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
                         table.needsLayoutInvalidation = false
+                        tableLayoutChanged = true
                     }
                 }
             }
@@ -852,7 +877,8 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // unchanged, their boundingRects are stable, and we can skip the full
         // updateAttachmentViews enumeration. If a new attachment did appear
         // (rare during text streaming after an image), fall through to refresh.
-        let skipAttachUpdate = fastPathTaken && newAttachInTail == 0
+        let skipAttachUpdate = (!hasAttachments && !hadAttachments)
+            || (fastPathTaken && newAttachInTail == 0 && !tableLayoutChanged)
         if skipAttachUpdate {
             // No-op. Existing attachment views remain correctly placed.
         } else if textView.textContainer.size.width > 1 {

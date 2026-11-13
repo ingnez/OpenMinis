@@ -632,6 +632,7 @@ private struct UserAskPendingCard: View {
                     .background(GeometryReader { g in
                         Color.clear.preference(key: UserAskBodyHeightKey.self, value: g.size.height)
                     })
+                    .background(NestedChatScrollProbe().accessibilityHidden(true))
             }
             .frame(height: min(max(bodyHeight, 1), bodyCap))
             .onPreferenceChange(UserAskBodyHeightKey.self) { h in
