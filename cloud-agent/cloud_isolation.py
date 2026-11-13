@@ -514,7 +514,7 @@ class BackgroundJobs:
         with self.lock:
             return sum(1 for j in self.jobs.values() if j["lane"] == lane and j["status"] == "running")
 
-    def start(self, lane, session_id, cmd, cwd, env, limits, log_dir, on_done):
+    def start(self, lane, session_id, cmd, cwd, env, limits, log_dir, on_done, owner_worker_id=None):
         os.makedirs(log_dir, exist_ok=True)
         job_id = "job_" + uuid.uuid4().hex[:10]
         log_path = os.path.join(log_dir, job_id + ".log")
@@ -524,6 +524,8 @@ class BackgroundJobs:
                                 start_new_session=True, preexec_fn=preexec)
         job = {"job_id": job_id, "lane": lane, "session_id": session_id, "command": cmd[:500], "status": "running",
                "pid": proc.pid, "log": log_path, "started_at": time.time(), "exit_code": None}
+        if owner_worker_id:
+            job["owner_worker_id"] = owner_worker_id
         with self.lock:
             self.jobs[job_id] = job
 
@@ -549,13 +551,13 @@ class BackgroundJobs:
         with self.lock:
             return [dict(j) for j in self.jobs.values() if lane is None or j["lane"] == lane]
 
-    def stop(self, job_id):
+    def stop(self, job_id, force=False):
         import signal
         j = self.get(job_id)
         if not j or j["status"] != "running":
             return False
         try:
-            os.killpg(os.getpgid(j["pid"]), signal.SIGTERM)
+            os.killpg(os.getpgid(j["pid"]), signal.SIGKILL if force else signal.SIGTERM)
         except OSError:
             return False
         return True

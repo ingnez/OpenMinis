@@ -99,6 +99,7 @@ struct DictationCard: View {
         .padding(.horizontal, 9).padding(.top, 10).padding(.bottom, 9)
         .background { shape.fill(.regularMaterial).overlay { shape.fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.04)) } }
         .overlay { shape.strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.75) }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("dictationCard")
     }
 }

@@ -49,7 +49,7 @@ final class MiscControlsUITests: XCTestCase {
             for label in ["允许", "Allow", "好", "OK"] where alert.buttons[label].exists { alert.buttons[label].tap(); return true }
             return false
         }
-        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch.waitForExistence(timeout: 60),
+        XCTAssertTrue(app.descendants(matching: .any)["homeBotRow-e2ebot"].waitForExistence(timeout: 60),
                       "首页没有出现 Bot")
         app.open(URL(string: "minis://bot/e2ebot?voice=1")!)
         app.tap()

@@ -1403,6 +1403,23 @@ def live_tool_output(task_id, out_f, err_f):
     if out != tool.get("output"):
         live_update(task_id, tool=dict(tool, output=out))
 
+def task_owner_worker(task_id, session_id=None):
+    """Keep worker ownership after a completed parent leaves active_tasks."""
+    with active_tasks_lock:
+        entry = dict(active_tasks.get(task_id, {}))
+    if entry.get("owner_worker_id"):
+        return entry["owner_worker_id"]
+    conn = get_db_connection()
+    try:
+        if not session_id:
+            row = conn.execute("SELECT session_id FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            session_id = row[0] if row else None
+        worker = cloud_workers.by_session(conn, session_id) if session_id else None
+        return worker["worker_id"] if worker else None
+    finally:
+        conn.close()
+
+
 def tool_shell_execute(task_id, session_id, args):
     if is_task_cancelled(task_id):
         return {"error": "Task was cancelled"}
@@ -1419,7 +1436,8 @@ def tool_shell_execute(task_id, session_id, args):
         cap = limits.get("bg_jobs_max") or 0
         if cap and BG_JOBS.running_count(lane) >= cap:
             return {"error": f"后台命令已达上限 {cap} 个，请等待或用 background_jobs 停止一个"}
-        job = BG_JOBS.start(lane, session_id, cmd, ws, env, limits, os.path.join(ws, ".bg"), on_background_done)
+        job = BG_JOBS.start(lane, session_id, cmd, ws, env, limits, os.path.join(ws, ".bg"), on_background_done,
+                            owner_worker_id=task_owner_worker(task_id, session_id))
         return {"status": "started", "job_id": job["job_id"], "log": os.path.relpath(job["log"], ws),
                 "note": "命令在后台运行，完成后会写回对话并推送；可用 background_jobs 查看进度。"}
     argv, use_shell, preexec = iso.wrap_command(cmd, limits)
@@ -2946,8 +2964,10 @@ def tool_subagent_task(task_id, session_id, args, model, provider_config, depth)
         conn.commit()
     finally:
         conn.close()
+    owner_worker_id = task_owner_worker(task_id, session_id)
     with active_tasks_lock:
-        active_tasks[tid] = {"process": None, "cancelled": False, "pid": None, "parent": task_id}
+        active_tasks[tid] = {"process": None, "cancelled": False, "pid": None, "parent": task_id,
+                             "owner_worker_id": owner_worker_id}
     log_event(task_id, "subagent_started", {"task_id": tid, "session_id": sid, "title": title})
     run_agent_task(tid, sid, prompt, model, provider_config, SUBAGENT_INSTRUCTIONS, depth=depth + 1)
     conn = get_db_connection()
@@ -3422,6 +3442,16 @@ def worker_stop(wid):
         w = cloud_workers.get(conn, wid)
         if not w:
             return None
+        # Detached shell jobs and completed-parent descendants must stop too.
+        # Ownership is explicit so another Bot's jobs remain untouched.
+        with active_tasks_lock:
+            owned = [tid for tid, entry in active_tasks.items() if entry.get("owner_worker_id") == wid]
+        for tid in owned:
+            set_task_cancelled(tid)
+        for job in BG_JOBS.list():
+            if job.get("status") == "running" and (job.get("owner_worker_id") == wid
+                    or job.get("session_id") == w["worker_session"]):
+                BG_JOBS.stop(job["job_id"], force=True)
         if w["status"] == "queued":
             cloud_workers.set_status(conn, wid, "cancelled", finished_at=time.time(), pause_requested=0, stop_reason="user")
             _worker_post(conn, cloud_workers.get(conn, wid))
@@ -4014,8 +4044,10 @@ def start_delegation(task_id, session_id, kind, target_id, body, priority="norma
         conn.commit()
     finally:
         conn.close()
+    owner_worker_id = task_owner_worker(task_id, session_id)
     with active_tasks_lock:
-        active_tasks[tid] = {"process": None, "cancelled": False, "pid": None, "parent": task_id}
+        active_tasks[tid] = {"process": None, "cancelled": False, "pid": None, "parent": task_id,
+                             "owner_worker_id": owner_worker_id}
     TASK_HOP[tid] = hop
     if priority == "high":
         TASK_PRIORITY[tid] = "high"

@@ -154,7 +154,7 @@ final class DeliverablesUITests: XCTestCase {
 
     @MainActor
     private func openBot(_ app: XCUIApplication) {
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
+        let row = app.descendants(matching: .any)["homeBotRow-e2ebot"]
         if !row.waitForExistence(timeout: 60) {
             shot(app, "找不到Bot")
             XCTFail("首页 60 秒内没出现「\(Self.botName)」（云端没连上？）")

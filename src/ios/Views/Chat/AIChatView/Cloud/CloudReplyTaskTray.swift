@@ -20,6 +20,7 @@ struct CloudReplyTaskTray: View {
             CloudReplyTrayActions(worker: worker, onPause: onPause, onResume: onResume,
                                   onStop: onStop, onRetry: onRetry)
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("replyTaskTray")
     }
 }

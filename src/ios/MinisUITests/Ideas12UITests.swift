@@ -5,6 +5,20 @@ final class Ideas12UITests: XCTestCase {
     static let token = "e2e-fake-token-0000000000000000"
     static let botName = "E2E小助手"
 
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        executionTimeAllowance = 180
+    }
+
+    override func tearDownWithError() throws {
+        guard (testRun?.failureCount ?? 0) > 0 else { return }
+        let app = XCUIApplication()
+        let screen = XCTAttachment(screenshot: app.screenshot())
+        screen.name = "failure-screen"; screen.lifetime = .keepAlways; add(screen)
+        let tree = XCTAttachment(string: app.debugDescription)
+        tree.name = "failure-ui-tree"; tree.lifetime = .keepAlways; add(tree)
+    }
+
     func testIdea1_instantHome() throws {
         executionTimeAllowance = 180
         let app = launch()
@@ -24,7 +38,7 @@ final class Ideas12UITests: XCTestCase {
         if avatar.waitForExistence(timeout: 15) {
             avatar.press(forDuration: 1.0)
         } else {
-            app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch.press(forDuration: 1.0)
+            app.descendants(matching: .any)["homeBotRow-e2ebot"].press(forDuration: 1.0)
         }
         XCTAssertTrue(app.descendants(matching: .any)["shiftSpeechSheet"].waitForExistence(timeout: 10)
                       || waitText(app, contains: "一句话交班", timeout: 8),
@@ -175,10 +189,8 @@ final class Ideas12UITests: XCTestCase {
         let gear = app.buttons["设置"]
         XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
         gear.tap()
-        let row = app.descendants(matching: .any)["ccDesktopSettingsRow"].exists
-            ? app.descendants(matching: .any)["ccDesktopSettingsRow"]
-            : app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "云电脑桌面")).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 15), "设置里没有云电脑桌面")
+        let row = app.descendants(matching: .any)["ccDesktopSettingsRow"]
+        XCTAssertTrue(scrollTo(app, row), "设置里没有云电脑桌面")
         row.tap()
         XCTAssertTrue(app.descendants(matching: .any)["ccTrackpadSurface"].waitForExistence(timeout: 30)
                       || waitText(app, contains: "触控板", timeout: 10),
@@ -203,10 +215,8 @@ final class Ideas12UITests: XCTestCase {
         let gear = app.buttons["设置"]
         XCTAssertTrue(gear.waitForExistence(timeout: 60), "首页没有设置按钮")
         gear.tap()
-        let row = app.descendants(matching: .any)["ipaChecklistRow"].exists
-            ? app.descendants(matching: .any)["ipaChecklistRow"]
-            : app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "测试清单")).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 15), "设置里没有测试清单")
+        let row = app.descendants(matching: .any)["ipaChecklistRow"]
+        XCTAssertTrue(scrollTo(app, row), "设置里没有测试清单")
         row.tap()
         XCTAssertTrue(app.descendants(matching: .any)["ipaChecklist"].waitForExistence(timeout: 10)
                       || waitText(app, contains: "已测流程", timeout: 8),
@@ -216,6 +226,14 @@ final class Ideas12UITests: XCTestCase {
     }
 
     // MARK: - helpers
+
+    private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+        for _ in 0..<14 {
+            if element.exists && element.isHittable { return true }
+            app.swipeUp()
+        }
+        return element.exists && element.isHittable
+    }
 
     private func launch(extraEnv: [String: String] = [:]) -> XCUIApplication {
         if let url = URL(string: "http://127.0.0.1:18799/_e2e/reset") { _ = try? Data(contentsOf: url) }
@@ -233,7 +251,7 @@ final class Ideas12UITests: XCTestCase {
     }
 
     private func openBot(_ app: XCUIApplication) {
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
+        let row = app.descendants(matching: .any)["homeBotRow-e2ebot"]
         XCTAssertTrue(row.waitForExistence(timeout: 60), "首页没有 E2E小助手")
         row.tap()
         XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 30), "打开 Bot 后没有输入框")

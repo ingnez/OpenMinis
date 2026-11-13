@@ -73,6 +73,9 @@ final class RealtimeVoiceAudio {
             throw AudioError.start("麦克风被占用或音频会话启动失败，请结束其他通话后重试。")
         }
         do {
+            guard !AVAudioSession.sharedInstance().currentRoute.inputs.isEmpty else {
+                throw AudioError.start("当前没有可用的麦克风，请连接音频设备后重试。")
+            }
             let engine = AVAudioEngine()
             self.engine = engine
             // VoiceProcessingIO 在同一个引擎内处理收音和播放，提供回声消除。

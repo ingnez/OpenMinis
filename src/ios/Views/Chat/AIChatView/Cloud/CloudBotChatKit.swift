@@ -648,15 +648,26 @@ final class CloudDictation: ObservableObject {
             try session.setCategory(.playAndRecord, mode: denoise ? .voiceChat : .measurement,
                                     options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
+            guard !session.currentRoute.inputs.isEmpty else {
+                errorText = "当前没有可用的麦克风，请连接音频设备后重试。"
+                try? session.setActive(false, options: .notifyOthersOnDeactivation)
+                return
+            }
             let req = SFSpeechAudioBufferRecognitionRequest()
             req.shouldReportPartialResults = true
             request = req
             let input = engine.inputNode
             // 必须在读输入格式、装 tap 之前切换；失败就当没开（照常录原声）
             if input.isVoiceProcessingEnabled != denoise { try? input.setVoiceProcessingEnabled(denoise) }
+            let format = input.outputFormat(forBus: 0)
+            guard format.sampleRate > 0, format.channelCount > 0 else {
+                errorText = "麦克风暂时无法录音，请检查音频设备后重试。"
+                try? session.setActive(false, options: .notifyOthersOnDeactivation)
+                return
+            }
             input.removeTap(onBus: 0)
             let tick = DictationTick()
-            input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { [weak self] buffer, _ in
+            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
                 req.append(buffer)
                 // 每两块算一次音量给波形（约 20 次每秒），只在主线程改界面状态
                 guard tick.next() % 2 == 0, let ch = buffer.floatChannelData?[0] else { return }

@@ -1199,7 +1199,7 @@ class PastableUITextView: UITextView, UIDropInteractionDelegate {
     /// The composer's smallest height: one line of the input font plus
     /// `minHeightExtra`.
     static func minHeight(for font: UIFont?) -> CGFloat {
-        (font?.lineHeight ?? 20) + minHeightExtra
+        max(36, (font?.lineHeight ?? 20) + minHeightExtra)
     }
     /// The height at which typing stops growing the composer and starts
     /// scrolling inside it. Raised while the user drags the composer taller.

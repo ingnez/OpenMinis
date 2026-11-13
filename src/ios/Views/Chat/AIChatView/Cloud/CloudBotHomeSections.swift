@@ -179,6 +179,8 @@ struct CloudBotSectionedList: View {
                         CloudBotHomeTile(bot: bot, unread: model.isUnread(bot), presence: model.presence(bot), card: layout == .card)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("homeBotRow-\(bot.id)")
                     .cloudBotMenu(bot, model: model, actions: actions)
                 }
             }
@@ -195,6 +197,8 @@ struct CloudBotSectionedList: View {
             CloudBotHomeRow(bot: bot, unread: model.isUnread(bot), presence: model.presence(bot))
                 .cloudBotMenu(bot, model: model, actions: actions)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("homeBotRow-\(bot.id)")
         .padding(.horizontal, 20)
     }
 
@@ -252,7 +256,7 @@ struct CloudSwipeRow<Content: View>: View {
             content()
                 .contentShape(Rectangle())
                 .onTapGesture { tapped() }
-                .accessibilityElement(children: .combine)
+                .accessibilityElement(children: .contain)
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { tapped() }
                 .offset(x: offset)

@@ -13,6 +13,15 @@ final class E2EFlowsUITests: XCTestCase {
         executionTimeAllowance = 150
     }
 
+    override func tearDownWithError() throws {
+        guard (testRun?.failureCount ?? 0) > 0 else { return }
+        let app = XCUIApplication()
+        let screen = XCTAttachment(screenshot: app.screenshot())
+        screen.name = "failure-screen"; screen.lifetime = .keepAlways; add(screen)
+        let tree = XCTAttachment(string: app.debugDescription)
+        tree.name = "failure-ui-tree"; tree.lifetime = .keepAlways; add(tree)
+    }
+
     // MARK: - 流程
 
     func test01_sendText() throws {
@@ -795,7 +804,7 @@ final class E2EFlowsUITests: XCTestCase {
 
     /// 首页 Bot 那一行的高度和名字的高度（找不到返回 nil）
     private func homeRowMetrics(_ app: XCUIApplication) -> (row: CGFloat, title: CGFloat?)? {
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
+        let row = app.descendants(matching: .any)["homeBotRow-e2ebot"]
         guard row.waitForExistence(timeout: 60) else { return nil }
         let title = app.descendants(matching: .any).matching(identifier: "homeRowTitle").firstMatch
         return (row.frame.height, title.exists ? title.frame.height : nil)
@@ -846,7 +855,7 @@ final class E2EFlowsUITests: XCTestCase {
     }
 
     private func openBot(_ app: XCUIApplication) {
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
+        let row = app.descendants(matching: .any)["homeBotRow-e2ebot"]
         if !row.waitForExistence(timeout: 60) {
             shot(app, "找不到Bot")
             print("OPENMINIS_UI_ENTRY_FAILURE: home Bot missing\n\(app.debugDescription)")
@@ -1483,7 +1492,7 @@ extension E2EFlowsUITests {
     /// H3：首页列表行左滑露出「置顶 / 隐藏」时不能进聊天；滑开时点行只收起；点「置顶」只置顶
     func test31_swipeRowDoesNotOpenChat() throws {
         let app = launch()
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
+        let row = app.descendants(matching: .any)["homeBotRow-e2ebot"]
         XCTAssertTrue(row.waitForExistence(timeout: 60), "首页没有假 Bot 的行")
         let composer = app.descendants(matching: .any)["botComposerField"]
         let pin = app.buttons["置顶"]
@@ -1731,7 +1740,7 @@ extension E2EFlowsUITests {
                                  "键盘盖住了输入胶囊")
         shot(app, "42b-键盘上方多行胶囊")
         app.buttons["composerVoiceButton"].tap()
-        XCTAssertTrue(poll(60) { lastProbe(containing: "E2E多行草稿")?.text.contains("第二行") == true },
+        XCTAssertTrue(poll(60) { (cloudProbe()?.cloud_texts ?? []).contains { $0.contains("E2E多行草稿") && $0.contains("第二行") } },
                       "改版后多行文字没有完整发给模型")
     }
 

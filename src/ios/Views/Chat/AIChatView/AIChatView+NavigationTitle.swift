@@ -151,7 +151,8 @@ extension AIChatView {
         #endif
         let display = SessionModelDisplay(store: configStore, draftGroupId: vm.initialGroupId)
         let resolved = display.resolvedDetail(for: vm.sessionId)
-        let sessionTitle: String? = (titlePillSession?.title?.trimmingCharacters(in: .whitespacesAndNewlines))
+        let sessionTitle: String? = (titlePillSession?.title)
+            .map { MarkdownStripper.plainText($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .flatMap { $0.isEmpty ? nil : $0 }
         return NavTitleKey(
             sessionTitle: sessionTitle,
@@ -198,7 +199,8 @@ extension AIChatView {
         // rename / re-categorize without leaving the chat. Falls back to
         // the SOUL.md `name` (or "Minis") for draft sessions or before a
         // title has been generated.
-        let sessionTitle: String? = (titlePillSession?.title?.trimmingCharacters(in: .whitespacesAndNewlines))
+        let sessionTitle: String? = (titlePillSession?.title)
+            .map { MarkdownStripper.plainText($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .flatMap { $0.isEmpty ? nil : $0 }
         let canEditTitle = titlePillSession != nil
 

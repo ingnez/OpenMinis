@@ -129,6 +129,13 @@ struct AttachmentTrayTile<Content: View>: View {
             .padding(4)
             .accessibilityLabel("移除 \(name)")
         }
+        .frame(width: isPhoto ? 140 : 64, height: isPhoto ? 140 : 64)
+        // The scaled image's uncropped bounds can exceed the visible tile.
+        // Expose the tile's actual bounds, retaining removal for VoiceOver.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(name)
+        .accessibilityAddTraits(isPhoto ? .isImage : [])
+        .accessibilityAction(named: "移除 \(name)") { onRemove() }
     }
 }
 

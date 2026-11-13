@@ -1,8 +1,10 @@
 """Real HTTP front/worker/reviewer integration; synthetic fixtures, no live keys."""
 import json
+import os
 import sqlite3
 import time
 import unittest
+from unittest.mock import patch
 
 import cloud_experience as exp
 import cloud_workorders as orders
@@ -70,6 +72,53 @@ class ExperiencePolicyTests(unittest.TestCase):
 
 class ExperienceHTTPTests(CloudServerTestCase):
     reply_default = None
+
+    def test_stop_reaps_detached_child_jobs_after_parent_finishes_without_touching_other_workers(self):
+        import cloud_workers
+        import cloud_experience_runtime
+        for stop_all in (False, True):
+            with self.subTest(stop_all=stop_all):
+                sid, other_sid, child_sid = self.new_session(), self.new_session(), self.new_session()
+                db = self.srv.get_db_connection()
+                try:
+                    worker = cloud_workers.create(db, None, sid, "真实后台进程演示")
+                    other = cloud_workers.create(db, None, other_sid, "其他对话")
+                    cloud_workers.set_status(db, worker["worker_id"], "completed", result="主调用已结束")
+                    db.commit()
+                finally:
+                    db.close()
+                tid = "synthetic-child-" + worker["worker_id"]
+                with self.srv.active_tasks_lock:
+                    self.srv.active_tasks[tid] = {"parent": "already-finished-parent", "owner_worker_id": worker["worker_id"]}
+                jobs = []
+                try:
+                    # Actual detached processes, including a child whose parent
+                    # has already left the active-task registry.
+                    with patch.object(self.srv, "on_background_done", lambda *_: None):
+                        job = self.srv.tool_shell_execute(tid, child_sid,
+                            {"command": "trap '' TERM; sleep 60", "background": True})
+                        jobs.append(job["job_id"])
+                        unrelated = self.srv.BG_JOBS.start("synthetic", other["worker_session"], "sleep 60",
+                            self.srv.GLOBAL_WORKSPACE, dict(os.environ), {},
+                            os.path.join(self.srv.GLOBAL_WORKSPACE, ".bg-test"), lambda *_: None,
+                            owner_worker_id=other["worker_id"])
+                        jobs.append(unrelated["job_id"])
+                    self.assertEqual(self.srv.BG_JOBS.get(job["job_id"])["owner_worker_id"], worker["worker_id"])
+                    if stop_all:
+                        stopped = cloud_experience_runtime.stop_all(self.srv, sid)
+                        self.assertIn(worker["worker_id"], [w["id"] for w in stopped])
+                    else:
+                        self.srv.worker_stop(worker["worker_id"])
+                    self.wait_until(lambda: self.srv.BG_JOBS.get(job["job_id"])["status"] == "finished", timeout=5)
+                    self.assertNotEqual(self.srv.BG_JOBS.get(job["job_id"])["exit_code"], 0)
+                    self.assertEqual(self.srv.BG_JOBS.get(unrelated["job_id"])["status"], "running")
+                    self.assertTrue(self.srv.is_task_cancelled(tid))
+                finally:
+                    for jid in jobs:
+                        self.srv.BG_JOBS.stop(jid, force=True)
+                        self.wait_until(lambda: self.srv.BG_JOBS.get(jid)["status"] == "finished", timeout=5)
+                    with self.srv.active_tasks_lock:
+                        self.srv.active_tasks.pop(tid, None)
 
     def body(self, **extra):
         provider = {"base_url": self.model_base, "api_key": "fake-front-phone-only", "protocol": "chat"}

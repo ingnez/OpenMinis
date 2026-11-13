@@ -390,9 +390,9 @@ final class CloudBotHomeModel: ObservableObject {
         do {
             let list = try await CloudQuiet.retry { try await CloudBotService.list() }
             if bots != list { bots = list }
+            CloudBotLock.shared.lockSecretHoldersByDefault(bots)
             CloudWatchBridge.shared.publish(bots, currentId: currentForWatch())
             CloudSpotlight.index(bots)
-            CloudBotLock.shared.lockSecretHoldersByDefault(bots)
             bannerText = nil
             publishToWidget()
             prefetchChats()
@@ -487,9 +487,10 @@ struct CloudBotHomeRow: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(bot.name)，\(presence.accessibilityText)")
             .accessibilityIdentifier("homeBotAvatar-\(bot.id)")
-            .onLongPressGesture {
+            .highPriorityGesture(LongPressGesture(minimumDuration: 0.6).onEnded { _ in
                 CloudBotHomeModel.shared.shiftSpeechBot = bot
-            }
+            })
+            .accessibilityAction(named: "一句话交班") { CloudBotHomeModel.shared.shiftSpeechBot = bot }
             VStack(alignment: .leading, spacing: 4) {
                 titleLayout {
                     // 系统字体样式，跟着「更大字体」缩放（以前写死 17pt）

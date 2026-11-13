@@ -99,7 +99,7 @@ final class Frog1850UITests: XCTestCase {
     }
 
     private func openBot(_ app: XCUIApplication) {
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
+        let row = app.descendants(matching: .any)["homeBotRow-e2ebot"]
         XCTAssertTrue(row.waitForExistence(timeout: 60), "首页没有 E2E小助手")
         row.tap()
         XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 30), "打开 Bot 后没有输入框")

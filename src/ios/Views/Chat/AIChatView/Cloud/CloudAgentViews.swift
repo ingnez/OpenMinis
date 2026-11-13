@@ -754,6 +754,9 @@ struct CloudSessionView: View {
     @State private var showTemplates = false
     @State private var showShiftCard = false
     @State private var showRelay = false
+    #if DEBUG
+    @State private var e2eAttachmentsInjected = false
+    #endif
     @State private var showReplayList = false
     @State private var showFiles = false
     @State private var showVoiceCall = false
@@ -1362,8 +1365,17 @@ struct CloudSessionView: View {
                     Label("需要你批准", systemImage: "hand.raised.fill").font(.subheadline.bold()).foregroundStyle(.orange)
                     Text(payload["reason"] as? String ?? (payload["tool"] as? String ?? "")).font(.callout)
                     HStack {
-                        Button("拒绝") { decide(approvalId: aid, approve: false) }.buttonStyle(.bordered).tint(.red)
-                        Button("批准") { decide(approvalId: aid, approve: true) }.buttonStyle(.borderedProminent).tint(theme.accent)
+                        Button(CloudApprovalActions.onceLabel) { decide(approvalId: aid, decision: CloudApprovalActions.onceDecision) }
+                            .buttonStyle(.borderedProminent).tint(theme.accent)
+                        Button(CloudApprovalActions.taskLabel) { decide(approvalId: aid, decision: CloudApprovalActions.taskDecision) }
+                            .buttonStyle(.bordered).tint(theme.accent)
+                    }
+                    .controlSize(.small)
+                    HStack {
+                        Button(CloudApprovalActions.shiftLabel) { decide(approvalId: aid, decision: CloudApprovalActions.shiftDecision) }
+                            .buttonStyle(.bordered).tint(theme.accent)
+                        Button(CloudApprovalActions.denyLabel) { decide(approvalId: aid, decision: CloudApprovalActions.denyDecision) }
+                            .buttonStyle(.bordered).tint(.red)
                     }
                     .controlSize(.small)
                 }
@@ -1533,6 +1545,10 @@ struct CloudSessionView: View {
         return HStack(alignment: .bottom, spacing: 8) {
             if compact { Spacer(minLength: 24) }
             Menu {
+                Button { showModelPicker = true } label: { Label("模型与思考深度", systemImage: "cpu") }
+                    .accessibilityHint("当前：\(theme.chipText)")
+                Button { showRelay = true } label: { Label("交给其他 Bot", systemImage: "arrowshape.turn.up.right") }
+                Divider()
                 Button { showPhotos = true } label: { Label("照片或视频", systemImage: "photo.on.rectangle") }
                 Button { showCamera = true } label: { Label("拍照", systemImage: "camera") }
                 if VNDocumentCameraViewController.isSupported {
@@ -1555,11 +1571,6 @@ struct CloudSessionView: View {
                     Label("插话：直接告诉它", systemImage: "arrow.turn.up.right").tag(true)
                     Label("排队：这一轮做完再发", systemImage: "text.badge.plus").tag(false)
                 }
-                Divider()
-                Button { showModelPicker = true } label: {
-                    Label("模型与思考深度", systemImage: "cpu")
-                }
-                .accessibilityHint("当前：\(theme.chipText)")
             } label: {
                 Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).foregroundStyle(.primary)
                     .frame(width: 38, height: 38).background(Circle().fill(Color.primary.opacity(0.06)))
@@ -1567,14 +1578,13 @@ struct CloudSessionView: View {
             .accessibilityLabel("添加附件与聊天选项")
             .accessibilityIdentifier("botComposerMenu")
             HStack(alignment: .bottom, spacing: 4) {
-                TextField(CloudBotComposerAction.placeholder(botName: theme.name, localHint: false), text: $inputPrompt, axis: .vertical)
-                    .font(.system(.body, design: typography?.design.swiftUI ?? .default))
-                    .dynamicTypeSize(typography?.inputTypeSize ?? typeSize)
-                    .accessibilityIdentifier("botComposerField")
-                    .focused($botComposerFocused)
-                    .lineLimit(1...6)
-                    .padding(.vertical, 8)
-                    .frame(minHeight: 38)
+                CloudComposerTextView(text: $inputPrompt,
+                    isFocused: Binding(get: { botComposerFocused }, set: { botComposerFocused = $0 }),
+                    placeholder: CloudBotComposerAction.placeholder(botName: theme.name, localHint: false),
+                    font: (typography?.design ?? .current).styled(
+                        UIFontMetrics(forTextStyle: .body).scaledFont(for: .systemFont(ofSize: 17),
+                            compatibleWith: UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(typography?.inputTypeSize ?? typeSize))),
+                        boldText: typography?.boldText ?? FontSettings.shared.systemBoldText))
                 Button { toggleDictation() } label: {
                     Image(systemName: dictation.isRecording ? "stop.circle.fill" : "mic").font(.system(size: 17))
                         .foregroundStyle(dictation.isRecording ? Color.red : Color.secondary)
@@ -1639,7 +1649,11 @@ struct CloudSessionView: View {
     private func injectE2EAttachments() {
         #if DEBUG
         let count = CloudE2E.fakeAttachments
-        guard count > 0, attachments.isEmpty else { return }
+        guard count > 0, attachments.isEmpty, !e2eAttachmentsInjected else { return }
+        // Restoring the last completed task also changes activeTaskId. Only
+        // seed once the new task is actually live, never while loading history.
+        if CloudE2E.attachWhenBusy && !taskIsLive { return }
+        e2eAttachmentsInjected = true
         for index in 0..<count {
             let image = CloudE2E.attachmentPhoto(at: index)
             if let attachment = CloudAttachmentKit.image(image, name: "照片 \(index + 1).jpg") {
@@ -2800,12 +2814,16 @@ struct CloudSessionView: View {
     }
 
     private func decide(approvalId: String, approve: Bool) {
-        if approve { CloudHaptics.success() } else { CloudHaptics.tap() }
+        decide(approvalId: approvalId, decision: approve ? CloudApprovalActions.onceDecision : CloudApprovalActions.denyDecision)
+    }
+
+    private func decide(approvalId: String, decision: String) {
+        if decision != CloudApprovalActions.denyDecision { CloudHaptics.success() } else { CloudHaptics.tap() }
         guard let tid = activeTaskId else { return }
         Task {
             do {
                 _ = try await connection.request(method: "POST", path: "/v1/tasks/\(tid)/approvals/\(approvalId)",
-                                                 body: ["decision": approve ? "approve" : "deny"])
+                                                 body: ["decision": decision])
                 pollTaskStatus(taskId: tid)
             } catch {
                 await MainActor.run { self.errorMessage = "提交审批失败: \(error.localizedDescription)" }

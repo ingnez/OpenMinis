@@ -106,8 +106,11 @@ def verify(server, conn, worker):
 def stop_all(server, sid):
     conn = server.get_db_connection()
     try:
+        background = [j for j in server.BG_JOBS.list() if j.get("status") == "running"]
         workers = [w for w in cloud_workers.list_for(conn, front_session=sid, limit=200)
-                   if w["status"] in ("queued", "running", "paused", "verifying")]
+                   if w["status"] in ("queued", "running", "paused", "verifying")
+                   or any(j.get("owner_worker_id") == w["worker_id"]
+                          or j.get("session_id") == w["worker_session"] for j in background)]
         # Freeze queued workers before stopping running ones, so _worker_finish
         # cannot promote the next queued worker during the cancellation sweep.
         workers.sort(key=lambda w: w["status"] != "queued")
@@ -131,7 +134,7 @@ def stop_all(server, sid):
             server.worker_stop(worker["worker_id"])
             for job in server.BG_JOBS.list():
                 if job.get("session_id") in owned_sessions and job.get("status") == "running":
-                    server.BG_JOBS.stop(job["job_id"])
+                    server.BG_JOBS.stop(job["job_id"], force=True)
             stopped.append({"id": worker["worker_id"], "title": worker["title"]})
         orders.reconcile(conn, sid)
         return stopped
