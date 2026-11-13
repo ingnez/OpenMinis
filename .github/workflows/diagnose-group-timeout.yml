@@ -5,10 +5,12 @@ on:
     paths:
       - .github/workflows/diagnose-group-timeout.yml
       - scripts/diagnostics/diagnose_group_timeout.py
+      - scripts/diagnostics/reproduce_fixture_cleanup_race.py
 permissions:
   contents: read
 env:
-  SOURCE_SHA: a5a2b7c9230026e5df6f9d6a77eafba306f99977
+  SOURCE_SHA: f98cd2576d7a9ad6db7ded76f0cdfc0e341b3271
+  RUNTIME_SHA: a5a2b7c9230026e5df6f9d6a77eafba306f99977
 jobs:
   trace-group-result:
     runs-on: ubuntu-24.04
@@ -17,15 +19,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 2
           path: source
       - uses: actions/checkout@v4
         with:
           path: diagnostics
-      - name: Verify source and trace the complete original suite
+      - name: Verify that only the fixture changed
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_SHA"
+          git -C source diff --exit-code "$RUNTIME_SHA" "$SOURCE_SHA" -- . ':!cloud-agent/test_phase1_support.py'
+          git -C source rev-parse HEAD > SOURCE_COMMIT.txt
+          echo "$RUNTIME_SHA" > RUNTIME_COMMIT.txt
+      - name: Reproduce the shutdown boundary with three real waiting tasks
+        env:
+          GROUP_REPRO_SOURCE: ${{ github.workspace }}/source/cloud-agent
+          EXPECT_GROUP_PASS: "1"
         run: |
           set -o pipefail
-          test "$(git -C source rev-parse HEAD)" = "$SOURCE_SHA"
-          git -C source rev-parse HEAD > SOURCE_COMMIT.txt
+          python3 diagnostics/scripts/diagnostics/reproduce_fixture_cleanup_race.py current 2>&1 | tee cleanup-race.log
+      - name: Trace the complete suite with corrected fixture cleanup
+        run: |
+          set -o pipefail
           python3 diagnostics/scripts/diagnostics/diagnose_group_timeout.py \
             "$PWD/source/cloud-agent" "$PWD/group-trace.jsonl" 2>&1 | tee group-diagnostic-suite.log
       - name: Preserve timing and thread evidence
@@ -35,6 +50,8 @@ jobs:
           name: group-result-diagnostic-a5a2b7c
           path: |
             SOURCE_COMMIT.txt
+            RUNTIME_COMMIT.txt
+            cleanup-race.log
             group-trace.jsonl
             group-diagnostic-suite.log
           retention-days: 7
