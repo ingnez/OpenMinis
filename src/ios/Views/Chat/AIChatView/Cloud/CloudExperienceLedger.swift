@@ -21,6 +21,7 @@ struct CloudExperienceLedgerView: View {
     let sessionID: String
     @State private var rows: [CloudExperienceRequest] = []
     @State private var tokens = 0
+    @State private var cost: Double?
     @State private var error: String?
     @Environment(\.dismiss) private var dismiss
 
@@ -29,6 +30,8 @@ struct CloudExperienceLedgerView: View {
             List {
                 Section {
                     Text("今天已用 \(tokens) tokens").accessibilityIdentifier("experienceTodayTokens")
+                    Text(cost.map { "后台金额约 \(String(format: "%.4f", $0))（设置的货币单位）" } ?? "后台金额未知")
+                        .font(.footnote).foregroundStyle(.secondary)
                     Text("服务商未设置单价时，金额显示为未知。这里只把已验证的后台结果记作已交付。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
@@ -64,6 +67,7 @@ struct CloudExperienceLedgerView: View {
             let data = try await CloudConnection.shared.request(method: "GET", path: "/v1/sessions/\(sessionID)/experience")
             rows = (data["requests"] as? [[String: Any]] ?? []).compactMap(CloudExperienceRequest.init)
             tokens = data["today_tokens"] as? Int ?? 0; error = nil
+            cost = (data["today_cost"] as? NSNumber)?.doubleValue
         } catch { self.error = error.localizedDescription }
     }
 }

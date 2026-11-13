@@ -79,8 +79,12 @@ class FakeModelHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
             self.close_connection = True
             return
-        body = json.dumps({"id": "fake", "object": "chat.completion",
-                           "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]}).encode("utf-8")
+        usage = message.pop("_usage", None) if isinstance(message, dict) else None
+        envelope = {"id": "fake", "object": "chat.completion",
+                    "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]}
+        if usage is not None:
+            envelope["usage"] = usage
+        body = json.dumps(envelope).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))

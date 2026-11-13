@@ -66,7 +66,7 @@ enum CloudCredentialSync {
 
     /// 开启加密保存时，每次提交前刷新服务端副本，使轮换后的 Key 同步到例行任务。失败不阻断对话。
     static func refreshIfEnabled(instanceId: String) async {
-        guard isEnabled else { return }
+        guard isEnabled, !CloudExperience.enabled else { return }
         _ = try? await upload(instanceId: instanceId)
     }
 }

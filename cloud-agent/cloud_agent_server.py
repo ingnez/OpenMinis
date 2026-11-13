@@ -3169,6 +3169,9 @@ def worker_view(w):
         contract = cloud_workorders.get(conn, w["worker_id"])
         if contract:
             w["workorder"] = contract
+            w["budget"] = cloud_experience.budget_state(conn, w)
+            checkpoint = cloud_workers.load_checkpoint(w) or {}
+            w["auto_resume_ready"] = w["status"] == "paused" and w.get("stop_reason") == "restart" and checkpoint.get("safe_resume") is True
     finally:
         conn.close()
     for k in ("context", "checkpoint", "runtime"):
@@ -3196,6 +3199,8 @@ def worker_status_extras(w):
             steps = [(t, a, i in done_ids) for t, a, i in steps]
         out = {"status_phrase": cloud_reply.status_phrase(w["status"], steps),
                "needs_decision": cloud_reply.decision_needed(conn, w.get("task_id")) if w["status"] == "running" else False}
+        if w["status"] == "paused" and w.get("stop_reason") == "budget":
+            out.update(needs_decision=True, status_phrase="达到预算，调整后可继续")
         if out["needs_decision"]:
             out["status_phrase"] = "等你决定"
         if w["status"] == "running":
@@ -3279,6 +3284,9 @@ def _worker_launch(wid):
             cfg = cloud_experience.settings(conn, w["front_session"]) if w else None
             cap = cloud_workorders.concurrency(cfg) if cfg else cloud_workers.SOFT_CAP
             if not w or w["status"] != "queued" or cloud_workers.running_count(conn, w["bot_id"]) >= cap:
+                return False
+            if cloud_workorders.get(conn, wid) and cloud_experience.budget_state(conn, w)["needs_approval"]:
+                cloud_workers.park(conn, wid, "budget")
                 return False
             runtime = WORKER_RUNTIME.get(wid)
             if not runtime:
@@ -3376,8 +3384,7 @@ def _worker_finish(wid, tid, started):
     finally:
         conn.close()
     for q in queued:
-        if not _worker_launch(q):
-            break
+        _worker_launch(q)
     if wid not in queued:
         WORKER_RUNTIME.pop(wid, None)
         EXPERIENCE_REVIEWERS.pop(wid, None)
@@ -3452,6 +3459,8 @@ def worker_resume(wid, model=None, provider=None, note=""):
         revised_completed = w["status"] == "completed" and revised_order and revised_order["verification"] == "pending"
         if w["status"] != "paused" and not cloud_workers.can_retry(w["status"]) and not revised_completed:
             return 409, {"error": "这个任务现在不能继续", "status": w["status"]}
+        if revised_order and cloud_experience.budget_state(conn, w)["needs_approval"]:
+            return 409, {"error": "已达到预算，请在体验升级设置中调整预算后再继续", "needs_decision": True}
         runtime = {}
         if w.get("runtime"):
             try:
@@ -5509,6 +5518,8 @@ def run_agent_task(task_id, session_id, initial_content, model, provider_config,
     finally:
         if timer:
             timer.cancel()
+        EXPERIENCE_TASKS.pop(task_id, None)
+        EXPERIENCE_REQUESTS.pop(task_id, None)
         ACTIVE_SLOTS.pop(session_id, None)
         if bot_id and slot:
             key = f"{bot_id}:{slot}"
@@ -6023,6 +6034,21 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 break
 
             note_usage(session_persona_id(session_id), model, resp, messages)
+            if is_worker:
+                ec = get_db_connection()
+                try:
+                    ew = cloud_workers.by_session(ec, session_id)
+                    if ew and cloud_workorders.get(ec, ew["worker_id"]):
+                        pt, ct = cloud_usage.usage_from_response(resp, send_msgs, json.dumps(resp.get("choices") or [], ensure_ascii=False))
+                        budget = cloud_experience.record_usage(ec, ew, task_id + ":" + str(turns), pt, ct, not bool(resp.get("usage")))
+                        if budget["needs_approval"]:
+                            cloud_experience.checkpoint(ec, ew["worker_id"], "budget")
+                            _park_running_task(task_id, session_id, "budget")
+                            log_event(task_id, "budget_required", budget)
+                            final_status = "paused"
+                            break
+                finally:
+                    ec.close()
             choices = resp.get("choices", [])
             if not choices:
                 if instant:
@@ -7431,6 +7457,8 @@ class Handler(BaseHTTPRequestHandler):
 
         m_experience = re.fullmatch(r"/v1/sessions/(sess_[a-f0-9]{12})/experience", path)
         if m_experience:
+            if not self._authorized():
+                return
             ec = get_db_connection()
             try:
                 sid = m_experience.group(1)
@@ -7439,7 +7467,8 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._send(200, {"settings": cloud_experience.settings(ec,sid),
                                  "requests": cloud_workorders.reconcile(ec,sid),
-                                 "today_tokens": cloud_usage.total_for_day(ec)})
+                                 "today_tokens": cloud_usage.total_for_day(ec),
+                                 "today_cost": cloud_experience.daily_cost(ec)})
             finally:
                 ec.close()
             return
@@ -8585,6 +8614,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if method == "POST" and len(parts) == 4 and parts[3] in ("resume", "retry"):
             body = body or {}
+            if body.get("experience") is not None:
+                ec = get_db_connection()
+                try:
+                    cloud_experience.configure(ec, w["front_session"], body["experience"])
+                except ValueError as exc:
+                    self._send(400, {"error": str(exc)})
+                    return
+                finally:
+                    ec.close()
             if body.get("execution_profiles") is not None:
                 try:
                     roles = cloud_experience.profiles(body["execution_profiles"], body.get("model") or "", body.get("provider") or {})

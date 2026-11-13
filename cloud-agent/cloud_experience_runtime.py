@@ -14,6 +14,8 @@ def dispatch(server, task_id, sid, contract, model, provider):
         if not experience.settings(conn, sid):
             return {"error": "请先在手机启用体验升级并配置前后台模型"}
         estimate = experience.estimate_budget(conn, sid, contract["goal"], contract["context"])
+        request_id = server.EXPERIENCE_REQUESTS.get(task_id)
+        orders.bind_workstream(conn, request_id, sid, contract["workstream"], "；".join(estimate["reasons"]) if estimate["needs_approval"] else None)
         if estimate["needs_approval"]:
             return {"error": "需要用户调整预算后再派发", "needs_decision": True, "budget": estimate}
         wid = orders.reusable_worker(conn, sid, contract["workstream"])
@@ -38,7 +40,7 @@ def dispatch(server, task_id, sid, contract, model, provider):
         # The latest request is assigned only after a successful create/steer.
         pending = [r for r in orders.list_requests(conn, sid) if r["id"] == server.EXPERIENCE_REQUESTS.get(task_id)]
         if pending:
-            orders.assign_request(conn, pending[0]["id"], sid, wid)
+            orders.assign_workstream(conn, pending[0]["id"], sid, wid, contract["workstream"])
         server.WORKER_RUNTIME.setdefault(wid, (model, provider, ""))
         if role:
             server.EXPERIENCE_REVIEWERS[wid] = role["reviewer"]

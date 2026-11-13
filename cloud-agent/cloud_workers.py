@@ -138,7 +138,7 @@ def set_status(conn, worker_id, status, **extra):
 
 def summary_note(workers, limit=6):
     """前台上下文里的任务摘要：每个任务一行，不带 worker 的完整过程。"""
-    rows = [w for w in workers if w["status"] in ACTIVE or (time.time() - (w["finished_at"] or 0)) < 6 * 3600][:limit]
+    rows = [w for w in workers if w["status"] in OPEN or (time.time() - (w["finished_at"] or 0)) < 6 * 3600][:limit]
     if not rows:
         return ""
     label = {"queued": "排队中", "running": "进行中", "paused": "已暂停", "completed": "已完成", "failed": "失败", "cancelled": "已停止",
@@ -146,7 +146,7 @@ def summary_note(workers, limit=6):
     lines = []
     for w in rows:
         line = f"- {w['worker_id']}「{w['title']}」{label.get(w['status'], w['status'])}"
-        if w["status"] in ACTIVE and w.get("last_step"):
+        if w["status"] in OPEN and w.get("last_step"):
             line += f"，最近一步：{w['last_step'][:80]}"
         if w["status"] not in ACTIVE and w.get("result"):
             line += "，结果摘要：" + " ".join(w["result"].split())[:160]
@@ -252,6 +252,18 @@ def recover(conn, post_prompt=None):
             )
         cp = load_checkpoint(w) or {}
         cp.update({"reason": "restart", "task_id": w.get("task_id"), "saved_at": time.time()})
+        if verified:
+            calls, results = set(), set()
+            for kind, payload in conn.execute("SELECT event_type,payload FROM task_events WHERE task_id=? "
+                                               "AND event_type IN ('tool_call','tool_result')", (w.get("task_id"),)):
+                try:
+                    event_id = json.loads(payload).get("id")
+                except (ValueError, AttributeError):
+                    event_id = None
+                if event_id:
+                    (calls if kind == "tool_call" else results).add(event_id)
+            cp["safe_resume"] = not bool(calls - results)
+            cp["uncertain_calls"] = sorted(calls - results)
         set_status(conn, w["worker_id"], "paused", stop_reason="restart", pause_requested=0,
                    checkpoint=json.dumps(cp, ensure_ascii=False), finished_at=None)
         w = get(conn, w["worker_id"])

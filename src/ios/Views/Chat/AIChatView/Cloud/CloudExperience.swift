@@ -7,16 +7,31 @@ import SwiftUI
 enum CloudExperience {
     static let prefix = "OpenMinis_experience_"
     static let defaults = UserDefaults.standard
+    private static var resumeAttempts: Set<String> = []
 
     static var enabled: Bool { defaults.bool(forKey: prefix + "enabled") }
     static func install() {
         CloudChatBridge.shared.preparePayload = { body in try prepare(&body) }
     }
+
+    static func restoreWorkers(_ workers: [CloudReplyWorker]) async {
+        guard enabled else { return }
+        for worker in workers where worker.autoResumeReady {
+            let key = CloudConnection.shared.host + ":" + worker.id
+            guard resumeAttempts.insert(key).inserted else { continue }
+            do { try await CloudReplyService.resume(worker.id, note: "手机已重新连接；从最后已确认的检查点继续，不重复已完成的外部操作。") }
+            catch { /* The paused task remains visible for explicit retry. */ }
+        }
+    }
     static func reference(_ role: String) -> String { defaults.string(forKey: prefix + role) ?? "" }
     static var policy: [String: Any] {
-        ["version": 1, "worker_concurrency": max(1, min(4, defaults.integer(forKey: prefix + "concurrency") == 0 ? 2 : defaults.integer(forKey: prefix + "concurrency"))),
+        var value: [String: Any] = ["version": 1, "worker_concurrency": max(1, min(4, defaults.integer(forKey: prefix + "concurrency") == 0 ? 2 : defaults.integer(forKey: prefix + "concurrency"))),
          "task_token_budget": max(0, defaults.integer(forKey: prefix + "taskTokens")),
          "daily_token_budget": max(0, defaults.integer(forKey: prefix + "dailyTokens"))]
+        for (key, setting) in [("input_price_per_million", "inputPrice"), ("output_price_per_million", "outputPrice"), ("task_cost_budget", "costBudget")] {
+            if let raw = defaults.string(forKey: prefix + setting), let number = Double(raw), number.isFinite, number >= 0 { value[key] = number }
+        }
+        return value
     }
 
     static var entries: [ModelEntry] {
@@ -77,6 +92,9 @@ struct CloudExperienceSection: View {
     @AppStorage(CloudExperience.prefix + "concurrency") private var concurrency = 2
     @AppStorage(CloudExperience.prefix + "taskTokens") private var taskTokens = 0
     @AppStorage(CloudExperience.prefix + "dailyTokens") private var dailyTokens = 0
+    @AppStorage(CloudExperience.prefix + "inputPrice") private var inputPrice = ""
+    @AppStorage(CloudExperience.prefix + "outputPrice") private var outputPrice = ""
+    @AppStorage(CloudExperience.prefix + "costBudget") private var costBudget = ""
     @ObservedObject private var providers = ProviderConfigStore.shared
 
     var body: some View {
@@ -95,6 +113,13 @@ struct CloudExperienceSection: View {
                 HStack {
                     Text("每日 token 预算")
                     TextField("0 为不限", value: $dailyTokens, format: .number).keyboardType(.numberPad).multilineTextAlignment(.trailing)
+                }
+                DisclosureGroup("费用估算（按后台服务商单价）") {
+                    TextField("每百万输入 tokens 的金额", text: $inputPrice).keyboardType(.decimalPad)
+                    TextField("每百万输出 tokens 的金额", text: $outputPrice).keyboardType(.decimalPad)
+                    TextField("单任务金额预算（空白为不限）", text: $costBudget).keyboardType(.decimalPad)
+                    Text("三项使用同一货币单位。单价未填写时金额保持未知；实际账单以服务商为准。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 NavigationLink("比较模型的首字速度和派工质量") { CloudExperienceBenchmarkView() }
             }

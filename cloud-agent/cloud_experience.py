@@ -40,6 +40,10 @@ def ensure_schema(conn):
         CREATE TABLE IF NOT EXISTS experience_lessons (
             session_id TEXT NOT NULL, layer TEXT NOT NULL, content TEXT NOT NULL,
             updated_at REAL NOT NULL, UNIQUE(session_id,layer,content));
+        CREATE TABLE IF NOT EXISTS experience_usage (
+            call_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, session_id TEXT NOT NULL,
+            day TEXT NOT NULL, prompt_tokens INTEGER NOT NULL, completion_tokens INTEGER NOT NULL,
+            cost REAL, estimated INTEGER NOT NULL DEFAULT 0);
     """)
 
 
@@ -173,3 +177,36 @@ def checkpoint(conn, worker_id, state):
                  "revision=excluded.revision,task_id=excluded.task_id,last_event=excluded.last_event,state=excluded.state,"
                  "updated_at=excluded.updated_at", (worker_id, order["revision"], task, last, state, time.time()))
     conn.commit()
+
+
+def record_usage(conn, worker, call_id, prompt, completion, estimated=False):
+    cfg = settings(conn, worker["front_session"]) or {}
+    p, c = cfg.get("input_price_per_million"), cfg.get("output_price_per_million")
+    cost = (prompt * p + completion * c) / 1000000 if p is not None and c is not None else None
+    conn.execute("INSERT OR IGNORE INTO experience_usage VALUES (?,?,?,?,?,?,?,?)",
+                 (call_id, worker["worker_id"], worker["front_session"], cloud_usage.today(), prompt, completion, cost, int(estimated)))
+    conn.commit()
+    return budget_state(conn, worker)
+
+
+def budget_state(conn, worker):
+    cfg = settings(conn, worker["front_session"]) or {}
+    row = conn.execute("SELECT COALESCE(SUM(prompt_tokens+completion_tokens),0),SUM(cost),"
+                       "COUNT(*)-COUNT(cost) FROM experience_usage WHERE worker_id=?", (worker["worker_id"],)).fetchone()
+    known_price = cfg.get("input_price_per_million") is not None and cfg.get("output_price_per_million") is not None
+    tokens = row[0]
+    cost = None if row[2] or not known_price else (row[1] or 0.0)
+    day = cloud_usage.total_for_day(conn)
+    reasons = []
+    if cfg.get("task_token_budget") and tokens >= cfg["task_token_budget"]:
+        reasons.append("本任务已达到 token 预算")
+    if cfg.get("daily_token_budget") and day >= cfg["daily_token_budget"]:
+        reasons.append("今天已达到 token 预算")
+    if cfg.get("task_cost_budget") and (cost is None or cost >= cfg["task_cost_budget"]):
+        reasons.append("费用未知，需要确认" if cost is None else "本任务已达到费用预算")
+    return {"tokens": tokens, "cost": cost, "needs_approval": bool(reasons), "reasons": reasons}
+
+
+def daily_cost(conn):
+    row = conn.execute("SELECT SUM(cost),COUNT(*)-COUNT(cost) FROM experience_usage WHERE day=?", (cloud_usage.today(),)).fetchone()
+    return None if row[1] else row[0]

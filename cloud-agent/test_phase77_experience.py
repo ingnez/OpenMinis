@@ -54,6 +54,19 @@ class ExperiencePolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             exp.remember(self.db, "a", "preference", "api_key=sk-synthetic")
 
+    def test_real_usage_is_idempotent_and_cost_budget_uses_configured_prices(self):
+        exp.configure(self.db, "chat", {"version": 1, "input_price_per_million": 1, "output_price_per_million": 2,
+                                       "task_token_budget": 2000, "task_cost_budget": 1})
+        worker = {"worker_id": "w", "front_session": "chat"}
+        first = exp.record_usage(self.db, worker, "call-one", 1000, 100)
+        self.assertEqual(first["tokens"], 1100)
+        self.assertAlmostEqual(first["cost"], .0012)
+        self.assertFalse(first["needs_approval"])
+        again = exp.record_usage(self.db, worker, "call-one", 9999, 9999)
+        self.assertEqual(again, first)
+        over = exp.record_usage(self.db, worker, "call-two", 1000, 100)
+        self.assertTrue(over["needs_approval"])
+
 
 class ExperienceHTTPTests(CloudServerTestCase):
     reply_default = None
@@ -142,6 +155,86 @@ class ExperienceHTTPTests(CloudServerTestCase):
         self.assertEqual(a["task_id"], b["task_id"])
         _, stopped = self.request("GET", "/v1/workers/" + worker["worker_id"])
         self.assertEqual(stopped["worker"]["status"], "cancelled")
+
+    def test_07_ledger_requires_authentication(self):
+        sid = self.new_session()
+        self.assertEqual(self.request("GET", f"/v1/sessions/{sid}/experience", token="")[0], 401)
+
+    def test_08_actual_budget_overrun_pauses_before_executing_the_next_tool(self):
+        sid = self.new_session()
+        contract = {"workstream": "budget-demo", "goal": "生成一个演示文件", "context": "假数据",
+                    "success_criteria": ["实际生成"], "report_back": "文件"}
+        FakeModelHandler.scripts["experience-front"] = lambda data: ({"role": "assistant", "content": "已派发"}
+            if tool_turns(data) else tool_call("dispatch", "dispatch_workorder", contract))
+        def worker(data):
+            reply = tool_call("write", "file_write", {"path": "must-not-be-written.txt", "content": "unsafe over budget"})
+            reply["_usage"] = {"prompt_tokens": 9000, "completion_tokens": 100}
+            return reply
+        FakeModelHandler.scripts["experience-back"] = worker
+        status, task = self.submit(sid, "生成演示文件", "base", client_nonce="budget", **self.body(experience={"version": 1, "task_token_budget": 7000}))
+        self.assertEqual(status, 202)
+        self.wait_status(task["task_id"], {"completed"})
+        def paused():
+            _, tray = self.request("GET", f"/v1/workers?session_id={sid}")
+            return tray["workers"][0] if tray.get("workers") and tray["workers"][0]["status"] == "paused" else None
+        worker = self.wait_until(paused)
+        self.assertEqual(worker["stop_reason"], "budget")
+        self.assertTrue(worker["budget"]["needs_approval"])
+        from pathlib import Path
+        self.assertFalse((Path(self.srv.get_session_workspace(worker["worker_session"])) / "must-not-be-written.txt").exists())
+        # An LLM cannot approve its own overrun. The phone must update policy.
+        self.assertEqual(self.request("POST", "/v1/workers/" + worker["worker_id"] + "/resume", {})[0], 409)
+        def within_budget(data):
+            msgs = data["messages"]
+            last_user = max(i for i, m in enumerate(msgs) if m["role"] == "user")
+            if any(m["role"] == "tool" for m in msgs[last_user:]):
+                return {"role": "assistant", "content": "文件已生成", "_usage": {"prompt_tokens": 5, "completion_tokens": 5}}
+            reply = tool_call("allowed-write", "file_write", {"path": "approved-budget.txt", "content": "synthetic verified"})
+            reply["_usage"] = {"prompt_tokens": 5, "completion_tokens": 5}
+            return reply
+        def reviewer(data):
+            bundle = json.loads(data["messages"][-1]["content"])
+            event = next(e for e in bundle["events"] if e["type"] == "tool_result")
+            return {"role": "assistant", "content": json.dumps({"pass": True, "unmet": [], "evidence": [
+                {"criterion": 0, "event_id": event["event_id"], "kind": "artifact"}]})}
+        FakeModelHandler.scripts["experience-back"] = within_budget
+        FakeModelHandler.scripts["experience-reviewer"] = reviewer
+        body = self.body(experience={"version": 1, "task_token_budget": 20000})
+        status, _ = self.request("POST", "/v1/workers/" + worker["worker_id"] + "/resume", body)
+        self.assertEqual(status, 200)
+        self.wait_until(lambda: self.request("GET", "/v1/workers/" + worker["worker_id"])[1]["worker"]["status"] == "completed")
+        self.assertTrue((Path(self.srv.get_session_workspace(worker["worker_session"])) / "approved-budget.txt").exists())
+
+    def test_09_restart_never_marks_unverified_execution_complete_or_replays_uncertain_calls(self):
+        import cloud_workers
+        sid = self.new_session()
+        conn = self.srv.get_db_connection()
+        try:
+            exp.configure(conn, sid, {"version": 1})
+            contract = {"workstream": "recover", "goal": "验证重启", "context": "编造数据",
+                        "success_criteria": ["实际核验"], "report_back": "依据"}
+            workers = []
+            for n, finished in enumerate((True, False)):
+                w = cloud_workers.create(conn, None, sid, "recover-" + str(n))
+                orders.attach(conn, w["worker_id"], sid, dict(contract, workstream="recover-" + str(n)))
+                tid = "task_recover_" + str(n)
+                conn.execute("INSERT INTO tasks(task_id,session_id,status,model,created_at) VALUES (?,?,?,?,?)",
+                             (tid, w["worker_session"], "completed" if finished else "running", "fake", time.time()))
+                conn.execute("INSERT INTO task_events(task_id,event_type,payload,timestamp) VALUES (?,?,?,?)",
+                             (tid,"tool_call",json.dumps({"id":"call","tool":"file_write"}),time.time()))
+                if finished:
+                    conn.execute("INSERT INTO task_events(task_id,event_type,payload,timestamp) VALUES (?,?,?,?)",
+                                 (tid,"tool_result",json.dumps({"id":"call","result":{"status":"success"}}),time.time()))
+                cloud_workers.set_status(conn,w["worker_id"],"running",task_id=tid)
+                workers.append(w)
+            cloud_workers.recover(conn)
+            for index, w in enumerate(workers):
+                recovered = cloud_workers.get(conn,w["worker_id"])
+                self.assertEqual(recovered["status"],"paused")
+                self.assertEqual(cloud_workers.load_checkpoint(recovered)["safe_resume"], index == 0)
+                self.assertEqual(self.srv.worker_view(recovered)["auto_resume_ready"], index == 0)
+        finally:
+            conn.close()
 
     def test_05_verified_worker_uses_background_credentials_and_delivers_evidence(self):
         sid = self.new_session()

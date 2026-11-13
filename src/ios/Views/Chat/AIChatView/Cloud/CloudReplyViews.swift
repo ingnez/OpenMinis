@@ -143,6 +143,7 @@ final class CloudReplyStatusModel: ObservableObject {
             return
         }
         let cues = tracker.update(list)
+        if workerSource == nil { await CloudExperience.restoreWorkers(list) }
         let now = Date()
         for w in list where !w.active && finishedAt[w.id] == nil && cues.contains(where: { $0.workerId == w.id }) {
             finishedAt[w.id] = now

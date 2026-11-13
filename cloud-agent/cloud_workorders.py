@@ -79,6 +79,9 @@ def ensure_schema(conn):
             PRIMARY KEY(worker_id, kind, fingerprint)
         );
     """)
+    if "workstream" not in {row[1] for row in conn.execute("PRAGMA table_info(request_ledger)")}:
+        conn.execute("ALTER TABLE request_ledger ADD COLUMN workstream TEXT")
+        conn.commit()
 
 
 def get(conn, worker_id):
@@ -135,11 +138,26 @@ def assign_request(conn, request_id, front_session, worker_id):
     conn.commit()
 
 
+def bind_workstream(conn, request_id, front_session, workstream, blocked=None):
+    conn.execute("UPDATE request_ledger SET workstream=?,status=CASE WHEN ? IS NULL THEN status ELSE 'blocked' END,"
+                 "reply=COALESCE(?,reply),updated_at=? WHERE request_id=? AND front_session=?",
+                 (workstream, blocked, blocked, time.time(), request_id, front_session))
+    conn.commit()
+
+
+def assign_workstream(conn, request_id, front_session, worker_id, workstream):
+    assign_request(conn, request_id, front_session, worker_id)
+    conn.execute("UPDATE request_ledger SET worker_id=?,status='in_progress',updated_at=? "
+                 "WHERE front_session=? AND workstream=? AND status IN ('queued','blocked')",
+                 (worker_id, time.time(), front_session, workstream))
+    conn.commit()
+
+
 def answer_request(conn, request_id, front_session, reply):
     if not isinstance(reply, str) or not reply.strip():
         raise WorkOrderError("不能把空回复标为已交付")
     conn.execute("UPDATE request_ledger SET status='delivered',reply=?,updated_at=? "
-                 "WHERE request_id=? AND front_session=? AND worker_id IS NULL",
+                 "WHERE request_id=? AND front_session=? AND worker_id IS NULL AND status='queued'",
                  (reply, time.time(), request_id, front_session))
     conn.commit()
 
@@ -147,7 +165,8 @@ def answer_request(conn, request_id, front_session, reply):
 def reconcile(conn, front_session):
     rows = conn.execute("SELECT r.request_id,w.status,o.verification FROM request_ledger r "
                         "JOIN bot_workers w ON w.worker_id=r.worker_id "
-                        "LEFT JOIN worker_workorders o ON o.worker_id=w.worker_id WHERE r.front_session=?",
+                        "LEFT JOIN worker_workorders o ON o.worker_id=w.worker_id WHERE r.front_session=? "
+                        "AND r.status NOT IN ('delivered','stopped')",
                         (front_session,)).fetchall()
     for request_id, worker_status, verification in rows:
         if worker_status == "completed":
