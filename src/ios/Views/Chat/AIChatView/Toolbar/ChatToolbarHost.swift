@@ -489,6 +489,7 @@ private struct ChatTrailingMenu: View, Equatable {
         // [T-ios-voiceover-labels] Matches the label the UIKit ellipsis button
         // elsewhere in this file already sets, so both read the same.
         .accessibilityLabel(Text("More options", comment: "VoiceOver label for the overflow menu button"))
+        .accessibilityIdentifier("chatOverflow")
     }
 }
 
@@ -869,6 +870,7 @@ struct ChatNavMenuBarItemInstaller: UIViewRepresentable {
             // the app tint; iOS 26's glass hides that, iOS 16-18 would show it.
             item.tintColor = UIColor(ChatColors.primaryText)
             item.accessibilityLabel = AppLocalized("More options")
+            item.accessibilityIdentifier = "chatOverflow"
             item.menu = ChatTrailingMenuButton.buildMenu(key: menu.key, coordinator: inner)
             inner.lastKey = menu.key
         }

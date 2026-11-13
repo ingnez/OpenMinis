@@ -90,9 +90,15 @@ final class DeliverablesUITests: XCTestCase {
         XCTAssertTrue(saveFile.isHittable, "系统文件保存按钮不可点击")
         saveFile.tap()
         let saved = card.descendants(matching: .any).matching(identifier: "deliverableSavedLocation").firstMatch
+        let system = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let replacePredicate = NSPredicate(format: "label IN %@", ["Replace", "替换"])
         XCTAssertTrue(poll(25) {
-            let replace = app.alerts.buttons.matching(NSPredicate(format: "label IN %@", ["Replace", "替换"])).firstMatch
-            if replace.exists, replace.isHittable { replace.tap() }
+            // Files presents the overwrite confirmation through a remote
+            // service; it is not always an app.alerts descendant on iOS 27.
+            for root in [app, system] {
+                let replace = root.buttons.matching(replacePredicate).firstMatch
+                if replace.exists, replace.isHittable { replace.tap(); break }
+            }
             return saved.exists
         }, "文件保存未收到成功回调")
         XCTAssertTrue(saved.label.contains(filename), "保存结果缺少文件名")
@@ -107,17 +113,21 @@ final class DeliverablesUITests: XCTestCase {
                 || app.buttons["Close"].exists || app.buttons["关闭"].exists
         }, "系统分享界面没有打开")
         shot(app, "d1-share")
-        for label in ["Close", "关闭"] {
-            let closeShare = app.buttons[label]
-            if closeShare.exists, closeShare.isHittable { closeShare.tap(); return }
-        }
-        app.swipeDown()
+        let closeShare = app.buttons.matching(NSPredicate(
+            format: "identifier == %@ OR label IN %@", "header.closeButton", ["Close", "关闭", "Cancel", "取消"]
+        )).firstMatch
+        XCTAssertTrue(poll(10) { closeShare.exists && closeShare.isHittable }, "系统分享关闭按钮不可点击")
+        closeShare.tap()
+        XCTAssertTrue(poll(15) {
+            !app.otherElements["ShareSheet.RemoteContainerView"].exists && !app.buttons["header.closeButton"].exists
+        }, "系统分享界面没有退出")
     }
 
     @MainActor
     private func openFilesPage(_ app: XCUIApplication) {
-        let menus = app.buttons.matching(NSPredicate(format: "identifier IN %@", ["botConversationMenu", "chatOverflow"]))
-        if menus.firstMatch.waitForExistence(timeout: 8) { menus.firstMatch.tap() }
+        let menus = app.descendants(matching: .any).matching(NSPredicate(format: "identifier IN %@", ["botConversationMenu", "chatOverflow"]))
+        XCTAssertTrue(poll(10) { menus.firstMatch.exists && menus.firstMatch.isHittable }, "对话菜单不可点击")
+        menus.firstMatch.tap()
         let files = app.buttons.matching(NSPredicate(format: "label == %@ OR identifier == %@", "文件", "chatFilesButton")).firstMatch
         XCTAssertTrue(files.waitForExistence(timeout: 8), "缺少对话文件入口")
         files.tap()
