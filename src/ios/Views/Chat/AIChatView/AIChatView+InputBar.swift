@@ -175,6 +175,7 @@ extension AIChatView {
                 }
             }
             .modifier(ComposerSurface())
+            .accessibilityIdentifier(vm.attachments.contains(where: { $0.kind == .image }) ? "composerAttachCard" : "localComposer")
             // [T-ios-context-usage-hint] Inner glow along the glass wall.
             // An overlay ABOVE the material (so the Liquid Glass backdrop
             // sampler never sees it) that clips itself to the same shape, so

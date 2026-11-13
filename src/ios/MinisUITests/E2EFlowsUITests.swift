@@ -168,6 +168,10 @@ final class E2EFlowsUITests: XCTestCase {
         let cards = app.descendants(matching: .any).matching(identifier: "trayCard")
         XCTAssertTrue(cards.firstMatch.waitForExistence(timeout: 20), "托盘里没有图片卡")
         XCTAssertEqual(cards.count, 3, "托盘里不是 3 张")
+        XCTAssertGreaterThanOrEqual(cards.firstMatch.frame.height, 100, "Bot 图片缩略图过小")
+        let composer = app.descendants(matching: .any)["botComposerField"]
+        XCTAssertGreaterThanOrEqual(composer.frame.height, 36, "附图时 Bot 输入框被挤压")
+        XCTAssertTrue(composer.isHittable)
         let toggle = app.descendants(matching: .any)["keepOriginalToggle"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5), "托盘下面没有「保留原图 / 自动压缩」开关")
         let before = toggle.label
@@ -1695,6 +1699,10 @@ extension E2EFlowsUITests {
         XCTAssertTrue(cards.firstMatch.waitForExistence(timeout: 15), "本地横滑托盘没有图片")
         XCTAssertTrue(app.descendants(matching: .any)["keepOriginalToggle"].exists)
         XCTAssertTrue(waitCount(cards, 7, timeout: 10), "发送前托盘不是 7 张图片")
+        XCTAssertGreaterThanOrEqual(cards.firstMatch.frame.height, 100, "本地图片缩略图过小")
+        let field = app.textViews.firstMatch
+        XCTAssertGreaterThanOrEqual(field.frame.height, 36, "附图时本地输入框被挤压")
+        XCTAssertTrue(field.isHittable)
 
         let send = localSendButton(app)
         XCTAssertTrue(send.waitForExistence(timeout: 10))

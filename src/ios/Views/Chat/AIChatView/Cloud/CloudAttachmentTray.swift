@@ -64,7 +64,7 @@ private struct CloudAttachmentTrayCard: View, Equatable {
     }
 
     var body: some View {
-        AttachmentTrayTile(name: attachment.filename, onRemove: remove) {
+        AttachmentTrayTile(name: attachment.filename, isPhoto: attachment.isImage, onRemove: remove) {
             ZStack {
                 if let thumb = attachment.thumbnail {
                     Image(uiImage: thumb).resizable().scaledToFill()
@@ -110,6 +110,7 @@ private struct CloudAttachmentTrayCard: View, Equatable {
 /// Shared photo tray surface for cloud and local composers.
 struct AttachmentTrayTile<Content: View>: View {
     let name: String
+    var isPhoto = true
     let onRemove: () -> Void
     @ViewBuilder var content: Content
 
@@ -119,13 +120,13 @@ struct AttachmentTrayTile<Content: View>: View {
                 Color(.systemGray6)
                 content
             }
-            .frame(width: 64, height: 64)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .frame(width: isPhoto ? 140 : 64, height: isPhoto ? 140 : 64)
+            .clipShape(RoundedRectangle(cornerRadius: isPhoto ? 18 : 12, style: .continuous))
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette)
                     .foregroundStyle(.white, Color.black.opacity(0.6)).font(.system(size: 18))
             }
-            .offset(x: 5, y: -5)
+            .padding(4)
             .accessibilityLabel("移除 \(name)")
         }
     }
