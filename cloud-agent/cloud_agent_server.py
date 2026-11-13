@@ -46,6 +46,7 @@ import binascii
 import shutil
 from urllib.parse import urlparse, parse_qs, unquote
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from socketserver import TCPServer
 
 # Import sub-modules
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -10339,13 +10340,22 @@ def warm_browser():
     res = cloud_browser.execute_browser_action("shared", SHARED_WORKSPACE, {"action": "__warm__"})
     print(f"[startup] browser warm: {res}", flush=True)
 
+class AgentHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind performs a synchronous reverse DNS lookup.
+        # The API needs only the bound address, and must start even when the
+        # host's DNS/mDNS resolver is slow or unavailable.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def run_server():
     global SERVER_TOKEN
     if not SERVER_TOKEN:
         SERVER_TOKEN = validate_and_load_token()
     global ADMIN_BASE
     ADMIN_BASE = f"http://127.0.0.1:{PORT}"
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    server = AgentHTTPServer((HOST, PORT), Handler)
 
     def start_background():
         # 后台服务（定时任务、Telegram 长轮询）放在独立线程启动：任何一项出错或网络不通都不影响 /health 与 API 立即可用

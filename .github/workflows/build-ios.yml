@@ -1228,6 +1228,7 @@ jobs:
           cd cloud-agent
           python3 -m unittest -v \
             test_phase9_speed.LLMClientTests.test_stream_parse_and_keepalive \
+            test_phase63_deliver.DeliverUnitTests.test_http_listener_serves_health_without_reverse_dns \
             test_phase63_deliver.DeliverExecutableTests 2>&1 | tee ../agent-entry.log
 
       - name: 云端 Agent 服务集成验证与资源打包

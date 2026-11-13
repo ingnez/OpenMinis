@@ -8,8 +8,10 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, ProxyHandler, build_opener
@@ -160,6 +162,21 @@ class DeliverExecutableTests(unittest.TestCase):
 
 
 class DeliverUnitTests(CloudServerTestCase):
+    def test_http_listener_serves_health_without_reverse_dns(self):
+        with patch("socket.getfqdn", side_effect=AssertionError("Reverse DNS must not block startup")):
+            with self.srv.AgentHTTPServer(("127.0.0.1", 0), self.srv.Handler) as server:
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    opener = build_opener(ProxyHandler({}))
+                    with opener.open(f"http://127.0.0.1:{server.server_port}/health", timeout=2) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(json.load(response)["status"], "ok")
+                    self.assertEqual(server.server_name, "127.0.0.1")
+                finally:
+                    server.shutdown()
+                    thread.join(timeout=2)
+
     def test_01_tool_listed_and_system_prompt_forbids_path_only(self):
         names = [t["function"]["name"] for t in self.srv.TOOL_DEFINITIONS]
         self.assertIn("deliver_file", names)
