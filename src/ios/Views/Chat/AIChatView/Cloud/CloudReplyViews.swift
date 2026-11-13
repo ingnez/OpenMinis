@@ -49,6 +49,7 @@ enum CloudReplyService {
     }
 
     static func resume(_ wid: String, note: String = "") async throws {
+        try await CloudConnection.shared.ensureConnected()
         var body: [String: Any] = [:]
         try CloudExperience.prepare(&body)
         if !note.isEmpty { body["note"] = note }
@@ -56,6 +57,7 @@ enum CloudReplyService {
     }
 
     static func retry(_ wid: String) async throws {
+        try await CloudConnection.shared.ensureConnected()
         var body: [String: Any] = [:]
         try CloudExperience.prepare(&body)
         _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/workers/\(wid)/retry", body: body)
@@ -143,7 +145,10 @@ final class CloudReplyStatusModel: ObservableObject {
             return
         }
         let cues = tracker.update(list)
-        if workerSource == nil { await CloudExperience.restoreWorkers(list) }
+        if workerSource == nil {
+            await CloudExperience.restoreWorkers(list)
+            await CloudApprovalCenter.shared.sync(workers: list, botName: botName)
+        }
         let now = Date()
         for w in list where !w.active && finishedAt[w.id] == nil && cues.contains(where: { $0.workerId == w.id }) {
             finishedAt[w.id] = now

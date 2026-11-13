@@ -61,6 +61,9 @@ struct CloudBot: Identifiable, Hashable {
     var soul: [String: String] = [:]
     /// 此刻在干什么（服务器 2.33.0+ 的 activity：正在思考 / 用工具 / 回复 / 委派）；没在跑为 nil
     var activity: CloudTypingPhase?
+    var pendingApprovalId: String? = nil
+    var pendingApprovalTaskId: String? = nil
+    var pendingApprovalTool: String? = nil
 
     init(id: String, name: String, emoji: String, summary: String, instructions: String, isPrimary: Bool = false) {
         self.id = id
@@ -116,6 +119,11 @@ struct CloudBot: Identifiable, Hashable {
         runningWorkers = d["running_workers"] as? Int ?? 0
         waitingApprovals = d["waiting_approvals"] as? Int ?? 0
         activity = CloudTypingPhase(json: d["activity"])
+        if let approval = d["pending_approval"] as? [String: Any] {
+            pendingApprovalId = approval["id"] as? String
+            pendingApprovalTaskId = approval["task_id"] as? String
+            pendingApprovalTool = approval["tool"] as? String
+        }
         unreadCount = d["unread_count"] as? Int ?? 0
         if let tp = d["thread_preview"] as? [String: Any] {
             threadPreview = (tp["text"] as? String).map(CloudPreviewText.plain)

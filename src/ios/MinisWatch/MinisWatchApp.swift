@@ -1,12 +1,20 @@
 import SwiftUI
 import WatchConnectivity
 import WatchKit
+import WidgetKit
 
 @main
 struct MinisWatchApp: App {
     @StateObject private var model = WatchModel()
+    @State private var showStatus = false
     var body: some Scene {
-        WindowGroup { WatchHomeView(model: model) }
+        WindowGroup {
+            WatchHomeView(model: model)
+                .onOpenURL { url in
+                    if url.scheme == "miniswatch", url.host == "status" { showStatus = true }
+                }
+                .sheet(isPresented: $showStatus) { WatchTaskStatusView(model: model) }
+        }
     }
 }
 
@@ -53,6 +61,10 @@ final class WatchModel: NSObject, ObservableObject, WCSessionDelegate {
             self.rows = rows
             self.sentAt = sent
             self.currentId = current
+            if let defaults = UserDefaults(suiteName: WatchWidgetStore.suite) {
+                WatchWidgetStore.save(WatchWidgetStore.snapshot(rows: rows, currentId: current), defaults: defaults)
+                WidgetCenter.shared.reloadAllTimelines()
+            }
         }
     }
 
@@ -88,6 +100,21 @@ final class WatchModel: NSObject, ObservableObject, WCSessionDelegate {
 
     func startPhoneVoice() {
         send(WatchVoiceRequest(botId: currentId).dict, ok: "正在手机上打开通话")
+    }
+
+    func control(_ action: WatchControlRequest.Action, row: WatchBotRow) {
+        let session = WCSession.default
+        guard session.activationState == .activated, session.isReachable else {
+            flash("请先连接 iPhone，再提交任务操作")
+            return
+        }
+        let request = WatchControlRequest(action: action, botId: row.id, taskId: row.taskId, approvalId: row.approvalId)
+        session.sendMessage(request.dict, replyHandler: { [weak self] response in
+            DispatchQueue.main.async {
+                let text = response["ok"] as? Bool == true ? (response["message"] as? String ?? "操作已确认") : (response["error"] as? String ?? "操作没有成功")
+                self?.flash(text)
+            }
+        }, errorHandler: { [weak self] _ in DispatchQueue.main.async { self?.flash("iPhone 没有确认，请重试") } })
     }
 
     private func send(_ message: [String: Any], ok: String) {
@@ -143,6 +170,47 @@ final class WatchModel: NSObject, ObservableObject, WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         apply(applicationContext)
+    }
+}
+
+struct WatchTaskStatusView: View {
+    @ObservedObject var model: WatchModel
+    @State private var selected: WatchBotRow?
+    @State private var action: WatchControlRequest.Action = .pause
+    @State private var confirming = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let status = model.status { Text(status).font(.footnote) }
+                if model.rows.isEmpty { Text("等待 iPhone 同步任务") }
+                ForEach(model.rows) { row in
+                    Section(row.name) {
+                        Text(row.working ?? "空闲").font(.footnote)
+                        Text(WatchComplicationText.stepsLine(stepsLeft: row.stepsLeft, working: row.working != nil))
+                            .font(.caption2).foregroundStyle(.secondary)
+                        if row.taskId != nil, row.working != nil {
+                            Button("暂停") { select(.pause, row) }
+                        }
+                        if row.approvalId != nil {
+                            Button("批准一次") { select(.approve, row) }
+                            Button("拒绝", role: .destructive) { select(.deny, row) }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("任务状态")
+            .confirmationDialog("确认对 \(selected?.name ?? "Bot") 提交这项操作？", isPresented: $confirming, titleVisibility: .visible) {
+                Button(action == .approve ? "确认批准一次" : (action == .pause ? "确认暂停" : "确认拒绝")) {
+                    if let selected { model.control(action, row: selected) }
+                }
+                Button("取消", role: .cancel) {}
+            }
+        }
+    }
+
+    private func select(_ value: WatchControlRequest.Action, _ row: WatchBotRow) {
+        selected = row; action = value; confirming = true
     }
 }
 

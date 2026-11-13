@@ -45,7 +45,7 @@ struct WatchStatusWidgetView: View {
             if family == .accessoryCircular {
                 ZStack {
                     AccessoryWidgetBackground()
-                    Text(working ? "\(max(snap.stepsLeft, 1))" : "·")
+                    Text(working ? (snap.stepsLeft > 0 ? "\(snap.stepsLeft)" : "…") : "·")
                         .font(.headline.monospacedDigit())
                 }
             } else if family == .accessoryInline {

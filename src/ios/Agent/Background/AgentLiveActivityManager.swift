@@ -37,6 +37,17 @@ final class AgentLiveActivityManager {
     /// minimal icon between the latest-tool icon and the session-count badge.
     private var minimalShowsTool: Bool = false
     private var lastPushedState: Any?
+    private var pendingCloudApproval: CloudLiveApproval?
+
+    func setCloudApproval(_ item: CloudLiveApproval?) {
+        guard pendingCloudApproval != item else { return }
+        pendingCloudApproval = item
+        guard Self.isActivityKitAvailable else { return }
+        if #available(iOS 16.2, *), let activity = currentActivity as? Activity<AgentActivityAttributes>,
+           let state = lastPushedState as? AgentActivityAttributes.ContentState {
+            pushState(state, activity: activity)
+        }
+    }
     private var lastPushDate: Date = .distantPast
     private var pendingState: Any?
     private var pendingPushWorkItem: DispatchWorkItem?
@@ -782,6 +793,7 @@ final class AgentLiveActivityManager {
     private func withAudioState(_ state: AgentActivityAttributes.ContentState) -> AgentActivityAttributes.ContentState {
         let audio = Self.currentAudioState()
         var s = state
+        s.pendingCloudApproval = pendingCloudApproval
         s.isAudioPlaying = audio.isPlaying
         s.isAudioLoaded = audio.isLoaded
         s.audioTitle = audio.title
@@ -806,6 +818,10 @@ final class AgentLiveActivityManager {
         guard BackgroundKeepAliveManager.shared.liveActivityPrivacyMode else { return state }
         var s = state
         s.privacyMode = true
+        if s.pendingCloudApproval != nil {
+            s.pendingCloudApproval?.botName = "Minis"
+            s.pendingCloudApproval?.summary = "有一项操作需要你确认"
+        }
         // [T-ios-live-activity-privacy-duration] soulName deliberately survives
         // redaction now: it is the user's chosen Soul persona (an identity
         // label), not conversation content — forcing "Minis" made Privacy Mode

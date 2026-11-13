@@ -43,13 +43,13 @@ enum CloudApprovalBridge {
         let args = ["questions": [question(for: payload)]]
         guard case .success(let request) = UserAskParser.parse(args) else { return }
         inFlight.insert(approvalId)
-        CloudLockApprovalSnapshot.save(CloudLockApprovalSnapshot(
+        CloudApprovalCenter.shared.capture(CloudLockApprovalSnapshot(
             approvalId: approvalId, taskId: taskId, botId: payload["bot_id"] as? String ?? "",
             botName: payload["bot_name"] as? String ?? "", tool: payload["tool"] as? String ?? "",
             summary: CloudLockApprovalSnapshot.summary(tool: payload["tool"] as? String ?? "",
                                                        reason: payload["reason"] as? String ?? ""),
             createdAt: Date().timeIntervalSince1970
-        ), defaults: .standard)
+        ))
 
         let block: AssistantBlock
         if let existing = message.blocks.first(where: { $0.toolUseId == toolUseId }) {
@@ -108,7 +108,7 @@ enum CloudApprovalBridge {
     /// 服务端已有结论（批准、拒绝、超时或取消）：关闭仍在等待的卡片。
     private static func settle(approvalId: String, decision: String, message: ChatMessage,
                                onUpdate: @escaping @MainActor () -> Void) {
-        CloudLockApprovalSnapshot.save(nil, defaults: .standard)
+        CloudApprovalCenter.shared.clear(approvalId)
         let toolUseId = toolUseIdPrefix + approvalId
         let wasPending: Bool
         if let requestId = requestIdByApproval[approvalId] ?? UserAskCenter.shared.ask(forToolUseId: toolUseId)?.requestId,

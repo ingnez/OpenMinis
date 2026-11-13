@@ -8,6 +8,7 @@ struct CloudTypingPhase: Hashable {
     var tool: String?
     var peer: String?
     var preview: String?
+    var taskId: String? = nil
 
     init(kind: Kind, tool: String? = nil, peer: String? = nil, preview: String? = nil) {
         self.kind = kind; self.tool = tool; self.peer = peer; self.preview = preview
@@ -17,6 +18,7 @@ struct CloudTypingPhase: Hashable {
     init?(json: Any?) {
         guard let d = json as? [String: Any], let k = Kind(rawValue: d["phase"] as? String ?? "") else { return nil }
         self.init(kind: k, tool: Self.clean(d["tool"]), peer: Self.clean(d["peer"]), preview: Self.clean(d["preview"]))
+        taskId = Self.clean(d["task_id"])
     }
 
     /// 本地对话：SSE 流里 toolName 为 "text" = 正在出字，"thinking" / 空 = 思考，其余是工具名；有子代理在跑 = 委派

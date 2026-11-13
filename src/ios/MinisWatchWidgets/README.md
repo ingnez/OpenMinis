@@ -1,13 +1,7 @@
-# MinisWatchWidgets（单独 scheme，不进主 IPA）
+# MinisWatchWidgets
 
-表盘小组件源码在这里：当前 Bot 步骤、剩余步数，点按打开状态页可暂停/批准。
+Watch App 通过目标依赖构建并嵌入这个 WidgetKit 扩展；iOS 出包流程再嵌入完整 Watch App。两个 @main 分别属于独立目标。
 
-**没有把这个扩展挂进 Minis 或 MinisWatch 目标**，也还没有写入 `project.pbxproj` 的依赖，以免主工程 `xcodebuild -scheme Minis` 和 `-target MinisWatch` 的出包任务因第二个 `@main` / 手表扩展签名失败。
+Watch App 收到配对手机的状态后，写入手表自己的 App Group 并刷新时间线。小组件点按打开实际任务状态页，暂停与审批经 WatchConnectivity 发给手机，手机核验当前任务标识及锁定状态后调用 Agent；只有手机确认成功才显示成功。
 
-要在 Mac 上真正装到表盘：
-
-1. 用 Xcode 增加 watchOS Widget Extension 目标，名字 `MinisWatchWidgets`，指向本目录。
-2. 不要把它设成 Minis 的依赖；只作为 MinisWatch 的可选嵌入，或只用 `MinisWatchWidgets` scheme 单独编。
-3. 主 IPA 流水线保持只编 `Minis` / 单独编 `MinisWatch`。
-
-文案和按钮的验收走 App 里「手表表盘小组件」预览页和 Linux 上的 `WatchComplicationTests`。
+构建检查包含 Watch App 和小组件；配对、表盘刷新与签名安装仍需真机验收。App 与扩展都需要 group.com.openminis.app 权限。

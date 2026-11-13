@@ -116,6 +116,8 @@ struct CloudReplyWorker: Equatable, Identifiable {
     var canResume: Bool
     var canRetry: Bool
     var autoResumeReady: Bool = false
+    var taskId: String? = nil
+    var botId: String? = nil
 
     init(id: String, title: String = "后台任务", status: String = "running", phrase: String = "", elapsed: Double = 0,
          eta: Int? = nil, steps: Int = 0, needsDecision: Bool = false, result: String = "", createdAt: Double = 0,
@@ -153,6 +155,8 @@ struct CloudReplyWorker: Equatable, Identifiable {
         canResume = d["can_resume"] as? Bool ?? (status == "paused")
         canRetry = d["can_retry"] as? Bool ?? ["failed", "cancelled", "interrupted", "limit_reached"].contains(status)
         autoResumeReady = d["auto_resume_ready"] as? Bool ?? false
+        taskId = d["task_id"] as? String
+        botId = d["bot_id"] as? String
     }
 
     var active: Bool { status == "queued" || status == "running" }

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 锁屏卡片和灵动岛审批的手机预览：真机才会出现在锁屏 / 灵动岛上。模拟器测文案、按钮和口令。
+/// 当前审批与口令设置。实际操作绑定到服务器仍待处理的审批记录。
 struct CloudLockApprovalPage: View {
     @AppStorage(CloudLockPassphrase.enabledKey) private var enabled = false
     @State private var phrase = ""
@@ -25,14 +25,16 @@ struct CloudLockApprovalPage: View {
                         .accessibilityIdentifier("lockApprovalNotice")
                 }
             } header: { Text("语音口令") } footer: {
-                Text("口令只在本机保存摘要，不会上传、不会写入日志。说对口令视为「批准一次」。真机锁屏和灵动岛上的审批按钮需要系统允许实时活动；模拟器里用下面的预览验收。")
+                Text("口令只在本机保存摘要。口令匹配后，仅批准当前仍有效的这一次调用。锁屏与灵动岛入口会打开实际操作的确认页；显示需要系统允许实时活动。")
             }
             Section {
-                CloudLockApprovalPreviewCard(item: displayItem)
+                if let snap {
+                CloudLockApprovalPreviewCard(item: snap)
                     .accessibilityIdentifier("lockApprovalCard")
-                CloudDynamicIslandApprovalPreview(item: displayItem)
+                CloudDynamicIslandApprovalPreview(item: snap)
                     .accessibilityIdentifier("dynamicIslandApproval")
-            } header: { Text("锁屏 / 灵动岛预览") }
+                } else { Text("当前没有待审批操作") }
+            } header: { Text("锁屏 / 灵动岛") }
             Section {
                 TextField("试说或输入口令（测试用）", text: $spoken)
                     .accessibilityIdentifier("lockApprovalSpokenField")
@@ -40,15 +42,16 @@ struct CloudLockApprovalPage: View {
                     .accessibilityIdentifier("lockApprovalSpeakApprove")
                     .disabled(!enabled)
                 HStack {
-                    Button("批准一次") { notice = "预览：批准一次（真机才会发给云端）" }
+                    Button("批准一次") { submit("approve_once") }
                         .accessibilityIdentifier("lockApprovalOnce")
-                    Button("本班次都批准") { notice = "预览：本班次都批准（真机才会发给云端）" }
+                    Button("本班次都批准") { submit("approve_shift") }
                         .accessibilityIdentifier("lockApprovalShift")
-                    Button("拒绝", role: .destructive) { notice = "预览：拒绝（真机才会发给云端）" }
+                    Button("拒绝", role: .destructive) { submit("deny") }
                         .accessibilityIdentifier("lockApprovalDeny")
                 }
                 .buttonStyle(.bordered)
-            } header: { Text("预览操作") }
+                .disabled(snap == nil)
+            } header: { Text("当前操作") }
         }
         .navigationTitle("锁屏审批与口令")
         .navigationBarTitleDisplayMode(.inline)
@@ -56,9 +59,22 @@ struct CloudLockApprovalPage: View {
             if CloudLockApprovalSnapshot.e2eForced { snap = .e2eItem() }
             else { snap = CloudLockApprovalSnapshot.load(defaults: .standard) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: CloudApprovalCenter.changed)) { _ in
+            snap = CloudLockApprovalSnapshot.load(defaults: .standard)
+        }
     }
 
-    private var displayItem: CloudLockApprovalSnapshot { snap ?? .e2eItem() }
+    private func submit(_ decision: String) {
+        guard let snap else { notice = "当前没有待审批操作"; return }
+        if CloudLockApprovalSnapshot.e2eForced { notice = "演示操作，不执行命令"; return }
+        Task { @MainActor in
+            do {
+                try await CloudApprovalCenter.shared.submit(snap, decision: decision)
+                notice = decision == "deny" ? "已拒绝" : "审批已提交"
+                self.snap = CloudLockApprovalSnapshot.load(defaults: .standard)
+            } catch { notice = error.localizedDescription }
+        }
+    }
 
     private func savePhrase() {
         let a = CloudLockPassphrase.normalize(phrase)
@@ -75,10 +91,11 @@ struct CloudLockApprovalPage: View {
     private func trySpoken() {
         let stored = UserDefaults.standard.string(forKey: CloudLockPassphrase.digestKey) ?? ""
         if CloudLockPassphrase.matches(spoken: spoken, storedDigest: stored) {
-            notice = "口令相符：将按批准一次处理"
+            notice = "口令相符"
+            submit("approve_once")
         } else if CloudLockApprovalSnapshot.e2eForced,
                   CloudLockPassphrase.normalize(spoken) == CloudLockPassphrase.normalize("批准测试口令") {
-            notice = "口令相符：将按批准一次处理"
+            notice = "口令相符（演示，不执行命令）"
         } else {
             notice = "口令不符"
         }
@@ -92,7 +109,7 @@ struct CloudLockApprovalPreviewCard: View {
             Text("锁屏审批").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Text(item.botName).font(.headline)
             Text(item.summary).font(.subheadline)
-            Text("预览不会执行命令").font(.caption2).foregroundStyle(.tertiary)
+            Text("操作前请核对当前审批内容").font(.caption2).foregroundStyle(.tertiary)
         }
         .padding(.vertical, 4)
     }

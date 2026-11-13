@@ -57,6 +57,7 @@ enum CloudExperience {
 
     static func prepare(_ body: inout [String: Any]) throws {
         guard enabled || body["experience"] != nil else { return }
+        try checkCapabilities()
         let refs = body["execution_profile_refs"] as? [String: String] ?? ["front": reference("front"), "back": reference("back"), "reviewer": reference("reviewer")]
         guard !(refs["front"] ?? "").isEmpty, !(refs["back"] ?? "").isEmpty else {
             throw NSError(domain: "CloudExperience", code: 2,
@@ -73,6 +74,14 @@ enum CloudExperience {
         if let front = profiles["front"] as? [String: Any] {
             body["model"] = front["model"]
             body["provider"] = front["provider"]
+        }
+    }
+
+    static func checkCapabilities() throws {
+        let connection = CloudConnection.shared
+        guard connection.isConnected, !connection.lastHealth.isEmpty else { return }
+        guard (connection.lastHealth["capabilities"] as? [String: Any])?["experience_workorders"] as? Bool == true else {
+            throw NSError(domain: "CloudExperience", code: 3, userInfo: [NSLocalizedDescriptionKey: "请先安装或更新服务器 Agent 到 2.58.0，再使用体验升级。"])
         }
     }
 

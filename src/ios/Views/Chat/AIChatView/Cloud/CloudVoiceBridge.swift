@@ -103,6 +103,7 @@ enum CloudVoiceBridge {
     private static func submitWorker(sessionId: String, prompt: String, model: String, provider: [String: Any]) async throws -> String {
         if CloudExperience.enabled {
             let nonce = UUID().uuidString
+            try await CloudConnection.shared.ensureConnected()
             var body: [String: Any] = ["content": prompt, "model": model, "provider": provider, "client_nonce": nonce]
             try CloudExperience.prepare(&body)
             do {

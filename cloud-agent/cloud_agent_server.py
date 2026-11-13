@@ -2336,6 +2336,12 @@ def bot_detail(bot):
         out["running_tasks"] = counts.get("running", 0) + counts.get("queued", 0)
         out["waiting_approvals"] = counts.get("waiting_user", 0)
         out["activity"] = bot_activity(conn, pid)
+        pending = conn.execute("SELECT a.approval_id,a.task_id,a.tool FROM approvals a "
+                               "JOIN tasks t ON t.task_id=a.task_id JOIN sessions s ON s.session_id=t.session_id "
+                               "WHERE s.persona_id=? AND COALESCE(s.incognito,0)=0 AND a.status='pending' "
+                               "AND a.expires_at>? AND t.status='waiting_user' ORDER BY a.created_at LIMIT 1",
+                               (pid, time.time())).fetchone()
+        out["pending_approval"] = {"id": pending[0], "task_id": pending[1], "tool": pending[2]} if pending else None
         # 首页状态：未读数、待回答卡片、最近一次任务是否出错、例行任务在跑 → status {state, unread, flags}
         cloud_botstatus.fill(conn, out, "COALESCE(s.incognito, 0) = 0 AND s.session_id NOT IN (SELECT worker_session FROM bot_workers)")
         # 存了密钥的 Bot：有自己的 API 凭据，或用过保管库里的条目 → App 默认给它上 Face ID 锁

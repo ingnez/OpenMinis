@@ -5,6 +5,70 @@ final class Frog1850Chunk3UITests: XCTestCase {
     static let token = "e2e-fake-token-0000000000000000"
     static let botName = "E2E小助手"
 
+    @MainActor
+    func testLockScreenEntryRequiresRealConfirmationAndRejectsStaleApproval() throws {
+        executionTimeAllowance = 180
+        let app = launch()
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch.waitForExistence(timeout: 60))
+        _ = try Data(contentsOf: URL(string: "http://127.0.0.1:18799/_e2e/approval?mode=ask")!)
+        defer { _ = try? Data(contentsOf: URL(string: "http://127.0.0.1:18799/_e2e/approval?mode=auto")!) }
+        let sid = try XCTUnwrap(api("POST", "/v1/sessions", body: ["title": "真实审批 E2E", "persona_id": "e2ebot"])["session_id"] as? String)
+        let task = try XCTUnwrap(api("POST", "/v1/sessions/\(sid)/messages", body: ["content": "跑个命令", "model": "e2e-vision-model", "provider": [:], "client_nonce": UUID().uuidString])["task_id"] as? String)
+        var approval: String?
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline {
+            let data = api("GET", "/v1/tasks/\(task)/approvals")
+            approval = (data["approvals"] as? [[String: Any]])?.first { $0["status"] as? String == "pending" }?["approval_id"] as? String
+            if approval != nil { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        let id = try XCTUnwrap(approval)
+        let url = URL(string: "minis://approval/\(id)?decision=approve_once")!
+        app.open(url)
+        let once = app.buttons["liveApprovalOnce"]
+        XCTAssertTrue(once.waitForExistence(timeout: 20), "锁屏入口没有打开真实确认页")
+        XCTAssertTrue(waitText(app, contains: "e2e-shell-ok", timeout: 15), "确认页没有展示将执行的具体命令")
+        XCTAssertEqual(api("GET", "/v1/tasks/\(task)")["status"] as? String, "waiting_user", "打开链接不应自动执行")
+        shot(app, "lock-real-confirmation-before-execution")
+        once.tap()
+        var done: [String: Any] = [:]
+        let finish = Date().addingTimeInterval(20)
+        while Date() < finish {
+            done = api("GET", "/v1/tasks/\(task)")
+            if done["status"] as? String == "completed" { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertEqual(done["status"] as? String, "completed")
+        let events = done["events"] as? [[String: Any]] ?? []
+        XCTAssertTrue(events.contains { event in
+            event["type"] as? String == "tool_result" && String(describing: event["payload"] ?? "").contains("e2e-shell-ok")
+        }, "批准后没有实际执行结果")
+        app.open(url)
+        XCTAssertTrue(app.staticTexts["liveApprovalError"].waitForExistence(timeout: 15), "旧审批入口没有被拒绝")
+        XCTAssertTrue(!app.buttons["liveApprovalOnce"].exists || !app.buttons["liveApprovalOnce"].isEnabled)
+        shot(app, "lock-stale-approval-rejected")
+    }
+
+    @MainActor
+    private func api(_ method: String, _ path: String, body: [String: Any]? = nil) -> [String: Any] {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:18765" + path)!)
+        request.httpMethod = method
+        request.setValue("Bearer " + Self.token, forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let body { request.httpBody = try? JSONSerialization.data(withJSONObject: body) }
+        let completed = expectation(description: "fixture API")
+        var result: [String: Any] = [:]
+        var status = 0
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if let data { result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:] }
+            completed.fulfill()
+        }.resume()
+        wait(for: [completed], timeout: 15)
+        XCTAssertTrue((200..<300).contains(status), "fixture API \(method) \(path)：\(status)")
+        return result
+    }
+
     func testLockScreenApprovalAndPassphrase() throws {
         executionTimeAllowance = 180
         let app = launch(extraEnv: ["OPENMINIS_E2E_LOCK_APPROVAL": "1"])

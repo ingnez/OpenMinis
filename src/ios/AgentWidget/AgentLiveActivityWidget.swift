@@ -52,7 +52,9 @@ struct AgentLiveActivityWidget: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    if let name = context.state.botCallName {
+                    if let approval = context.state.pendingCloudApproval {
+                        CloudApprovalActivityRow(item: approval).padding(.horizontal, 8)
+                    } else if let name = context.state.botCallName {
                         BotCallRow(name: name, since: context.attributes.startDate).padding(.horizontal, 8)
                     } else if let session = context.state.currentSession {
                         VStack(alignment: .leading, spacing: 5) {
@@ -219,6 +221,7 @@ struct AgentLockScreenView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let approval = state.pendingCloudApproval { CloudApprovalActivityRow(item: approval) }
             HStack {
                 HStack(spacing: 3) {
                     Image(systemName: "sparkles")
@@ -340,6 +343,30 @@ struct AgentLockScreenView: View {
             }
         }
         .padding()
+    }
+}
+
+@available(iOSApplicationExtension 16.2, *)
+private struct CloudApprovalActivityRow: View {
+    let item: CloudLiveApproval
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(item.botName).font(.caption.bold()).lineLimit(1)
+            Text(item.summary).font(.caption).lineLimit(2)
+            HStack(spacing: 8) {
+                action("批准一次", decision: "approve_once", color: .green)
+                action("本班次批准", decision: "approve_shift", color: .orange)
+                action("拒绝", decision: "deny", color: .red)
+            }
+            Text("打开 Minis 核对后确认").font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+    @ViewBuilder private func action(_ title: String, decision: String, color: Color) -> some View {
+        if let url = item.url(decision) {
+            Link(title, destination: url).font(.caption2.bold())
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                .background(color.opacity(0.18), in: Capsule())
+        }
     }
 }
 

@@ -53,6 +53,10 @@ enum DeepLinkRouter {
         let coord = DeepLinkCoordinator.shared
 
         switch host {
+        case "approval":
+            let id = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let decision = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "decision" }?.value
+            CloudApprovalCenter.shared.open(id: id, decision: decision)
         case "share":
             // Funnel through ShareCoordinator so any leftover
             // fullScreenCover (gallery / WebApp / camera) is dismissed

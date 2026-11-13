@@ -1206,6 +1206,11 @@ struct CloudSessionView: View {
             }
             CloudEventApplier.apply(liveMessage, type: type, payload: payload,
                                     eventId: CloudEventLedger.eventId(ev))
+            if type == "approval_required", let tid = activeTaskId {
+                CloudApprovalCenter.shared.capture(payload, taskId: tid, botId: theme?.botId ?? "", botName: theme?.name ?? "云端 Bot")
+            } else if type == "approval_resolved", let id = payload["approval_id"] as? String {
+                CloudApprovalCenter.shared.clear(id)
+            }
             if type == "tool_call" {
                 let tool = payload["tool"] as? String ?? ""
                 let args = payload["arguments"] as? [String: Any] ?? [:]
@@ -2495,6 +2500,7 @@ struct CloudSessionView: View {
         }
         do {
             try await connection.ensureConnected()
+            if body["experience"] != nil { try CloudExperience.checkCapabilities() }
             let res = try await connection.request(method: "POST", path: "/v1/sessions/\(sessionId)/messages", body: body)
             markUserSent(nonce: item.nonce)
             if res["idempotent_replayed"] as? Bool == true {

@@ -630,6 +630,10 @@
 		RCL000121 /* BackupHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000221 /* BackupHUD.swift */; };
 		C10D00000000000000000001 /* cloud-agent-bundle.tar.gz in Resources */ = {isa = PBXBuildFile; fileRef = C10D00000000000000000002 /* cloud-agent-bundle.tar.gz */; };
 		C10D00000000000000000003 /* cloud_workspace_tools.py in Resources */ = {isa = PBXBuildFile; fileRef = C10D00000000000000000004 /* cloud_workspace_tools.py */; };
+		F7A00000000000000000000B /* WatchStatusWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A000000000000000000001 /* WatchStatusWidget.swift */; };
+		F7A00000000000000000000C /* WatchComplicationLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A000000000000000000002 /* WatchComplicationLogic.swift */; };
+		F7A00000000000000000000D /* WatchPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A000000000000000000003 /* WatchPayload.swift */; };
+		F7A00000000000000000000E /* MinisWatchWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F7A000000000000000000004; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -668,6 +672,7 @@
 			remoteGlobalIDString = E5TH00070;
 			remoteInfo = MinisTestHost;
 		};
+		F7A00000000000000000003C /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = E51000060; proxyType = 1; remoteGlobalIDString = F7A000000000000000000046; remoteInfo = MinisWatchWidgets; };
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -730,6 +735,7 @@
 			name = "Embed Minis.debug.dylib";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F7A000000000000000000032 /* Embed Watch App Extensions */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (F7A00000000000000000000E, ); name = "Embed App Extensions"; runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -1464,6 +1470,10 @@
 		RCL000221 /* BackupHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupHUD.swift; sourceTree = "<group>"; };
 		C10D00000000000000000002 /* cloud-agent-bundle.tar.gz */ = {isa = PBXFileReference; lastKnownFileType = archive.gzip; name = "cloud-agent-bundle.tar.gz"; path = "Resources/cloud-agent-bundle.tar.gz"; sourceTree = "<group>"; };
 		C10D00000000000000000004 /* cloud_workspace_tools.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; name = cloud_workspace_tools.py; path = ../../cloud-agent/cloud_workspace_tools.py; sourceTree = SOURCE_ROOT; };
+		F7A000000000000000000001 /* WatchStatusWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MinisWatchWidgets/WatchStatusWidget.swift; sourceTree = "<group>"; };
+		F7A000000000000000000002 /* WatchComplicationLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchShared/WatchComplicationLogic.swift; sourceTree = "<group>"; };
+		F7A000000000000000000003 /* WatchPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchShared/WatchPayload.swift; sourceTree = "<group>"; };
+		F7A000000000000000000004 /* MinisWatchWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = MinisWatchWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -1475,10 +1485,11 @@
 			);
 			target = BB1000070F700000000000AA /* MinisTests */;
 		};
+		F7A000000000000000000065 = {isa = PBXFileSystemSynchronizedBuildFileExceptionSet; membershipExceptions = (Info.plist, ); target = E5WA00070; };
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		E5WA00012 /* MinisWatch */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = MinisWatch; sourceTree = "<group>"; };
+		E5WA00012 /* MinisWatch */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (F7A000000000000000000065, ); explicitFileTypes = {}; explicitFolders = (); path = MinisWatch; sourceTree = "<group>"; };
 		E5WA00013 /* WatchShared */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = WatchShared; sourceTree = "<group>"; };
 		AA0838CB2F3CA8A900049557 /* Terminal */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Terminal; sourceTree = "<group>"; };
 		AA8A568C2F6FBB7A00A3E54E /* MinisUITests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = MinisUITests; sourceTree = "<group>"; };
@@ -1543,6 +1554,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F7A000000000000000000014 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -1718,6 +1730,9 @@
 				E5TH00012 /* MinisTestHost */,
 				E5TH0G000 /* MinisTests Embedded */,
 				E5WA00012 /* MinisWatch */,
+                F7A000000000000000000001 /* WatchStatusWidget.swift */,
+                F7A000000000000000000002 /* WatchComplicationLogic.swift */,
+                F7A000000000000000000003 /* WatchPayload.swift */,
 				E5WA00013 /* WatchShared */,
 				AA26BD0E2F2E5FA500AECF2D /* Frameworks */,
 				E51000032 /* Products */,
@@ -1772,6 +1787,7 @@
 				BB1000010F700000000000AA /* MinisTests.xctest */,
 				E5TH00010 /* MinisTestHost.app */,
 				E5WA00010 /* MinisWatch.app */,
+                F7A000000000000000000004 /* MinisWatchWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -2764,10 +2780,12 @@
 				E5WA00030 /* Sources */,
 				E5WA00020 /* Frameworks */,
 				E5WA00040 /* Resources */,
+                F7A000000000000000000032 /* Embed Watch App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+                F7A00000000000000000003D /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				E5WA00012 /* MinisWatch */,
@@ -2930,6 +2948,15 @@
 			productReference = E5TH00010 /* MinisTestHost.app */;
 			productType = "com.apple.product-type.application";
 		};
+		F7A000000000000000000046 /* MinisWatchWidgets */ = {
+            isa = PBXNativeTarget;
+            buildConfigurationList = F7A000000000000000000064;
+            buildPhases = (F7A00000000000000000001E, F7A000000000000000000014, F7A000000000000000000028, );
+            buildRules = (); dependencies = ();
+            name = MinisWatchWidgets; productName = MinisWatchWidgets;
+            productReference = F7A000000000000000000004;
+            productType = "com.apple.product-type.app-extension";
+        };
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -3002,6 +3029,7 @@
 				BB1000070F700000000000AA /* MinisTests */,
 				E5TH00070 /* MinisTestHost */,
 				E5WA00070 /* MinisWatch */,
+                F7A000000000000000000046 /* MinisWatchWidgets */,
 			);
 		};
 /* End PBXProject section */
@@ -3094,6 +3122,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F7A000000000000000000028 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
@@ -3759,6 +3788,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F7A00000000000000000001E /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (F7A00000000000000000000B, F7A00000000000000000000C, F7A00000000000000000000D, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -3787,6 +3817,7 @@
 			target = E5TH00070 /* MinisTestHost */;
 			targetProxy = E5TH000B1 /* PBXContainerItemProxy */;
 		};
+		F7A00000000000000000003D /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = F7A000000000000000000046; targetProxy = F7A00000000000000000003C; };
 /* End PBXTargetDependency section */
 
 /* Begin PBXVariantGroup section */
@@ -3832,13 +3863,17 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
+                CODE_SIGN_ENTITLEMENTS = MinisWatch/MinisWatch.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+                INFOPLIST_FILE = MinisWatch/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Minis;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.openminis.app;
+                INFOPLIST_KEY_WKApplication = YES;
+                INFOPLIST_KEY_WKWatchOnly = NO;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -3858,13 +3893,17 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
+                CODE_SIGN_ENTITLEMENTS = MinisWatch/MinisWatch.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+                INFOPLIST_FILE = MinisWatch/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Minis;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.openminis.app;
+                INFOPLIST_KEY_WKApplication = YES;
+                INFOPLIST_KEY_WKWatchOnly = NO;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -4474,6 +4513,56 @@
 			};
 			name = Release;
 		};
+		F7A000000000000000000050 /* Debug */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                APPLICATION_EXTENSION_API_ONLY = YES;
+                CODE_SIGN_STYLE = Automatic;
+                CODE_SIGN_ENTITLEMENTS = MinisWatchWidgets/WatchStatusWidget.entitlements;
+                CURRENT_PROJECT_VERSION = 1;
+                DEVELOPMENT_TEAM = "";
+                ENABLE_DEBUG_DYLIB = NO;
+                GENERATE_INFOPLIST_FILE = YES;
+                INFOPLIST_FILE = MinisWatchWidgets/Info.plist;
+                INFOPLIST_KEY_CFBundleDisplayName = "Minis 状态";
+                LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", );
+                MARKETING_VERSION = 1.0;
+                PRODUCT_BUNDLE_IDENTIFIER = com.openminis.app.watchkitapp.widgets;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SDKROOT = watchos;
+                SKIP_INSTALL = YES;
+                SUPPORTED_PLATFORMS = "watchos watchsimulator";
+                SWIFT_VERSION = 5.0;
+                TARGETED_DEVICE_FAMILY = 4;
+                WATCHOS_DEPLOYMENT_TARGET = 9.0;
+            };
+            name = Debug;
+        };
+		F7A00000000000000000005A /* Release */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                APPLICATION_EXTENSION_API_ONLY = YES;
+                CODE_SIGN_STYLE = Automatic;
+                CODE_SIGN_ENTITLEMENTS = MinisWatchWidgets/WatchStatusWidget.entitlements;
+                CURRENT_PROJECT_VERSION = 1;
+                DEVELOPMENT_TEAM = "";
+                ENABLE_DEBUG_DYLIB = NO;
+                GENERATE_INFOPLIST_FILE = YES;
+                INFOPLIST_FILE = MinisWatchWidgets/Info.plist;
+                INFOPLIST_KEY_CFBundleDisplayName = "Minis 状态";
+                LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", );
+                MARKETING_VERSION = 1.0;
+                PRODUCT_BUNDLE_IDENTIFIER = com.openminis.app.watchkitapp.widgets;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SDKROOT = watchos;
+                SKIP_INSTALL = YES;
+                SUPPORTED_PLATFORMS = "watchos watchsimulator";
+                SWIFT_VERSION = 5.0;
+                TARGETED_DEVICE_FAMILY = 4;
+                WATCHOS_DEPLOYMENT_TARGET = 9.0;
+            };
+            name = Release;
+        };
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -4558,6 +4647,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		F7A000000000000000000064 /* Build configuration list for PBXNativeTarget "MinisWatchWidgets" */ = {isa = XCConfigurationList; buildConfigurations = (F7A000000000000000000050, F7A00000000000000000005A, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */

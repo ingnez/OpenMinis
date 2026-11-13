@@ -996,7 +996,7 @@ jobs:
             -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
             -scmProvider system \
             -disableAutomaticPackageResolution \
-            CURRENT_PROJECT_VERSION=12 \
+            CURRENT_PROJECT_VERSION=13 MARKETING_VERSION=1.16 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -1013,6 +1013,7 @@ jobs:
             -configuration Release \
             -sdk watchos \
             SYMROOT="$GITHUB_WORKSPACE/build/watch" \
+            CURRENT_PROJECT_VERSION=13 MARKETING_VERSION=1.16 \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             build | tee watch-build.log
           W=$(find build/watch -maxdepth 3 -name 'MinisWatch.app' -path '*watchos*' | head -n 1)
@@ -1037,6 +1038,7 @@ jobs:
           python3 scripts/build_ipa_checklist.py --out 测试清单.md --commit "$(git rev-parse HEAD)"
           cp 测试清单.md "Payload/$(basename "$APP")/"
           zip -qry Minis-unsigned.ipa Payload
+          python3 scripts/check_ipa_device_install.py Minis-unsigned.ipa --workspace-tools --watch-widgets
           ls -lh Minis-unsigned.ipa 测试清单.md
           shasum -a 256 Minis-unsigned.ipa | tee SHA256SUMS
           git rev-parse HEAD > SOURCE_COMMIT.txt
@@ -1072,6 +1074,7 @@ jobs:
             cloud-agent-test.log
             agent-entry.log
             cloud-connection-typecheck.log
+            watch-preflight.log
             storage-test.log
           retention-days: 30
 
@@ -1090,6 +1093,7 @@ jobs:
             cloud-agent-test.log
             agent-entry.log
             cloud-connection-typecheck.log
+            watch-preflight.log
             storage-test.log
             reset-test.log
             soul-test.log
@@ -1471,6 +1475,23 @@ jobs:
 
       # Fail at the shared entry point before spending hours retrying dependent flows.
       # Explicit subsets still run exactly the requested methods.
+      - name: 编译 Watch App 与实际嵌入的表盘小组件
+        run: |
+          set -o pipefail
+          xcodebuild -project src/ios/Minis.xcodeproj -target MinisWatch -configuration Debug -sdk watchos \
+            SYMROOT="$RUNNER_TEMP/openminis-watch-preflight" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tee watch-preflight.log
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, 'scripts')
+          from check_watch_bundle import verify
+          products = list(Path(os.environ['RUNNER_TEMP'], 'openminis-watch-preflight').glob('**/MinisWatch.app'))
+          assert len(products) == 1, f'Expected one built Watch app, got {len(products)}'
+          verify(products[0])
+          PYTHON
+
       - name: 聊天入口预检（打开 Bot、输入、真实回复）
         id: ui_entry
         if: ${{ inputs.only_testing == '' }}
@@ -1566,94 +1587,183 @@ jobs:
             unit-tests.xcresult
           retention-days: 7
 
-      - name: XCUITest 端到端冒烟（模拟器）
-        id: ui_e2e
-        if: ${{ steps.unit.outcome != 'failure' }}
-        # 累积版本覆盖所有功能批次；保留每项测试限时，给完整编译和串行回归留足时间。
-        # 不用并行克隆模拟器（克隆冷启动「Timed out while launching application」，且假云端栈不能同时给两台模拟器用）；失败的流程自动重试一次，汇总里注明重试次数
+      - name: 准备分套件串行 UI 验证
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        run: mkdir -p ui-suites
+
+      - name: XCUITest MinisSmokeUITests (1/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/MinisSmokeUITests
+          RESULT_BUNDLE: ui-suites/MinisSmokeUITests.xcresult
+          UI_LOG: ui-suites/MinisSmokeUITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest ComposerVoiceButtonUITests (2/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/ComposerVoiceButtonUITests
+          RESULT_BUNDLE: ui-suites/ComposerVoiceButtonUITests.xcresult
+          UI_LOG: ui-suites/ComposerVoiceButtonUITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest E2EFlowsUITests (3/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/E2EFlowsUITests
+          RESULT_BUNDLE: ui-suites/E2EFlowsUITests.xcresult
+          UI_LOG: ui-suites/E2EFlowsUITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest MiscControlsUITests (4/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/MiscControlsUITests
+          RESULT_BUNDLE: ui-suites/MiscControlsUITests.xcresult
+          UI_LOG: ui-suites/MiscControlsUITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest ReplyModeUITests (5/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/ReplyModeUITests
+          RESULT_BUNDLE: ui-suites/ReplyModeUITests.xcresult
+          UI_LOG: ui-suites/ReplyModeUITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest DeliverablesUITests (6/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/DeliverablesUITests
+          RESULT_BUNDLE: ui-suites/DeliverablesUITests.xcresult
+          UI_LOG: ui-suites/DeliverablesUITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest ImageExperienceUITests (7/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/ImageExperienceUITests
+          RESULT_BUNDLE: ui-suites/ImageExperienceUITests.xcresult
+          UI_LOG: ui-suites/ImageExperienceUITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest BotToBotUITests (8/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/BotToBotUITests
+          RESULT_BUNDLE: ui-suites/BotToBotUITests.xcresult
+          UI_LOG: ui-suites/BotToBotUITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest GroupChatUITests (9/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/GroupChatUITests
+          RESULT_BUNDLE: ui-suites/GroupChatUITests.xcresult
+          UI_LOG: ui-suites/GroupChatUITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest Ideas12UITests (10/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/Ideas12UITests
+          RESULT_BUNDLE: ui-suites/Ideas12UITests.xcresult
+          UI_LOG: ui-suites/Ideas12UITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest FrogP0UITests (11/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/FrogP0UITests
+          RESULT_BUNDLE: ui-suites/FrogP0UITests.xcresult
+          UI_LOG: ui-suites/FrogP0UITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest Frog1850UITests (12/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/Frog1850UITests
+          RESULT_BUNDLE: ui-suites/Frog1850UITests.xcresult
+          UI_LOG: ui-suites/Frog1850UITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest Frog1850Chunk2UITests (13/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/Frog1850Chunk2UITests
+          RESULT_BUNDLE: ui-suites/Frog1850Chunk2UITests.xcresult
+          UI_LOG: ui-suites/Frog1850Chunk2UITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest Frog1850Chunk3UITests (14/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/Frog1850Chunk3UITests
+          RESULT_BUNDLE: ui-suites/Frog1850Chunk3UITests.xcresult
+          UI_LOG: ui-suites/Frog1850Chunk3UITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: XCUITest BackupUXUITests (15/15)
+        if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+          ONLY_TESTING: MinisUITests/BackupUXUITests
+          RESULT_BUNDLE: ui-suites/BackupUXUITests.xcresult
+          UI_LOG: ui-suites/BackupUXUITests.log
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: 定向 XCUITest（模拟器）
+        id: ui_targeted
+        if: ${{ inputs.only_testing != '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 150
         env:
           ONLY_TESTING: ${{ inputs.only_testing }}
           DEV: ${{ steps.simulator.outputs.udid }}
+        run: bash scripts/run_ios_ui_tests.sh
+
+      - name: 汇总完整 UI 套件及具名用例
+        id: ui_complete
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        run: python3 scripts/merge_ios_ui_results.py
+
+      - name: XCUITest 端到端冒烟（模拟器）
+        id: ui_e2e
+        if: ${{ always() && steps.unit.outcome != 'failure' }}
+        env:
+          FULL_RESULT: ${{ steps.ui_complete.outcome }}
+          TARGET_RESULT: ${{ steps.ui_targeted.outcome }}
+          ONLY_TESTING: ${{ inputs.only_testing }}
         run: |
-          set -o pipefail
-          DEFAULT_ONLY_TESTING="MinisUITests/MinisSmokeUITests
-          MinisUITests/ComposerVoiceButtonUITests
-          MinisUITests/E2EFlowsUITests
-          MinisUITests/MiscControlsUITests
-          MinisUITests/ReplyModeUITests
-          MinisUITests/DeliverablesUITests
-          MinisUITests/ImageExperienceUITests
-          MinisUITests/BotToBotUITests
-          MinisUITests/GroupChatUITests
-          MinisUITests/Ideas12UITests
-          MinisUITests/FrogP0UITests
-          MinisUITests/Frog1850UITests
-          MinisUITests/Frog1850Chunk2UITests
-          MinisUITests/Frog1850Chunk3UITests
-          MinisUITests/BackupUXUITests"
-          ONLY_SRC="${ONLY_TESTING:-}"
-          if [ -z "$(printf '%s' "$ONLY_SRC" | tr -d '[:space:]')" ]; then
-            ONLY_SRC="$DEFAULT_ONLY_TESTING"
-          fi
-          ONLY_SRC="$(printf '%s' "$ONLY_SRC" | tr ',' $'\n')"
-          ONLY_FLAGS=()
-          while IFS= read -r item; do
-            item="${item#"${item%%[![:space:]]*}"}"
-            item="${item%"${item##*[![:space:]]}"}"
-            [ -z "$item" ] && continue
-            case "$item" in
-              *[!A-Za-z0-9_./-]*) echo "only_testing 条目不合法：$item" >&2; exit 1 ;;
-            esac
-            ONLY_FLAGS+=("-only-testing:$item")
-          done <<EOF
-          $ONLY_SRC
-          EOF
-          if [ ${#ONLY_FLAGS[@]} -eq 0 ]; then
-            echo "only_testing 解析后为空" >&2
-            exit 1
-          fi
-          echo "本次 -only-testing：${ONLY_FLAGS[*]}"
-          echo "模拟器：$DEV"
-          # Minis 方案里挂着的 MinisTests 只依赖 MinisTestHost、不依赖 Minis（设计上走 MinisUnitTests 方案、先单独编 App，
-          # 见 scripts/ios-unit-tests.sh），并行编译时扫描不到 Minis 模块就报「Unable to resolve module dependency: 'Minis'」，
-          # -only-testing 也挡不住它被编译。这里只在运行机上生成一个不含它的方案跑 UI 流程；单元测试在下一步按它自己的方案跑。
-          python3 - <<'PY'
-          import re
-          d = "src/ios/Minis.xcodeproj/xcshareddata/xcschemes/"
-          s = open(d + "Minis.xcscheme").read()
-          s2 = re.sub(r"\s*<TestableReference[^>]*>(?:(?!</TestableReference>).)*?BlueprintName = \"MinisTests\"(?:(?!</TestableReference>).)*?</TestableReference>", "", s, flags=re.S)
-          assert s2 != s and "MinisUITests" in s2
-          open(d + "MinisE2E.xcscheme", "w").write(s2)
-          PY
-          # 主线程卡死取证：模拟器里的 App 是本机进程，CPU 连续 10 秒占满就 sample 一次调用栈（最多 4 份）
-          mkdir -p hang-samples
-          ( n=0; hot=0; while [ $n -lt 4 ]; do sleep 2
-              pid=$(pgrep -f "/CoreSimulator/Devices/$DEV/data/Containers/Bundle/Application/.*/Minis.app/Minis$" | head -1); [ -z "$pid" ] && { hot=0; continue; }
-              cpu=$(ps -o %cpu= -p "$pid" | awk '{print int($1)}'); [ "${cpu:-0}" -ge 90 ] && hot=$((hot+1)) || hot=0
-              if [ $hot -ge 5 ]; then n=$((n+1)); hot=0; sample "$pid" 3 -file "hang-samples/hang-$n-$(date +%H%M%S).txt" >/dev/null 2>&1 || true; sleep 20; fi
-            done ) >/dev/null 2>&1 &
-          composer_watch_pid=$!
-          trap 'kill "$composer_watch_pid" 2>/dev/null || true' EXIT
-          xcodebuild test \
-            -project src/ios/Minis.xcodeproj \
-            -scheme MinisE2E \
-            -configuration Debug \
-            -destination "id=$DEV" \
-            -derivedDataPath build \
-            -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
-            -scmProvider system \
-            -disableAutomaticPackageResolution \
-            -showBuildTimingSummary \
-            "${ONLY_FLAGS[@]}" \
-            -collect-test-diagnostics never \
-            -test-timeouts-enabled YES \
-            -default-test-execution-time-allowance 150 \
-            -maximum-test-execution-time-allowance 240 \
-            -parallel-testing-enabled NO \
-            -retry-tests-on-failure -test-iterations 2 \
-            -resultBundlePath ui-tests.xcresult \
-            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= 2>&1 | tee ui-tests.log
+          if [ -z "$ONLY_TESTING" ]; then test "$FULL_RESULT" = success; else test "$TARGET_RESULT" = success; fi
 
       - name: 端到端流程结果与截图
         if: always()
@@ -1678,6 +1788,8 @@ jobs:
           name: Minis-e2e-early
           path: |
             ui-tests.log
+            ui-suites/*.log
+            ui-merge-failure
             e2e-summary.md
             ui-tests-summary.json
             ui-tests-tests.json
@@ -1690,6 +1802,7 @@ jobs:
             cloud-agent-test.log
             agent-entry.log
             cloud-connection-typecheck.log
+            watch-preflight.log
           retention-days: 7
 
       - name: 定向 UI 通过后的 Agent 完整回归
@@ -1708,6 +1821,8 @@ jobs:
           name: Minis-ui-tests
           path: |
             ui-tests.log
+            ui-suites/*.log
+            ui-merge-failure
             ui-tests.xcresult
             e2e-summary.md
             ui-tests-summary.json
@@ -1719,6 +1834,7 @@ jobs:
             cloud-agent-test.log
             agent-entry.log
             cloud-connection-typecheck.log
+            watch-preflight.log
           retention-days: 14
 
       - name: 清空专用 CI 模拟器的测试数据

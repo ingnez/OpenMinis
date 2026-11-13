@@ -7,6 +7,22 @@
 import Foundation
 
 @MainActor
+enum CloudApprovalLiveActivity {
+    private static var task: String?
+    static func update(_ item: CloudLockApprovalSnapshot?) {
+        if let prior = task, prior != item?.taskId {
+            CloudBotLiveActivity.finished(sessionId: "approval:" + prior, summary: "审批已处理", succeeded: false)
+        }
+        task = item?.taskId
+        if let item {
+            CloudBotLiveActivity.began(sessionId: "approval:" + item.taskId, botName: item.botName)
+            CloudBotLiveActivity.progress(sessionId: "approval:" + item.taskId, toolName: "", status: "等你确认操作")
+            AgentLiveActivityManager.shared.setCloudApproval(.init(approvalId: item.approvalId, botName: item.botName, summary: item.summary))
+        } else { AgentLiveActivityManager.shared.setCloudApproval(nil) }
+    }
+}
+
+@MainActor
 enum CloudBotLiveActivity {
     private static var running: Set<String> = []
 

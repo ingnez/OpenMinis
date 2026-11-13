@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+enum CloudApprovalLiveActivity { static func update(_ item: CloudLockApprovalSnapshot?) {} }
 enum ProviderType { case openAI, openAIResponses, anthropic, gemini }
 enum ProviderCredential { case apiKey, oauth }
 struct ProviderInstance: Identifiable {

@@ -1,6 +1,20 @@
 import ActivityKit
 import Foundation
 
+struct CloudLiveApproval: Codable, Hashable {
+    var approvalId: String
+    var botName: String
+    var summary: String
+
+    func url(_ decision: String) -> URL? {
+        guard ["approve_once", "approve_shift", "deny"].contains(decision) else { return nil }
+        var components = URLComponents()
+        components.scheme = "minis"; components.host = "approval"; components.path = "/" + approvalId
+        components.queryItems = [.init(name: "decision", value: decision)]
+        return components.url
+    }
+}
+
 struct LiveSessionSnapshot: Codable, Hashable {
     var sessionId: String
     var title: String
@@ -33,6 +47,7 @@ struct AgentActivityAttributes: ActivityAttributes {
     var startDate: Date
 
     public struct ContentState: Codable, Hashable {
+        var pendingCloudApproval: CloudLiveApproval? = nil
         var activeSessionCount: Int
         var sessions: [LiveSessionSnapshot]
         /// Index into `sessions` for the currently displayed session (rotates each update).

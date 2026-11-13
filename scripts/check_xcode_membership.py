@@ -13,8 +13,6 @@ IGNORE_DIRS = {"Minis.xcodeproj", "build", "Pods", "DerivedData"}
 KNOWN_UNBUILT = {
     "ISHCommandExecutionExample.swift",
     "Views/Chat/AIChatView.swift",
-    # Optional watch extension; see src/ios/MinisWatchWidgets/README.md.
-    "MinisWatchWidgets/WatchStatusWidget.swift",
 }
 
 

@@ -602,6 +602,7 @@ struct ContentView: View {
             NotificationCenter.default.publisher(for: .sessionDidCreate),
             perform: handleSessionCreatedForPendingFolder
         )
+        .modifier(CloudApprovalPresentation())
         .onReceive(NotificationCenter.default.publisher(for: .newChatRequested)) { _ in
             handleNewChatRequest()
         }
