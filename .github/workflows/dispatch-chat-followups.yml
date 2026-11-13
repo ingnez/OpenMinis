@@ -1,0 +1,77 @@
+name: Validate image and Bot-to-Bot follow-ups in order
+on:
+  push:
+    branches: [grokbot-phase2-chat-motion-ci]
+    paths: [.github/workflows/dispatch-chat-followups.yml]
+permissions:
+  actions: write
+  contents: read
+jobs:
+  validate:
+    if: github.repository == 'ingnez/OpenMinis'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Wait for the delivery IPA and validate each follow-up
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DELIVER_DISPATCH: '43402079088'
+        run: |
+          set -euo pipefail
+          repo="repos/$GITHUB_REPOSITORY"
+          prerequisite="$repo/actions/runs/$DELIVER_DISPATCH"
+          while [ "$(gh api "$prerequisite" --jq .status)" != completed ]; do
+            sleep 45
+          done
+          test "$(gh api "$prerequisite" --jq .conclusion)" = success
+          test "$(gh release view grokbot-deliver-3df4e4d --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[] | select(.name | endswith("-unsigned.ipa"))] | length')" = 1
+
+          validate() {
+            local branch="$1" sha="$2" tests="$3"
+            local ref="$repo/git/ref/heads/$branch"
+            local runs="$repo/actions/workflows/build-ios.yml/runs?branch=$branch&head_sha=$sha&event=workflow_dispatch&per_page=20"
+            local test_id=0 status=pending conclusion=pending last_id=0 completed_checks=0 result
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            test_id=$(gh api "$runs" --jq '.workflow_runs[0].id // 0')
+            if [ "$test_id" = 0 ]; then
+              gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$branch" -f ui_tests=true -f mac_runner=macos-15 -f only_testing="$tests"
+            fi
+            while true; do
+              result=$(gh api "$runs" --jq '(.workflow_runs[0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
+              IFS=$'\t' read -r test_id status conclusion <<< "$result"
+              if [ "$test_id" != "$last_id" ]; then
+                echo "$branch simulator run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$test_id"
+                last_id="$test_id"
+                completed_checks=0
+              fi
+              if [ "$status" = completed ]; then
+                if [ "$conclusion" = success ]; then break; fi
+                completed_checks=$((completed_checks + 1))
+                if [ "$completed_checks" -ge 4 ]; then echo "$branch simulator tests: $conclusion"; return 1; fi
+              fi
+              sleep 45
+            done
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            local evidence
+            evidence=$(mktemp -d)
+            gh run download "$test_id" --repo "$GITHUB_REPOSITORY" --name Minis-e2e-early --dir "$evidence"
+            python3 - "$evidence/e2e-summary.md" "$tests" <<'PY'
+          import sys
+          from pathlib import Path
+
+          expected = {test.split('/', 1)[1].replace('/', '.') for test in sys.argv[2].split(',')}
+          results = {}
+          for line in Path(sys.argv[1]).read_text().splitlines():
+              if line.startswith('|'):
+                  _, name, outcome, *_ = line.split('|')
+                  if name.strip() in expected:
+                      results[name.strip()] = outcome.strip().startswith('PASS')
+          missing = sorted(test for test in expected if not results.get(test))
+          if missing:
+              sys.exit(f'Missing or failed XCTest cases: {", ".join(missing)}')
+          print(f'{len(expected)}/{len(expected)} targeted XCTest cases passed')
+          PY
+          }
+
+          validate grokbot-phase2-images-integration 6765a3350ea2d93b65f521e64538abdbd359ac6b 'MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport,MinisUITests/E2EFlowsUITests/test40_cloudMessageSwipeQuotesExactReply,MinisUITests/E2EFlowsUITests/test04_markdownBoldInQuoteCJK,MinisUITests/E2EFlowsUITests/test20_localMarkdownBoldInQuoteCJK,MinisUITests/MinisSmokeUITests/testLaunchShowsHomeAndSurvivesBackgrounding,MinisUITests/DeliverablesUITests/testBotDeliverableCards,MinisUITests/DeliverablesUITests/testLocalDeliverableLinkCard,MinisUITests/ImageExperienceUITests/testI1_scrubOpensNthImage'
+          validate grokbot-phase2-b2b-integration 945e70eb4fa8848deb30e3b224d70582db0da8ce 'MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport,MinisUITests/E2EFlowsUITests/test40_cloudMessageSwipeQuotesExactReply,MinisUITests/E2EFlowsUITests/test04_markdownBoldInQuoteCJK,MinisUITests/E2EFlowsUITests/test20_localMarkdownBoldInQuoteCJK,MinisUITests/MinisSmokeUITests/testLaunchShowsHomeAndSurvivesBackgrounding,MinisUITests/DeliverablesUITests/testBotDeliverableCards,MinisUITests/DeliverablesUITests/testLocalDeliverableLinkCard,MinisUITests/ImageExperienceUITests/testI1_scrubOpensNthImage,MinisUITests/BotToBotUITests/testX1toX5_handoffShowsCollapsedLineAndThread'
