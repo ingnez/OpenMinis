@@ -109,6 +109,8 @@ struct SelectableMarkdownView: UIViewRepresentable {
     var onReadAloud: (() -> Void)?
     /// [T-selection-menu-minis-tts] "Read Selection" (selected text) via Minis TTS.
     var onSpeakText: ((String) -> Void)?
+    /// Completed Bot history can be measured and mounted repeatedly as it scrolls.
+    var cachesFinishedMarkdown = false
     @Environment(\.openURL) private var openURL
     @Environment(\.cloudChatTypography) private var cloudTypography
     private var renderedDesign: ChatFontDesign { cloudTypography?.design ?? .current }
@@ -177,6 +179,26 @@ struct SelectableMarkdownView: UIViewRepresentable {
     /// re-parses, but far below the unbounded growth this replaces.
     @MainActor private static let rendererCacheCap = 80
 
+    private final class ParsedMarkdown {
+        let content: MarkdownContent
+        init(_ content: MarkdownContent) { self.content = content }
+    }
+
+    private static let finishedMarkdownCache: NSCache<NSString, ParsedMarkdown> = {
+        let cache = NSCache<NSString, ParsedMarkdown>()
+        cache.countLimit = 128
+        cache.totalCostLimit = 2 * 1024 * 1024
+        return cache
+    }()
+
+    func parsedFinishedMarkdown() -> MarkdownContent {
+        let key = markdown as NSString
+        if let parsed = Self.finishedMarkdownCache.object(forKey: key) { return parsed.content }
+        let content = MarkdownContent(prepareMarkdownForRender(markdown))
+        Self.finishedMarkdownCache.setObject(ParsedMarkdown(content), forKey: key, cost: markdown.utf8.count)
+        return content
+    }
+
     /// [T-scroll-first-build-once] The renderer a coordinator for `messageId`
     /// adopts in `makeCoordinator`, created and cached here if there is none
     /// yet, so a height computed before the row is displayed renders through
@@ -225,6 +247,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         let n = rendererCache.count
         rendererCache.removeAll()
         rendererLRU.removeAll()
+        finishedMarkdownCache.removeAllObjects()
         return n
     }
 
@@ -545,14 +568,14 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // point cmark must see the full markdown so a trailing
         // un-terminated `|...|` final row (no trailing `\n`) is still
         // rendered as a real table row.
-        let _isFinalised = cachedAttributedString != nil || cachedContent != nil
+        let _isFinalised = cachedAttributedString != nil || cachedContent != nil || cachesFinishedMarkdown
         let _splitForUpdate = _isFinalised ? (prefix: markdown, plainSuffix: "") : splitStreamingTableTail(markdown)
         let _hasPlainSuffix = !_splitForUpdate.plainSuffix.isEmpty
-        let prepared = prepareMarkdownForRender(_splitForUpdate.prefix)
         // If we split off a suffix, the prebuilt cache (which was rendered
         // from the full markdown) no longer matches what we'll render —
         // force a fresh MarkdownContent parse and skip cachedContent.
-        let content = (_hasPlainSuffix ? nil : cachedContent) ?? MarkdownContent(prepared)
+        let content = (_hasPlainSuffix ? nil : cachedContent)
+            ?? (cachesFinishedMarkdown ? parsedFinishedMarkdown() : MarkdownContent(prepareMarkdownForRender(_splitForUpdate.prefix)))
         let prepElapsed = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
         // Image-related diagnostics — only walk the parsed block tree when
         // the raw markdown actually contains image syntax. The block walk
@@ -594,7 +617,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // hash input) vs lastRenderedContentHash being reset between calls.
         // Gated to non-streaming messages with prebuilt cache so it only fires
         // on the scroll-rerender case, not live streaming.
-        if cachedContent != nil || cachedAttributedString != nil {
+        if _isFinalised {
             let prev = context.coordinator.lastRenderedContentHash
             let usingBlocks = cachedContent != nil
             AppLogger(category: "MarkdownRenderer").info("[RND-MISS] hash=\(contentHash) prev=\(prev.map(String.init) ?? "nil") src=\(usingBlocks ? "blocks" : "markdown") hasPlainSuffix=\(_hasPlainSuffix) fontChanged=\(fontChanged) mdLen=\(markdown.count)")
@@ -788,7 +811,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
             // TextKit will lay out the appended tail on demand. setNeedsLayout
             // is enough so the text view re-draws and re-measures intrinsic size.
             textView.setNeedsLayout()
-        } else if (cachedContent != nil || cachedAttributedString != nil) && textView.textContainer.size.width > 1 {
+        } else if _isFinalised && textView.textContainer.size.width > 1 {
             // Bounded slow-path layout: only ensure the visible glyph range
             // plus a small overscan. Replacing the full-range ensureLayout
             // here was the second prong of the NSTypesetter watchdog fix —

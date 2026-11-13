@@ -1749,6 +1749,13 @@ extension E2EFlowsUITests {
         app.buttons["到最新"].tap()
         XCTAssertTrue(poll(12) { latest.exists && latest.isHittable }, "滑动后无法回到最新消息")
         shot(app, "39b-回到长对话末尾")
+
+        // Revisit the same rows after a second pass through the lazy list.
+        list.swipeDown(velocity: .fast)
+        XCTAssertTrue(poll(8) { !latest.exists || !latest.isHittable }, "第二次翻历史时被拉回最新消息")
+        app.buttons["到最新"].tap()
+        XCTAssertTrue(poll(12) { latest.exists && latest.isHittable }, "重复滚动后最新的 Markdown 回复未显示")
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "上下滚动不应触发横滑引用")
     }
 
     func test40_cloudMessageSwipeQuotesExactReply() throws {

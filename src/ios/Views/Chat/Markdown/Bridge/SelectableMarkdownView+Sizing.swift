@@ -257,15 +257,16 @@ extension SelectableMarkdownView {
                 // `cachedContent` is the finalised signal): a message
                 // whose final row never gets a trailing `\n` must still
                 // be rendered as a real table after stream-end.
-                let _isFinalisedSTF = cachedAttributedString != nil || cachedContent != nil
+                let _isFinalisedSTF = cachedAttributedString != nil || cachedContent != nil || cachesFinishedMarkdown
                 let split = _isFinalisedSTF
                     ? (prefix: markdown, plainSuffix: "")
                     : splitStreamingTableTail(markdown)
-                let preparedPrefix = prepareMarkdownForRender(split.prefix)
-                let blocks = MarkdownContent(preparedPrefix).blocks
+                let content = cachesFinishedMarkdown
+                    ? (cachedContent ?? parsedFinishedMarkdown())
+                    : MarkdownContent(prepareMarkdownForRender(split.prefix))
                 coord.renderer.messageId = messageId
                 coord.renderer.blockId = blockId
-                let rendered = autoreleasepool { coord.renderer.render(blocks: blocks) }
+                let rendered = autoreleasepool { coord.renderer.render(blocks: content.blocks) }
                 if split.plainSuffix.isEmpty {
                     pending = rendered
                 } else {

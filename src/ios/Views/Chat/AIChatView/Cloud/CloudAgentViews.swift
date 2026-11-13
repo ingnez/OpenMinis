@@ -659,9 +659,15 @@ struct CloudSessionView: View {
     @State private var watchedTasks: Set<String> = []
     /// 与本地模式同一个消息模型：服务器历史转换后的回合、正在进行任务的那条助手消息
     @State private var turns: [CloudHistoryAdapter.Turn] = []
+    private struct HistoryRow: Identifiable {
+        let id: String
+        let turn: CloudHistoryAdapter.Turn
+        let showsAssistantHeader: Bool
+    }
+    @State private var historyRows: [HistoryRow] = []
     @State private var displayedHistoryRows: [[String: Any]]?
-    @State private var threadsByTurn: [Int: [CloudBotThreadCollapsed]] = [:]
-    @State private var callsByTurn: [Int: [CloudCallDivider]] = [:]
+    @State private var threadsByTurn: [String?: [CloudBotThreadCollapsed]] = [:]
+    @State private var callsByTurn: [String?: [CloudCallDivider]] = [:]
     /// 已用过的任务事件 id：全量重拉、长轮询、恢复连接重叠时同一事件只用一次
     @State private var ledger = CloudEventLedger()
     /// 进行中的任务已写进历史的那几轮暂时不从历史画（实时那一份负责），任务结束重新加载后恢复
@@ -691,6 +697,7 @@ struct CloudSessionView: View {
     @State private var loadingOlder = false
     @State private var followLatest = true
     @State private var isUserScrolling = false
+    @State private var positionedInitialHistory = false
     @State private var historyScrollAnchor: String?
     /// 每个附件的上传状态（托盘卡片上的进度圈 / 重试）
     /// 点了哪个拍照识别要求（用来找更对口的 Bot）
@@ -1033,19 +1040,37 @@ struct CloudSessionView: View {
             return turn
         }
         displayedHistoryRows = rows
+        updateHistoryRows()
+    }
+
+    private func updateHistoryRows() {
+        // Keep one lazy-list child per turn. Build the IDs and grouping once
+        // when history changes, independently of composer and stream updates.
+        historyRows = turns.indices.map { index in
+            let turn = turns[index]
+            let previous = index > 0 ? turns[index - 1] : nil
+            let followsAssistant = previous?.message.role == .assistant && previous?.workerOutcome == nil
+            return HistoryRow(id: turn.presentationID, turn: turn, showsAssistantHeader: !followsAssistant)
+        }
         updateHistoryMarkers()
     }
 
     private func updateHistoryMarkers() {
         if !threadRows.isEmpty {
             let times = turns.map { ($0.raw["timestamp"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) } }
-            threadsByTurn = Dictionary(grouping: threadRows) { CloudBotThreadRules.anchor(firstAt: $0.firstAt, turnTimes: times) }
+            threadsByTurn = Dictionary(grouping: threadRows) { item in
+                let index = CloudBotThreadRules.anchor(firstAt: item.firstAt, turnTimes: times)
+                return index < 0 ? nil : historyRows[index].id
+            }
         } else if !threadsByTurn.isEmpty {
             threadsByTurn = [:]
         }
         if !callDividers.isEmpty {
             let times = turns.map { ($0.raw["timestamp"] as? NSNumber)?.doubleValue ?? 0 }
-            callsByTurn = Dictionary(grouping: callDividers) { CloudCallDivider.anchor($0, timestamps: times) }
+            callsByTurn = Dictionary(grouping: callDividers) { item in
+                let index = CloudCallDivider.anchor(item, timestamps: times)
+                return index < 0 ? nil : historyRows[index].id
+            }
         } else if !callsByTurn.isEmpty {
             callsByTurn = [:]
         }
@@ -1635,41 +1660,10 @@ struct CloudSessionView: View {
                         : []
                     if let theme {
                         Color.clear.frame(height: 1).id("chat-top")
-                        ForEach(threadsByTurn[-1] ?? []) { CloudBotThreadCollapsedRow(item: $0) }
-                        ForEach(callsByTurn[-1] ?? []) { CloudCallDividerRow(seconds: $0.seconds) }
-                        ForEach(Array(turns.enumerated()), id: \.element.presentationID) { idx, turn in
-                            let msg = turn.message
-                            if let outcome = turn.workerOutcome {
-                                CloudWorkerOutcomeRow(outcome: outcome)
-                                    .modifier(CloudTranscriptMessage(date: CloudHistoryAdapter.MessageLocation(turn.raw).date))
-                                    .id(turn.presentationID)
-                            } else if msg.role == .user {
-                                let location = CloudHistoryAdapter.MessageLocation(turn.raw)
-                                cloudUserTurn(turn, accent: theme.accent)
-                                    .modifier(CloudTranscriptMessage(date: location.date, replyID: location.id, excerpt: msg.content, replyRole: "user"))
-                                    .id(turn.presentationID)
-                                anchoredReplies(after: turn, theme: theme)
-                            } else {
-                                let prevAssistant = idx > 0 && turns[idx - 1].message.role == .assistant
-                                    && turns[idx - 1].workerOutcome == nil
-                                let extras = reactionExtras(CloudMessageExtras(turn.textRaw))
-                                CloudInstantFooterGate(turn:
-                                    CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
-                                                           showHeader: !prevAssistant, collapsible: true, textLocations: turn.textLocations)
-                                        .modifier(CloudAssistantLongPress(text: msg.content, extras: extras,
-                                                                          onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 },
-                                                                          botId: theme.botId, onAsk: quickSend)),
-                                    footer:
-                                    CloudAssistantFooter(text: msg.content, latency: CloudLatency.line(for: turn.raw, tasks: tasks),
-                                                         extras: extras, selfId: theme.botId,
-                                                         onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 }))
-                                    .id(turn.presentationID)
-                            }
-                            if idx == turns.count - 1, msg.role == .assistant, turn.workerOutcome == nil, activeTaskStatus != "running" {
-                                CloudSmartReplyBar(text: msg.content, accent: theme.accent, onPick: quickSend)
-                            }
-                            ForEach(threadsByTurn[idx] ?? []) { CloudBotThreadCollapsedRow(item: $0) }
-                            ForEach(callsByTurn[idx] ?? []) { CloudCallDividerRow(seconds: $0.seconds) }
+                        ForEach(threadsByTurn[nil] ?? []) { CloudBotThreadCollapsedRow(item: $0) }
+                        ForEach(callsByTurn[nil] ?? []) { CloudCallDividerRow(seconds: $0.seconds) }
+                        ForEach(historyRows) { row in
+                            historyRow(row, theme: theme)
                         }
                     }
                     ForEach(Array(shownItems.enumerated()), id: \.offset) { _, item in
@@ -1780,7 +1774,8 @@ struct CloudSessionView: View {
                     proxy.scrollTo(anchor, anchor: .top)
                     return
                 }
-                guard followLatest, !isUserScrolling, !transcriptSwipe.isInteracting else { return }
+                guard followLatest, !isUserScrolling, !transcriptSwipe.isInteracting,
+                      !transcriptSwipe.isVerticallyScrolling else { return }
                 proxy.scrollTo("chat-bottom", anchor: .bottom)
             }
             .onAppear {
@@ -1790,17 +1785,58 @@ struct CloudSessionView: View {
                     replyTarget = CloudReplyTarget(id: id, excerpt: preview.isEmpty ? "图片" : String(preview.prefix(140)), role: role)
                     if !dictation.isRecording { botComposerFocused = true }
                 }
-                if #available(iOS 18, *), theme != nil { return }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    guard followLatest, !isUserScrolling, !transcriptSwipe.isInteracting else { return }
-                    proxy.scrollTo("chat-bottom", anchor: .bottom)
-                }
+            }
+            .task(id: theme == nil || !historyRows.isEmpty) {
+                guard !positionedInitialHistory, theme == nil || !historyRows.isEmpty else { return }
+                // The default anchor can be applied before the cached/network
+                // rows get their first layout. Resolve the bottom once after
+                // the lazy stack has mounted, then leave position to the user.
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+                positionedInitialHistory = true
+                guard followLatest, !isUserScrolling, !transcriptSwipe.isInteracting,
+                      !transcriptSwipe.isVerticallyScrolling else { return }
+                proxy.scrollTo("chat-bottom", anchor: .bottom)
             }
             .onDisappear { transcriptSwipe.onReply = nil }
         }
         // 看图页「问问这张图」：图片放回附件，输入框起个头
         .environment(\.cloudAskImage, askAboutImage)
         .environment(\.cloudAttachmentSession, sessionId)
+    }
+
+    private func historyRow(_ row: HistoryRow, theme: CloudBotChatTheme) -> some View {
+        let turn = row.turn
+        let msg = turn.message
+        return VStack(alignment: .leading, spacing: 12) {
+            if let outcome = turn.workerOutcome {
+                CloudWorkerOutcomeRow(outcome: outcome)
+                    .modifier(CloudTranscriptMessage(date: CloudHistoryAdapter.MessageLocation(turn.raw).date))
+            } else if msg.role == .user {
+                let location = CloudHistoryAdapter.MessageLocation(turn.raw)
+                cloudUserTurn(turn, accent: theme.accent)
+                    .modifier(CloudTranscriptMessage(date: location.date, replyID: location.id, excerpt: msg.content, replyRole: "user"))
+                anchoredReplies(after: turn, theme: theme)
+            } else {
+                let extras = reactionExtras(CloudMessageExtras(turn.textRaw))
+                CloudInstantFooterGate {
+                    CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
+                                           showHeader: row.showsAssistantHeader, collapsible: true, textLocations: turn.textLocations)
+                        .modifier(CloudAssistantLongPress(text: msg.content, extras: extras,
+                                                          onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 },
+                                                          botId: theme.botId, onAsk: quickSend))
+                } footer: {
+                    CloudAssistantFooter(text: msg.content, latency: CloudLatency.line(for: turn.raw, tasks: tasks),
+                                         extras: extras, selfId: theme.botId,
+                                         onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 })
+                }
+            }
+            if row.id == historyRows.last?.id, msg.role == .assistant, turn.workerOutcome == nil, activeTaskStatus != "running" {
+                CloudSmartReplyBar(text: msg.content, accent: theme.accent, onPick: quickSend)
+            }
+            ForEach(threadsByTurn[row.id] ?? []) { CloudBotThreadCollapsedRow(item: $0) }
+            ForEach(callsByTurn[row.id] ?? []) { CloudCallDividerRow(seconds: $0.seconds) }
+        }
     }
 
     /// 往前翻一页：接在最前面
@@ -1978,7 +2014,7 @@ struct CloudSessionView: View {
                 messages.removeAll { $0["client_nonce"] as? String == r.nonce }
                 turns.removeAll { $0.raw["client_nonce"] as? String == r.nonce }
                 displayedHistoryRows = nil
-                updateHistoryMarkers()
+                updateHistoryRows()
                 if activeTaskId == r.taskId {
                     activeTaskStatus = "cancelled"
                     historyHidesTask = false
@@ -2092,7 +2128,7 @@ struct CloudSessionView: View {
         messages.append(row)
         turns.append(CloudHistoryAdapter.Turn(message: msg, raw: row))
         displayedHistoryRows?.append(row)
-        updateHistoryMarkers()
+        updateHistoryRows()
     }
 
     private func userTurn(nonce: String) -> CloudHistoryAdapter.Turn? {
@@ -2336,7 +2372,7 @@ struct CloudSessionView: View {
         messages.removeAll { CloudHistoryPager.pendingNonce($0) == nonce }
         turns.removeAll { CloudHistoryPager.pendingNonce($0.raw) == nonce }
         displayedHistoryRows = nil
-        updateHistoryMarkers()
+        updateHistoryRows()
     }
 
     private func withdrawQueuedSend(_ nonce: String) {
@@ -2499,14 +2535,16 @@ struct CloudSessionView: View {
                         if fresh.contains(where: { ["reasoning", "tool_call", "thought", "final", "error"].contains($0["type"] as? String ?? "") }) { self.liveReasoning = "" }
                     }
                     if let live = batch.live, let t = live["text"] as? String, let s = live["seq"] as? Int {
-                        self.liveText = t
-                        self.liveReasoning = live["reasoning"] as? String ?? ""
-                        self.liveTool = CloudLiveTool(live["tool"])
-                        self.liveSeq = s
+                        let reasoning = live["reasoning"] as? String ?? ""
+                        let tool = CloudLiveTool(live["tool"])
+                        if self.liveText != t { self.liveText = t }
+                        if self.liveReasoning != reasoning { self.liveReasoning = reasoning }
+                        if self.liveTool != tool { self.liveTool = tool }
+                        if self.liveSeq != s { self.liveSeq = s }
                     } else if !fresh.isEmpty, fresh.contains(where: { $0["type"] as? String == "tool_result" }) {
                         self.liveTool = nil
                     }
-                    if let s = batch.rawStatus { self.activeTaskStatus = s }
+                    if let s = batch.rawStatus, self.activeTaskStatus != s { self.activeTaskStatus = s }
                     if !self.liveText.isEmpty || fresh.contains(where: { ["thought", "text", "content", "final"].contains($0["type"] as? String ?? "")
                         && !((($0["payload"] as? [String: Any])?["content"] as? String) ?? "").isEmpty }) { self.replyLatency.sawText() }
                     // 结束了：正在生成的那段文字已经写进最后一轮，别再单独画一遍

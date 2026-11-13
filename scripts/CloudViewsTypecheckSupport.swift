@@ -31,6 +31,7 @@ enum SoulStore { static func load() -> SoulFile? { nil } }
 /// 真实实现在 Views/Chat/Markdown/Bridge/SelectableMarkdownView.swift（UIViewRepresentable）；类型检查只需同名同参数
 struct SelectableMarkdownView: View {
     let markdown: String
+    var cachesFinishedMarkdown = false
     var body: some View { Text(markdown) }
 }
 

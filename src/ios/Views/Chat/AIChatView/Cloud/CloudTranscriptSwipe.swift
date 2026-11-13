@@ -52,13 +52,30 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
     private var armed = false
     private var hideTimes: Task<Void, Never>?
     private var reduceMotion = false
+    private var frameLink: CADisplayLink?
+    private var pendingOffset: CGFloat?
     var onReply: ((Int, String, String) -> Void)?
     var isInteracting: Bool { direction != nil }
+    var isVerticallyScrolling: Bool {
+        guard let scrollView else { return false }
+        return scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating
+    }
 
     func attach(to scroll: UIScrollView?, reduceMotion: Bool) {
         self.reduceMotion = reduceMotion
         guard scrollView !== scroll else { return }
         scrollView?.removeGestureRecognizer(pan)
+        stopFrameUpdates()
+        hideTimes?.cancel()
+        if timeOffset.x != 0 { timeOffset.x = 0 }
+        if times.visible { times.visible = false }
+        if let offset = replyRow?.offset {
+            if offset.x != 0 { offset.x = 0 }
+            if offset.showingReply { offset.showingReply = false }
+        }
+        direction = nil
+        replyRow = nil
+        armed = false
         scrollView = scroll
         scroll?.addGestureRecognizer(pan)
     }
@@ -110,33 +127,28 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
         let distance = pan.translation(in: scrollView).x
         switch pan.state {
         case .began, .changed:
+            if pan.state == .began { startFrameUpdates(in: scrollView) }
             switch direction {
             case .timestamps:
                 hideTimes?.cancel()
                 if !times.visible { times.visible = true }
                 let x = -min(Self.timeWidth, max(0, distance))
-                if timeOffset.x != x { timeOffset.x = x }
-                #if DEBUG
-                if x == -Self.timeWidth, CloudE2E.token != nil, !times.didReveal {
-                    times.didReveal = true
-                }
-                #endif
+                pendingOffset = x
             case .reply:
                 let left = max(0, -distance)
                 if pan.state == .began { replyRow?.offset.showingReply = true }
-                if let offset = replyRow?.offset {
-                    let excess = max(0, left - Self.replyThreshold)
-                    let resistance = min(Self.replyOvershoot, 2 * excess.squareRoot())
-                    let x = -(min(left, Self.replyThreshold) + resistance)
-                    if offset.x != x { offset.x = x }
-                }
+                let excess = max(0, left - Self.replyThreshold)
+                let resistance = min(Self.replyOvershoot, 2 * excess.squareRoot())
+                pendingOffset = -(min(left, Self.replyThreshold) + resistance)
                 let reached = left >= Self.replyThreshold
                 if reached && !armed { CloudHaptics.selection() }
                 armed = reached
             }
+            if pan.state == .began { applyPendingOffset() }
         case .ended, .cancelled, .failed:
             let row = replyRow
             let reply = direction == .reply && pan.state == .ended && -distance >= Self.replyThreshold
+            stopFrameUpdates()
             self.direction = nil
             replyRow = nil
             armed = false
@@ -158,6 +170,48 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
             }
         default:
             break
+        }
+    }
+
+    private func startFrameUpdates(in scrollView: UIScrollView) {
+        stopFrameUpdates()
+        let target = FrameTarget(swipe: self)
+        let link = CADisplayLink(target: target, selector: #selector(FrameTarget.tick(_:)))
+        let maximum = Float(scrollView.window?.windowScene?.screen.maximumFramesPerSecond ?? 60)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: min(60, maximum), maximum: maximum, preferred: maximum)
+        link.add(to: .main, forMode: .common)
+        frameLink = link
+    }
+
+    private func stopFrameUpdates() {
+        frameLink?.invalidate()
+        frameLink = nil
+        pendingOffset = nil
+    }
+
+    // Only the latest transform is published each display frame. Recognition,
+    // haptics and the final reply decision still use the original touch events.
+    private func applyPendingOffset() {
+        guard let pendingOffset, let direction else { return }
+        self.pendingOffset = nil
+        let offset = direction == .timestamps ? timeOffset : replyRow?.offset
+        if let offset, offset.x != pendingOffset { offset.x = pendingOffset }
+        #if DEBUG
+        if direction == .timestamps, pendingOffset == -Self.timeWidth, CloudE2E.token != nil, !times.didReveal {
+            times.didReveal = true
+        }
+        #endif
+    }
+
+    @MainActor
+    private final class FrameTarget: NSObject {
+        weak var swipe: CloudTranscriptSwipe?
+
+        init(swipe: CloudTranscriptSwipe) { self.swipe = swipe }
+
+        @objc func tick(_ link: CADisplayLink) {
+            guard let swipe, swipe.scrollView?.window != nil else { link.invalidate(); return }
+            swipe.applyPendingOffset()
         }
     }
 }
@@ -205,7 +259,8 @@ struct CloudTranscriptGestureBridge: UIViewRepresentable {
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            connect()
+            if window != nil { connect() }
+            else { swipe?.attach(to: nil, reduceMotion: reduceMotion) }
         }
 
         func connect() {

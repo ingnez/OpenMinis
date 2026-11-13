@@ -25,6 +25,7 @@ enum CloudAttachmentLines {
 
     /// 去掉附件行，返回给人看的文字和附件列表
     static func split(_ text: String) -> (text: String, items: [Item]) {
+        guard text.contains("[附件] ") else { return (text, []) }
         var kept: [Substring] = []
         var items: [Item] = []
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {

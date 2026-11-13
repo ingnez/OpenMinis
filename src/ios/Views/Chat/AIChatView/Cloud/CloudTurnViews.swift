@@ -34,7 +34,7 @@ struct CloudAssistantTurnView: View {
     }
 
     private enum Segment {
-        case text(AssistantBlock, CloudHistoryAdapter.MessageLocation?)
+        case text(AssistantBlock, String?, CloudHistoryAdapter.MessageLocation?)
         case thinking(AssistantBlock)
         case injected(AssistantBlock)
         case reset(AssistantBlock)
@@ -67,10 +67,10 @@ struct CloudAssistantTurnView: View {
                         for (index, part) in beats.enumerated() {
                             var location = textLocations[b.id]
                             if index != beats.count - 1 { location?.date = nil }
-                            out.append(.text(AssistantBlock(kind: .text, content: part), location))
+                            out.append(.text(b, part, location))
                         }
                     } else {
-                        out.append(.text(b, textLocations[b.id]))
+                        out.append(.text(b, nil, textLocations[b.id]))
                     }
                 }
             case .thinking:
@@ -119,15 +119,17 @@ struct CloudAssistantTurnView: View {
             }
             ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
                 switch seg {
-                case .text(let block, let location):
+                case .text(let block, let part, let location):
                     Group {
                         if replyInstant {
-                            CloudBotBubble { CloudTextBlockView(block: block, accent: accent) }
+                            CloudBotBubble {
+                                CloudTextBlockView(block: block, accent: accent, part: part, isHistory: collapsible)
+                            }
                         } else {
-                            CloudTextBlockView(block: block, accent: accent)
+                            CloudTextBlockView(block: block, accent: accent, part: part, isHistory: collapsible)
                         }
                     }
-                    .modifier(CloudTranscriptMessage(date: location?.date, replyID: location?.id, excerpt: block.content))
+                    .modifier(CloudTranscriptMessage(date: location?.date, replyID: location?.id, excerpt: part ?? block.content))
                 case .thinking(let block):
                     if !replyInstant { CloudThinkingView(text: block.content, streaming: false) }
                 case .injected(let block):
@@ -268,25 +270,25 @@ private struct CloudBotBubbleLayout: Layout {
 /// 秒回：消息下面的耗时（首字 / 总 / tokens）和操作图标默认收起；点这条消息（气泡旁或下方的空白）展开，再点收起。
 /// 详细模式照旧一直显示。
 struct CloudInstantFooterGate<Turn: View, Footer: View>: View {
-    let turn: Turn
-    let footer: Footer
+    @ViewBuilder let turn: () -> Turn
+    @ViewBuilder let footer: () -> Footer
     @Environment(\.cloudReplyInstant) private var instant
     @State private var open = false
 
     var body: some View {
         if instant {
             VStack(alignment: .leading, spacing: 6) {
-                turn
+                turn()
                 if open {
-                    footer.accessibilityIdentifier("botReplyFooter")
+                    footer().accessibilityIdentifier("botReplyFooter")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { open.toggle() } }
         } else {
-            turn
-            footer
+            turn()
+            footer()
         }
     }
 }
@@ -330,21 +332,24 @@ struct CloudCollapse: ViewModifier {
 struct CloudTextBlockView: View {
     @ObservedObject var block: AssistantBlock
     let accent: Color
+    var part: String?
+    var isHistory = false
 
     var body: some View {
-        if let mark = CloudDelegationMark.parse(block.content) {
+        let content = part ?? block.content
+        if let mark = CloudDelegationMark.parse(content) {
             CloudDelegationCard(mark: mark, accent: accent)
         } else {
-            let shown = CloudMessageText.display(block.content)
+            let shown = CloudMessageText.display(content)
             if shown.images > 0 {
-                CloudMessageImages(content: block.content, alignment: .leading)
+                CloudMessageImages(content: content, alignment: .leading)
             }
             let src = CloudSourceLine.parse(shown.text)
             let text = src?.rest ?? shown.text
             if let one = CloudOneLine.split(text) {
                 CloudOneLineView(head: one.head, detail: one.detail, accent: accent)
             } else if !text.isEmpty {
-                SelectableMarkdownView(markdown: text)
+                SelectableMarkdownView(markdown: text, cachesFinishedMarkdown: isHistory)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
