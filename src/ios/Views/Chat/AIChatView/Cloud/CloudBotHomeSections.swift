@@ -194,8 +194,7 @@ struct CloudBotSectionedList: View {
                       onPin: { model.setPrefs(bot.id, ["pinned": !bot.pinned]) },
                       onHide: { model.setPrefs(bot.id, ["hidden": true]) },
                       onTap: { open(bot.id) }) {
-            CloudBotHomeRow(bot: bot, unread: model.isUnread(bot), presence: model.presence(bot))
-                .cloudBotMenu(bot, model: model, actions: actions)
+            CloudBotHomeRow(bot: bot, unread: model.isUnread(bot), presence: model.presence(bot), menuActions: actions)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("homeBotRow-\(bot.id)")

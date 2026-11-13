@@ -900,6 +900,7 @@ final class E2EFlowsUITests: XCTestCase {
         field.tap()
         dismissKeyboardIntro(app)
         field.typeText(text)
+        XCTAssertTrue((field.value as? String)?.hasSuffix(text) == true, "输入框没有保留完整文字：\(String(describing: field.value))")
         let button = app.buttons["composerVoiceButton"]
         XCTAssertTrue(button.waitForExistence(timeout: 10))
         button.tap()

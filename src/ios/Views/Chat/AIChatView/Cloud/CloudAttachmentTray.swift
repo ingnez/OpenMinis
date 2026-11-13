@@ -24,7 +24,6 @@ struct CloudAttachmentTray: View {
                                 }
                             }
                             .opacity(dragging == a.id ? 0.4 : 1)
-                            .accessibilityElement(children: .combine)
                             .accessibilityIdentifier("trayCard")
                             .onDrag { dragging = a.id; return NSItemProvider(object: a.id.uuidString as NSString) }
                             .onDrop(of: [.text], delegate: CloudTrayDrop(target: a.id, dragging: $dragging, items: $attachments))
@@ -118,7 +117,7 @@ struct AttachmentTrayTile<Content: View>: View {
         ZStack(alignment: .topTrailing) {
             ZStack {
                 Color(.systemGray6)
-                content
+                content.accessibilityHidden(true)
             }
             .frame(width: isPhoto ? 140 : 64, height: isPhoto ? 140 : 64)
             .clipShape(RoundedRectangle(cornerRadius: isPhoto ? 18 : 12, style: .continuous))
@@ -132,10 +131,14 @@ struct AttachmentTrayTile<Content: View>: View {
         .frame(width: isPhoto ? 140 : 64, height: isPhoto ? 140 : 64)
         // The scaled image's uncropped bounds can exceed the visible tile.
         // Expose the tile's actual bounds, retaining removal for VoiceOver.
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(name)
-        .accessibilityAddTraits(isPhoto ? .isImage : [])
-        .accessibilityAction(named: "移除 \(name)") { onRemove() }
+        .accessibilityRepresentation {
+            Rectangle().fill(Color.clear)
+                .frame(width: isPhoto ? 140 : 64, height: isPhoto ? 140 : 64)
+                .accessibilityElement()
+                .accessibilityLabel(name)
+                .accessibilityAddTraits(isPhoto ? .isImage : [])
+                .accessibilityAction(named: "移除 \(name)") { onRemove() }
+        }
     }
 }
 

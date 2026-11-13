@@ -458,6 +458,7 @@ struct CloudBotHomeRow: View {
     let bot: CloudBot
     let unread: Bool
     var presence = CloudBotPresence(state: .idle, unread: 0, routine: .none, muted: false)
+    var menuActions: CloudBotMenuActions? = nil
     /// 头像跟着系统字号一起变大，但不超过 60pt（首页一行一个 Bot，太大挤掉名字）
     @ScaledMetric(relativeTo: .headline) private var scaledAvatar: CGFloat = 46
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -466,8 +467,6 @@ struct CloudBotHomeRow: View {
     var body: some View {
         let status = CloudBotStatus.of(bot)
         let spec = CloudBotAvatarSpec.of(bot)
-        let titleLayout = typeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 3)) : AnyLayout(HStackLayout())
         HStack(spacing: 14) {
             Group {
                 if bot.activity != nil, !CloudBotLock.shared.isLocked(bot.id) {
@@ -491,44 +490,58 @@ struct CloudBotHomeRow: View {
                 CloudBotHomeModel.shared.shiftSpeechBot = bot
             })
             .accessibilityAction(named: "一句话交班") { CloudBotHomeModel.shared.shiftSpeechBot = bot }
-            VStack(alignment: .leading, spacing: 4) {
-                titleLayout {
-                    // 系统字体样式，跟着「更大字体」缩放（以前写死 17pt）
-                    Text(bot.name).font(.headline).lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
-                        .accessibilityIdentifier("homeRowTitle")
-                    CloudPresenceFlags(presence: presence)
-                    if !typeSize.isAccessibilitySize { Spacer(minLength: 8) }
-                    Text(CloudBotHome.timeText(CloudTypingRules.sortTime(lastAt: max(bot.lastAt, showsThread ? bot.threadAt : 0), working: bot.activity != nil)))
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                HStack(spacing: 8) {
-                    if status.busy && typing == nil { CloudBotStatusChip(status: status) }
-                    if bot.runningWorkers > 0 {
-                        Label("\(bot.runningWorkers)", systemImage: "gearshape.2.fill")
-                            .font(.caption2.weight(.semibold)).foregroundStyle(.green)
-                            .accessibilityLabel("\(bot.runningWorkers) 个后台任务进行中")
-                    }
-                    if showsThread {
-                        // 和别的 Bot 说话：纸飞机 = 它发出的，箭头 = 收到的
-                        Image(systemName: bot.threadOutgoing ? "paperplane.fill" : "arrow.down.left")
-                            .font(.caption).foregroundStyle(bot.threadPriority ? Color.red : Color.secondary)
-                            .accessibilityHidden(true)
-                    }
-                    if let typing {
-                        Text(typing.subtitle).font(.subheadline).foregroundStyle(.green)
-                            .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
-                            .transition(.opacity)
-                    } else {
-                        Text(previewText).font(.subheadline).foregroundStyle(.secondary)
-                            .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
-                    }
-                    Spacer(minLength: 0)
-                    CloudUnreadMark(presence: presence)
-                }
+            if let menuActions {
+                details.cloudBotMenu(bot, model: .shared, actions: menuActions)
+            } else {
+                details
             }
         }
         .padding(.vertical, 10)
         .contentShape(Rectangle())
+    }
+
+    // Keep the system context menu off the avatar: it would consume its
+    // long press and merge its accessibility identifier into the whole row.
+    @ViewBuilder
+    private var details: some View {
+        let status = CloudBotStatus.of(bot)
+        let titleLayout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 3)) : AnyLayout(HStackLayout())
+        VStack(alignment: .leading, spacing: 4) {
+            titleLayout {
+                // 系统字体样式，跟着「更大字体」缩放（以前写死 17pt）
+                Text(bot.name).font(.headline).lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
+                    .accessibilityIdentifier("homeRowTitle")
+                CloudPresenceFlags(presence: presence)
+                if !typeSize.isAccessibilitySize { Spacer(minLength: 8) }
+                Text(CloudBotHome.timeText(CloudTypingRules.sortTime(lastAt: max(bot.lastAt, showsThread ? bot.threadAt : 0), working: bot.activity != nil)))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                if status.busy && typing == nil { CloudBotStatusChip(status: status) }
+                if bot.runningWorkers > 0 {
+                    Label("\(bot.runningWorkers)", systemImage: "gearshape.2.fill")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.green)
+                        .accessibilityLabel("\(bot.runningWorkers) 个后台任务进行中")
+                }
+                if showsThread {
+                    // 和别的 Bot 说话：纸飞机 = 它发出的，箭头 = 收到的
+                    Image(systemName: bot.threadOutgoing ? "paperplane.fill" : "arrow.down.left")
+                        .font(.caption).foregroundStyle(bot.threadPriority ? Color.red : Color.secondary)
+                        .accessibilityHidden(true)
+                }
+                if let typing {
+                    Text(typing.subtitle).font(.subheadline).foregroundStyle(.green)
+                        .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
+                        .transition(.opacity)
+                } else {
+                    Text(previewText).font(.subheadline).foregroundStyle(.secondary)
+                        .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
+                }
+                Spacer(minLength: 0)
+                CloudUnreadMark(presence: presence)
+            }
+        }
     }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

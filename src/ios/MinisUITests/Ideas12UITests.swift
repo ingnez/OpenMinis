@@ -35,11 +35,8 @@ final class Ideas12UITests: XCTestCase {
         let app = launch(extraEnv: ["OPENMINIS_E2E_SHIFT_SPEECH": "明天下午三点提醒我给病人换药"])
         XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 60))
         let avatar = app.descendants(matching: .any)["homeBotAvatar-e2ebot"]
-        if avatar.waitForExistence(timeout: 15) {
-            avatar.press(forDuration: 1.0)
-        } else {
-            app.descendants(matching: .any)["homeBotRow-e2ebot"].press(forDuration: 1.0)
-        }
+        XCTAssertTrue(avatar.waitForExistence(timeout: 15), "首页头像没有独立的辅助功能入口")
+        avatar.press(forDuration: 1.0)
         XCTAssertTrue(app.descendants(matching: .any)["shiftSpeechSheet"].waitForExistence(timeout: 10)
                       || waitText(app, contains: "一句话交班", timeout: 8),
                       "长按头像没有出现交班话术页")
@@ -221,7 +218,8 @@ final class Ideas12UITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["ipaChecklist"].waitForExistence(timeout: 10)
                       || waitText(app, contains: "已测流程", timeout: 8),
                       "没有打开测试清单")
-        XCTAssertTrue(waitText(app, contains: "需真机验证", timeout: 5))
+        let deviceSection = app.staticTexts["需真机验证"]
+        XCTAssertTrue(scrollTo(app, deviceSection), "测试清单没有列出需真机验证项目")
         shot(app, "i12-IPA测试清单")
     }
 

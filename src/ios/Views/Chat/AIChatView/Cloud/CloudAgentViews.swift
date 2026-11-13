@@ -680,7 +680,9 @@ struct CloudSessionView: View {
     @State private var tasks: [[String: Any]] = []
     @State private var inputPrompt: String = ""
     @State private var replyTarget: CloudReplyTarget?
-    @FocusState private var botComposerFocused: Bool
+    // UIKit owns first responder status; FocusState without a SwiftUI focused
+    // field resets during redraws and dismisses the editor after one character.
+    @State private var botComposerFocused = false
     @StateObject private var transcriptSwipe = CloudTranscriptSwipe()
     /// 用户刚点的表情回应（服务器确认前先显示）；值为 nil 表示刚取消
     @State private var localReactions: [Int: String?] = [:]

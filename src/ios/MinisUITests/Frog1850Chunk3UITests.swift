@@ -13,7 +13,9 @@ final class Frog1850Chunk3UITests: XCTestCase {
         _ = try Data(contentsOf: URL(string: "http://127.0.0.1:18799/_e2e/approval?mode=ask")!)
         defer { _ = try? Data(contentsOf: URL(string: "http://127.0.0.1:18799/_e2e/approval?mode=auto")!) }
         let sid = try XCTUnwrap(api("POST", "/v1/sessions", body: ["title": "真实审批 E2E", "persona_id": "e2ebot"])["session_id"] as? String)
-        let task = try XCTUnwrap(api("POST", "/v1/sessions/\(sid)/messages", body: ["content": "跑个命令", "model": "e2e-vision-model", "provider": [:], "client_nonce": UUID().uuidString])["task_id"] as? String)
+        // Safe echo commands intentionally need no approval. Use the fixture's
+        // destructive command in its disposable directory to exercise a real gate.
+        let task = try XCTUnwrap(api("POST", "/v1/sessions/\(sid)/messages", body: ["content": "危险删除 测试目录", "model": "e2e-vision-model", "provider": [:], "client_nonce": UUID().uuidString])["task_id"] as? String)
         var approval: String?
         let deadline = Date().addingTimeInterval(20)
         while Date() < deadline {
@@ -27,7 +29,7 @@ final class Frog1850Chunk3UITests: XCTestCase {
         app.open(url)
         let once = app.buttons["liveApprovalOnce"]
         XCTAssertTrue(once.waitForExistence(timeout: 20), "锁屏入口没有打开真实确认页")
-        XCTAssertTrue(waitText(app, contains: "e2e-shell-ok", timeout: 15), "确认页没有展示将执行的具体命令")
+        XCTAssertTrue(waitText(app, contains: "e2e-rm-ok", timeout: 15), "确认页没有展示将执行的具体命令")
         XCTAssertEqual(api("GET", "/v1/tasks/\(task)")["status"] as? String, "waiting_user", "打开链接不应自动执行")
         shot(app, "lock-real-confirmation-before-execution")
         once.tap()
@@ -41,7 +43,7 @@ final class Frog1850Chunk3UITests: XCTestCase {
         XCTAssertEqual(done["status"] as? String, "completed")
         let events = done["events"] as? [[String: Any]] ?? []
         XCTAssertTrue(events.contains { event in
-            event["type"] as? String == "tool_result" && String(describing: event["payload"] ?? "").contains("e2e-shell-ok")
+            event["type"] as? String == "tool_result" && String(describing: event["payload"] ?? "").contains("e2e-rm-ok")
         }, "批准后没有实际执行结果")
         app.open(url)
         XCTAssertTrue(app.staticTexts["liveApprovalError"].waitForExistence(timeout: 15), "旧审批入口没有被拒绝")

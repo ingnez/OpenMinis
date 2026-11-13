@@ -13,6 +13,13 @@ final class FrogP0UITests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        if (testRun?.failureCount ?? 0) > 0 {
+            let app = XCUIApplication()
+            let screen = XCTAttachment(screenshot: app.screenshot())
+            screen.name = "failure-screen"; screen.lifetime = .keepAlways; add(screen)
+            let tree = XCTAttachment(string: app.debugDescription)
+            tree.name = "failure-ui-tree"; tree.lifetime = .keepAlways; add(tree)
+        }
         _ = probe("/_e2e/approval?mode=auto")
         _ = probe("/_e2e/reply?mode=verbose")
     }
@@ -151,6 +158,7 @@ final class FrogP0UITests: XCTestCase {
         field.tap()
         dismissKeyboardIntro(app)
         field.typeText(text)
+        XCTAssertTrue((field.value as? String)?.hasSuffix(text) == true, "输入框没有保留完整文字：\(String(describing: field.value))")
         let button = app.buttons["composerVoiceButton"]
         XCTAssertTrue(button.waitForExistence(timeout: 10))
         button.tap()
