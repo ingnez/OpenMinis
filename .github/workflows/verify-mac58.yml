@@ -1,6 +1,11 @@
 name: Verify OpenMinis routing to Mac-58
 on:
   workflow_dispatch:
+    inputs:
+      prepare_dependencies:
+        type: boolean
+        default: false
+        description: Prepare the required OpenMinis build tools after routing verification
   push:
     branches: [grokbot-phase2-combined-20261113]
     paths: [.github/workflows/verify-mac58.yml]
@@ -15,7 +20,7 @@ jobs:
   verify-mac58:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: [self-hosted, macOS, openminis-mac]
-    timeout-minutes: 5
+    timeout-minutes: ${{ inputs.prepare_dependencies && 30 || 5 }}
     concurrency:
       group: ${{ github.repository }}-macos
       cancel-in-progress: false
@@ -33,6 +38,11 @@ jobs:
           persist-credentials: false
       - name: Select the installed Xcode for this job
         run: python3 scripts/select_mac58_xcode.py
+      - name: Make installed Homebrew tools visible to the launchd runner
+        run: |
+          for directory in /opt/homebrew/bin /opt/homebrew/sbin /usr/local/bin; do
+            if [ -d "$directory" ]; then echo "$directory" >> "$GITHUB_PATH"; fi
+          done
       - name: Verify the installed SDK and simulator runtime
         run: |
           xcodebuild -version
@@ -43,3 +53,18 @@ jobs:
           for tool in ('python3', 'go', 'ninja', 'pkg-config', 'meson'):
               print(tool + ': ' + ('available' if shutil.which(tool) else 'not installed'))
           PY
+      - name: Prepare native build tools
+        if: ${{ inputs.prepare_dependencies }}
+        run: bash scripts/prepare_mac_build_tools.sh
+      - name: Prepare Go
+        if: ${{ inputs.prepare_dependencies }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: false
+      - name: Prepare the CI Python interpreter
+        if: ${{ inputs.prepare_dependencies }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: arm64

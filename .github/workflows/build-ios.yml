@@ -147,6 +147,18 @@ jobs:
           persist-credentials: false
       - name: 使用 Mac-58 已安装的 Xcode 27.0（仅当前任务）
         run: python3 scripts/select_mac58_xcode.py
+
+      - name: 配置 launchd runner 的构建工具路径
+        run: |
+          for directory in /opt/homebrew/bin /opt/homebrew/sbin /usr/local/bin; do
+            if [ -d "$directory" ]; then echo "$directory" >> "$GITHUB_PATH"; fi
+          done
+
+      - name: 使用隔离的 CI Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: arm64
       - name: Swift 文件都在 Xcode 工程里
         run: python3 scripts/check_xcode_membership.py
       - name: 实时语音协议回归与 iOS 类型检查
@@ -697,6 +709,18 @@ jobs:
       - name: 使用 Mac-58 已安装的 Xcode 27.0（仅当前任务）
         run: python3 scripts/select_mac58_xcode.py
 
+      - name: 配置 launchd runner 的构建工具路径
+        run: |
+          for directory in /opt/homebrew/bin /opt/homebrew/sbin /usr/local/bin; do
+            if [ -d "$directory" ]; then echo "$directory" >> "$GITHUB_PATH"; fi
+          done
+
+      - name: 使用隔离的 CI Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: arm64
+
       - name: iOS 16 API 兼容预检
         run: |
           # 部署目标是 iOS 16：禁止双参数 onChange（iOS 17+）；云端页面里禁止未加 #available 的 iOS 17 专属 API
@@ -930,10 +954,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew install ninja llvm lld libarchive pkg-config
-          python3 -m pip install --break-system-packages meson
-          echo "LLVM prefix: $(brew --prefix llvm)"
-          meson --version
+          bash scripts/prepare_mac_build_tools.sh
 
       - name: Ensure Metal toolchain
         run: |
@@ -1104,6 +1125,18 @@ jobs:
 
       - name: 使用 Mac-58 已安装的 Xcode 27.0（仅当前任务）
         run: python3 scripts/select_mac58_xcode.py
+
+      - name: 配置 launchd runner 的构建工具路径
+        run: |
+          for directory in /opt/homebrew/bin /opt/homebrew/sbin /usr/local/bin; do
+            if [ -d "$directory" ]; then echo "$directory" >> "$GITHUB_PATH"; fi
+          done
+
+      - name: 使用隔离的 CI Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: arm64
 
       - name: iOS 16 API 兼容预检
         run: |
@@ -1384,10 +1417,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew install ninja llvm lld libarchive pkg-config
-          python3 -m pip install --break-system-packages meson
-          echo "LLVM prefix: $(brew --prefix llvm)"
-          meson --version
+          bash scripts/prepare_mac_build_tools.sh
 
       - name: Ensure Metal toolchain
         run: |
