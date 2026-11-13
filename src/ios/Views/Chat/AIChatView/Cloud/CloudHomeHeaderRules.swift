@@ -62,17 +62,6 @@ enum CloudHomeHeaderRules {
         return (workingCount, lastAts.filter { $0 >= start }.count)
     }
 
-    /// 下拉多少显示「今天」卡片、往上滑多少收起
-    static let revealPull: Double = 70
-    static let hideScroll: Double = -40
-    /// panelOpen：「今天」下面有小窗口开着时不收起（在小窗口里上滑以前会把整条栏连同小窗口一起收掉，43145023039 test29）
-    static func todayVisible(was: Bool, scrollTop: Double, panelOpen: Bool = false) -> Bool {
-        if was && panelOpen { return true }
-        if scrollTop >= revealPull { return true }
-        if scrollTop <= hideScroll { return false }
-        return was
-    }
-
     /// 顶部大头像的表情：出错皱眉，在干活时眨眼频率加快（返回下一次眨眼前等待的秒数范围）
     static func blinkWait(working: Bool) -> ClosedRange<Double> { working ? 0.45...1.1 : 1.2...3.2 }
 }

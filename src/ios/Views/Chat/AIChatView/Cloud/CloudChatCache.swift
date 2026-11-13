@@ -18,10 +18,12 @@ enum CloudChatCache {
 
     /// 只留最近的消息；返回写入的条数（失败或无效 id 返回 nil）
     @discardableResult
-    static func save(_ sid: String, messages: [[String: Any]], tasks: [[String: Any]], in dir: URL = directory, now: Date = Date()) -> Int? {
+    static func save(_ sid: String, messages: [[String: Any]], tasks: [[String: Any]], reply: [String: Any]? = nil,
+                     in dir: URL = directory, now: Date = Date()) -> Int? {
         guard isValidId(sid) else { return nil }
         let msgs = Array(messages.suffix(keepMessages)).map(clean)
-        let body: [String: Any] = ["v": 1, "saved_at": now.timeIntervalSince1970, "messages": msgs, "tasks": Array(tasks.prefix(keepTasks)).map(clean)]
+        var body: [String: Any] = ["v": 1, "saved_at": now.timeIntervalSince1970, "messages": msgs, "tasks": Array(tasks.prefix(keepTasks)).map(clean)]
+        if let reply { body["reply"] = clean(reply) }
         guard JSONSerialization.isValidJSONObject(body), let data = try? JSONSerialization.data(withJSONObject: body) else { return nil }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         #if os(iOS)
@@ -33,11 +35,12 @@ enum CloudChatCache {
         return msgs.count
     }
 
-    static func load(_ sid: String, in dir: URL = directory) -> (messages: [[String: Any]], tasks: [[String: Any]], savedAt: Date)? {
+    static func load(_ sid: String, in dir: URL = directory) -> (messages: [[String: Any]], tasks: [[String: Any]], reply: [String: Any]?, savedAt: Date)? {
         guard isValidId(sid), let data = try? Data(contentsOf: file(sid, in: dir)),
               let d = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let msgs = d["messages"] as? [[String: Any]] else { return nil }
-        return (msgs, d["tasks"] as? [[String: Any]] ?? [], Date(timeIntervalSince1970: (d["saved_at"] as? NSNumber)?.doubleValue ?? 0))
+        return (msgs, d["tasks"] as? [[String: Any]] ?? [], d["reply"] as? [String: Any],
+                Date(timeIntervalSince1970: (d["saved_at"] as? NSNumber)?.doubleValue ?? 0))
     }
 
     static func remove(_ sid: String, in dir: URL = directory) {

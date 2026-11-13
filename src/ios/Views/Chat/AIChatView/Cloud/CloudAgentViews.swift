@@ -585,21 +585,23 @@ struct CloudSessionsView: View {
 private struct CloudChatScrollTracking: ViewModifier {
     @Binding var followLatest: Bool
     @Binding var isUserScrolling: Bool
+    let startsAtBottom: Bool
 
     func body(content: Content) -> some View {
         if #available(iOS 18, *) {
-            content.onScrollPhaseChange { _, phase, context in
-                switch phase {
-                case .tracking, .interacting, .decelerating:
-                    if !isUserScrolling { isUserScrolling = true }
-                case .idle where isUserScrolling:
-                    let geometry = context.geometry
-                    followLatest = geometry.contentSize.height - geometry.visibleRect.maxY <= 64
-                    isUserScrolling = false
-                default:
-                    break
+            content.defaultScrollAnchor(startsAtBottom ? .bottom : nil, for: .initialOffset)
+                .onScrollPhaseChange { _, phase, context in
+                    switch phase {
+                    case .tracking, .interacting, .decelerating:
+                        if !isUserScrolling { isUserScrolling = true }
+                    case .idle where isUserScrolling:
+                        let geometry = context.geometry
+                        followLatest = geometry.contentSize.height - geometry.visibleRect.maxY <= 64
+                        isUserScrolling = false
+                    default:
+                        break
+                    }
                 }
-            }
         } else {
             content
         }
@@ -619,9 +621,10 @@ struct CloudSessionView: View {
     let mentionBots: [CloudBot]
     /// 多 Bot 模式：用 Bot 的头像颜色做气泡与按钮主题，显示动态头像进度、附件与语音入口
     let theme: CloudBotChatTheme?
+    let incognito: Bool
 
     init(sessionId: String, sessionTitle: String, model: String, selectedInstanceId: String,
-         botHasOwnModel: Bool = false, mentionBots: [CloudBot] = [], theme: CloudBotChatTheme? = nil) {
+         botHasOwnModel: Bool = false, mentionBots: [CloudBot] = [], theme: CloudBotChatTheme? = nil, incognito: Bool = false) {
         self.theme = theme
         self.sessionId = sessionId
         self.sessionTitle = sessionTitle
@@ -629,6 +632,7 @@ struct CloudSessionView: View {
         self.selectedInstanceId = selectedInstanceId
         self.botHasOwnModel = botHasOwnModel
         self.mentionBots = mentionBots
+        self.incognito = incognito
     }
 
     @ObservedObject private var connection = CloudConnection.shared
@@ -644,7 +648,7 @@ struct CloudSessionView: View {
     @State private var activeTaskId: String? = nil
     @State private var activeTaskStatus: String = "idle"
     @State private var taskEvents: [[String: Any]] = []
-    @State private var isLoading = false
+    @State private var hasLoadedSessionDetail = false
     @State private var isSubmitting = false
     @StateObject private var delivery = CloudDeliveryBox()
     @State private var canStoreOutbox = false
@@ -759,7 +763,11 @@ struct CloudSessionView: View {
             }
 
             // Messages & Event Log area
-            messagesArea
+            if theme != nil && messages.isEmpty && !hasLoadedSessionDetail && !isSubmitting {
+                CloudChatSkeleton()
+            } else {
+                messagesArea
+            }
 
             Divider()
 
@@ -859,7 +867,7 @@ struct CloudSessionView: View {
         }
         .onChange(of: activeTaskId) { tid in if tid != nil, CloudE2E.attachWhenBusy { injectE2EAttachments() } }
         .modifier(CloudDraftKeeper(sessionId: sessionId, text: $inputPrompt))
-        .modifier(CloudReplyChatChrome(sessionId: sessionId, instant: replyPlan?.isInstant == true, status: replyStatus,
+        .modifier(CloudReplyChatChrome(sessionId: sessionId, instant: showsInstantHistory, status: replyStatus,
                                        onPlan: { applyReplyPlan($0) }))
         // 通话中途断开等：也走去处面板（不再往消息列表底下塞灰字，那里还会压住滚动箭头）
         .onChange(of: call.error) { e in if let e, !call.active { reportVoiceProblem(e) } }
@@ -987,19 +995,22 @@ struct CloudSessionView: View {
     }
 
     private var taskIsLive: Bool { ["running", "waiting_user", "queued"].contains(activeTaskStatus) && activeTaskId != nil }
+    // Older caches have no reply mode. Keep process details collapsed until the server confirms the mode.
+    private var showsInstantHistory: Bool { replyPlan?.isInstant ?? (theme != nil && !hasLoadedSessionDetail) }
 
     /// 历史 → 回合。任务进行中时这次任务的几轮只由实时事件那一份显示，避免同一段话、同一步工具画两遍
     private func rebuildTurns() {
         let rows: [[String: Any]]
-        if taskIsLive, serverTracksReplyTurns, replyPlan?.isInstant == true, let tid = activeTaskId {
+        let liveHistoryReady = taskIsLive && loadedTaskId == activeTaskId
+        if liveHistoryReady, serverTracksReplyTurns, replyPlan?.isInstant == true, let tid = activeTaskId {
             rows = messages.filter { $0["front_task_id"] as? String != tid }
         } else {
             let roles = messages.map { $0["role"] as? String ?? "" }
             let stamps = messages.map { $0["timestamp"] as? Double }
-            let n = CloudEventLedger.visibleHistoryCount(roles: roles, timestamps: stamps, liveShown: taskIsLive, taskStartedAt: activeTaskCreatedAt)
+            let n = CloudEventLedger.visibleHistoryCount(roles: roles, timestamps: stamps, liveShown: liveHistoryReady, taskStartedAt: activeTaskCreatedAt)
             rows = Array(messages.prefix(n))
         }
-        historyHidesTask = taskIsLive && rows.count < messages.count
+        historyHidesTask = liveHistoryReady && rows.count < messages.count
         let users = turns.reduce(into: [String: CloudHistoryAdapter.Turn]()) { result, turn in
             if turn.message.role == .user, let nonce = turn.raw["client_nonce"] as? String { result[nonce] = turn }
         }
@@ -1067,26 +1078,33 @@ struct CloudSessionView: View {
     }
 
     private func loadSessionDetail() {
-        isLoading = true
         let taskAtRequest = activeTaskId
         // 先画手机上缓存的对话（不等连接），网络回来再静默替换
-        if messages.allSatisfy({ CloudHistoryPager.pendingNonce($0) != nil }),
-           theme != nil, let cached = CloudChatCache.load(sessionId) {
+        if !hasLoadedSessionDetail, messages.allSatisfy({ CloudHistoryPager.pendingNonce($0) != nil }),
+           let theme, !incognito, !CloudBotLock.isLockedStored(theme.botId), let cached = CloudChatCache.load(sessionId) {
             messages = CloudHistoryPager.merge(current: messages, fresh: cached.messages, preservePending: true)
             if tasks.isEmpty { tasks = cached.tasks }
+            if replyPlan == nil { replyPlan = CloudReplyPlan(json: cached.reply) }
             rebuildTurns()
         }
         Task {
             do {
+                #if DEBUG
+                // Keep the network response out of the way while the UI test checks cached history.
+                if CloudE2E.token != nil, ProcessInfo.processInfo.environment["OPENMINIS_E2E_DELAY_HISTORY"] == "1" {
+                    try await Task.sleep(for: .seconds(12))
+                }
+                #endif
                 let res = try await quietly(CloudHistoryPager.firstPath(sessionId))
                 await MainActor.run {
                     guard !CloudBotService.deletedSessions.contains(self.sessionId) else { return }
                     let fresh = res["messages"] as? [[String: Any]] ?? []
                     let freshTasks = res["tasks"] as? [[String: Any]] ?? []
-                    self.canStoreOutbox = (res["incognito"] as? Bool) != true
+                    let freshReply = res["reply"] as? [String: Any]
+                    self.canStoreOutbox = !self.incognito && (res["incognito"] as? Bool) != true
                         && (self.theme.map { !CloudBotLock.isLockedStored($0.botId) } ?? true)
                     if self.theme != nil, self.canStoreOutbox {
-                        CloudChatCache.save(self.sessionId, messages: fresh, tasks: freshTasks)
+                        CloudChatCache.save(self.sessionId, messages: fresh, tasks: freshTasks, reply: freshReply)
                     }
                     // 分页：之前翻出来的更早消息留着；旧服务器不认 limit 时 has_more 缺省为 false
                     self.serverTracksReplyTurns = res["ordered_reply_turns"] as? Bool == true
@@ -1094,8 +1112,8 @@ struct CloudSessionView: View {
                                                             preservePending: self.serverTracksReplyTurns)
                     if self.messages.count == fresh.count { self.hasOlderHistory = res["has_more"] as? Bool ?? false }
                     self.tasks = freshTasks
-                    self.isLoading = false
-                    self.applyReplyPlan(CloudReplyPlan(json: res["reply"] as? [String: Any]))
+                    self.hasLoadedSessionDetail = true
+                    self.applyReplyPlan(CloudReplyPlan(json: freshReply))
                     if self.activeTaskId != taskAtRequest, self.taskIsLive,
                        self.tasks.first?["task_id"] as? String != self.activeTaskId {
                         self.rebuildTurns()
@@ -1126,8 +1144,10 @@ struct CloudSessionView: View {
             } catch {
                 await MainActor.run {
                     // 持续失败才提示，且用温和的说法（状态点同时显示连接状态）
-                    if self.messages.isEmpty { self.errorMessage = "暂时连不上云电脑，正在自动重试…" }
-                    self.isLoading = false
+                    if self.messages.isEmpty {
+                        self.errorMessage = "暂时连不上云电脑，正在自动重试…"
+                        self.hasLoadedSessionDetail = true
+                    }
                 }
             }
         }
@@ -1686,7 +1706,8 @@ struct CloudSessionView: View {
                 }
                 .padding()
             }
-            .modifier(CloudChatScrollTracking(followLatest: $followLatest, isUserScrolling: $isUserScrolling))
+            .modifier(CloudChatScrollTracking(followLatest: $followLatest, isUserScrolling: $isUserScrolling,
+                                              startsAtBottom: theme != nil))
             .environment(\.cloudChatActions, chatActions)
             // 往下拖消息收起键盘（和信息 App 一样）；以前键盘只能点别处收，拖动时键盘一直顶着，叠放卡片被挤到导航栏下面
             .scrollDismissesKeyboard(.interactively)
@@ -1715,9 +1736,10 @@ struct CloudSessionView: View {
                     return
                 }
                 guard followLatest, !isUserScrolling else { return }
-                withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                proxy.scrollTo("chat-bottom", anchor: .bottom)
             }
             .onAppear {
+                if #available(iOS 18, *), theme != nil { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     guard followLatest, !isUserScrolling else { return }
                     proxy.scrollTo("chat-bottom", anchor: .bottom)
@@ -2350,6 +2372,7 @@ struct CloudSessionView: View {
                         _ = self.ingest(events)
                     }
                     self.loadedTaskId = taskId
+                    if self.taskIsLive { self.rebuildTurns() }
                     self.errorMessage = nil
                     if ["running", "waiting_user", "queued"].contains(self.activeTaskStatus) {
                         self.streamEvents(taskId: taskId)

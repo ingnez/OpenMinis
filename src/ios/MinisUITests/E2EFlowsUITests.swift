@@ -304,9 +304,10 @@ final class E2EFlowsUITests: XCTestCase {
         shot(app, "13a-顶栏齿轮无切换器")
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
         start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)))
-        XCTAssertTrue(app.descendants(matching: .any)["todayCard"].waitForExistence(timeout: 8), "下拉没露出「今天」卡片")
+        XCTAssertFalse(app.descendants(matching: .any)["todayCard"].exists, "下拉首页仍在主 Bot 上方露出「今天」")
+        revealTodayBar(app)
         XCTAssertTrue(waitText(app, contains: "在跑的 Bot", timeout: 3) && waitText(app, contains: "云电脑", timeout: 3))
-        shot(app, "13b-下拉今天卡片")
+        shot(app, "13b-底部菜单打开今天")
     }
 
     func test14_settingsModeSwitchRoundTrip() throws {
@@ -1444,6 +1445,8 @@ extension E2EFlowsUITests {
         row.tap()
         XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 20), "点消息条目没进聊天")
         shot(app, "29f-点条目进聊天")
+        goBack(app)
+        XCTAssertTrue(app.descendants(matching: .any)["todayCard"].waitForExistence(timeout: 5), "从聊天返回没有回到「今天」")
     }
 
     /// H2：齿轮上没有状态点；主 Bot 星标按状态变色（在线 = 绿），星标不可点；长按头像看说明，点头像照常进聊天
@@ -1729,10 +1732,14 @@ extension E2EFlowsUITests {
 
     private func revealTodayBar(_ app: XCUIApplication) {
         let bar = app.descendants(matching: .any)["todayCard"]
-        if bar.exists { return }
-        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
-        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)))
-        XCTAssertTrue(bar.waitForExistence(timeout: 8), "下拉没露出「今天」统计栏")
+        let menu = app.buttons["homeAppsButton"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5), "首页左下角没有四宫格菜单")
+        menu.tap()
+        let menuItem = app.buttons["homeTodayMenuItem"]
+        let today = menuItem.exists ? menuItem : app.buttons["今天"]
+        XCTAssertTrue(today.waitForExistence(timeout: 5), "四宫格菜单没有「今天」")
+        today.tap()
+        XCTAssertTrue(bar.waitForExistence(timeout: 8), "菜单没有打开「今天」")
     }
 
     private func waitLabel(_ el: XCUIElement, valueEquals v: String, timeout: TimeInterval) -> Bool {

@@ -355,7 +355,8 @@ final class CloudBotHomeModel: ObservableObject {
             for sid in targets {
                 guard let r = try? await CloudConnection.shared.request(method: "GET", path: "/v1/sessions/\(sid)"),
                       (r["incognito"] as? Bool) != true else { continue }
-                CloudChatCache.save(sid, messages: r["messages"] as? [[String: Any]] ?? [], tasks: r["tasks"] as? [[String: Any]] ?? [])
+                CloudChatCache.save(sid, messages: r["messages"] as? [[String: Any]] ?? [],
+                                    tasks: r["tasks"] as? [[String: Any]] ?? [], reply: r["reply"] as? [String: Any])
             }
         }
     }
@@ -557,10 +558,6 @@ struct CloudBotHomeScreen: View {
     @State private var showCreate = false
     @State private var showCreateGroup = false
     @State private var showHub = false
-    /// 下拉首页露出的「今天」卡片
-    @State private var showToday = false
-    @State private var todayPanel: CloudTodayPanel?
-    @State private var restScrollTop: CGFloat?
     @State private var showShiftCard = false
     @State private var showWorkbench = false
     /// 打开 Bot 设置时直接进「云电脑设置」（连接出问题的修复按钮用）
@@ -596,10 +593,6 @@ struct CloudBotHomeScreen: View {
             ZStack(alignment: .bottom) {
                 ScrollView {
                     VStack(spacing: 0) {
-                        CloudHomeScrollProbe()
-                        if showToday && search.isEmpty {
-                            CloudTodayCard(model: model, open: open, panel: $todayPanel).transition(.move(edge: .top).combined(with: .opacity))
-                        }
                         CloudLinkBanner(onOpenSettings: openCloudSettings)
                             .padding(.horizontal, 16).padding(.bottom, 8)
                         if let until = model.dutyUntil, until > Date() {
@@ -636,7 +629,6 @@ struct CloudBotHomeScreen: View {
                         if search.isEmpty && !model.exams.isEmpty {
                             CloudExamBoard(exams: model.exams)
                         }
-                        // H1：大「今日」卡片去掉，主动消息 / 例行结果收进顶部「今天」统计栏的「今天有消息」小窗口
                         LazyVStack(spacing: 0) {
                             ForEach(groupsMatching) { g in
                                 Button { path = ["group:" + g.id] } label: {
@@ -669,14 +661,6 @@ struct CloudBotHomeScreen: View {
                         }
                         Color.clear.frame(height: 90)
                     }
-                }
-                .coordinateSpace(name: "cloudHomeScroll")
-                .onPreferenceChange(CloudHomeScrollTopKey.self) { value in
-                    guard let top = value else { return }
-                    // 静止时内容顶部在导航栏下面（iOS 26 约 116pt），以第一次读到的位置为 0，下拉为正
-                    if restScrollTop == nil { restScrollTop = top }
-                    let next = CloudHomeHeaderRules.todayVisible(was: showToday, scrollTop: Double(top - (restScrollTop ?? top)), panelOpen: todayPanel != nil)
-                    if next != showToday { withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { showToday = next } }
                 }
                 .refreshable { await model.refresh() }
                 .scrollDismissesKeyboard(.interactively)
@@ -724,6 +708,11 @@ struct CloudBotHomeScreen: View {
                     CloudRoutinesView()
                 } else if id == "nav:vault" {
                     CloudVaultView()
+                } else if id == "nav:today" {
+                    ScrollView {
+                        CloudTodayCard(model: model, open: open)
+                    }
+                    .navigationTitle("今天")
                 } else if id.hasPrefix("page:") {
                     let rest = id.dropFirst(5).split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
                     CloudPageDetailView(pageId: String(rest.first ?? ""), title: rest.count > 1 ? String(rest[1]) : "页面")
@@ -829,7 +818,11 @@ struct CloudBotHomeScreen: View {
         CloudHaptics.tap()
         model.markSeen(id)
         model.rememberCurrent(id)
-        path = [id]
+        if path.last == "nav:today" {
+            path.append(id)
+        } else {
+            path = [id]
+        }
     }
 
     private func openBotSettings() {
@@ -853,6 +846,8 @@ struct CloudBotHomeScreen: View {
                 Button { path = ["hidden"] } label: {
                     Label(model.hiddenBots.isEmpty ? "已隐藏对话" : "已隐藏对话（\(model.hiddenBots.count)）", systemImage: "eye.slash")
                 }
+                Button { path = ["nav:today"] } label: { Label("今天", systemImage: "calendar") }
+                    .accessibilityIdentifier("homeTodayMenuItem")
             } label: {
                 CloudHomeAppsGlyph()
                     .stroke(style: StrokeStyle(lineWidth: 1.65, lineCap: .round, lineJoin: .round))
@@ -863,7 +858,7 @@ struct CloudBotHomeScreen: View {
             }
             .buttonStyle(.plain)
             .tint(Color(.label))
-            .accessibilityLabel("连接应用")
+            .accessibilityLabel("首页菜单")
             .accessibilityIdentifier("homeAppsButton")
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
@@ -1040,7 +1035,8 @@ struct CloudBotChatView: View {
 
     init(botId: String, sessionId: String? = nil) {
         self.botId = botId
-        _sessionId = State(initialValue: sessionId)
+        _sessionId = State(initialValue: sessionId ?? UserDefaults.standard.string(forKey: Self.lastSessionKey(botId))
+                           ?? CloudBotHomeModel.shared.bot(botId)?.latestSessionId)
         _backdropRaw = AppStorage(wrappedValue: "", CloudChatBackdrop.key(botId))
     }
 
@@ -1061,7 +1057,7 @@ struct CloudBotChatView: View {
                                  selectedInstanceId: UserDefaults.standard.string(forKey: "OpenMinisCloud_selectedInstanceId") ?? "",
                                  botHasOwnModel: bot.hasOwnModel,
                                  mentionBots: model.bots.filter { $0.id != botId },
-                                 theme: CloudBotChatTheme(bot: bot))
+                                 theme: CloudBotChatTheme(bot: bot), incognito: incognito?.id == sid)
                     .id(sid + "|" + backdropRaw)
                     .environment(\.cloudChatBotId, botId)
                     .environment(\.colorScheme, CloudChatBackdrop(rawValue: backdropRaw)?.colorScheme ?? systemScheme)

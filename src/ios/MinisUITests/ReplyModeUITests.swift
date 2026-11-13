@@ -283,6 +283,28 @@ final class ReplyModeUITests: XCTestCase {
         shot(app, "reply-08c-再点收起")
     }
 
+    func testReply_reopenInstantHistoryAtLatestMessage() throws {
+        var app = launch(mode: "instant")
+        openBot(app)
+        send(app, "先翻记忆 早上好")
+        XCTAssertTrue(waitText(app, contains: "记忆里没有新事", timeout: 25))
+        let latest = "重开时应看到的末条消息"
+        send(app, latest)
+        XCTAssertTrue(waitText(app, contains: "秒回：" + latest, timeout: 25))
+        hideKeyboard(app)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["homeAppsButton"].waitForExistence(timeout: 10))
+        app.terminate()
+        app = launch(mode: "instant", reset: false, delayHistory: true)
+        openBot(app)
+        let lastReply = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "秒回：" + latest, "秒回：" + latest)
+        ).firstMatch
+        XCTAssertTrue(poll(4) { lastReply.exists && lastReply.isHittable }, "重开后没有先从缓存显示最新回复")
+        assertNoReasoningOrBrief(app)
+        shot(app, "reply-重开直接显示最新回复")
+    }
+
     /// 例行任务 / 主动消息的内部提示词（「…只回复 [SKIP]」）不能显示成用户气泡；后面 Bot 的回复照常显示
     func testReply_internalPromptNotUserBubble() throws {
         var app = launch(mode: "instant")
@@ -611,7 +633,7 @@ final class ReplyModeUITests: XCTestCase {
         return r.requests.map(\.text)
     }
 
-    private func launch(mode: String, reset: Bool = true) -> XCUIApplication {
+    private func launch(mode: String, reset: Bool = true, delayHistory: Bool = false) -> XCUIApplication {
         if reset { _ = probe("/_e2e/reset") }
         XCTAssertNotNil(probe("/_e2e/reply?mode=" + mode), "探针设不了回复方式（E2E 云端没起来？）")
         let app = XCUIApplication()
@@ -620,6 +642,7 @@ final class ReplyModeUITests: XCTestCase {
         app.launchArguments += ["-OpenMinisCloud_lockDefaultsDecided", "(e2ebot)", "-OpenMinisCloud_lockedBots", "()"]
         app.launchEnvironment["OPENMINIS_E2E_TOKEN"] = Self.token
         app.launchEnvironment["OPENMINIS_E2E_PORT"] = "18765"
+        if delayHistory { app.launchEnvironment["OPENMINIS_E2E_DELAY_HISTORY"] = "1" }
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 60))
         dismissKeyboardIntro(app)

@@ -20,9 +20,6 @@ struct CloudHomeHeaderRulesTests {
         let start = cal.startOfDay(for: now).timeIntervalSince1970
         let c = R.todayCounts(lastAts: [start + 5, start - 5, now.timeIntervalSince1970, 0], workingCount: 2, now: now, calendar: cal)
         check("今天的对话数只算 0 点之后", c.chatsToday == 2 && c.running == 2)
-        check("下拉够了显示今天卡片", R.todayVisible(was: false, scrollTop: 80))
-        check("下拉不够保持", !R.todayVisible(was: false, scrollTop: 30) && R.todayVisible(was: true, scrollTop: 0))
-        check("往上滑收起", !R.todayVisible(was: true, scrollTop: -60))
         check("干活时眨眼更勤", R.blinkWait(working: true).upperBound < R.blinkWait(working: false).lowerBound)
         check("两种模式的标题", HomeMode.local.title == "本地模式" && HomeMode.bots.title == "云端模式")
         check("模式存储值", HomeMode.from("bots") == .bots && HomeMode.from("local") == .local && HomeMode.from("") == .local)
@@ -48,8 +45,6 @@ struct CloudHomeHeaderRulesTests {
         check("星标：连接中黄", R.star(.connecting, botError: false) == (.yellow, "正在连接服务器…"))
         check("星标：断开红且提示重连", R.star(.offline, botError: false).tone == .red && R.star(.offline, botError: false).text.contains("重连"))
         check("星标：Bot 出错红", R.star(.online(needsAttention: false), botError: true).tone == .red)
-        check("小窗口开着时上滑不收起「今天」", R.todayVisible(was: true, scrollTop: -200, panelOpen: true))
-        check("小窗口关着照常收起", !R.todayVisible(was: true, scrollTop: -200, panelOpen: false))
         if failed > 0 { exit(1) }
         print("全部通过")
     }

@@ -139,8 +139,7 @@ struct CloudHomeCenterStatus: View {
 struct CloudTodayCard: View {
     @ObservedObject var model: CloudBotHomeModel
     let open: (String) -> Void
-    /// 首页持有：小窗口开着时首页不因滚动收起这条栏
-    @Binding var panel: CloudTodayPanel?
+    @State private var panel: CloudTodayPanel?
     @ObservedObject private var link = CloudLinkSupervisor.shared
 
     /// 「今天有消息」小窗口的一条
@@ -186,9 +185,6 @@ struct CloudTodayCard: View {
             }
             .padding(.vertical, 12)
             .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color(.secondarySystemBackground)))
-            .overlay(alignment: .topLeading) {
-                Text("今天").font(.caption2.weight(.semibold)).foregroundStyle(.secondary).padding(.leading, 12).padding(.top, -16)
-            }
             if panel == .running {
                 runningPanel.transition(.opacity.combined(with: .move(edge: .top)))
             } else if panel == .messages {
@@ -320,23 +316,6 @@ struct CloudTodayCard: View {
         CloudPreviewText.rich(s).reduce(Text("")) { acc, seg in
             acc + (seg.bold ? Text(seg.text).bold() : Text(seg.text))
         }
-    }
-}
-
-/// 读滚动位置：首页内容顶部相对滚动视图的 y（下拉为正）
-/// 可选值：VStack 里别的子视图不设这个偏好时贡献的是 defaultValue，以前 reduce 直接用 nextValue()
-/// 会被后面兄弟视图的 0 盖掉，下拉永远读到 0（42963481185 test13「今天」卡片不出来）
-struct CloudHomeScrollTopKey: PreferenceKey {
-    static let defaultValue: CGFloat? = nil
-    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) { value = value ?? nextValue() }
-}
-
-struct CloudHomeScrollProbe: View {
-    var body: some View {
-        GeometryReader { g in
-            Color.clear.preference(key: CloudHomeScrollTopKey.self, value: g.frame(in: .named("cloudHomeScroll")).minY)
-        }
-        .frame(height: 0)
     }
 }
 
