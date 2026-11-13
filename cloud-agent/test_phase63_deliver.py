@@ -12,7 +12,7 @@ import time
 import unittest
 from pathlib import Path
 from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request, ProxyHandler, build_opener
 import struct
 import zipfile
 
@@ -77,6 +77,19 @@ def _write_fixture(ws, name, data=None, writer=None):
 class DeliverExecutableTests(unittest.TestCase):
     def test_delivery_does_not_interrupt_task_when_agent_starts_as_script(self):
         token = "fake-delivery-cli-token"
+        model_name = "m-delivery-cli"
+        previous_script = FakeModelHandler.scripts.get(model_name)
+        def reply(data):
+            if not tool_turns(data):
+                return tool_call("cli-deliver", "deliver_file", {"path": "report.txt"})
+            return {"role": "assistant", "content": "Report delivered"}
+        FakeModelHandler.scripts[model_name] = reply
+        def restore_script():
+            if previous_script is None:
+                FakeModelHandler.scripts.pop(model_name, None)
+            else:
+                FakeModelHandler.scripts[model_name] = previous_script
+        self.addCleanup(restore_script)
         with tempfile.TemporaryDirectory() as folder, socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
@@ -89,14 +102,18 @@ class DeliverExecutableTests(unittest.TestCase):
             model, model_port = _serve(FakeModelHandler)
             self.addCleanup(model.server_close)
             self.addCleanup(model.shutdown)
+            # This API is always local, even on Macs with system HTTP proxies.
+            opener = build_opener(ProxyHandler({}))
+            output = tempfile.TemporaryFile(mode="w+b")
+            self.addCleanup(output.close)
             process = subprocess.Popen([sys.executable, str(Path(__file__).with_name("cloud_agent_server.py"))],
-                                       env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                       env=env, stdout=output, stderr=subprocess.STDOUT)
             try:
                 def request(method, route, body=None):
                     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
                     data = json.dumps(body).encode() if body is not None else None
                     req = Request(f"http://127.0.0.1:{port}{route}", data=data, headers=headers, method=method)
-                    with urlopen(req, timeout=2) as response:
+                    with opener.open(req, timeout=2) as response:
                         return json.load(response)
 
                 deadline = time.monotonic() + 10
@@ -104,14 +121,20 @@ class DeliverExecutableTests(unittest.TestCase):
                     try:
                         request("GET", "/health")
                         break
-                    except URLError:
+                    except URLError as error:
                         if time.monotonic() >= deadline or process.poll() is not None:
-                            raise
+                            output.seek(0)
+                            self.fail(f"Executable Agent health check failed: {error}; "
+                                      f"exit={process.poll()}; output="
+                                      + output.read().decode(errors="replace")[-4000:])
                         time.sleep(.05)
                 sid = request("POST", "/v1/sessions", {"title": "Executable delivery"})["session_id"]
+                workspace = path / "workspace" / sid
+                workspace.mkdir(parents=True, exist_ok=True)
+                (workspace / "report.txt").write_text("executable delivery evidence", encoding="utf-8")
                 task = request("POST", f"/v1/sessions/{sid}/messages", {
                     "content": "Generate a report",
-                    "model": "m-delivery-cli",
+                    "model": model_name,
                     "provider": {"base_url": f"http://127.0.0.1:{model_port}/v1", "api_key": "fake-model-key"},
                 })["task_id"]
                 deadline = time.monotonic() + 10
@@ -122,6 +145,15 @@ class DeliverExecutableTests(unittest.TestCase):
                         break
                     time.sleep(.05)
                 self.assertEqual(status, "completed")
+                session = request("GET", f"/v1/sessions/{sid}")
+                delivered = [item for message in session["messages"]
+                             for item in message.get("deliverables") or []]
+                self.assertTrue(any(item.get("name") == "report.txt" for item in delivered), delivered)
+                replies = [data for data in FakeModelHandler.requests if data.get("model") == model_name]
+                results = [message for data in replies for message in tool_turns(data)
+                           if message.get("tool_call_id") == "cli-deliver"]
+                self.assertTrue(results, "The executable regression never called deliver_file")
+                self.assertEqual(json.loads(results[-1]["content"])["status"], "ok")
             finally:
                 process.terminate()
                 process.wait(timeout=5)

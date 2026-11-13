@@ -1134,10 +1134,18 @@ jobs:
           set -o pipefail
           xcrun swiftc -swift-version 5 -whole-module-optimization -emit-sil -o /tmp/cloud-compile-check.sil -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 scripts/CloudConnectionTypecheckSupport.swift scripts/CloudViewsTypecheckSupport.swift scripts/CloudChatTypecheckSupport.swift scripts/CloudPhase1TypecheckSupport.swift scripts/CloudRealtimeTypecheckSupport.swift src/ios/Views/Chat/AIChatView/Cloud/*.swift src/ios/Views/Chat/AIChatView/Images/*.swift src/ios/WatchShared/*.swift 2>&1 | tee cloud-connection-typecheck.log
 
-      - name: 云端 Agent 服务集成验证与资源打包
+      - name: 云端 Agent 服务回归
+        id: agent_regression
+        # A targeted UI diagnostic may collect its evidence independently;
+        # the final step still makes this job fail if this regression failed.
+        continue-on-error: ${{ inputs.only_testing != '' }}
         run: |
           set -o pipefail
           python3 -m unittest discover -s cloud-agent -p 'test*.py' -v 2>&1 | tee cloud-agent-test.log
+
+      - name: 云端 Agent 服务集成验证与资源打包
+        run: |
+          set -o pipefail
           python3 scripts/prepare_cloud_agent.py
           swiftc -swift-version 5 src/ios/Views/Chat/AIChatView/Cloud/CloudContextFiles.swift scripts/CloudContextFilesTests.swift -o /tmp/cloud-context-tests
           /tmp/cloud-context-tests | tee cloud-context-test.log
@@ -1581,6 +1589,10 @@ jobs:
       - name: 端到端流程结果与截图
         if: always()
         run: |
+          if [ ! -f ui-tests.log ]; then
+            echo 'UI tests did not execute; inspect prerequisite logs.' > e2e-summary.md
+            exit 0
+          fi
           xcrun xcresulttool get test-results summary --path ui-tests.xcresult --format json > ui-tests-summary.json 2>/dev/null || true
           xcrun xcresulttool get test-results tests --path ui-tests.xcresult --format json > ui-tests-tests.json 2>/dev/null || true
           python3 scripts/e2e_summary.py ui-tests.log ui-tests-summary.json ui-tests-tests.json > e2e-summary.md || true
@@ -1606,6 +1618,8 @@ jobs:
             ffmpeg-simulator.log
             rclone-simulator.log
             hang-samples
+            cloud-agent-test.log
+            cloud-connection-typecheck.log
           retention-days: 7
 
       - name: iOS 单元测试 MinisTests（模拟器，MinisUnitTests 方案）
@@ -1647,7 +1661,15 @@ jobs:
             e2e-cloud-stack.log
             simulator-boot.log
             unit-tests.log
+            cloud-agent-test.log
+            cloud-connection-typecheck.log
           retention-days: 14
+
+      - name: Agent 回归必须通过（先保存定向 UI 诊断证据再判定）
+        if: ${{ always() && steps.agent_regression.outcome == 'failure' }}
+        run: |
+          echo '::error::Agent regression failed; UI diagnostic evidence does not make this job pass.'
+          exit 1
 
       - name: MinisTests 必须全部通过（先传完日志再判定）
         if: always() && steps.unit.outcome == 'failure'
