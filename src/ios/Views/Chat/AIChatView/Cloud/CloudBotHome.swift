@@ -688,6 +688,7 @@ struct CloudBotHomeScreen: View {
                     Menu {
                         Button { showCreate = true } label: { Label("新 Bot", systemImage: "person.crop.circle.badge.plus") }
                         Button { showCreateGroup = true } label: { Label("新群聊", systemImage: "person.3") }
+                            .accessibilityIdentifier("createGroupButton")
                             .disabled(model.bots.isEmpty)
                         if !model.hiddenBots.isEmpty {
                             Button { path = ["hidden"] } label: { Label("已隐藏对话（\(model.hiddenBots.count)）", systemImage: "eye.slash") }

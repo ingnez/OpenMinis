@@ -26,6 +26,12 @@ typealias L = CloudGroupVoiceRules.Line
         check(R.next(pending: p, speaking: false, recording: false, heardText: false, silence: 0, typing: 0, sending: true) == .wait, "发送中不抢")
         check(R.spokenText("**我**觉得 [资料](https://x.y) `code`") == "我觉得 资料 code", "念之前去掉符号：\(R.spokenText("**我**觉得 [资料](https://x.y) `code`"))")
         check(R.spokenText(String(repeating: "长", count: 700)).count == 602, "太长只念开头")
-        print("PASS：群聊语音轮流规则（只念新回复、按顺序、一个一个念、有人打字就等、停顿发送、去符号）")
+        // G5 / G8：只听某一个、会议感文案、插话
+        check(R.pending(lines, after: 4, spoken: [], listenTo: "bot_a").map(\.id) == [6], "只听 bot_a")
+        check(R.meetingStatus(speaking: "厨师", recording: false, muted: false, waitingBots: 0).contains("可插话"), "正在说时可插话")
+        check(R.meetingStatus(speaking: nil, recording: true, muted: false, waitingBots: 0) == "正在听你说…", "听你说")
+        check(R.meetingStatus(speaking: nil, recording: false, muted: false, waitingBots: 2) == "等候 2 位 Bot 发言", "等候")
+        check(R.meetingStatus(speaking: nil, recording: false, muted: true, waitingBots: 0) == "已静音", "静音")
+        print("PASS：群聊语音轮流规则（只念新回复、按顺序、一个一个念、有人打字就等、停顿发送、去符号、只听、会议感）")
     }
 }

@@ -104,6 +104,10 @@ def script(data):
     if "做一张海报" in text:
         long = "[海报链接](https://example.com/poster)\n\n" + ("这是一段很长的说明，方便在会话页里展开查看。" * 18)
         return {"role": "assistant", "content": long + "\n\n海报长消息结束"}
+    if "大家好" in text or "群里" in text:
+        return {"role": "assistant", "content": "群里收到：大家好"}
+    if "@E2E工匠" in text or "@工匠" in text or "做海报" in text:
+        return {"role": "assistant", "content": "工匠在群里：海报可以做"}
     if "加粗" in text:
         return {"role": "assistant", "content": "> 这是**结论：**引用里的中文加粗，还有**「重点」**和**加粗的中文**。\n\n正文第二段。"}
     if "生成交付物" in text:
@@ -784,6 +788,7 @@ def main():
 
     call("PUT", "/v1/credentials/e2e", {"api_key": "sk-e2e-fake-000000000000", "base_url": model_base})
     call("PUT", f"/v1/bots/{BOT_ID}", {"name": BOT_NAME, "instructions": "端到端测试 Bot", "model": MODEL, "credential": "e2e"})
+    call("PUT", f"/v1/bots/{MAKER_ID}", {"name": MAKER_NAME, "instructions": "端到端测试工匠 Bot，擅长做海报", "model": MODEL, "credential": "e2e"})
     set_reply("verbose")
     plugins = call("GET", "/v1/plugins")
     ids = [c["id"] for c in (plugins.get("catalog") or [])]

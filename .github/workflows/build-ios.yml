@@ -315,6 +315,11 @@ jobs:
           set -o pipefail
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudGroupVoiceRules.swift scripts/CloudGroupVoiceTests.swift -o /tmp/cloud-group-voice-tests
           /tmp/cloud-group-voice-tests
+      - name: 群聊 G1-G11 规则测试
+        run: |
+          set -o pipefail
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudGroupRules.swift scripts/CloudGroupRulesTests.swift -o /tmp/cloud-group-rules-tests
+          /tmp/cloud-group-rules-tests
       - name: 工作流画布逻辑测试
         run: |
           set -o pipefail
@@ -711,6 +716,8 @@ jobs:
           /tmp/cloud-workflow-graph-tests | tee cloud-workflow-graph-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudGroupVoiceRules.swift scripts/CloudGroupVoiceTests.swift -o /tmp/cloud-group-voice-tests
           /tmp/cloud-group-voice-tests | tee cloud-group-voice-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudGroupRules.swift scripts/CloudGroupRulesTests.swift -o /tmp/cloud-group-rules-tests
+          /tmp/cloud-group-rules-tests | tee cloud-group-rules-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudHistoryPager.swift scripts/CloudHistoryPagerTests.swift -o /tmp/cloud-history-pager-tests
           /tmp/cloud-history-pager-tests | tee cloud-history-pager-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/LocalCallDivider.swift scripts/LocalCallDividerTests.swift -o /tmp/local-call-divider-tests
@@ -1087,6 +1094,8 @@ jobs:
           /tmp/cloud-workflow-graph-tests | tee cloud-workflow-graph-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudGroupVoiceRules.swift scripts/CloudGroupVoiceTests.swift -o /tmp/cloud-group-voice-tests
           /tmp/cloud-group-voice-tests | tee cloud-group-voice-tests.log
+          swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudGroupRules.swift scripts/CloudGroupRulesTests.swift -o /tmp/cloud-group-rules-tests
+          /tmp/cloud-group-rules-tests | tee cloud-group-rules-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Cloud/CloudHistoryPager.swift scripts/CloudHistoryPagerTests.swift -o /tmp/cloud-history-pager-tests
           /tmp/cloud-history-pager-tests | tee cloud-history-pager-tests.log
           swiftc -swift-version 5 -parse-as-library src/ios/Views/Chat/AIChatView/Realtime/LocalCallDivider.swift scripts/LocalCallDividerTests.swift -o /tmp/local-call-divider-tests

@@ -20,12 +20,23 @@ enum CloudGroupVoiceRules {
     /// 停顿多久算说完
     static let endOfSpeech: TimeInterval = 1.6
 
-    /// 通话开始之后新来的、要念的 Bot 消息（你自己的、表情、空的不念），按 id 顺序
-    static func pending(_ lines: [Line], after startId: Int, spoken: Set<Int>) -> [Line] {
-        lines.filter { $0.id > startId && !spoken.contains($0.id) && $0.sender != "user"
+    /// 通话开始之后新来的、要念的 Bot 消息（你自己的、表情、空的不念），按 id 顺序；listenTo 只念这一个 Bot。
+    static func pending(_ lines: [Line], after startId: Int, spoken: Set<Int>, listenTo: String? = nil) -> [Line] {
+        let base = lines.filter { $0.id > startId && !spoken.contains($0.id) && $0.sender != "user"
             && ($0.kind == "text" || $0.kind == "task_result")
             && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .sorted { $0.id < $1.id }
+        if let listenTo, !listenTo.isEmpty { return base.filter { $0.sender == listenTo } }
+        return base
+    }
+
+    /// 会议感状态：谁在说、是否在听你、可否插话。
+    static func meetingStatus(speaking: String?, recording: Bool, muted: Bool, waitingBots: Int) -> String {
+        if muted { return "已静音" }
+        if let speaking, !speaking.isEmpty { return "\(speaking) 正在说…（可插话）" }
+        if recording { return "正在听你说…" }
+        if waitingBots > 0 { return "等候 \(waitingBots) 位 Bot 发言" }
+        return "轮到你说了"
     }
 
     /// 每 0.3 秒决定一次下一步

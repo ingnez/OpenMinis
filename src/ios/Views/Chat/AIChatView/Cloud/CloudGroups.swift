@@ -16,6 +16,9 @@ struct CloudGroup: Identifiable, Equatable {
     var lastContent: String?
     var lastAt: Double
     var typing: [String]
+    var lastReadId: Int
+    var notifyMode: String
+    var missedCount: Int
 
     init(_ d: [String: Any]) {
         id = d["group_id"] as? String ?? ""
@@ -27,6 +30,9 @@ struct CloudGroup: Identifiable, Equatable {
         lastSender = last?["sender"] as? String
         lastContent = last?["content"] as? String
         lastAt = (last?["timestamp"] as? Double) ?? (d["updated_at"] as? Double) ?? 0
+        lastReadId = d["last_read_id"] as? Int ?? 0
+        notifyMode = d["notify_mode"] as? String ?? "relevant"
+        missedCount = d["missed_count"] as? Int ?? (d["missed"] as? [String: Any]).flatMap { $0["count"] as? Int } ?? 0
     }
 }
 
@@ -50,6 +56,42 @@ struct CloudGroupMessage: Identifiable, Equatable {
         let meta = d["meta"] as? [String: Any]
         taskStatus = meta?["status"] as? String
         sessionId = meta?["session_id"] as? String
+        reason = meta?["reason"] as? String
+        wrapSummary = meta?["summary"] as? String
+        disagreements = meta?["disagreements"] as? [String] ?? []
+        quotaKind = meta?["quota"] as? String
+    }
+    let reason: String?
+    let wrapSummary: String?
+    let disagreements: [String]
+    let quotaKind: String?
+
+    var asLine: CloudGroupRules.Line {
+        .init(id: id, sender: sender, kind: kind, content: content, replyTo: replyTo, reason: reason, quotaKind: quotaKind)
+    }
+}
+
+enum CloudGroupPayload {
+    static func missed(_ d: [String: Any], fallbackRead: Int = 0) -> CloudGroupRules.Missed {
+        let m = d["missed"] as? [String: Any] ?? [:]
+        return CloudGroupRules.Missed(
+            count: m["count"] as? Int ?? 0,
+            senders: m["senders"] as? [String] ?? [],
+            preview: m["preview"] as? String ?? "",
+            fromId: m["from_id"] as? Int ?? fallbackRead)
+    }
+
+    static func quota(_ d: [String: Any]) -> CloudGroupRules.Quota {
+        let q = d["quota"] as? [String: Any] ?? [:]
+        var out = CloudGroupRules.Quota(
+            turns: q["turns"] as? Int ?? 0,
+            turnsMax: q["turns_max"] as? Int ?? 0,
+            tokens: q["tokens"] as? Int ?? 0,
+            tokensMax: q["tokens_max"] as? Int ?? 0,
+            hit: q["hit"] as? Bool ?? false,
+            hint: q["hint"] as? String)
+        if out.hint == nil { out.hint = CloudGroupRules.quotaHint(out) }
+        return out
     }
 }
 
@@ -66,9 +108,10 @@ enum CloudGroupService {
         return (r["groups"] as? [[String: Any]] ?? []).map(CloudGroup.init)
     }
 
-    static func get(_ id: String) async throws -> (CloudGroup, [CloudGroupMessage]) {
+    static func get(_ id: String) async throws -> (CloudGroup, [CloudGroupMessage], CloudGroupRules.Missed, CloudGroupRules.Quota) {
         let r = try await conn().request(method: "GET", path: "/v1/groups/\(id)")
-        return (CloudGroup(r), (r["messages"] as? [[String: Any]] ?? []).map(CloudGroupMessage.init))
+        return (CloudGroup(r), (r["messages"] as? [[String: Any]] ?? []).map(CloudGroupMessage.init),
+                CloudGroupPayload.missed(r), CloudGroupPayload.quota(r))
     }
 
     static func create(name: String, members: [String]) async throws -> String {
@@ -85,8 +128,9 @@ enum CloudGroupService {
     }
 
     /// 成员 Bot 没有自己的模型时，用手机上当前选的模型（Key 先加密上传到云电脑，不随消息明文发送）
-    static func send(_ id: String, text: String, nonce: String = UUID().uuidString) async throws -> Int {
+    static func send(_ id: String, text: String, nonce: String = UUID().uuidString, replyTo: Int? = nil) async throws -> Int {
         var body: [String: Any] = ["content": text, "client_nonce": nonce]
+        if let replyTo { body["reply_to"] = replyTo }
         let d = UserDefaults.standard
         let instanceId = d.string(forKey: "OpenMinisCloud_selectedInstanceId") ?? ""
         let model = d.string(forKey: "OpenMinisCloud_manualModel") ?? ""
@@ -101,9 +145,23 @@ enum CloudGroupService {
     }
 
     /// 长轮询：有新消息或输入状态变化时返回
-    static func poll(_ id: String, after: Int, wait: Int = 20) async throws -> ([CloudGroupMessage], [String]) {
+    static func poll(_ id: String, after: Int, wait: Int = 20) async throws -> ([CloudGroupMessage], [String], CloudGroupRules.Quota) {
         let r = try await conn().request(method: "GET", path: "/v1/groups/\(id)/messages?after=\(after)&wait=\(wait)")
-        return ((r["messages"] as? [[String: Any]] ?? []).map(CloudGroupMessage.init), r["typing"] as? [String] ?? [])
+        return ((r["messages"] as? [[String: Any]] ?? []).map(CloudGroupMessage.init), r["typing"] as? [String] ?? [], CloudGroupPayload.quota(r))
+    }
+
+    static func wrap(_ id: String) async throws -> [String: Any] {
+        try await conn().request(method: "POST", path: "/v1/groups/\(id)/wrap", body: [:])
+    }
+
+    static func markRead(_ id: String, lastId: Int) async throws {
+        _ = try await conn().request(method: "POST", path: "/v1/groups/\(id)/read", body: ["last_id": lastId])
+    }
+
+    static func spinTask(_ id: String, botId: String, goal: String? = nil) async throws {
+        var body: [String: Any] = ["bot_id": botId]
+        if let goal, !goal.isEmpty { body["goal"] = goal }
+        _ = try await conn().request(method: "POST", path: "/v1/groups/\(id)/spin-task", body: body)
     }
 }
 
@@ -159,6 +217,14 @@ struct CloudGroupHomeRow: View {
                 titleLayout {
                     Text(group.name).font(.headline).lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
                     Text("\(group.members.count + 1)").font(.caption).foregroundStyle(.tertiary)
+                    if group.missedCount > 0 {
+                        Text("\(group.missedCount)")
+                            .font(.caption2.weight(.bold)).foregroundStyle(.white)
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.orange))
+                            .accessibilityLabel("不在时错过 \(group.missedCount) 条")
+                            .accessibilityIdentifier("groupMissedBadge-\(group.id)")
+                    }
                     if !typeSize.isAccessibilitySize { Spacer(minLength: 8) }
                     Text(CloudBotHome.timeText(group.lastAt)).font(.caption).foregroundStyle(.secondary)
                 }
@@ -221,7 +287,9 @@ struct CloudGroupCreateSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(saving ? "创建中…" : "创建") { create() }.disabled(selected.isEmpty || saving)
+                    Button(saving ? "创建中…" : "创建") { create() }
+                        .disabled(selected.isEmpty || saving)
+                        .accessibilityIdentifier("createGroupConfirm")
                 }
             }
         }
@@ -273,6 +341,7 @@ struct CloudGroupMemberPicker: View {
                 }
             }
             .accessibilityAddTraits(selected.contains(bot.id) ? .isSelected : [])
+            .accessibilityIdentifier("groupMember-\(bot.id)")
         }
     }
 }
@@ -287,17 +356,27 @@ final class CloudGroupChatModel: ObservableObject {
     @Published var typing: [String] = []
     @Published var errorText: String?
     @Published var sending = false
+    @Published var listenTo: String? = nil
+    @Published var replyTo: CloudGroupMessage? = nil
+    @Published var quota = CloudGroupRules.Quota(turns: 0, turnsMax: 0, tokens: 0, tokensMax: 0, hit: false, hint: nil)
+    @Published var missed = CloudGroupRules.Missed(count: 0, senders: [], preview: "", fromId: 0)
+    @Published var showMissed = false
+    @Published var expandedFolds: Set<Int> = []
+    @Published var threadSeed: Int? = nil
     private var lastId = 0
 
     init(groupId: String) { self.groupId = groupId }
 
     func load() async {
         do {
-            let (g, msgs) = try await CloudQuiet.retry { try await CloudGroupService.get(self.groupId) }
+            let (g, msgs, missed, quota) = try await CloudQuiet.retry { try await CloudGroupService.get(self.groupId) }
             group = g
             messages = msgs
             typing = g.typing
             lastId = msgs.last?.id ?? 0
+            self.quota = quota
+            self.missed = missed
+            showMissed = missed.count > 0
             errorText = nil
         } catch {
             if messages.isEmpty { errorText = "暂时读不到群聊，正在自动重试…" }
@@ -308,7 +387,7 @@ final class CloudGroupChatModel: ObservableObject {
         var misses = 0
         while !Task.isCancelled {
             do {
-                let (new, typing) = try await CloudGroupService.poll(groupId, after: lastId)
+                let (new, typing, quota) = try await CloudGroupService.poll(groupId, after: lastId)
                 if Task.isCancelled { return }
                 if !new.isEmpty {
                     let known = Set(messages.map(\.id))
@@ -316,6 +395,7 @@ final class CloudGroupChatModel: ObservableObject {
                     lastId = messages.last?.id ?? lastId
                 }
                 if typing != self.typing { self.typing = typing }
+                self.quota = quota
                 misses = 0
                 if errorText != nil, !sending { errorText = nil; if group == nil { await load() } }
             } catch {
@@ -333,12 +413,40 @@ final class CloudGroupChatModel: ObservableObject {
         defer { sending = false }
         // 同一个 nonce 静默重试，服务器按 nonce 去重，不会发出两条
         let nonce = UUID().uuidString
+        let reply = replyTo?.id
+        replyTo = nil
         do {
-            _ = try await CloudQuiet.retry { try await CloudGroupService.send(self.groupId, text: text, nonce: nonce) }
+            _ = try await CloudQuiet.retry { try await CloudGroupService.send(self.groupId, text: text, nonce: nonce, replyTo: reply) }
             errorText = nil
+            await markReadNow()
         } catch {
             errorText = "发送失败：\(error.localizedDescription)"
         }
+    }
+
+    func wrapUp() async {
+        do {
+            _ = try await CloudGroupService.wrap(groupId)
+            errorText = nil
+        } catch {
+            errorText = "收尾失败：\(error.localizedDescription)"
+        }
+    }
+
+    func spinTask(botId: String) async {
+        do {
+            try await CloudGroupService.spinTask(groupId, botId: botId)
+            errorText = nil
+        } catch {
+            errorText = "转任务失败：\(error.localizedDescription)"
+        }
+    }
+
+    func markReadNow() async {
+        let last = messages.last?.id ?? lastId
+        showMissed = false
+        missed = CloudGroupRules.Missed(count: 0, senders: [], preview: "", fromId: last)
+        try? await CloudGroupService.markRead(groupId, lastId: last)
     }
 }
 
@@ -368,10 +476,13 @@ struct CloudGroupChatView: View {
                         if let err = model.errorText {
                             Text(err).font(.footnote).foregroundStyle(.red).padding(.horizontal)
                         }
-                        ForEach(visibleMessages) { m in
-                            row(m).id(m.id)
+                        if model.showMissed, model.missed.count > 0 {
+                            missedCard
                         }
-                        ForEach(model.typing, id: \.self) { bid in
+                        ForEach(Array(foldedSections.enumerated()), id: \.offset) { _, sec in
+                            sectionView(sec)
+                        }
+                        ForEach(visibleTyping, id: \.self) { bid in
                             typingRow(bid)
                         }
                         Color.clear.frame(height: 4).id("bottom")
@@ -385,6 +496,16 @@ struct CloudGroupChatView: View {
                 .onChange(of: model.typing) { _ in
                     withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
+            }
+            if !CloudGroupRules.quotaLine(model.quota).isEmpty {
+                Text(CloudGroupRules.quotaLine(model.quota))
+                    .font(.caption2)
+                    .foregroundStyle(model.quota.hit ? Color.orange : Color.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                    .background(model.quota.hit ? Color.orange.opacity(0.12) : Color(.secondarySystemBackground))
+                    .accessibilityIdentifier("groupQuotaBanner")
+                    .accessibilityLabel(CloudGroupRules.quotaLine(model.quota))
             }
             composer
         }
@@ -408,10 +529,27 @@ struct CloudGroupChatView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 14) {
+                    Menu {
+                        Button("听所有人") { model.listenTo = nil }
+                            .accessibilityIdentifier("groupListen-all")
+                        ForEach(memberBots) { b in
+                            Button {
+                                model.listenTo = b.id
+                            } label: {
+                                Label(b.name, systemImage: model.listenTo == b.id ? "checkmark" : "ear")
+                            }
+                            .accessibilityIdentifier("groupListen-\(b.id)")
+                        }
+                    } label: {
+                        Image(systemName: model.listenTo == nil ? "ear" : "ear.fill")
+                    }
+                    .accessibilityLabel(model.listenTo == nil ? "只听某个 Bot" : "正在只听一位 Bot")
+                    .accessibilityIdentifier("groupListenButton")
                     Button {
                         if groupVoice.active { groupVoice.stop(dictation: voice) } else { groupVoice.start(model: model, dictation: voice) }
                     } label: { Image(systemName: groupVoice.active ? "phone.down.fill" : "phone") }
                     .accessibilityLabel(groupVoice.active ? "挂断群聊语音" : "群聊语音")
+                    .accessibilityIdentifier("groupVoiceButton")
                     Button { showSettings = true } label: { Image(systemName: "ellipsis") }.accessibilityLabel("群设置")
                 }
             }
@@ -421,10 +559,28 @@ struct CloudGroupChatView: View {
                 CloudGroupSettingsView(group: g, onChanged: { Task { await model.load(); await home.refresh() } })
             }
         }
+        .sheet(item: threadItem) { seed in
+            CloudGroupThreadSheet(messages: threadMessages(seed.id), nameOf: { bot($0)?.name ?? $0 }, onReply: { m in
+                model.replyTo = m
+                model.threadSeed = nil
+            })
+        }
         .task {
             await model.load()
             await model.pollLoop()
         }
+    }
+
+    private var threadItem: Binding<IdentifiedInt?> {
+        Binding(
+            get: { model.threadSeed.map(IdentifiedInt.init) },
+            set: { model.threadSeed = $0?.id }
+        )
+    }
+
+    private func threadMessages(_ id: Int) -> [CloudGroupMessage] {
+        let ids = Set(CloudGroupRules.thread(around: id, in: model.messages.map(\.asLine)).map(\.id))
+        return model.messages.filter { ids.contains($0.id) }
     }
 
     private var memberBots: [CloudBot] {
@@ -432,12 +588,18 @@ struct CloudGroupChatView: View {
     }
 
     private var typingText: String {
-        let names = model.typing.compactMap { id in home.bots.first(where: { $0.id == id })?.name }
-        return names.joined(separator: "、") + " 正在输入…"
+        let names = visibleTyping.compactMap { id in home.bots.first(where: { $0.id == id })?.name }
+        return CloudGroupRules.typingLabel(names)
     }
 
-    /// 表情挂在被回应的消息下面，不单独占一行
-    private var visibleMessages: [CloudGroupMessage] { model.messages.filter { $0.kind != "reaction" } }
+    private var visibleTyping: [String] {
+        guard let listen = model.listenTo, !listen.isEmpty else { return model.typing }
+        return model.typing.filter { $0 == listen }
+    }
+
+    private var foldedSections: [CloudGroupRules.Section] {
+        CloudGroupRules.fold(CloudGroupRules.listening(model.messages.map(\.asLine), to: model.listenTo))
+    }
 
     struct ReactionCount: Identifiable {
         let emoji: String
@@ -463,6 +625,9 @@ struct CloudGroupChatView: View {
         case "system":
             Text(m.content).font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity).padding(.horizontal, 24)
+                .accessibilityIdentifier(m.quotaKind == nil ? "groupSystem-\(m.id)" : "groupQuotaHint")
+        case "wrap":
+            wrapCard(m)
         case "task", "task_result":
             taskCard(m)
         default:
@@ -474,6 +639,14 @@ struct CloudGroupChatView: View {
                             .foregroundStyle(.white)
                             .padding(.horizontal, 14).padding(.vertical, 10)
                             .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.accentColor))
+                            .contextMenu {
+                                Button { model.replyTo = m } label: { Label("回复", systemImage: "arrowshape.turn.up.left") }
+                                Button { model.threadSeed = m.id } label: { Label("查看回复串", systemImage: "text.bubble") }
+                            }
+                    }
+                    if let parent = quote(of: m) {
+                        Text("回复 \(parent)").font(.caption2).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("groupReplyQuote-\(m.id)")
                     }
                     reactionChips(m.id)
                 }
@@ -502,9 +675,12 @@ struct CloudGroupChatView: View {
                     .padding(.horizontal, 12).padding(.vertical, 9)
                     .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.systemGray6)))
                     .contextMenu {
+                        Button { model.replyTo = m } label: { Label("回复", systemImage: "arrowshape.turn.up.left") }
+                        Button { model.threadSeed = m.id } label: { Label("查看回复串", systemImage: "text.bubble") }
                         Button { CloudBotSpeaker.speak(m.content, botId: m.sender) } label: { Label("朗读", systemImage: "speaker.wave.2") }
                         Button { UIPasteboard.general.string = m.content } label: { Label("复制", systemImage: "doc.on.doc") }
                     }
+                    .onLongPressGesture(minimumDuration: 0.5) { model.replyTo = m }
                 }
                 reactionChips(m.id)
             }
@@ -591,6 +767,76 @@ struct CloudGroupChatView: View {
         }
         .padding(.horizontal, 12)
         .transition(.opacity)
+        .accessibilityIdentifier("groupTyping-\(bid)")
+    }
+
+    private func quote(of m: CloudGroupMessage) -> String? {
+        guard let rid = m.replyTo, let p = model.messages.first(where: { $0.id == rid }) else { return nil }
+        let who = p.sender == "user" ? "我" : (bot(p.sender)?.name ?? p.sender)
+        let line = p.content.replacingOccurrences(of: "\n", with: " ")
+        return who + "：" + String(line.prefix(40))
+    }
+
+    private var missedCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(CloudGroupRules.missedLabel(model.missed)).font(.subheadline.weight(.semibold))
+            if !model.missed.preview.isEmpty {
+                Text(model.missed.preview).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Button("知道了") { Task { await model.markReadNow() } }
+                .font(.caption.weight(.semibold))
+                .accessibilityIdentifier("groupMissedDismiss")
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.orange.opacity(0.12)))
+        .padding(.horizontal, 12)
+        .accessibilityIdentifier("groupMissedCard")
+    }
+
+    @ViewBuilder
+    private func sectionView(_ sec: CloudGroupRules.Section) -> some View {
+        let shown = sec.hidden.isEmpty || model.expandedFolds.contains(sec.messages.first?.id ?? 0) ? sec.messages + sec.hidden : sec.messages
+        ForEach(shown, id: \.id) { line in
+            if let m = model.messages.first(where: { $0.id == line.id }) {
+                row(m).id(m.id)
+            }
+        }
+        if !sec.hidden.isEmpty {
+            let key = sec.messages.first?.id ?? 0
+            let open = model.expandedFolds.contains(key)
+            Button {
+                if open { model.expandedFolds.remove(key) } else { model.expandedFolds.insert(key) }
+            } label: {
+                Text(open ? "收起" : CloudGroupRules.foldLabel(hidden: sec.hidden))
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Capsule().fill(Color(.secondarySystemBackground)))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .accessibilityIdentifier("groupFoldButton")
+            .accessibilityLabel(open ? "收起折叠的回复" : CloudGroupRules.foldLabel(hidden: sec.hidden))
+        }
+    }
+
+    private func wrapCard(_ m: CloudGroupMessage) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("本轮收尾").font(.subheadline.weight(.semibold))
+            Text(m.wrapSummary ?? m.content).font(.callout)
+            if m.disagreements.isEmpty {
+                if m.content.contains("没有明显分歧") {
+                    Text("没有明显分歧。").font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("分歧：" + m.disagreements.joined(separator: "；")).font(.caption).foregroundStyle(.orange)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.accentColor.opacity(0.08)))
+        .padding(.horizontal, 12)
+        .accessibilityIdentifier("groupWrapCard")
     }
 
     private var mentionCandidates: [CloudBot] {
@@ -602,6 +848,16 @@ struct CloudGroupChatView: View {
 
     private var composer: some View {
         VStack(spacing: 6) {
+            if let r = model.replyTo {
+                HStack {
+                    Text("回复 \(r.sender == "user" ? "我" : (bot(r.sender)?.name ?? r.sender))：\(String(r.content.prefix(40)))")
+                        .font(.caption).lineLimit(1)
+                    Spacer()
+                    Button("取消") { model.replyTo = nil }.font(.caption)
+                }
+                .padding(.horizontal, 14)
+                .accessibilityIdentifier("groupReplyBanner")
+            }
             if !mentionCandidates.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -612,12 +868,19 @@ struct CloudGroupChatView: View {
                             } label: {
                                 HStack(spacing: 4) {
                                     CloudBotAvatarView(spec: CloudBotAvatarSpec.of(b), size: 18)
-                                    Text(b.name).font(.subheadline)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(b.name).font(.subheadline)
+                                        if !b.summary.isEmpty {
+                                            Text(b.summary).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                        }
+                                    }
                                 }
                                 .padding(.horizontal, 10).padding(.vertical, 6)
                                 .background(Capsule().fill(Color.accentColor.opacity(0.12)))
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("groupMention-\(b.id)")
+                            .accessibilityLabel(b.summary.isEmpty ? b.name : "\(b.name)，擅长 \(b.summary)")
                         }
                     }
                     .padding(.horizontal, 14)
@@ -652,7 +915,22 @@ struct CloudGroupChatView: View {
                 }
                 .accessibilityLabel(voice.isRecording ? "说完了，发送" : "语音消息")
                 CloudGroupDebateMenu { input = $0; focused = true }
+                Menu {
+                    Button("收尾总结") { Task { await model.wrapUp() } }
+                        .accessibilityIdentifier("groupWrapButton")
+                    ForEach(memberBots) { b in
+                        Button("把讨论交给\(b.name)") { Task { await model.spinTask(botId: b.id) } }
+                            .accessibilityIdentifier("groupSpin-\(b.id)")
+                    }
+                } label: {
+                    Image(systemName: "checkmark.rectangle")
+                        .font(.system(size: 16)).foregroundStyle(.secondary)
+                        .frame(width: 34, height: 38)
+                }
+                .accessibilityLabel("收尾或转任务")
+                .accessibilityIdentifier("groupWrapMenu")
                 TextField("发消息，@ 某个 Bot 让它回答或去做事", text: $input, axis: .vertical)
+                    .accessibilityIdentifier("groupComposerField")
                     .lineLimit(1...6)
                     .focused($focused)
                     .padding(.horizontal, 14).padding(.vertical, 10)
@@ -669,6 +947,7 @@ struct CloudGroupChatView: View {
                 }
                 .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty || model.sending)
                 .accessibilityLabel("发送")
+                .accessibilityIdentifier("groupSendButton")
             }
             .padding(.horizontal, 12).padding(.bottom, 8)
         }
@@ -717,6 +996,7 @@ struct CloudGroupSettingsView: View {
     @State private var name: String
     @State private var members: [String]
     @State private var activity: String
+    @State private var notifyMode: String
     @State private var saving = false
     @State private var errorText: String?
     @State private var confirmDelete = false
@@ -727,6 +1007,7 @@ struct CloudGroupSettingsView: View {
         _name = State(initialValue: group.name)
         _members = State(initialValue: group.members)
         _activity = State(initialValue: group.activity ?? "")
+        _notifyMode = State(initialValue: group.notifyMode)
     }
 
     var body: some View {
@@ -747,6 +1028,15 @@ struct CloudGroupSettingsView: View {
                     }
                 } footer: {
                     Text("安静：主要是被 @ 的 Bot 回复；活跃：Bot 们更爱接话、点表情。发言数、token 预算等上限在 云电脑资源设置 › 群聊。")
+                }
+                Section {
+                    Picker("推送", selection: $notifyMode) {
+                        Text("只推与我相关").tag("relevant")
+                        Text("全部消息").tag("all")
+                    }
+                    .accessibilityIdentifier("groupNotifyMode")
+                } footer: {
+                    Text("只推与我相关：回复你的、被 @ 的、任务、收尾和额度提示。表情和闲聊接话不推。")
                 }
                 Section {
                     Button("删除群聊", role: .destructive) { confirmDelete = true }
@@ -786,7 +1076,8 @@ struct CloudGroupSettingsView: View {
         Task {
             do {
                 try await CloudGroupService.update(group.id, ["name": name.trimmingCharacters(in: .whitespaces), "members": members,
-                                                              "activity": activity.isEmpty ? NSNull() : activity])
+                                                              "activity": activity.isEmpty ? NSNull() : activity,
+                                                              "notify_mode": notifyMode])
                 onChanged()
                 dismiss()
             } catch {
@@ -811,5 +1102,42 @@ struct CloudGroupDebateMenu: View {
                 .frame(width: 30, height: 38)
         }
         .accessibilityLabel("辩论或投票")
+    }
+}
+
+
+private struct IdentifiedInt: Identifiable, Hashable {
+    let id: Int
+}
+
+/// G7：一条消息所在的回复串
+struct CloudGroupThreadSheet: View {
+    let messages: [CloudGroupMessage]
+    let nameOf: (String) -> String
+    let onReply: (CloudGroupMessage) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(messages) { m in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(m.sender == "user" ? "我" : nameOf(m.sender)).font(.caption.weight(.semibold))
+                            Text(m.content)
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color(.secondarySystemBackground)))
+                        .onTapGesture { onReply(m); dismiss() }
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("回复串")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+            .accessibilityIdentifier("groupThreadSheet")
+        }
     }
 }

@@ -37,7 +37,7 @@ final class CloudGroupVoiceCall: ObservableObject {
     /// 插话：正在念就停下，马上听你说
     func interrupt(model: CloudGroupChatModel) {
         CloudBotSpeaker.stop()
-        spoken.formUnion(CloudGroupVoiceRules.pending(lines(model), after: startId, spoken: spoken).map(\.id))
+        spoken.formUnion(CloudGroupVoiceRules.pending(lines(model), after: startId, spoken: spoken, listenTo: model.listenTo).map(\.id))
         speakingBot = nil
     }
 
@@ -46,7 +46,7 @@ final class CloudGroupVoiceCall: ObservableObject {
     }
 
     private func tick(model: CloudGroupChatModel, dictation: CloudDictation) {
-        let pending = CloudGroupVoiceRules.pending(lines(model), after: startId, spoken: spoken)
+        let pending = CloudGroupVoiceRules.pending(lines(model), after: startId, spoken: spoken, listenTo: model.listenTo)
         let speaking = CloudBotSpeaker.isSpeaking
         if !speaking { speakingBot = nil }
         let action = CloudGroupVoiceRules.next(
@@ -90,25 +90,34 @@ struct CloudGroupVoiceBar: View {
             Spacer()
             if call.speakingBot != nil {
                 Button("插话", action: onInterrupt).font(.subheadline.weight(.semibold))
+                    .accessibilityLabel("插话")
+                    .accessibilityIdentifier("groupVoiceInterrupt")
             }
             Button { call.muted.toggle(); if call.muted { dictation.stop() } } label: {
                 Image(systemName: call.muted ? "mic.slash.fill" : "mic.fill")
             }
             .accessibilityLabel(call.muted ? "取消静音" : "静音")
+            .accessibilityIdentifier("groupVoiceMute")
             Button(action: onHangUp) {
                 Image(systemName: "phone.down.fill").foregroundStyle(.white).padding(8).background(Circle().fill(Color.red))
             }
             .accessibilityLabel("挂断群聊语音")
+            .accessibilityIdentifier("groupVoiceHangup")
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 14).fill(Color.green.opacity(0.1)))
         .padding(.horizontal, 12)
+        .accessibilityIdentifier("groupVoiceBar")
+        .accessibilityElement(children: .contain)
     }
 
     private var status: String {
-        if let b = call.speakingBot { return "\(botName(b)) 正在说…" }
-        if call.muted { return "已静音" }
-        if dictation.isRecording { return dictation.transcript.isEmpty ? "正在听你说…" : dictation.transcript }
-        return "等 Bot 回答…（Bot 们轮流说，同一时间只有一个声音）"
+        if dictation.isRecording, !dictation.transcript.trimmingCharacters(in: .whitespaces).isEmpty {
+            return dictation.transcript
+        }
+        let speaking = call.speakingBot.map(botName)
+        return CloudGroupVoiceRules.meetingStatus(
+            speaking: speaking, recording: dictation.isRecording, muted: call.muted,
+            waitingBots: (call.speakingBot == nil && !dictation.isRecording) ? 1 : 0)
     }
 }
