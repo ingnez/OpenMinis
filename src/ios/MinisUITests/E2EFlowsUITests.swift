@@ -1651,12 +1651,19 @@ extension E2EFlowsUITests {
         }
         openBot(app)
         send(app, "E2E引用卡布局")
-        let headline = app.descendants(matching: .any)["cloudOneLineHeadline"]
-        let source = app.descendants(matching: .any)["cloudSourceChip"]
+        let headline = app.textViews["cloudOneLineHeadline"]
+        let sources = app.descendants(matching: .any).matching(identifier: "cloudSourceChip")
+        let source = sources.firstMatch
         XCTAssertTrue(headline.waitForExistence(timeout: 30))
         XCTAssertTrue(waitText(app, contains: "E2E结论正文：今夜值班，记得交班。", timeout: 5))
         XCTAssertFalse(anyElement(app, contains: "**今夜值班**"), "折叠结论露出了 Markdown 星号")
-        XCTAssertTrue(source.waitForExistence(timeout: 10))
+        guard source.waitForExistence(timeout: 10) else {
+            XCTFail("回复下方没有出处卡")
+            return
+        }
+        XCTAssertEqual(sources.count, 1, "一张出处卡应当只暴露一个无障碍元素")
+        XCTAssertTrue(source.label.contains("这是一段模拟出处"))
+        XCTAssertTrue(source.label.contains("把握度"))
         XCTAssertGreaterThanOrEqual(source.frame.minY, headline.frame.maxY, "出处卡盖住了结论")
         shot(app, "36-正文与出处卡")
     }
@@ -1694,10 +1701,15 @@ extension E2EFlowsUITests {
         let send = localSendButton(app)
         XCTAssertTrue(send.waitForExistence(timeout: 10))
         send.tap()
-        let stack = app.descendants(matching: .any).matching(
+        let message = app.descendants(matching: .any).matching(identifier: "userMessage").firstMatch
+        let stack = message.buttons.matching(
             NSPredicate(format: "identifier == %@ AND label == %@", "imageStack", "6 张图片")
         ).firstMatch
-        XCTAssertTrue(stack.waitForExistence(timeout: 20))
+        guard stack.waitForExistence(timeout: 20) else {
+            shot(app, "38-找不到本地六图叠卡")
+            XCTFail("发送后，用户消息内没有独立的六图叠卡")
+            return
+        }
         revealBelowNavBar(app, stack)
         pressVisible(app, stack)
         XCTAssertTrue(waitValue(stack, "已展开", timeout: 5), "本地纯图片消息长按未铺开")

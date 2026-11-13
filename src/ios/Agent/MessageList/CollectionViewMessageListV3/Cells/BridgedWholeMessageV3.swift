@@ -68,6 +68,9 @@ struct BridgedWholeMessageV3: View {
         // [T-in-chat-search] Compacted rows are drawn at half opacity; their
         // search highlights use stronger colours to stay visible.
         .environment(\.chatSearchDimmed, message.isCompactedHistory)
+        // Keep the row's identifier from replacing its children's identifiers,
+        // including the UIKit image stack and its accessibility actions.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(message.role == .user ? "userMessage" : "wholeMessage")
     }
 }

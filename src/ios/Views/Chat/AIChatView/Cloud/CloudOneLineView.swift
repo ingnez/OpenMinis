@@ -43,6 +43,7 @@ struct CloudSourceChip: View {
         let tint: Color = parsed.lowConfidence ? .orange : (parsed.confidence == "高" ? .green : .blue)
         return HStack(alignment: .top, spacing: 6) {
             Image(systemName: parsed.lowConfidence ? "exclamationmark.triangle" : "books.vertical")
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 Text(parsed.source)
                 if let c = parsed.confidence {
@@ -56,6 +57,7 @@ struct CloudSourceChip: View {
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(tint.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
         .textSelection(.enabled)
+        .accessibilityElement(children: .combine)
         .accessibilityIdentifier("cloudSourceChip")
     }
 }
