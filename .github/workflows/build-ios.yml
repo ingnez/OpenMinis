@@ -1184,9 +1184,18 @@ jobs:
             --cloned-source-packages "$GITHUB_WORKSPACE/build/SourcePackages" \
             2> >(tee simulator-boot.log >&2))
           echo "udid=$DEV" >> "$GITHUB_OUTPUT"
-          # Dismiss the system keyboard tutorial that can cover the test controls.
-          xcrun simctl spawn "$DEV" defaults write com.apple.keyboard.preferences DidShowContinuousPathIntroduction -bool true || true
-          xcrun simctl spawn "$DEV" defaults write com.apple.Preferences DidShowContinuousPathIntroduction -bool true || true
+          # Suppress the keyboard tutorial if the booted simulator responds.
+          python3 - "$DEV" <<'PYTHON'
+          import subprocess
+          import sys
+          for domain in ("com.apple.keyboard.preferences", "com.apple.Preferences"):
+              try:
+                  subprocess.run(["xcrun", "simctl", "spawn", sys.argv[1], "defaults", "write",
+                                  domain, "DidShowContinuousPathIntroduction", "-bool", "true"],
+                                 check=True, timeout=12)
+              except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                  print(f"::warning::Could not set keyboard preference: {error}")
+          PYTHON
 
       - name: 验证启动修复和本轮功能
         run: |

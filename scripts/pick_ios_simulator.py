@@ -132,10 +132,19 @@ def prepare_iphone_simulator(dests: list[dict[str, str]], preferred_runtime: str
             result = simctl("bootstatus", udid, "-b", timeout=180)
             result.check_returncode()
             print(result.stdout, result.stderr, file=sys.stderr, flush=True)
-            if re.search(r"Data Migration Failed|Status=3, isTerminal=YES", result.stdout + result.stderr):
+            boot_log = result.stdout + result.stderr
+            if re.search(r"Data Migration Failed|Status=3, isTerminal=YES", boot_log):
                 raise RuntimeError("iOS 系统数据迁移失败")
-            probe = simctl("spawn", udid, "launchctl", "list")
-            probe.check_returncode()
+            # The bootstatus terminal success covers migration and system app readiness.
+            # Spawning launchctl inside the guest can hang after a successful boot.
+            if not re.search(r"^\s*Finished\s*$", boot_log, re.MULTILINE):
+                raise RuntimeError("bootstatus 未报告系统启动完成")
+            devices = simctl("list", "devices", "booted", "-j")
+            devices.check_returncode()
+            if not any(device["udid"] == udid and device["state"] == "Booted"
+                       for runtime_devices in json.loads(devices.stdout)["devices"].values()
+                       for device in runtime_devices):
+                raise RuntimeError("CoreSimulator 未报告设备已启动")
             ready = True
             print(f"模拟器已就绪：{udid}", file=sys.stderr, flush=True)
             return udid
@@ -255,13 +264,15 @@ def self_test() -> None:
         attempted = []
 
         def mock_simctl(*args: str, timeout: int = 20) -> subprocess.CompletedProcess[str]:
-            if args[0] == "list":
+            if args == ("list", "-j"):
                 output = json.dumps(inventory)
+            elif args == ("list", "devices", "booted", "-j"):
+                output = json.dumps({"devices": {"runtime": [{"udid": f"fresh-{len(attempted)}", "state": "Booted"}]}})
             elif args[0] == "create":
                 attempted.append(args[-1])
                 output = f"fresh-{len(attempted)}"
-            elif args[0] == "bootstatus" and fail_first_boot and len(attempted) == 1:
-                output = "Data Migration Failed"
+            elif args[0] == "bootstatus":
+                output = "Data Migration Failed" if fail_first_boot and len(attempted) == 1 else "\tFinished\n"
             else:
                 output = ""
             return subprocess.CompletedProcess(args, 0, output, "")
