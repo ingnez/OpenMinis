@@ -1,14 +1,21 @@
 name: Validate the combined OpenMinis candidate and publish one IPA
 on:
-  push:
-    branches: [grokbot-phase2-chat-motion-ci]
-    paths: [.github/workflows/dispatch-combined-openminis-ipa.yml]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact source SHA that passed the full simulator suite
+        type: string
+        required: true
+      test_run:
+        description: Existing full simulator and MinisTests run ID
+        type: string
+        required: true
 permissions:
   actions: write
   contents: read
 env:
   TARGET_BRANCH: grokbot-phase2-combined-20261113
-  EXPECTED_SHA: a5a2b7c9230026e5df6f9d6a77eafba306f99977
+  EXPECTED_SHA: ${{ inputs.source_sha }}
 jobs:
   dispatch:
     if: github.repository == 'ingnez/OpenMinis'
@@ -17,7 +24,6 @@ jobs:
     outputs:
       build_run: ${{ steps.dispatch.outputs.build_run }}
       test_run: ${{ steps.dispatch.outputs.test_run }}
-      backend_recheck: ${{ steps.dispatch.outputs.backend_recheck }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,6 +33,7 @@ jobs:
         id: dispatch
         env:
           GH_TOKEN: ${{ github.token }}
+          TEST_RUN_INPUT: ${{ inputs.test_run }}
         run: |
           set -euo pipefail
           repo="repos/$GITHUB_REPOSITORY"
@@ -36,40 +43,32 @@ jobs:
             exit 0
           fi
           runs="$repo/actions/workflows/build-ios.yml/runs?branch=$TARGET_BRANCH&head_sha=$EXPECTED_SHA&event=workflow_dispatch&per_page=10"
-          last_id=43427487762
-          completed_checks=0
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TEST_RUN_INPUT" =~ ^[0-9]+$ ]]
+          test_id="$TEST_RUN_INPUT"
+          test "$(gh api "$repo/actions/runs/$test_id" --jq .head_sha)" = "$EXPECTED_SHA"
           while true; do
-            result=$(gh api "$runs" --jq '(.workflow_runs[0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
-            IFS=$'\t' read -r test_id status conclusion <<< "$result"
-            if [ "$test_id" != "$last_id" ]; then
-              echo "Combined simulator run: $test_id"
-              completed_checks=0
-              last_id="$test_id"
-            fi
+            result=$(gh api "$repo/actions/runs/$test_id" --jq '[.status, (.conclusion // "pending")] | @tsv')
+            IFS=$'\t' read -r status conclusion <<< "$result"
             if [ "$status" = completed ]; then
-              if [ "$conclusion" = success ]; then break; fi
-              # Keep successful same-SHA simulator work. A single group timeout
-              # can be rechecked by the IPA workflow, which runs the complete
-              # Linux suite and installed-browser checks again before release.
-              jobs_url="$repo/actions/runs/$test_id/jobs?filter=all&per_page=100"
-              cloud_only=$(gh api "$jobs_url" --jq '.jobs | group_by(.name) | map(max_by(.id)) | (map(select(.conclusion != "success" and .conclusion != "skipped")) | map(.name) | sort) as $bad | ($bad == ["cloud-computer-linux"] and any(.[]; .name == "cloud-computer-linux" and .conclusion == "failure") and any(.[]; .name == "ui-tests" and .conclusion == "success") and any(.[]; .name == "quick-linux" and .conclusion == "success"))')
-              if [ "$conclusion" = failure ] && [ "$cloud_only" = true ]; then
-                cloud_job=$(gh api "$jobs_url" --jq '[.jobs[] | select(.name == "cloud-computer-linux")] | max_by(.id) | .id')
-                cloud_log=$(mktemp)
-                gh run view "$test_id" --repo "$GITHUB_REPOSITORY" --job "$cloud_job" --log-failed > "$cloud_log"
-                if grep -Fq 'FAIL: test_group_api_and_flow (test_phase7_groups.GroupServerTests.test_group_api_and_flow)' "$cloud_log" \
-                  && grep -Eq 'FAILED \(failures=1, skipped=[0-9]+\)' "$cloud_log" \
-                  && ! grep -Eq '(^|[[:space:]])ERROR: ' "$cloud_log"; then
-                  echo "One group-result timeout; complete Linux validation must pass in the same-SHA IPA workflow"
-                  echo "backend_recheck=group-result-timeout" >> "$GITHUB_OUTPUT"
-                  break
-                fi
+              if [ "$conclusion" != success ]; then
+                echo "Full simulator run $test_id failed: $conclusion"
+                exit 1
               fi
-              completed_checks=$((completed_checks + 1))
-              if [ "$completed_checks" -ge 4 ]; then echo "Combined simulator tests: $conclusion"; exit 1; fi
+              break
             fi
             sleep 45
           done
+          mac_jobs=$(gh api "$repo/actions/runs/$test_id/jobs?filter=latest&per_page=100" --jq '[.jobs[] | select(.name == "ui-tests")]')
+          python3 - "$mac_jobs" <<'PYROUTE'
+          import json, sys
+          jobs = json.loads(sys.argv[1])
+          assert len(jobs) == 1, jobs
+          job = jobs[0]
+          assert job['runner_name'] == 'Mac-58' and job['conclusion'] == 'success', job
+          assert {'self-hosted', 'macOS', 'openminis-mac'} <= set(job['labels']), job
+          print('Full simulator validation ran successfully on Mac-58')
+          PYROUTE
           echo "test_run=$test_id" >> "$GITHUB_OUTPUT"
           evidence=$(mktemp -d)
           gh run download "$test_id" --repo "$GITHUB_REPOSITORY" --name Minis-e2e-early --dir "$evidence"
@@ -113,7 +112,7 @@ jobs:
             exit 0
           fi
           before=$(gh api "$runs" --jq '.workflow_runs[0].id // 0')
-          gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$TARGET_BRANCH" -f mac_runner=macos-15-intel
+          gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$TARGET_BRANCH" -f mac_runner=openminis-mac -f mac_retry=0
           while true; do
             result=$(gh api "$runs" --jq "([.workflow_runs[] | select(.id > $before)][0] // {}) | [(.id // 0), (.status // \"pending\"), (.conclusion // \"pending\")] | @tsv")
             IFS=$'\t' read -r build_id status conclusion <<< "$result"
@@ -151,7 +150,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BUILD_RUN: ${{ needs.dispatch.outputs.build_run }}
           TEST_RUN: ${{ needs.dispatch.outputs.test_run }}
-          BACKEND_RECHECK: ${{ needs.dispatch.outputs.backend_recheck }}
         run: |
           set -euo pipefail
           ref="repos/$GITHUB_REPOSITORY/git/ref/heads/$TARGET_BRANCH"
@@ -189,9 +187,6 @@ jobs:
           mv Minis-unsigned.ipa "$ipa"
           sha256sum "$ipa" > "$ipa.sha256"
           notes="The full simulator and MinisTests regressions passed. IPA source: $EXPECTED_SHA. Simulator: https://github.com/$GITHUB_REPOSITORY/actions/runs/$TEST_RUN. Linux checks and IPA build: https://github.com/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN"
-          if [ -n "$BACKEND_RECHECK" ]; then
-            notes="$notes. The simulator workflow had one Linux group-result timeout; all Linux checks were rerun successfully in the IPA workflow."
-          fi
           if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$tag" "$ipa" "$ipa.sha256" --repo "$GITHUB_REPOSITORY" \
               --target "$EXPECTED_SHA" --prerelease --title "OpenMinis $short_sha (unsigned)" \
