@@ -1,0 +1,37 @@
+name: Stop OpenMinis checks superseded by the Agent fix
+on:
+  push:
+    branches: [grokbot-phase2-chat-motion-ci]
+    paths: [.github/workflows/stop-superseded-openminis-checks.yml]
+permissions:
+  actions: write
+  contents: read
+jobs:
+  stop:
+    if: github.repository == 'ingnez/OpenMinis'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cancel superseded runs and free the Mac
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="repos/$GITHUB_REPOSITORY"
+          while read -r run sha; do
+            row=$(gh api "$repo/actions/runs/$run" --jq '[.head_sha,.status]|@tsv')
+            IFS=$'\t' read -r actual status <<< "$row"
+            [[ "$actual" == "$sha"* ]] || { echo "Run $run has unexpected SHA $actual"; exit 1; }
+            if [ "$status" != completed ]; then
+              gh api --method POST "$repo/actions/runs/$run/cancel" --silent || {
+                test "$(gh api "$repo/actions/runs/$run" --jq .status)" = completed
+              }
+              echo "Cancelled superseded run $run at $actual"
+            fi
+          done <<'RUNS'
+          43402079088 f1dfc5e1d9355ad67919fef211208507d97c70f2
+          43404739514 f779182ee3bcf208b9bbb1e2490dc1220d21687b
+          43405573493 a412115b6534f5debe9735a0ccd271de9682e759
+          43406898012 7fd866ae1dcef70da71e850d902564a705666955
+          43406045085 3df4e4dba2a9bdeab71e047a9cdd182fa8844de6
+          RUNS
