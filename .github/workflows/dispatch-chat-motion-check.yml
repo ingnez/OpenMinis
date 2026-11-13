@@ -16,7 +16,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_BRANCH: grokbot-phase2-message-menu
-          EXPECTED_SHA: daa48a7176d0901adfcf99c1dbd3594eefd447ba
+          EXPECTED_SHA: c422c93016050cd86e741ed793bd81164e6d3605
           TESTS: MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport
         run: |
           set -euo pipefail
