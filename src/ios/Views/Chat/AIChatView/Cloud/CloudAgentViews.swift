@@ -608,6 +608,42 @@ private struct CloudChatScrollTracking: ViewModifier {
     }
 }
 
+#if DEBUG
+private struct CloudTranscriptViewportTestStatus: ViewModifier {
+    private enum Position: String {
+        case bottom = "末尾"
+        case history = "历史"
+        case nearBottom = "接近末尾"
+    }
+
+    let enabled: Bool
+    @State private var position = Position.nearBottom
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *), enabled {
+            content
+                .onScrollGeometryChange(for: Position.self) { geometry in
+                    let distance = geometry.contentSize.height - geometry.visibleRect.maxY
+                    if distance <= 24 { return .bottom }
+                    return distance >= geometry.containerSize.height / 2 ? .history : .nearBottom
+                } action: { _, newPosition in
+                    position = newPosition
+                }
+                .overlay(alignment: .topLeading) {
+                    Text(position.rawValue)
+                        .font(.system(size: 1))
+                        .opacity(0.01)
+                        .accessibilityIdentifier("botTranscriptViewport")
+                        .allowsHitTesting(false)
+                }
+        } else {
+            content
+        }
+    }
+}
+#endif
+
 struct CloudSessionView: View {
     @Environment(\.cloudChatTypography) private var typography
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -1752,6 +1788,7 @@ struct CloudSessionView: View {
             }
             .accessibilityIdentifier("cloudChatTranscript")
             #if DEBUG
+            .modifier(CloudTranscriptViewportTestStatus(enabled: testViewportEnabled))
             .overlay(alignment: .topLeading) {
                 if theme != nil, CloudE2E.token != nil {
                     CloudTranscriptTimeTestStatus(times: transcriptSwipe.times)
@@ -1829,6 +1866,13 @@ struct CloudSessionView: View {
         .environment(\.cloudAskImage, askAboutImage)
         .environment(\.cloudAttachmentSession, sessionId)
     }
+
+    #if DEBUG
+    private var testViewportEnabled: Bool {
+        theme != nil && CloudE2E.token != nil
+            && ProcessInfo.processInfo.environment["OPENMINIS_E2E_TRANSCRIPT_VIEWPORT"] == "1"
+    }
+    #endif
 
     private func historyRow(_ row: HistoryRow, theme: CloudBotChatTheme) -> some View {
         let turn = row.turn

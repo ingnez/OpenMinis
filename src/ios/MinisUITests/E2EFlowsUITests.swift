@@ -1726,7 +1726,7 @@ extension E2EFlowsUITests {
 
     func test39_cloudHistoryFlingKeepsViewport() throws {
         executionTimeAllowance = 240
-        let app = launch()
+        let app = launch(extraEnv: ["OPENMINIS_E2E_TRANSCRIPT_VIEWPORT": "1"])
         openBot(app) // Ensure the fixture Bot has a conversation to seed.
         goBack(app)
         let url = try XCTUnwrap(URL(string: "http://127.0.0.1:18799/_e2e/scroll_history"))
@@ -1734,27 +1734,39 @@ extension E2EFlowsUITests {
         XCTAssertEqual(seed["seeded"], 48)
         openBot(app)
         let latestReply = "滚动测试回复 48"
-        let latest = app.textViews.matching(NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", latestReply, latestReply)).firstMatch
-        XCTAssertTrue(poll(30) { latest.exists && latest.isHittable }, "长对话打开后没有定位到最新消息")
+        func latestIsVisible() -> Bool {
+            let latest = app.textViews.matching(NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", latestReply, latestReply)).firstMatch
+            return latest.exists && latest.isHittable
+        }
+        func viewportIs(_ position: String, timeout: TimeInterval) -> Bool {
+            poll(timeout) {
+                app.staticTexts.matching(identifier: "botTranscriptViewport")
+                    .matching(NSPredicate(format: "label == %@", position)).firstMatch.exists
+            }
+        }
+        XCTAssertTrue(poll(30, latestIsVisible), "长对话打开后没有定位到最新消息")
+        XCTAssertTrue(viewportIs("末尾", timeout: 5), "长对话打开后视口未到末尾")
         let list = app.scrollViews["cloudChatTranscript"]
         XCTAssertTrue(list.waitForExistence(timeout: 5))
 
         list.swipeDown(velocity: .fast)
-        XCTAssertTrue(poll(8) { !latest.exists || !latest.isHittable }, "快速下拉后仍被锁在最新消息")
+        XCTAssertTrue(viewportIs("历史", timeout: 8), "快速下拉后仍被锁在最新消息")
         list.swipeUp(velocity: .fast)
         list.swipeDown(velocity: .fast)
-        XCTAssertTrue(poll(8) { !latest.exists || !latest.isHittable }, "反向甩动后被拉回最新消息")
+        XCTAssertTrue(viewportIs("历史", timeout: 8), "反向甩动后被拉回最新消息")
         shot(app, "39a-快速滑动后停在历史")
 
         app.buttons["到最新"].tap()
-        XCTAssertTrue(poll(12) { latest.exists && latest.isHittable }, "滑动后无法回到最新消息")
+        XCTAssertTrue(viewportIs("末尾", timeout: 12), "滑动后无法回到最新消息")
+        XCTAssertTrue(poll(12, latestIsVisible), "回到末尾后最新消息未显示")
         shot(app, "39b-回到长对话末尾")
 
         // Revisit the same rows after a second pass through the lazy list.
         list.swipeDown(velocity: .fast)
-        XCTAssertTrue(poll(8) { !latest.exists || !latest.isHittable }, "第二次翻历史时被拉回最新消息")
+        XCTAssertTrue(viewportIs("历史", timeout: 8), "第二次翻历史时被拉回最新消息")
         app.buttons["到最新"].tap()
-        XCTAssertTrue(poll(12) { latest.exists && latest.isHittable }, "重复滚动后最新的 Markdown 回复未显示")
+        XCTAssertTrue(viewportIs("末尾", timeout: 12), "重复滚动后无法回到末尾")
+        XCTAssertTrue(poll(12, latestIsVisible), "重复滚动后最新的 Markdown 回复未显示")
         XCTAssertFalse(app.keyboards.firstMatch.exists, "上下滚动不应触发横滑引用")
     }
 
