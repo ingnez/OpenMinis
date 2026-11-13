@@ -731,7 +731,6 @@ jobs:
 
       - name: 云端 Agent 服务集成验证与资源打包
         env:
-          NO_PROXY: localhost,127.0.0.1,::1
           no_proxy: localhost,127.0.0.1,::1
         run: |
           set -o pipefail
@@ -1211,7 +1210,6 @@ jobs:
 
       - name: 云端 Agent 服务回归
         env:
-          NO_PROXY: localhost,127.0.0.1,::1
           no_proxy: localhost,127.0.0.1,::1
         id: agent_regression
         if: ${{ inputs.only_testing == '' }}
@@ -1224,7 +1222,6 @@ jobs:
         if: ${{ inputs.only_testing != '' }}
         timeout-minutes: 3
         env:
-          NO_PROXY: localhost,127.0.0.1,::1
           no_proxy: localhost,127.0.0.1,::1
         run: |
           set -o pipefail
@@ -1464,7 +1461,6 @@ jobs:
 
       - name: 启动本地云端 Agent + 假模型（给端到端流程用）
         env:
-          NO_PROXY: localhost,127.0.0.1,::1
           no_proxy: localhost,127.0.0.1,::1
         run: |
           python3 scripts/e2e_cloud_stack.py "$RUNNER_TEMP/openminis-e2e" > e2e-cloud-stack.log 2>&1 &
@@ -1657,7 +1653,6 @@ jobs:
         id: agent_diagnostic_regression
         if: ${{ inputs.only_testing != '' && steps.ui_e2e.outcome == 'success' }}
         env:
-          NO_PROXY: localhost,127.0.0.1,::1
           no_proxy: localhost,127.0.0.1,::1
         run: |
           set -o pipefail
