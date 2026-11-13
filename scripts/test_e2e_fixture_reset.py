@@ -71,6 +71,44 @@ def main():
     finally:
         probe('/_e2e/reply?mode=verbose')
 
+    probe('/_e2e/reply?mode=instant')
+    try:
+        sid = api('/v1/sessions', {'title': 'synthetic safe-point pause', 'persona_id': 'e2ebot'})['session_id']
+        api('/v1/sessions/' + sid + '/messages', {'content': '查一下资料', 'model': 'e2e-vision-model', 'provider': {}})
+        deadline = time.monotonic() + 5
+        worker = None
+        while time.monotonic() < deadline:
+            workers = api('/v1/workers?session_id=' + sid)['workers']
+            if workers and workers[0].get('task_id'):
+                worker = workers[0]
+                if any(e['type'] == 'tool_call' for e in api('/v1/tasks/' + worker['task_id'])['events']):
+                    break
+            time.sleep(.05)
+        assert worker and worker.get('task_id'), 'Background tool did not start before pause'
+        path = '/v1/workers/' + worker['worker_id']
+        pending = api(path + '/pause', {})['worker']
+        assert pending['status'] == 'running' and not pending['can_resume'], pending
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            parked = api(path)['worker']
+            if parked['status'] == 'paused':
+                break
+            time.sleep(.1)
+        assert parked['status'] == 'paused' and parked['can_resume'], parked
+        task = api('/v1/tasks/' + worker['task_id'])
+        assert any(e['type'] == 'tool_result' and 'e2e-back-step0' in str(e['payload']) for e in task['events']), task
+        api(path + '/resume', {})
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            resumed = api(path)['worker']
+            if resumed['status'] == 'completed':
+                break
+            time.sleep(.1)
+        assert resumed['status'] == 'completed', resumed
+        print('PASS: pause finishes the current tool, checkpoints, and resumes to completion without stopping it.')
+    finally:
+        probe('/_e2e/reply?mode=verbose')
+
 
 if __name__ == '__main__':
     main()

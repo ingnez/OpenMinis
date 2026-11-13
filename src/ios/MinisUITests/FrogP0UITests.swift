@@ -77,7 +77,9 @@ final class FrogP0UITests: XCTestCase {
         hideKeyboard(app)
         pause.tap()
         let resume = app.buttons["replyTrayResume"]
-        XCTAssertTrue(resume.waitForExistence(timeout: 20), "暂停后没有继续")
+        // This fixture's first shell tool runs for 60 seconds. Pause preserves
+        // that operation and checkpoints at its end; it must not act as Stop.
+        XCTAssertTrue(resume.waitForExistence(timeout: 75), "当前工具结束后仍未暂停，托盘没有继续")
         XCTAssertTrue(waitText(app, contains: "已暂停", timeout: 10) || (row.value as? String)?.contains("暂停") == true,
                       "暂停后状态不是已暂停：\(String(describing: row.value)) \(row.label)")
         shot(app, "frog-03b-已暂停")

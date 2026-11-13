@@ -44,8 +44,10 @@ enum CloudReplyService {
         _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/workers/\(wid)/stop", body: [:])
     }
 
-    static func pause(_ wid: String) async throws {
-        _ = try await CloudConnection.shared.request(method: "POST", path: "/v1/workers/\(wid)/pause", body: [:])
+    @discardableResult
+    static func pause(_ wid: String) async throws -> Bool {
+        let response = try await CloudConnection.shared.request(method: "POST", path: "/v1/workers/\(wid)/pause", body: [:])
+        return (response["worker"] as? [String: Any])?["status"] as? String == "paused"
     }
 
     static func resume(_ wid: String, note: String = "") async throws {
@@ -188,8 +190,9 @@ final class CloudReplyStatusModel: ObservableObject {
     func pause(_ w: CloudReplyWorker) {
         Task {
             do {
-                try await CloudReplyService.pause(w.id)
-                notice = "已暂停「\(w.title)」，进度已保存"
+                let paused = try await CloudReplyService.pause(w.id)
+                notice = paused ? "已暂停「\(w.title)」，进度已保存"
+                    : "已请求暂停「\(w.title)」，当前步骤结束后保存进度"
             } catch {
                 notice = "没能暂停：\(error.localizedDescription.prefix(80))"
             }
