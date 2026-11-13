@@ -41,7 +41,7 @@ final class FrogP0UITests: XCTestCase {
             XCTFail("探针读不到资源默认值")
             return
         }
-        XCTAssertEqual(w.defaults.approval_mode, "ask")
+        XCTAssertEqual(w.defaults.bot_defaults.approval_mode, "ask")
     }
 
     /// 把假的 API 形态密钥贴进输入框发送：对话里是遮罩，看不到原文
