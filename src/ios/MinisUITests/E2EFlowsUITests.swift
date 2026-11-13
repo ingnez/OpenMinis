@@ -20,6 +20,8 @@ final class E2EFlowsUITests: XCTestCase {
         openBot(app)
         send(app, "你好E2E文字")
         XCTAssertTrue(waitText(app, contains: "收到：你好E2E文字", timeout: 60), "Bot 回复没出现")
+        XCTAssertFalse(app.staticTexts["长按 Bot 的回复：朗读、翻译、钉到要点板"].exists)
+        XCTAssertFalse(app.buttons["继续"].exists, "回复下方仍有快捷回复按钮")
         shot(app, "01-发文字")
     }
 

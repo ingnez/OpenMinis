@@ -2015,7 +2015,6 @@ struct CloudSessionView: View {
                 }
             }
             if row.id == historyRows.last?.id, msg.role == .assistant, turn.workerOutcome == nil, activeTaskStatus != "running" {
-                CloudSmartReplyBar(text: msg.content, accent: theme.accent, onPick: quickSend)
                 CloudTaskActionBar(taskId: loadedTaskId, hasReplay: loadedTaskId != nil,
                                    result: msg.content, fromBot: theme.botId, fromSession: sessionId,
                                    accent: theme.accent, showReplay: $showReplayList, showRelay: $showRelay)
