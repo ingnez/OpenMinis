@@ -20,6 +20,7 @@ struct CloudAssistantTurnView: View {
     var liveReasoning = ""
     /// 已完成的长回复先折叠（正在生成的不折叠）
     var collapsible = false
+    var textLocations: [UUID: CloudHistoryAdapter.MessageLocation] = [:]
     @State private var expanded = false
     @Environment(\.cloudReplyInstant) private var replyInstant
     @State private var showHiddenDetail = false
@@ -33,12 +34,12 @@ struct CloudAssistantTurnView: View {
     }
 
     private enum Segment {
-        case text(AssistantBlock)
+        case text(AssistantBlock, CloudHistoryAdapter.MessageLocation?)
         case thinking(AssistantBlock)
         case injected(AssistantBlock)
         case reset(AssistantBlock)
         case tools([AssistantBlock])
-        case card(CloudCards.Card)
+        case card(CloudCards.Card, Date?)
         case notice(String)
     }
 
@@ -63,9 +64,13 @@ struct CloudAssistantTurnView: View {
                     // 用单独一行 --- 分开的两三个意思：拆成几个气泡
                     let beats = collapsible ? CloudBeats.split(b.content) : [b.content]
                     if beats.count > 1 {
-                        for part in beats { out.append(.text(AssistantBlock(kind: .text, content: part))) }
+                        for (index, part) in beats.enumerated() {
+                            var location = textLocations[b.id]
+                            if index != beats.count - 1 { location?.date = nil }
+                            out.append(.text(AssistantBlock(kind: .text, content: part), location))
+                        }
                     } else {
-                        out.append(.text(b))
+                        out.append(.text(b, textLocations[b.id]))
                     }
                 }
             case .thinking:
@@ -83,7 +88,7 @@ struct CloudAssistantTurnView: View {
                     out.append(.notice(b.content))
                 } else if let card = CloudCards.decode(b) {
                     if !run.isEmpty { out.append(.tools(run)); run = [] }
-                    out.append(.card(card))
+                    out.append(.card(card, textLocations[b.id]?.date))
                 }
             default:
                 run.append(b)
@@ -114,27 +119,34 @@ struct CloudAssistantTurnView: View {
             }
             ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
                 switch seg {
-                case .text(let block):
-                    if replyInstant {
-                        CloudBotBubble { CloudTextBlockView(block: block, accent: accent) }
-                    } else {
-                        CloudTextBlockView(block: block, accent: accent)
+                case .text(let block, let location):
+                    Group {
+                        if replyInstant {
+                            CloudBotBubble { CloudTextBlockView(block: block, accent: accent) }
+                        } else {
+                            CloudTextBlockView(block: block, accent: accent)
+                        }
                     }
+                    .modifier(CloudTranscriptMessage(date: location?.date, replyID: location?.id, excerpt: block.content))
                 case .thinking(let block):
                     if !replyInstant { CloudThinkingView(text: block.content, streaming: false) }
                 case .injected(let block):
                     CloudInjectedNote(text: block.content)
+                        .modifier(CloudTranscriptMessage(date: textLocations[block.id]?.date))
                 case .reset(let block):
                     CloudResetNoteView(block: block)
                 case .tools(let blocks):
                     // 秒回：工具步骤不进聊天流，只在「查看详情」里（详细模式照旧）
                     if !replyInstant { CloudToolRunView(blocks: blocks) }
-                case .card(let card):
-                    if replyInstant, card.kind == .worker {
-                        CloudReplyHandoffLine(title: card.payload["title"] as? String ?? "后台任务", accent: accent)
-                    } else {
-                        CloudCardView(card: card, accent: accent)
+                case .card(let card, let date):
+                    Group {
+                        if replyInstant, card.kind == .worker {
+                            CloudReplyHandoffLine(title: card.payload["title"] as? String ?? "后台任务", accent: accent)
+                        } else {
+                            CloudCardView(card: card, accent: accent)
+                        }
                     }
+                    .modifier(CloudTranscriptMessage(date: date))
                 case .notice(let text):
                     CloudNoticeCapsule(text: text, systemImage: "eye")
                 }

@@ -114,6 +114,7 @@ struct CloudTeammateChips: View {
 struct CloudReplyTarget: Equatable {
     let id: Int
     let excerpt: String
+    var role = "assistant"
 }
 
 /// 用户这一条：被引用的话 + 气泡 + Bot 点的表情；长按可复制、回复
@@ -148,7 +149,7 @@ struct CloudUserTurnRow: View {
         var actions = CloudMessageAction.textActions(text)
         if let id = extras.id {
             actions.insert(CloudMessageAction(title: "回复", symbol: "arrowshape.turn.up.left", key: "reply") {
-                onReply(CloudReplyTarget(id: id, excerpt: text))
+                onReply(CloudReplyTarget(id: id, excerpt: text, role: "user"))
             }, at: 0)
         }
         let withdraw = onWithdraw.map { action in

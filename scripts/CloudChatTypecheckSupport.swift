@@ -28,6 +28,7 @@ enum AssistantBlockKind: Equatable {
 }
 enum MessageSendTick: String, Equatable { case failed }
 final class AssistantBlock: ObservableObject {
+ let id = UUID()
  @Published var kind: AssistantBlockKind
  @Published var content: String
  var toolUseId: String?

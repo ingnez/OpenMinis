@@ -526,6 +526,24 @@ def main():
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if urlparse(self.path).path == "/_e2e/swipe_history":
+                import sqlite3
+                with sqlite3.connect(os.environ["OPENMINIS_DB"]) as db:
+                    sid = db.execute("SELECT session_id FROM sessions WHERE persona_id = ? ORDER BY created_at DESC LIMIT 1",
+                                     (BOT_ID,)).fetchone()
+                    if sid:
+                        now = time.time()
+                        rows = [
+                            (sid[0], "user", "E2E先问两个问题", now - 180),
+                            (sid[0], "assistant", "E2E左滑要引用第一条", now - 120),
+                            (sid[0], "assistant", "E2E第二条需要独立定位", now - 60),
+                        ]
+                        db.executemany("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)", rows)
+                self.send_response(200 if sid else 404)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"seeded": len(rows) if sid else 0}).encode())
+                return
             if urlparse(self.path).path == "/_e2e/scroll_history":
                 import sqlite3
                 with sqlite3.connect(os.environ["OPENMINIS_DB"]) as db:

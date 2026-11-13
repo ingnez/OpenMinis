@@ -78,6 +78,17 @@ struct LLMModel { let id: String; let displayName: String }
   ])
   precondition(pending[0].presentationID == confirmed[1].presentationID, "确认送达和加载旧消息不能重建原气泡")
   precondition(confirmed[0].presentationID == "history:21", "历史回复使用稳定的服务器消息 ID")
+  let adjacent = CloudHistoryAdapter.turns(from: [
+   ["role": "assistant", "content": "第一条可以单独引用", "id": 23, "timestamp": 120.0],
+   ["role": "assistant", "content": "第二条有自己的时间", "id": 24, "timestamp": 180.0],
+  ])
+  precondition(adjacent.count == 1 && adjacent[0].message.blocks.count == 2)
+  let firstBlock = adjacent[0].message.blocks[0]
+  let secondBlock = adjacent[0].message.blocks[1]
+  precondition(adjacent[0].textLocations[firstBlock.id]?.id == 23)
+  precondition(adjacent[0].textLocations[firstBlock.id]?.date == Date(timeIntervalSince1970: 120))
+  precondition(adjacent[0].textLocations[secondBlock.id]?.id == 24)
+  precondition(adjacent[0].textLocations[secondBlock.id]?.date == Date(timeIntervalSince1970: 180))
   precondition(turns.count == 3, "一问一答 + 追问应为 3 条，实际 \(turns.count)")
   let reply = turns[1].message
   precondition(reply.blocks.count == 3, "两个工具块 + 一段正文")

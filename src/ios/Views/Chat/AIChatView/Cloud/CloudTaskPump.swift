@@ -64,7 +64,7 @@ enum CloudEventApplier {
     static let visionPrefix = "vision-"
 
     /// eventId：事件自己的 id，工具调用没给 id 时用它生成稳定的 id（重放同一事件不会多出一步）
-    static func apply(_ message: ChatMessage, type: String, payload: [String: Any], eventId: Int? = nil) {
+    static func apply(_ message: ChatMessage, type: String, payload: [String: Any], eventId: Int? = nil, mergeAdjacentText: Bool = true) {
         switch type {
         case "thought", "text", "content":
             if let content = payload["content"] as? String, !content.isEmpty {
@@ -74,7 +74,7 @@ enum CloudEventApplier {
                     if case .text = $0.kind { return $0.content.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(trimmed) }
                     return false
                 }) { return }
-                if let last = message.blocks.last, case .text = last.kind {
+                if mergeAdjacentText, let last = message.blocks.last, case .text = last.kind {
                     // 不同轮次的整段话之间空一行，免得两句粘在一起
                     if type == "thought", !last.content.isEmpty, !last.content.hasSuffix("\n") { last.content += "\n\n" }
                     last.content += content
@@ -202,6 +202,16 @@ struct CloudWorkerOutcome {
 /// 服务器会话历史（OpenAI 风格 messages）→ 与本地模式同样的 ChatMessage 列表。
 /// 同一轮里助手的多条消息（正文、tool_calls、tool 结果）合并成一条助手消息，工具结果挂到对应工具块上。
 enum CloudHistoryAdapter {
+    struct MessageLocation {
+        let id: Int?
+        var date: Date?
+
+        init(_ row: [String: Any]) {
+            id = (row["id"] as? NSNumber)?.intValue
+            date = (row["timestamp"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
+        }
+    }
+
     struct Turn {
         let message: ChatMessage
         /// 这一轮最后一条原始消息（取时间戳算耗时）
@@ -209,6 +219,7 @@ enum CloudHistoryAdapter {
         /// 这一轮最后一条有文字的原始消息（表情回应、引用回复针对它）
         var textRaw: [String: Any] = [:]
         var workerOutcome: CloudWorkerOutcome? = nil
+        var textLocations: [UUID: MessageLocation] = [:]
         fileprivate var firstRowIndex: Int? = nil
         fileprivate var lastRowIndex: Int? = nil
 
@@ -235,6 +246,7 @@ enum CloudHistoryAdapter {
         var current: ChatMessage?
         var currentRaw: [String: Any] = [:]
         var currentTextRaw: [String: Any] = [:]
+        var textLocations: [UUID: MessageLocation] = [:]
         var toolNames: [String: String] = [:]
         var firstIndex = 0
         var lastIndex = 0
@@ -251,10 +263,13 @@ enum CloudHistoryAdapter {
         }
         func flush() {
             if let c = current, !c.blocks.isEmpty || c.error != nil {
-                append(Turn(message: c, raw: currentRaw, textRaw: currentTextRaw), first: firstIndex, last: lastIndex)
+                var turn = Turn(message: c, raw: currentRaw, textRaw: currentTextRaw)
+                turn.textLocations = textLocations
+                append(turn, first: firstIndex, last: lastIndex)
             }
             current = nil
             currentTextRaw = [:]
+            textLocations = [:]
         }
         for (index, m) in messages.enumerated() {
             let role = m["role"] as? String ?? ""
@@ -263,7 +278,14 @@ enum CloudHistoryAdapter {
             case "user" where m["injected"] as? Bool == true && current != nil:
                 lastIndex = index
                 // 插话：留在这一轮里原来的位置
-                CloudEventApplier.apply(current!, type: "user_message_applied", payload: ["content": content, "nonce": "h\(out.count)-\(content.count)"])
+                if let current {
+                    let previousCount = current.blocks.count
+                    CloudEventApplier.apply(current, type: "user_message_applied",
+                                            payload: ["content": content, "nonce": "h\(out.count)-\(content.count)"])
+                    if current.blocks.count > previousCount, let block = current.blocks.last {
+                        textLocations[block.id] = MessageLocation(m)
+                    }
+                }
             case "context_reset":
                 flush()
                 let note = ChatMessage(role: .assistant, content: "")
@@ -295,11 +317,22 @@ enum CloudHistoryAdapter {
                     CloudEventApplier.apply(msg, type: "reasoning", payload: ["content": r])
                 }
                 if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !CloudCards.hidesText(m) {
-                    CloudEventApplier.apply(msg, type: "thought", payload: ["content": content])
+                    let previousCount = msg.blocks.count
+                    CloudEventApplier.apply(msg, type: "thought", payload: ["content": content], mergeAdjacentText: false)
+                    if msg.blocks.count > previousCount, let block = msg.blocks.last {
+                        textLocations[block.id] = MessageLocation(m)
+                    }
                     msg.content += (msg.content.isEmpty ? "" : "\n\n") + content
                     currentTextRaw = m
                 }
-                for card in CloudCards.cards(in: m) { msg.blocks.append(CloudCards.block(card)) }
+                let cards = CloudCards.cards(in: m)
+                for (index, card) in cards.enumerated() {
+                    let block = CloudCards.block(card)
+                    msg.blocks.append(block)
+                    if index == cards.count - 1, content.isEmpty || CloudCards.hidesText(m) {
+                        textLocations[block.id] = MessageLocation(m)
+                    }
+                }
                 for call in toolCalls(m) {
                     let fn = call["function"] as? [String: Any] ?? [:]
                     if let cid = call["id"] as? String { toolNames[cid] = fn["name"] as? String ?? "" }

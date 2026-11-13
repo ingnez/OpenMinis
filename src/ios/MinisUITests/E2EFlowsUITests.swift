@@ -1751,6 +1751,55 @@ extension E2EFlowsUITests {
         shot(app, "39b-回到长对话末尾")
     }
 
+    func test40_cloudMessageSwipeQuotesExactReply() throws {
+        executionTimeAllowance = 240
+        let app = launch()
+        openBot(app)
+        goBack(app)
+        let fixture = try XCTUnwrap(URL(string: "http://127.0.0.1:18799/_e2e/swipe_history"))
+        let seed = try JSONDecoder().decode([String: Int].self, from: Data(contentsOf: fixture))
+        XCTAssertEqual(seed["seeded"], 3)
+        openBot(app)
+
+        let target = "E2E左滑要引用第一条"
+        let reply = app.textViews.matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", target, target)).firstMatch
+        XCTAssertTrue(poll(30) { reply.exists && reply.isHittable }, "第一条 Bot 消息不可滑动")
+        let cancel = app.buttons["取消回复"]
+        let origin = app.coordinate(withNormalizedOffset: .zero)
+        let screen = app.windows.firstMatch.frame
+        let rowY = reply.frame.midY
+        func drag(from: CGFloat, to: CGFloat) {
+            let start = origin.withOffset(CGVector(dx: screen.width * from, dy: rowY))
+            let end = origin.withOffset(CGVector(dx: screen.width * to, dy: rowY))
+            start.press(forDuration: 0.04, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.25)
+        }
+
+        drag(from: 0.35, to: 0.65)
+        let revealed = app.descendants(matching: .any)["botMessageTimesRevealed"]
+        XCTAssertTrue(revealed.waitForExistence(timeout: 8), "右滑没有拉出时间栏")
+        let times = app.staticTexts.matching(identifier: "botMessageTime")
+        XCTAssertTrue(waitGone(times.firstMatch, timeout: 5), "松手后时间栏未收回")
+        XCTAssertFalse(cancel.exists, "右滑误触发引用")
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "右滑时间不应打开键盘")
+        drag(from: 0.57, to: 0.54)
+        XCTAssertFalse(cancel.exists, "短滑误触发引用")
+
+        drag(from: 0.65, to: 0.30)
+        XCTAssertTrue(cancel.waitForExistence(timeout: 8), "左滑没有打开引用")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8), "引用后没有聚焦输入框")
+        shot(app, "40-左滑引用第一条")
+        dismissKeyboardIntro(app)
+        let followup = "E2E继续这条"
+        send(app, followup)
+
+        // The fixture records the actual prompt delivered to the model, including the server quote.
+        XCTAssertTrue(poll(35) {
+            cloudProbe()?.cloud_texts.contains {
+                $0.contains("回复（你之前说）：\(target)") && $0.contains(followup)
+            } ?? false
+        }, "发给模型的引用没有指向左滑选中的第一条")
+    }
+
     private func revealTodayBar(_ app: XCUIApplication) {
         let bar = app.descendants(matching: .any)["todayCard"]
         let menu = app.buttons["homeAppsButton"]

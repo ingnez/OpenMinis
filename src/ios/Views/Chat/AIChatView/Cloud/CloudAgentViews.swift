@@ -640,6 +640,8 @@ struct CloudSessionView: View {
     @State private var tasks: [[String: Any]] = []
     @State private var inputPrompt: String = ""
     @State private var replyTarget: CloudReplyTarget?
+    @FocusState private var botComposerFocused: Bool
+    @StateObject private var transcriptSwipe = CloudTranscriptSwipe()
     /// 用户刚点的表情回应（服务器确认前先显示）；值为 nil 表示刚取消
     @State private var localReactions: [Int: String?] = [:]
     /// 这次对话里发给其他 Bot 的消息：折叠成「N 条消息，与 X」，点开只读线程
@@ -1283,6 +1285,7 @@ struct CloudSessionView: View {
             }
             if let r = replyTarget {
                 CloudReplyBanner(excerpt: r.excerpt) { replyTarget = nil }
+                    .accessibilityIdentifier("botReplyBanner")
             }
             if !attachments.isEmpty {
                 CloudAttachmentTray(attachments: $attachments, states: [:], onRetry: { sendTask() })
@@ -1381,6 +1384,7 @@ struct CloudSessionView: View {
                             .font(.system(.body, design: typography?.design.swiftUI ?? .default))
                             .dynamicTypeSize(typography?.inputTypeSize ?? typeSize)
                             .accessibilityIdentifier("botComposerField")
+                            .focused($botComposerFocused)
                             .lineLimit(1...6)
                             .padding(.vertical, 10).padding(.leading, 14)
                             .disabled(false)
@@ -1637,9 +1641,12 @@ struct CloudSessionView: View {
                             let msg = turn.message
                             if let outcome = turn.workerOutcome {
                                 CloudWorkerOutcomeRow(outcome: outcome)
+                                    .modifier(CloudTranscriptMessage(date: CloudHistoryAdapter.MessageLocation(turn.raw).date))
                                     .id(turn.presentationID)
                             } else if msg.role == .user {
+                                let location = CloudHistoryAdapter.MessageLocation(turn.raw)
                                 cloudUserTurn(turn, accent: theme.accent)
+                                    .modifier(CloudTranscriptMessage(date: location.date, replyID: location.id, excerpt: msg.content, replyRole: "user"))
                                     .id(turn.presentationID)
                                 anchoredReplies(after: turn, theme: theme)
                             } else {
@@ -1648,7 +1655,7 @@ struct CloudSessionView: View {
                                 let extras = reactionExtras(CloudMessageExtras(turn.textRaw))
                                 CloudInstantFooterGate(turn:
                                     CloudAssistantTurnView(message: msg, spec: theme.spec, name: theme.name, accent: theme.accent,
-                                                           showHeader: !prevAssistant, collapsible: true)
+                                                           showHeader: !prevAssistant, collapsible: true, textLocations: turn.textLocations)
                                         .modifier(CloudAssistantLongPress(text: msg.content, extras: extras,
                                                                           onReact: { reactToBot($0, $1) }, onReply: { replyTarget = $0 },
                                                                           botId: theme.botId, onAsk: quickSend)),
@@ -1726,8 +1733,23 @@ struct CloudSessionView: View {
                     }
                 }
                 .padding()
+                .modifier(CloudTranscriptShift(offset: transcriptSwipe.timeOffset))
+                .background {
+                    if theme != nil {
+                        CloudTranscriptGestureBridge(swipe: transcriptSwipe)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .environment(\.cloudTranscriptSwipe, theme == nil ? nil : transcriptSwipe)
             }
             .accessibilityIdentifier("cloudChatTranscript")
+            #if DEBUG
+            .overlay(alignment: .topLeading) {
+                if theme != nil, CloudE2E.token != nil {
+                    CloudTranscriptTimeTestStatus(times: transcriptSwipe.times)
+                }
+            }
+            #endif
             .environment(\.cloudScrollInMotion, isUserScrolling)
             .modifier(CloudChatScrollTracking(followLatest: $followLatest, isUserScrolling: $isUserScrolling,
                                               startsAtBottom: theme != nil))
@@ -1758,16 +1780,23 @@ struct CloudSessionView: View {
                     proxy.scrollTo(anchor, anchor: .top)
                     return
                 }
-                guard followLatest, !isUserScrolling else { return }
+                guard followLatest, !isUserScrolling, !transcriptSwipe.isInteracting else { return }
                 proxy.scrollTo("chat-bottom", anchor: .bottom)
             }
             .onAppear {
+                transcriptSwipe.onReply = { id, text, role in
+                    let shown = CloudMessageText.display(text)
+                    let preview = shown.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                    replyTarget = CloudReplyTarget(id: id, excerpt: preview.isEmpty ? "图片" : String(preview.prefix(140)), role: role)
+                    if !dictation.isRecording { botComposerFocused = true }
+                }
                 if #available(iOS 18, *), theme != nil { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    guard followLatest, !isUserScrolling else { return }
+                    guard followLatest, !isUserScrolling, !transcriptSwipe.isInteracting else { return }
                     proxy.scrollTo("chat-bottom", anchor: .bottom)
                 }
             }
+            .onDisappear { transcriptSwipe.onReply = nil }
         }
         // 看图页「问问这张图」：图片放回附件，输入框起个头
         .environment(\.cloudAskImage, askAboutImage)
@@ -1912,7 +1941,7 @@ struct CloudSessionView: View {
         attachments = []
         inputPrompt = ""
         followLatest = true
-        showPendingSend(content: content, nonce: nonce)
+        showPendingSend(content: content, nonce: nonce, reply: replyTarget)
         CloudHaptics.tap()
         NotificationCenter.default.post(name: CloudReplyService.kick, object: nil)
         if let r = replyTarget {
@@ -2051,11 +2080,15 @@ struct CloudSessionView: View {
         submitPrepared(content: content, body: body, providerInstanceId: inst.id)
     }
 
-    private func showPendingSend(content: String, nonce: String, createdAt: Double = Date().timeIntervalSince1970) {
+    private func showPendingSend(content: String, nonce: String, createdAt: Double = Date().timeIntervalSince1970,
+                                 reply: CloudReplyTarget? = nil) {
         guard !messages.contains(where: { $0["client_nonce"] as? String == nonce }) else { return }
         let text = content.isEmpty ? "附件" : content
         let msg = ChatMessage(role: .user, content: text)
-        let row: [String: Any] = ["role": "user", "content": text, "timestamp": createdAt, "client_nonce": nonce]
+        var row: [String: Any] = ["role": "user", "content": text, "timestamp": createdAt, "client_nonce": nonce]
+        if let reply {
+            row["reply_to"] = ["id": reply.id, "excerpt": reply.excerpt, "role": reply.role]
+        }
         messages.append(row)
         turns.append(CloudHistoryAdapter.Turn(message: msg, raw: row))
         displayedHistoryRows?.append(row)
