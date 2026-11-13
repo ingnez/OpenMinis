@@ -160,6 +160,7 @@ jobs:
           sha256sum --check SHA256SUMS
           unzip -tq Minis-unsigned.ipa
           python3 candidate/scripts/check_ipa_promotion.py Minis-unsigned.ipa
+          python3 candidate/scripts/check_ipa_device_install.py Minis-unsigned.ipa --workspace-tools --watch-widgets
           python3 - <<'PY'
           import hashlib
           import io
@@ -194,13 +195,14 @@ jobs:
           notes = [
               '# OpenMinis 整合版（未签名）', '',
               '整合成果直达、图片交互、Bot 间对话与群聊、交班和任务功能、备份，以及第三方模型和聊天界面修复。', '',
+              '包含前台／后台／验收分工、工单证据、请求台账与预算，以及 Watch 状态小组件和审批确认入口。', '',
               '- 源码：' + os.environ['EXPECTED_SHA'],
               '- 完整模拟器界面测试和 MinisTests：https://github.com/' + repo + '/actions/runs/' + os.environ['TEST_RUN'],
               '- Linux、安装版 Agent、真实浏览器与 IPA 构建：https://github.com/' + repo + '/actions/runs/' + os.environ['BUILD_RUN'], '',
               '## 已知限制', '',
               '- IPA 未签名，签名后才能安装。',
-              '- 锁屏／灵动岛任务状态沿用已有实现；新增审批页面目前仅为 App 内预览，尚未接通系统实时活动上的审批。',
-              '- Watch 表盘小组件未包含在此 IPA；不能把 App 内预览视为已交付的手表功能。',
+              '- 锁屏／灵动岛审批入口会打开 App 核对实际请求后确认；系统锁屏呈现与通知回传仍需真机验收。',
+              '- 包含 Watch App 与表盘 Widget 扩展；配对安装、实际表盘展示及手机联动仍需真机验收。',
               '- 签名安装、120 Hz、触感、外放回声、Watch／App Group、Files／WPS、iCloud 和 VPS 验收仍待对应设备及环境。', '',
               Path('测试清单.md').read_text(),
           ]
