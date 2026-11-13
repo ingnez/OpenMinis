@@ -657,7 +657,7 @@ pending_approvals_lock = threading.Lock()
 
 APP_FEED = cloud_appfeed.Feed(lambda: get_db_connection())
 RETRACT_WINDOW_S = 15        # 撤回发送：App 给 5 秒按钮，这里多留网络余量
-AGENT_VERSION = "2.52.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
+AGENT_VERSION = "2.53.0"     # 与 iOS CloudLinkSupervisor.bundledAgentVersion 保持一致（测试会核对）
 DESKTOP_UNITS = ("openminis-display", "openminis-vnc", "openminis-novnc")
 
 _BRIEF_CACHE = {"at": 0.0, "value": None}
@@ -3531,7 +3531,8 @@ def start_delegation(task_id, session_id, kind, target_id, body, priority="norma
                       (sid, title, now, target_id))
         c.execute("INSERT INTO tasks (task_id, session_id, client_nonce, status, model, created_at) VALUES (?, ?, NULL, 'running', ?, ?)",
                   (tid, sid, run_model, now))
-        c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)", (sid, content, now))
+        c.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'user', ?, ?, ?)",
+                  (sid, content, now, json.dumps({"delegation_id": did})))
         root = (c.execute("SELECT root_id FROM bot_delegations WHERE to_task = ?", (task_id,)).fetchone() or [did])[0]
         c.execute("INSERT INTO bot_delegations (delegation_id, kind, from_bot, to_bot, from_session, from_task, to_session, to_task, content, priority, "
                   "report_back, hop, root_id, status, result, reported, created_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'running', NULL, 0, ?, NULL)",
@@ -5026,9 +5027,15 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     c.execute("SELECT role, content, tool_calls, tool_call_id, meta FROM messages WHERE session_id = ? AND id > ? "
               "AND role != 'context_reset' ORDER BY id ASC", (session_id, last_reset))
     rows = c.fetchall()
+    delegation = c.execute("SELECT delegation_id FROM bot_delegations WHERE to_task = ?", (task_id,)).fetchone()
     is_worker = cloud_workers.is_worker_session(conn, session_id)
     conn.close()
     turn_limit = (WORKER_MAX_TURNS or None) if is_worker else MAX_TURNS
+
+    def write_task_message(role, content, tool_calls=None, tool_call_id=None, meta=None):
+        if delegation:
+            meta = dict(meta or {}, delegation_id=delegation[0])
+        insert_message(session_id, role, content, tool_calls=tool_calls, tool_call_id=tool_call_id, meta=meta)
 
     plugin_defs, plugin_map, plugin_note = plugin_tools_for_session(session_id, depth)
     # 系统提示保持稳定（不放随消息变化的内容），服务商的前缀缓存才能命中；@提及提示放到本轮请求的末尾
@@ -5313,7 +5320,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
             live_clear(task_id)
             log_event(task_id, "thought", {"content": text})
             messages.append({"role": "assistant", "content": text})
-            insert_message(session_id, "assistant", text, meta={"front_task_id": task_id})
+            write_task_message("assistant", text, meta={"front_task_id": task_id})
             answered = True
 
         def take_injected(limit=None):
@@ -5374,7 +5381,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 final_status = "failed"
                 if instant:
                     text = "这条消息没能生成回复。" + err
-                    insert_message(session_id, "assistant", text, meta={"front_task_id": task_id})
+                    write_task_message("assistant", text, meta={"front_task_id": task_id})
                     messages.append({"role": "assistant", "content": text})
             if instant and advance_after_reply():
                 final_status = "completed"
@@ -5391,7 +5398,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 # 没有能看图的模型：立刻如实回复，不让主模型去装 OCR 之类的东西
                 log_event(task_id, "thought", {"content": cloud_vision.NO_VISION_REPLY})
                 messages.append({"role": "assistant", "content": cloud_vision.NO_VISION_REPLY})
-                insert_message(session_id, "assistant", cloud_vision.NO_VISION_REPLY, meta={"vision": "unavailable"})
+                write_task_message("assistant", cloud_vision.NO_VISION_REPLY, meta={"vision": "unavailable"})
                 answered = True
                 break
             if not instant:
@@ -5404,7 +5411,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                         live_clear(task_id)
                         log_event(task_id, "thought", {"content": progress})
                         messages.append({"role": "assistant", "content": progress})
-                        insert_message(session_id, "assistant", progress, meta={"front_task_id": task_id})
+                        write_task_message("assistant", progress, meta={"front_task_id": task_id})
                         answered = True
                         if advance_after_reply():
                             continue
@@ -5497,7 +5504,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 log_event(task_id, "thought", {"content": content})
                 messages.append({"role": "assistant", "content": content})
                 row_meta = _turn_meta(task_id, row_meta)
-                insert_message(session_id, "assistant", content, meta=row_meta)
+                write_task_message("assistant", content, meta=row_meta)
 
             if tool_calls:
                 ast_msg = {"role": "assistant"}
@@ -5511,7 +5518,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     ast_msg["reasoning_content"] = msg["reasoning_content"]
                 messages.append(ast_msg)
 
-                insert_message(session_id, "assistant", content, tool_calls=tool_calls, meta=row_meta)
+                write_task_message("assistant", content, tool_calls=tool_calls, meta=row_meta)
 
                 def exec_tool(tc):
                     if is_task_cancelled(task_id):
@@ -5656,7 +5663,7 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                     tool_meta = {"duration_ms": duration_ms} if duration_ms is not None else {}
                     if instant:
                         tool_meta["front_task_id"] = task_id
-                    insert_message(session_id, "tool", tool_content_str, tool_call_id=tc_id, meta=tool_meta)
+                    write_task_message("tool", tool_content_str, tool_call_id=tc_id, meta=tool_meta)
 
                 handoffs_before = len(front_handoffs)
                 parallel = (len(tool_calls) > 1 and resource_settings().get("parallel_tools", True)
@@ -7368,7 +7375,7 @@ class Handler(BaseHTTPRequestHandler):
             names = _thread_names()
             for r in rows:
                 r["peer_name"] = names.get(r["peer"], r["peer"])
-                r["label"] = cloud_botthreads.collapsed_label(r["count"], r["peer_name"])
+                r["label"] = cloud_botthreads.collapsed_label(r["count"], r["peer_name"], r.get("outgoing"))
             self._send(200, {"threads": rows})
             return
 
@@ -7572,6 +7579,10 @@ class Handler(BaseHTTPRequestHandler):
                     page_rows = c.fetchall()
                     has_more = False
                 reactions = cloud_runmodel.reactions_for(conn, sid)
+                delegation_windows = c.execute(
+                    "SELECT delegation_id, created_at, finished_at FROM bot_delegations WHERE to_session = ? ORDER BY created_at DESC",
+                    (sid,),
+                ).fetchall()
                 msgs = []
                 for mr in page_rows:
                     m = {"id": mr[6], "role": mr[0], "content": mr[1], "timestamp": mr[4]}
@@ -7587,14 +7598,23 @@ class Handler(BaseHTTPRequestHandler):
                             m.update(cloud_runmodel.public_meta(meta))
                         except ValueError:
                             pass
+                    if "delegation_id" not in m and mr[0] in ("user", "assistant", "tool") and mr[4] is not None:
+                        for delegation_id, started, finished in delegation_windows:
+                            if started <= mr[4] <= (finished if finished is not None else float("inf")):
+                                if mr[0] != "user" or (mr[4] == started and deleg.parse_mark(mr[1])):
+                                    m["delegation_id"] = delegation_id
+                                break
                     if mr[2]:
                         try: m["tool_calls"] = json.loads(mr[2])
                         except: pass
                     if mr[3]:
                         m["tool_call_id"] = mr[3]
                     msgs.append(m)
-                c.execute("SELECT task_id, status, model, created_at, client_nonce FROM tasks WHERE session_id = ? ORDER BY created_at DESC", (sid,))
-                tasks = [{"task_id": tr[0], "status": tr[1], "model": tr[2], "created_at": tr[3], "client_nonce": tr[4]} for tr in c.fetchall()]
+                c.execute("SELECT t.task_id, t.status, t.model, t.created_at, t.client_nonce, d.delegation_id "
+                          "FROM tasks t LEFT JOIN bot_delegations d ON d.to_task = t.task_id "
+                          "WHERE t.session_id = ? ORDER BY t.created_at DESC", (sid,))
+                tasks = [{"task_id": tr[0], "status": tr[1], "model": tr[2], "created_at": tr[3], "client_nonce": tr[4],
+                          **({"delegation_id": tr[5]} if tr[5] else {})} for tr in c.fetchall()]
                 # 每个任务的耗时（首字、总时长、token），手机长按消息时显示
                 timing_rows = c.execute("SELECT e.task_id, e.payload FROM task_events e JOIN tasks t ON t.task_id = e.task_id "
                                         "WHERE t.session_id = ? AND e.event_type = 'timings'", (sid,)).fetchall()

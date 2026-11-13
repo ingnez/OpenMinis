@@ -68,11 +68,12 @@ struct CloudThreadPairAvatars: View {
 
 // MARK: - 只读线程
 
-/// Bot 之间的对话（参照 Grok Bot）：标题是两个叠在一起的头像，按天分隔，每条上方是发送者名字、左下角是小头像，
-/// 底部「🔒 只读」。用户不能在这里发言；长按可复制，或引用到自己和某个 Bot 的对话里。
+/// Bot 之间的对话：标题显示对方头像，按天分隔，气泡按当前 Bot 的视角对齐。
+/// 底部标注只读，长按可复制或引用到自己和某个 Bot 的对话里。
 struct CloudBotThreadView: View {
     let a: String
     let b: String
+    var viewer: String = ""
     @ObservedObject private var home = CloudBotHomeModel.shared
     @State private var messages: [CloudBotThreadMessage] = []
     @State private var working: [String] = []
@@ -80,6 +81,7 @@ struct CloudBotThreadView: View {
     @State private var lastId = 0
     @State private var loaded = false
     @State private var errorText: String?
+    @State private var browserURL: URL?
 
     private func name(_ id: String) -> String { names[id] ?? home.bot(id)?.name ?? (id == "_main" ? "主助手" : id) }
 
@@ -97,7 +99,8 @@ struct CloudBotThreadView: View {
                             .background(Capsule().fill(Color(.secondarySystemBackground)))
                             .frame(maxWidth: .infinity)
                         ForEach(section.messages) { m in
-                            CloudThreadBubble(message: m, senderName: name(m.sender), recipientName: name(m.recipient), names: names)
+                            CloudThreadBubble(message: m, senderName: name(m.sender), recipientName: name(m.recipient), names: names,
+                                              outgoing: (viewer.isEmpty ? a : viewer) == m.sender)
                                 .id(m.id)
                         }
                     }
@@ -125,12 +128,40 @@ struct CloudBotThreadView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
+                let peer = {
+                    let v = viewer.isEmpty ? a : viewer
+                    return v == a ? b : a
+                }()
                 HStack(spacing: 8) {
-                    CloudThreadPairAvatars(a: a, b: b, size: 22)
-                    Text("\(name(a)) 与 \(name(b))").font(.subheadline.weight(.semibold)).lineLimit(1)
+                    CloudThreadAvatar(botId: peer, size: 26)
+                    Text(name(peer)).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Text("只读").font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Capsule().fill(Color(.secondarySystemBackground)))
+                        .foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(name(a)) 与 \(name(b)) 的对话")
+                .accessibilityLabel("\(name(peer))，只读")
+                .accessibilityIdentifier("botThreadTitle")
+            }
+        }
+        .environment(\.openURL, OpenURLAction { url in
+            guard ["http", "https"].contains(url.scheme?.lowercased()) else { return .systemAction }
+            browserURL = url
+            return .handled
+        })
+        .sheet(isPresented: Binding(get: { browserURL != nil }, set: { if !$0 { browserURL = nil } })) {
+            if let browserURL {
+                NavigationStack {
+                    MinisSafariView(url: browserURL, localFile: false)
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("完成") { self.browserURL = nil }
+                                    .accessibilityIdentifier("closeBotThreadLink")
+                            }
+                        }
+                }
             }
         }
         .task { await follow() }
@@ -174,14 +205,20 @@ struct CloudThreadBubble: View {
     let senderName: String
     let recipientName: String
     let names: [String: String]
+    var outgoing: Bool = false
     @ObservedObject private var home = CloudBotHomeModel.shared
+    @State private var expanded = false
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            Button { open(message.sender) } label: { CloudThreadAvatar(botId: message.sender, size: 26) }
-                .buttonStyle(.plain)
-                .accessibilityLabel("打开 \(senderName)")
-            VStack(alignment: .leading, spacing: 4) {
+            if !outgoing {
+                Button { open(message.sender) } label: { CloudThreadAvatar(botId: message.sender, size: 26) }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("打开 \(senderName)")
+            } else {
+                Spacer(minLength: 24)
+            }
+            VStack(alignment: outgoing ? .trailing : .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(senderName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     if message.isPriority {
@@ -193,10 +230,23 @@ struct CloudThreadBubble: View {
                     if message.kind == "task" { Text("委托").font(.caption2).foregroundStyle(.tertiary) }
                     if message.kind == "result" { Text(statusText).font(.caption2).foregroundStyle(.tertiary) }
                 }
-                Text(message.text).font(.callout).foregroundStyle(.primary)
+                let long = CloudBotThreadRules.isLongMessage(message.text)
+                let shown = (long && !expanded)
+                    ? String(message.text.prefix(CloudBotThreadRules.longMessageChars)) + "…"
+                    : message.text
+                SelectableMarkdownView(markdown: shown)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 12).padding(.vertical, 9)
-                    .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color(.secondarySystemBackground)))
+                    .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(outgoing ? Color.accentColor.opacity(0.16) : Color(.secondarySystemBackground)))
+                    .frame(maxWidth: 280, alignment: outgoing ? .trailing : .leading)
                     .contextMenu { menu }
+                    .accessibilityIdentifier("threadBubble-\(message.kind)")
+                if long {
+                    Button(expanded ? "收起" : "展开") { withAnimation { expanded.toggle() } }
+                        .font(.caption.weight(.medium))
+                        .accessibilityIdentifier("threadExpand")
+                }
                 let mentioned = CloudBotThreadRules.mentions(in: message.text, names: names)
                 if !mentioned.isEmpty {
                     HStack(spacing: 6) {
@@ -221,7 +271,13 @@ struct CloudThreadBubble: View {
                     .buttonStyle(.plain).foregroundStyle(.tint)
                 }
             }
-            Spacer(minLength: 24)
+            if outgoing {
+                Button { open(message.sender) } label: { CloudThreadAvatar(botId: message.sender, size: 26) }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("打开 \(senderName)")
+            } else {
+                Spacer(minLength: 24)
+            }
         }
         .accessibilityElement(children: .contain)
     }
@@ -293,22 +349,29 @@ struct CloudBotThreadCollapsedRow: View {
 
     var body: some View {
         NavigationLink {
-            CloudBotThreadView(a: item.me, b: item.peer)
+            CloudBotThreadView(a: item.me, b: item.peer, viewer: item.me)
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: "bubble.left.and.bubble.right").font(.caption)
-                Text("\(item.count) 条消息，与").font(.footnote)
                 CloudThreadAvatar(botId: item.peer, size: 18)
-                Text(item.peerName).font(.footnote.weight(.semibold))
+                Text(item.label).font(.footnote)
+                Text(Self.timeText(item.lastAt)).font(.caption2).foregroundStyle(.tertiary)
                 Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
             }
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 12).padding(.vertical, 7)
+            .padding(.horizontal, 12).padding(.vertical, 6)
             .background(Capsule().fill(Color(.secondarySystemBackground)))
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
         .accessibilityLabel(item.label + "，点开查看")
+        .accessibilityIdentifier("botThreadCollapsedRow")
+    }
+
+    private static func timeText(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = Calendar.current.isDateInToday(d) ? "HH:mm" : "M月d日 HH:mm"
+        return f.string(from: d)
     }
 }
 
@@ -326,7 +389,7 @@ struct CloudBotThreadsSection: View {
             ForEach(threads) { t in
                 let peer = t.peer ?? t.bots.first { $0 != botId } ?? t.bots[0]
                 NavigationLink {
-                    CloudBotThreadView(a: t.bots[0], b: t.bots[1])
+                    CloudBotThreadView(a: t.bots[0], b: t.bots[1], viewer: botId)
                 } label: {
                     HStack(spacing: 10) {
                         CloudThreadPairAvatars(a: botId, b: peer, size: 26)

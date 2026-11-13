@@ -69,8 +69,10 @@ struct CloudBotThreadCollapsed: Identifiable, Equatable {
     let count: Int
     let firstAt: Date
     let lastAt: Date
+    let outgoing: Bool?
+    let delegationIDs: [String]
     var id: String { me + "|" + peer }
-    var label: String { CloudBotThreadRules.collapsedLabel(count: count, peerName: peerName) }
+    var label: String { CloudBotThreadRules.collapsedLabel(count: count, peerName: peerName, outgoing: outgoing) }
     var route: String { CloudBotThreadRules.route(me, peer) }
 
     init?(_ d: [String: Any]) {
@@ -79,8 +81,12 @@ struct CloudBotThreadCollapsed: Identifiable, Equatable {
         me = d["me"] as? String ?? "_main"
         peerName = d["peer_name"] as? String ?? peer
         self.count = count
+        delegationIDs = d["delegations"] as? [String] ?? []
         firstAt = Date(timeIntervalSince1970: (d["first_at"] as? NSNumber)?.doubleValue ?? 0)
         lastAt = Date(timeIntervalSince1970: (d["last_at"] as? NSNumber)?.doubleValue ?? 0)
+        if let o = d["outgoing"] as? Bool { outgoing = o }
+        else if let n = d["outgoing"] as? NSNumber { outgoing = n.boolValue }
+        else { outgoing = nil }
     }
 }
 
@@ -103,7 +109,19 @@ enum CloudBotThreadRules {
         return (parts[0], parts[1])
     }
 
-    static func collapsedLabel(count: Int, peerName: String) -> String { "\(count) 条消息，与 \(peerName)" }
+    static func collapsedLabel(count: Int, peerName: String, outgoing: Bool? = nil) -> String {
+        if count <= 1 {
+            return outgoing == false ? "收到 ◯\(peerName) 的消息" : "发消息给 ◯\(peerName)"
+        }
+        return "与 \(peerName) 往来 \(count) 条"
+    }
+
+    /// 线程页里超过这个字数或行数先收起，点「展开」再看全文
+    static let longMessageChars = 280
+    static let longMessageLines = 8
+    static func isLongMessage(_ text: String) -> Bool {
+        text.count > longMessageChars || text.split(separator: "\n", omittingEmptySubsequences: false).count > longMessageLines
+    }
 
     /// 首页预览：Bot 间消息比最后一条对话更新时用它（「➤ 已发消息给 X：…」/「← 来自 X：…」）
     static func homePreview(chat: String, chatAt: Date?, thread: String?, threadAt: Date?) -> (text: String, isThread: Bool) {

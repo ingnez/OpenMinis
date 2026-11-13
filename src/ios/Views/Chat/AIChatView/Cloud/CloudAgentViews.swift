@@ -917,7 +917,10 @@ struct CloudSessionView: View {
             if !CloudE2E.attachWhenBusy { injectE2EAttachments() }
         }
         .onChange(of: callDividers) { _ in updateHistoryMarkers() }
-        .onChange(of: threadRows) { _ in updateHistoryMarkers() }
+        .onChange(of: threadRows) { _ in
+            rebuildTurns()
+            updateHistoryMarkers()
+        }
         .onChange(of: activeTaskId) { tid in if tid != nil, CloudE2E.attachWhenBusy { injectE2EAttachments() } }
         .modifier(CloudDraftKeeper(sessionId: sessionId, text: $inputPrompt))
         .modifier(CloudReplyChatChrome(sessionId: sessionId, instant: showsInstantHistory, status: replyStatus,
@@ -1053,17 +1056,27 @@ struct CloudSessionView: View {
 
     /// 历史 → 回合。任务进行中时这次任务的几轮只由实时事件那一份显示，避免同一段话、同一步工具画两遍
     private func rebuildTurns() {
-        let rows: [[String: Any]]
+        let visibleRows: [[String: Any]]
         let liveHistoryReady = taskIsLive && loadedTaskId == activeTaskId
         if liveHistoryReady, serverTracksReplyTurns, replyPlan?.isInstant == true, let tid = activeTaskId {
-            rows = messages.filter { $0["front_task_id"] as? String != tid }
+            visibleRows = messages.filter { $0["front_task_id"] as? String != tid }
         } else {
             let roles = messages.map { $0["role"] as? String ?? "" }
             let stamps = messages.map { $0["timestamp"] as? Double }
             let n = CloudEventLedger.visibleHistoryCount(roles: roles, timestamps: stamps, liveShown: liveHistoryReady, taskStartedAt: activeTaskCreatedAt)
-            rows = Array(messages.prefix(n))
+            visibleRows = Array(messages.prefix(n))
         }
-        let hidesLiveHistory = liveHistoryReady && rows.count < messages.count
+        let hidesLiveHistory = liveHistoryReady && visibleRows.count < messages.count
+        let delegationIDs = Set(threadRows.flatMap(\.delegationIDs))
+        let rows = delegationIDs.isEmpty ? visibleRows : visibleRows.compactMap { row -> [String: Any]? in
+            guard let id = row["delegation_id"] as? String, delegationIDs.contains(id) else { return row }
+            guard row["role"] as? String == "assistant", !CloudCards.cards(in: row).isEmpty else { return nil }
+            var cardsOnly = row
+            cardsOnly["content"] = ""
+            cardsOnly["reasoning"] = nil
+            cardsOnly["tool_calls"] = nil
+            return cardsOnly
+        }
         if historyHidesTask != hidesLiveHistory { historyHidesTask = hidesLiveHistory }
         if let displayedHistoryRows, CloudHistoryAdapter.sameRows(rows, displayedHistoryRows) { return }
         let users = turns.reduce(into: [String: CloudHistoryAdapter.Turn]()) { result, turn in
@@ -1273,6 +1286,14 @@ struct CloudSessionView: View {
 
     @ViewBuilder
     private func themedTaskArea(_ theme: CloudBotChatTheme) -> some View {
+        let delegated = tasks.first { $0["task_id"] as? String == activeTaskId }?["delegation_id"] is String
+        if !delegated {
+            activeThemedTaskArea(theme)
+        }
+    }
+
+    @ViewBuilder
+    private func activeThemedTaskArea(_ theme: CloudBotChatTheme) -> some View {
         let resolved = Set(taskEvents.compactMap { ev -> String? in
             guard ev["type"] as? String == "approval_resolved" else { return nil }
             return (ev["payload"] as? [String: Any])?["approval_id"] as? String

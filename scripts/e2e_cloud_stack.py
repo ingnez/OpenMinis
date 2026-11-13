@@ -18,6 +18,8 @@ TOKEN = "e2e-fake-token-0000000000000000"
 MODEL = "e2e-vision-model"
 BOT_ID = "e2ebot"
 BOT_NAME = "E2E小助手"
+MAKER_ID = "e2emaker"
+MAKER_NAME = "E2E工匠"
 # 本地模式的假服务商（App 用 OPENMINIS_E2E_LOCAL_PROVIDER 指过来）：单独端口、单独模型名，和云端那边的请求分开数
 LOCAL_MODEL = "e2e-local-model"
 LOCAL_MODEL_PORT = 18797
@@ -89,6 +91,19 @@ def script(data):
         return tool_call("c2", "shell_execute", {"command": "sleep 40; echo e2e-slow-done"})
     if "跑个命令" in text and not tool_turns(data):
         return tool_call("c1", "shell_execute", {"command": "echo e2e-shell-ok; sleep 2"})
+    if text == "通知工匠":
+        if not _fresh_tools(data):
+            return tool_call("x1-notice", "send_to_bot", {"bot_id": MAKER_ID, "message": "记下这条工匠通知"})
+        return {"role": "assistant", "content": "已通知工匠"}
+    if text == "交给工匠做海报":
+        if not _fresh_tools(data):
+            return tool_call("x1-task", "delegate_task", {"bot_id": MAKER_ID, "task": "做一张海报", "wait": True})
+        return {"role": "assistant", "content": "已经交给工匠了"}
+    if "记下这条工匠通知" in text:
+        return {"role": "assistant", "content": "已收到工匠通知"}
+    if "做一张海报" in text:
+        long = "[海报链接](https://example.com/poster)\n\n" + ("这是一段很长的说明，方便在会话页里展开查看。" * 18)
+        return {"role": "assistant", "content": long + "\n\n海报长消息结束"}
     if "加粗" in text:
         return {"role": "assistant", "content": "> 这是**结论：**引用里的中文加粗，还有**「重点」**和**加粗的中文**。\n\n正文第二段。"}
     if "生成交付物" in text:
@@ -564,6 +579,23 @@ def main():
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+                return
+            if urlparse(self.path).path == "/_e2e/bot_threads":
+                import sqlite3
+                db = sqlite3.connect(os.environ["OPENMINIS_DB"])
+                with db:
+                    maker_sessions = db.execute("SELECT session_id FROM sessions WHERE persona_id = ?", (MAKER_ID,)).fetchall()
+                    db.executemany("DELETE FROM messages WHERE session_id = ?", maker_sessions)
+                    db.executemany("DELETE FROM tasks WHERE session_id = ?", maker_sessions)
+                    db.execute("DELETE FROM bot_thread_messages WHERE sender = ? OR recipient = ?", (MAKER_ID, MAKER_ID))
+                    db.execute("DELETE FROM bot_delegations WHERE from_bot = ? OR to_bot = ?", (MAKER_ID, MAKER_ID))
+                db.close()
+                set_reply("verbose")
+                _api("PUT", f"/v1/bots/{MAKER_ID}", {"name": MAKER_NAME, "instructions": "端到端测试工匠 Bot",
+                     "model": MODEL, "credential": "e2e"})
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
                 return
             if urlparse(self.path).path == "/_e2e/swipe_history":
                 import sqlite3

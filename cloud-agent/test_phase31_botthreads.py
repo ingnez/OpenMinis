@@ -21,7 +21,9 @@ class UnitTests(unittest.TestCase):
         self.assertTrue(bt.preview_text("boss", msg, names).startswith("➤ 已发消息给 制造厂：把 图 做好"))
         self.assertTrue(bt.preview_text("boss", msg, names).endswith("…"))
         self.assertTrue(bt.preview_text("maker", msg, names).startswith("← 来自 总管：把 图 做好"))
-        self.assertEqual(bt.collapsed_label(2, "制造厂"), "2 条消息，与 制造厂")
+        self.assertEqual(bt.collapsed_label(2, "制造厂"), "与 制造厂 往来 2 条")
+        self.assertEqual(bt.collapsed_label(1, "制造厂", True), "发消息给 ◯制造厂")
+        self.assertEqual(bt.collapsed_label(1, "制造厂", False), "收到 ◯制造厂 的消息")
 
     def test_record_idempotent_and_backfill(self):
         conn = sqlite3.connect(":memory:")
@@ -73,7 +75,22 @@ class ThreadApiTests(CloudServerTestCase):
         self.assertTrue(lst[0]["preview"].startswith("➤ 已发消息给 总管：海报做好了"))
         # 用户对话里的折叠行
         rows = self.request("GET", f"/v1/sessions/{sid}/bot-threads")[1]["threads"]
-        self.assertEqual((rows[0]["peer"], rows[0]["count"], rows[0]["label"]), ("maker", 2, "2 条消息，与 制造厂"))
+        self.assertEqual((rows[0]["peer"], rows[0]["count"], rows[0]["label"]), ("maker", 2, "与 制造厂 往来 2 条"))
+        receiver = self.request("GET", f"/v1/sessions/{m1['session_id']}")[1]
+        did = m1["delegation_id"]
+        self.assertEqual(receiver["tasks"][0]["delegation_id"], did)
+        self.assertEqual([(m["role"], m.get("delegation_id")) for m in receiver["messages"]],
+                         [("user", did), ("assistant", did)])
+        incoming = self.request("GET", f"/v1/sessions/{m1['session_id']}/bot-threads")[1]["threads"]
+        self.assertEqual((incoming[0]["peer"], incoming[0]["count"], incoming[0]["delegations"]), ("boss", 2, [did]))
+        conn = self.srv.get_db_connection()
+        try:
+            conn.execute("UPDATE messages SET meta = NULL WHERE session_id = ?", (m1["session_id"],))
+            conn.commit()
+        finally:
+            conn.close()
+        legacy = self.request("GET", f"/v1/sessions/{m1['session_id']}?limit=1")[1]["messages"]
+        self.assertEqual([(m["role"], m.get("delegation_id")) for m in legacy], [("assistant", did)])
         # 首页预览：制造厂最近的动静是回复总管
         bots = {b["bot_id"]: b for b in self.request("GET", "/v1/bots")[1]["bots"]}
         self.assertIn("thread_preview", bots["maker"])

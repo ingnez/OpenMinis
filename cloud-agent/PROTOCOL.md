@@ -503,7 +503,7 @@
 每次 `send_to_bot` / `delegate_task` 记一条线程消息（委托结束再记一条回复），表 `bot_thread_messages`：`id, pair, sender, recipient, text, ts, priority, kind(message/task/result), status, delegation_id, task_id, session_id`。没有 Bot 身份的会话记作 `_main`。文字经过保管库脱敏。
 - `GET /v1/bot-threads[?bot_id=]`：线程列表（每对一条）`{pair, bots, names, count, last, last_at, working, high_priority, peer?, preview?}`。
 - `GET /v1/bot-threads/<a>/<b>?after=<id>&wait=<秒>&working=<逗号分隔>`：只读线程消息，`working` 是正在处理的 Bot；有新消息或 working 变化立刻返回。
-- `GET /v1/sessions/<sid>/bot-threads`：用户对话里的折叠行 `{peer, peer_name, count, label:"N 条消息，与 X", delegations}`。
+- `GET /v1/sessions/<sid>/bot-threads`：用户对话里的折叠行 `{me, peer, peer_name, count, outgoing, label, first_at, last_at, delegations}`。`label`：一条时为「发消息给 ◯X」/「收到 ◯X 的消息」，连续多条为「与 X 往来 N 条」。发起方和接收方对话都能看到同一对线程。会话详情的委托消息和接收任务带 `delegation_id`，供聊天折叠正文并保留文件卡。
 - `GET /v1/bots` 每个 Bot 可能带 `thread_preview {text:"➤ 已发消息给 X：…" / "← 来自 X：…", at, peer, outgoing, priority}`（最近的动静是 Bot 间消息时）。
 - `GET /v1/search` 结果多了 `type: "bot_thread"`（`bots`, `sender`, `message_id`）。
 
