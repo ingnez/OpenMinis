@@ -120,7 +120,8 @@ class NotifySinkHandler(BaseHTTPRequestHandler):
 
 def _serve(handler):
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    server._fixture_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server._fixture_thread.start()
     return server, server.server_address[1]
 
 
@@ -178,12 +179,23 @@ class CloudServerTestCase(unittest.TestCase):
     def tearDownClass(cls):
         if hasattr(cls.srv, "stop_scheduler"):
             cls.srv.stop_scheduler()
-        for s in (cls.api_server, cls.model_server, cls.notify_server):
+        # Stop new submissions first, but keep the fake model and notification
+        # endpoints alive until in-flight tasks have observed cancellation.
+        # Otherwise a late model call can connect to an unserved listening
+        # socket, outlive the drain timeout and keep a TaskGate slot into the
+        # next fixture's database.
+        try:
+            cls.api_server.shutdown()
+        except Exception:
+            pass
+        cls._drain_background()
+        for s in (cls.model_server, cls.notify_server):
             try:
                 s.shutdown()
             except Exception:
                 pass
-        cls._drain_background()
+        for s in (cls.api_server, cls.model_server, cls.notify_server):
+            s.server_close()
         for k in list(cls.extra_env.keys()) + ["OPENMINIS_MASTER_KEY_FILE"]:
             os.environ.pop(k, None)
         cls.tmp.cleanup()
@@ -208,9 +220,14 @@ class CloudServerTestCase(unittest.TestCase):
                 except Exception:
                     pass
         deadline = time.time() + timeout
+        # These serving loops must stay alive while tasks drain. They are
+        # fixture infrastructure, not leftover task threads.
+        server_threads = {getattr(s, "_fixture_thread", None)
+                          for s in (cls.api_server, cls.model_server, cls.notify_server)}
         while time.time() < deadline:
             alive = [t for t in threading.enumerate()
                      if t not in cls._threads_before and t is not threading.current_thread() and t.is_alive()
+                     and t not in server_threads
                      and t.name not in ("routine-scheduler", "watchdog")]
             if not alive:
                 break
