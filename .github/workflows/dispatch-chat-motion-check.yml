@@ -26,21 +26,21 @@ jobs:
             echo "A newer revision superseded $EXPECTED_SHA"
             exit 0
           fi
-          previous="$repo/actions/runs/43366979683"
+          previous="$repo/actions/runs/43369277825"
           while [ "$(gh api "$previous" --jq .status)" != completed ]; do
-            echo "Waiting for the previous simulator run 43366979683 to finish"
+            echo "Waiting for the previous simulator run 43369277825 to finish"
             sleep 45
           done
           if [ "$(gh api "$ref" --jq '.object.sha')" != "$EXPECTED_SHA" ]; then
             echo "A newer revision superseded $EXPECTED_SHA"
             exit 0
           fi
-          gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$TARGET_BRANCH" -f ui_tests=true -f mac_runner=macos-26 -f only_testing="$TESTS"
+          gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$TARGET_BRANCH" -f ui_tests=true -f mac_runner=macos-15 -f only_testing="$TESTS"
           runs="$repo/actions/workflows/build-ios.yml/runs?branch=$TARGET_BRANCH&head_sha=$EXPECTED_SHA&event=workflow_dispatch&per_page=10"
           last_id=
           completed_checks=0
           while true; do
-            result=$(gh api "$runs" --jq '(.workflow_runs[0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
+            result=$(gh api "$runs" --jq '([.workflow_runs[] | select(.id > 43369277825)][0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
             IFS=$'\t' read -r test_id status conclusion <<< "$result"
             if [ "$test_id" != "$last_id" ]; then
               echo "Simulator run: $test_id"
