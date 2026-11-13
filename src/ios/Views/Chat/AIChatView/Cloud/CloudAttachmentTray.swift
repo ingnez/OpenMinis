@@ -13,8 +13,19 @@ struct CloudAttachmentTray: View {
         VStack(alignment: .leading, spacing: 4) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(attachments) { a in
-                        card(a)
+                    ForEach(Array(attachments.enumerated()), id: \.element.id) { index, a in
+                        CloudAttachmentTrayCard(attachment: a, canMoveEarlier: index > 0,
+                                                canMoveLater: index + 1 < attachments.count,
+                                                attachments: $attachments, markup: $markup)
+                            .equatable()
+                            .overlay {
+                                if let state = states[a.id], state != .done {
+                                    ImageUploadBadge(state: state, onRetry: onRetry).scaleEffect(0.8)
+                                }
+                            }
+                            .opacity(dragging == a.id ? 0.4 : 1)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityIdentifier("trayCard")
                             .onDrag { dragging = a.id; return NSItemProvider(object: a.id.uuidString as NSString) }
                             .onDrop(of: [.text], delegate: CloudTrayDrop(target: a.id, dragging: $dragging, items: $attachments))
                     }
@@ -31,50 +42,68 @@ struct CloudAttachmentTray: View {
         }
     }
 
-    private func card(_ a: CloudPendingAttachment) -> some View {
-        let state = states[a.id] ?? .done
-        return AttachmentTrayTile(name: a.filename, onRemove: { attachments.removeAll { $0.id == a.id } }) {
-            ZStack {
-                if let thumb = a.thumbnail {
-                    Image(uiImage: thumb).resizable().scaledToFill()
-                } else {
-                    VStack(spacing: 4) {
-                        Image(systemName: "doc").font(.title3)
-                        Text(a.filename).appTextFont(size: 9, relativeTo: .caption).lineLimit(1).padding(.horizontal, 4)
-                    }.foregroundStyle(.secondary)
-                }
-                ImageUploadBadge(state: state, onRetry: onRetry).scaleEffect(0.8)
-            }
-        }
-        .opacity(dragging == a.id ? 0.4 : 1)
-        .contextMenu {
-            if a.isImage {
-                Button { openMarkup(a) } label: { Label("裁剪和标注", systemImage: "pencil.tip.crop.circle") }
-            }
-            if let i = attachments.firstIndex(where: { $0.id == a.id }) {
-                if i > 0 { Button { move(i, to: i - 1) } label: { Label("往前移", systemImage: "arrow.left") } }
-                if i < attachments.count - 1 { Button { move(i, to: i + 1) } label: { Label("往后移", systemImage: "arrow.right") } }
-            }
-            Button(role: .destructive) { attachments.removeAll { $0.id == a.id } } label: { Label("移除", systemImage: "trash") }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("trayCard")
-    }
-
-    private func move(_ from: Int, to: Int) {
-        withAnimation(.easeInOut(duration: 0.2)) { attachments.swapAt(from, to) }
-    }
-
-    private func openMarkup(_ a: CloudPendingAttachment) {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("markup-\(a.id.uuidString).jpg")
-        guard (try? a.data.write(to: url, options: .atomic)) != nil else { return }
-        markup = CloudMarkupTarget(id: a.id, url: url)
-    }
-
     private func apply(_ url: URL, to id: UUID) {
         guard let i = attachments.firstIndex(where: { $0.id == id }), let data = try? Data(contentsOf: url),
               let img = UIImage(data: data), let fresh = CloudAttachmentKit.image(img, name: attachments[i].filename) else { return }
         attachments[i] = fresh
+    }
+}
+
+/// Keep a presented system menu stable through unrelated composer redraws.
+private struct CloudAttachmentTrayCard: View, Equatable {
+    let attachment: CloudPendingAttachment
+    let canMoveEarlier: Bool
+    let canMoveLater: Bool
+    @Binding var attachments: [CloudPendingAttachment]
+    @Binding var markup: CloudMarkupTarget?
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.attachment.id == rhs.attachment.id
+            && lhs.canMoveEarlier == rhs.canMoveEarlier
+            && lhs.canMoveLater == rhs.canMoveLater
+    }
+
+    var body: some View {
+        AttachmentTrayTile(name: attachment.filename, onRemove: remove) {
+            ZStack {
+                if let thumb = attachment.thumbnail {
+                    Image(uiImage: thumb).resizable().scaledToFill()
+                } else {
+                    VStack(spacing: 4) {
+                        Image(systemName: "doc").font(.title3)
+                        Text(attachment.filename).appTextFont(size: 9, relativeTo: .caption).lineLimit(1).padding(.horizontal, 4)
+                    }.foregroundStyle(.secondary)
+                }
+            }
+        }
+        .contextMenu {
+            if attachment.isImage {
+                Button(action: openMarkup) { Label("裁剪和标注", systemImage: "pencil.tip.crop.circle") }
+            }
+            if canMoveEarlier {
+                Button { move(by: -1) } label: { Label("往前移", systemImage: "arrow.left") }
+            }
+            if canMoveLater {
+                Button { move(by: 1) } label: { Label("往后移", systemImage: "arrow.right") }
+            }
+            Button(role: .destructive, action: remove) { Label("移除", systemImage: "trash") }
+        }
+    }
+
+    private func remove() {
+        attachments.removeAll { $0.id == attachment.id }
+    }
+
+    private func move(by offset: Int) {
+        guard let from = attachments.firstIndex(where: { $0.id == attachment.id }),
+              attachments.indices.contains(from + offset) else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { attachments.swapAt(from, from + offset) }
+    }
+
+    private func openMarkup() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("markup-\(attachment.id.uuidString).jpg")
+        guard (try? attachment.data.write(to: url, options: .atomic)) != nil else { return }
+        markup = CloudMarkupTarget(id: attachment.id, url: url)
     }
 }
 

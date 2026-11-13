@@ -284,21 +284,22 @@ final class ReplyModeUITests: XCTestCase {
     }
 
     func testReply_reopenInstantHistoryAtLatestMessage() throws {
-        var app = launch(mode: "instant")
+        let latest = "重开时应看到的末条消息"
+        let expectedReply = "秒回：" + latest
+        var app = launch(mode: "instant", cacheReply: expectedReply)
         openBot(app)
         send(app, "先翻记忆 早上好")
         XCTAssertTrue(waitText(app, contains: "记忆里没有新事", timeout: 25))
-        let latest = "重开时应看到的末条消息"
         send(app, latest)
-        XCTAssertTrue(waitText(app, contains: "秒回：" + latest, timeout: 25))
-        hideKeyboard(app)
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.buttons["homeAppsButton"].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitText(app, contains: expectedReply, timeout: 25))
+        XCTAssertTrue(app.staticTexts["e2eCachedReply"].waitForExistence(timeout: 15),
+                      "退出前最新回复还没有写入本地缓存")
+        // The cache test needs a process restart, independent of keyboard or navigation gestures.
         app.terminate()
         app = launch(mode: "instant", reset: false, delayHistory: true)
         openBot(app)
         let lastReply = app.descendants(matching: .any).matching(
-            NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "秒回：" + latest, "秒回：" + latest)
+            NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", expectedReply, expectedReply)
         ).firstMatch
         XCTAssertTrue(poll(4) { lastReply.exists && lastReply.isHittable }, "重开后没有先从缓存显示最新回复")
         assertNoReasoningOrBrief(app)
@@ -633,7 +634,7 @@ final class ReplyModeUITests: XCTestCase {
         return r.requests.map(\.text)
     }
 
-    private func launch(mode: String, reset: Bool = true, delayHistory: Bool = false) -> XCUIApplication {
+    private func launch(mode: String, reset: Bool = true, delayHistory: Bool = false, cacheReply: String? = nil) -> XCUIApplication {
         if reset { _ = probe("/_e2e/reset") }
         XCTAssertNotNil(probe("/_e2e/reply?mode=" + mode), "探针设不了回复方式（E2E 云端没起来？）")
         let app = XCUIApplication()
@@ -643,6 +644,7 @@ final class ReplyModeUITests: XCTestCase {
         app.launchEnvironment["OPENMINIS_E2E_TOKEN"] = Self.token
         app.launchEnvironment["OPENMINIS_E2E_PORT"] = "18765"
         if delayHistory { app.launchEnvironment["OPENMINIS_E2E_DELAY_HISTORY"] = "1" }
+        if let cacheReply { app.launchEnvironment["OPENMINIS_E2E_CACHE_REPLY"] = cacheReply }
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 60))
         dismissKeyboardIntro(app)

@@ -651,6 +651,9 @@ struct CloudSessionView: View {
     @State private var activeTaskStatus: String = "idle"
     @State private var taskEvents: [[String: Any]] = []
     @State private var hasLoadedSessionDetail = false
+    #if DEBUG
+    @State private var e2eCachedReply = false
+    #endif
     @State private var isSubmitting = false
     @StateObject private var delivery = CloudDeliveryBox()
     @State private var canStoreOutbox = false
@@ -1157,7 +1160,18 @@ struct CloudSessionView: View {
                     self.canStoreOutbox = !self.incognito && (res["incognito"] as? Bool) != true
                         && (self.theme.map { !CloudBotLock.isLockedStored($0.botId) } ?? true)
                     if self.theme != nil, self.canStoreOutbox {
-                        CloudChatCache.save(self.sessionId, messages: fresh, tasks: freshTasks, reply: freshReply)
+                        let savedCount = CloudChatCache.save(self.sessionId, messages: fresh, tasks: freshTasks, reply: freshReply)
+                        #if DEBUG
+                        if CloudE2E.token != nil, let savedCount,
+                           let expected = ProcessInfo.processInfo.environment["OPENMINIS_E2E_CACHE_REPLY"] {
+                            self.e2eCachedReply = fresh.suffix(savedCount).contains {
+                                $0["role"] as? String == "assistant"
+                                    && ($0["content"] as? String)?.contains(expected) == true
+                            }
+                        }
+                        #else
+                        _ = savedCount
+                        #endif
                     }
                     // 分页：之前翻出来的更早消息留着；旧服务器不认 limit 时 has_more 缺省为 false
                     self.serverTracksReplyTurns = res["ordered_reply_turns"] as? Bool == true
@@ -1741,6 +1755,13 @@ struct CloudSessionView: View {
             .overlay(alignment: .topLeading) {
                 if theme != nil, CloudE2E.token != nil {
                     CloudTranscriptTimeTestStatus(times: transcriptSwipe.times)
+                }
+                if e2eCachedReply {
+                    Text("聊天缓存已写入")
+                        .font(.system(size: 1))
+                        .opacity(0.01)
+                        .accessibilityIdentifier("e2eCachedReply")
+                        .allowsHitTesting(false)
                 }
             }
             #endif
