@@ -29,4 +29,5 @@ jobs:
             mac-live-tail.log
             mac-operation-tail.log
             mac-test-results.log
+            mac-failure-context.log
           retention-days: 7

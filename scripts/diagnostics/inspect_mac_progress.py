@@ -52,6 +52,11 @@ results = [line for line in lines if re.search(r'Test [Cc]ase .*\b(passed|failed
 Path('mac-test-results.log').write_text('\n'.join(results)+'\n')
 started = [line for line in lines if re.search(r'Test Case .* started|Test case .* started|Testing started',line)]
 errors = [line for line in lines if re.search(r'\.swift:\d+:\d+: error:|\*\* TEST FAILED|Testing failed:',line)]
+failure_indexes = set()
+for index, line in enumerate(lines):
+    if re.search(r'error: -\[|XCTAssert.*failed|XCTFail|Assertion Failure|Caught error|failed -|Timed out.*(?:App|application|idle)',line):
+        failure_indexes.update(range(max(0,index-7),min(len(lines),index+5)))
+Path('mac-failure-context.log').write_text('\n'.join(lines[i] for i in sorted(failure_indexes))[:250000]+'\n')
 warning_files = collections.Counter(re.findall(r'/([^/\n]+\.swift):\d+:\d+: warning:',log))
 summary = {'job_id':job_id,'source_sha':expected,'job_status':job['status'],
     'job_conclusion':job.get('conclusion'),'log_bytes':path.stat().st_size,
@@ -60,6 +65,7 @@ summary = {'job_id':job_id,'source_sha':expected,'job_status':job['status'],
     'failed_records':sum(' failed ' in l for l in results),
     'last_test_start':started[-1] if started else None,
     'last_test_result':results[-1] if results else None,
+    'first_failure_context':[lines[i] for i in sorted(failure_indexes)[:35]],
     'last_operation':markers[-1] if markers else None,
     'compilation_errors':errors[-10:], 'warning_counts':warning_files.most_common(12)}
 Path('mac-progress.json').write_text(json.dumps(summary,indent=2))
