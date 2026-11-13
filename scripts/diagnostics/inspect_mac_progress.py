@@ -8,8 +8,8 @@ import subprocess
 import zipfile
 
 repo = os.environ['GITHUB_REPOSITORY']
-job_id = os.environ.get('INSPECT_JOB_ID') or '131954557726'
-expected = os.environ.get('INSPECT_EXPECTED_SHA') or 'a41f897c2ff96ee55cb7cf22d5879f0f4bfc55fb'
+job_id = os.environ.get('INSPECT_JOB_ID') or '131972251247'
+expected = os.environ.get('INSPECT_EXPECTED_SHA') or 'ebde3ea659b98ef5a2c17181185c4a1ae89bf3aa'
 assert job_id.isdecimal() and re.fullmatch(r'[0-9a-f]{40}', expected)
 
 def api(path):
@@ -47,6 +47,9 @@ if result.returncode:
             'job_log_error':message,'run_log_error':fallback_message},indent=2))
         print(message)
         print(fallback_message)
+        if job['status'] != 'completed' and '404' in message:
+            print('Live log has not been published yet; this is not a test result.')
+            raise SystemExit(0)
         raise SystemExit('Could not retrieve current logs; exact API errors were preserved')
 
 path = Path('mac-live.log')
@@ -57,7 +60,7 @@ markers = [line for line in lines if re.search(r'Test Case|Test case|Test Suite|
 Path('mac-operation-tail.log').write_text('\n'.join(markers[-60:])+'\n')
 results = [line for line in lines if re.search(r'Test [Cc]ase .*\b(passed|failed|skipped)\b',line)]
 Path('mac-test-results.log').write_text('\n'.join(results)+'\n')
-entry = next((i for i, line in enumerate(lines) if 'OPENMINIS_UI_ENTRY_FAILURE:' in line), None)
+entry = next((i for i, line in enumerate(lines) if re.search(r'Z\s+OPENMINIS_UI_ENTRY_FAILURE:', line)), None)
 if entry is not None:
     Path('mac-entry-failure.log').write_text('\n'.join(lines[entry:entry+250])[:50000]+'\n')
 started = [line for line in lines if re.search(r'Test Case .* started|Test case .* started|Testing started',line)]
