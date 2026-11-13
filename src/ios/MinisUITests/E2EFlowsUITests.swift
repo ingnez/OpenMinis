@@ -1733,7 +1733,8 @@ extension E2EFlowsUITests {
         let seed = try JSONDecoder().decode([String: Int].self, from: Data(contentsOf: url))
         XCTAssertEqual(seed["seeded"], 48)
         openBot(app)
-        let latest = app.textViews.containing(NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", "滚动测试回复 48", "滚动测试回复 48")).firstMatch
+        let latestReply = "滚动测试回复 48"
+        let latest = app.textViews.matching(NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", latestReply, latestReply)).firstMatch
         XCTAssertTrue(poll(30) { latest.exists && latest.isHittable }, "长对话打开后没有定位到最新消息")
         let list = app.scrollViews["cloudChatTranscript"]
         XCTAssertTrue(list.waitForExistence(timeout: 5))
