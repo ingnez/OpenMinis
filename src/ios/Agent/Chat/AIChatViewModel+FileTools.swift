@@ -706,4 +706,34 @@ extension AIChatViewModel {
         return FileToolResult(output: result, success: true)
     }
 
+
+    /// Collect only regular files generated in the current local workspace.
+    func recordDeliveredPaths(_ paths: [String]) async {
+        let prefix = "/var/minis/workspace/"
+        for path in paths where path.hasPrefix(prefix) {
+            let relative = String(path.dropFirst(prefix.count))
+            guard !relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }),
+                  !pendingDeliveries.contains(where: { $0.path == relative }),
+                  let sid = sessionId,
+                  let url = await resolvePathForDirectRead(path) else { continue }
+            let workspace = Self.minisWorkspacePersistentDir(for: sid).resolvingSymlinksInPath()
+            let resolved = url.resolvingSymlinksInPath()
+            guard sessionId == sid, resolved.path.hasPrefix(workspace.path + "/"),
+                  let values = try? resolved.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true else { continue }
+            let name = (relative as NSString).lastPathComponent
+            pendingDeliveries.append(CloudDeliverable(localId: "local-" + UUID().uuidString,
+                                                        path: relative, name: name, bytes: values.fileSize ?? 0))
+        }
+    }
+
+    func flushDeliveries(after historyCount: Int) async {
+        guard let message = messages.last(where: { $0.role == .assistant }),
+              let raw = agentHistory.dropFirst(historyCount).last(where: { $0.role == .assistant && $0.dbMessageId != nil }),
+              let rowId = raw.dbMessageId else { return }
+        let items = pendingDeliveries + CloudLinkExtract.links(in: message.content)
+        guard !items.isEmpty else { return }
+        message.addLocalDeliveries(items)
+        await ChatStore.shared.saveLocalDeliveries(messageId: rowId, items: message.deliverables)
+    }
 }

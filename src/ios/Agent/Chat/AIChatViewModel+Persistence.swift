@@ -304,6 +304,8 @@ extension AIChatViewModel {
         let resolver = await ChatStore.shared.mediaFileURLResolver()
         logger.info("[SessionLoad] \(sessionId) — Phase 1 DB load: \(String(format: "%.1f", dbElapsed))ms (\(rawMessages.count) messages)")
 
+        let deliveries = remoteDeviceId == nil ? await ChatStore.shared.localDeliveries(sessionId: sessionId) : [:]
+
         // Phase 2: Build UI messages and agent history
         let buildStart = CFAbsoluteTimeGetCurrent()
         let phase2aStart = CFAbsoluteTimeGetCurrent()
@@ -404,10 +406,12 @@ extension AIChatViewModel {
                         logger.info("[ErrorPersist] reload: clearing stale mid-run error at so=\(raw.sortOrder) — later assistant rows exist")
                         assistant.error = nil
                     }
+                    assistant.addLocalDeliveries(deliveries[raw.id] ?? [])
                     assistant.lastSourceSortOrder = raw.sortOrder
                 } else {
                     // First assistant message in this turn
                     let msg = raw.toChatMessage(mediaResolver: resolver, showThinking: showThinking)
+                    msg.addLocalDeliveries(deliveries[raw.id] ?? [])
                     msg.sourceSortOrder = raw.sortOrder
                     msg.lastSourceSortOrder = raw.sortOrder
                     currentAssistant = msg

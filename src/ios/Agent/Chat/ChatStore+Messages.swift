@@ -41,6 +41,39 @@ extension ChatStore {
         return sqlite3_step(check) == SQLITE_ROW
     }
 
+    func saveLocalDeliveries(messageId: String, items: [CloudDeliverable]) {
+        guard let data = try? JSONEncoder().encode(items) else { return }
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(db, """
+            INSERT OR REPLACE INTO local_deliveries(message_id, items_json)
+            SELECT id, ? FROM messages WHERE id = ? AND role = 'assistant'
+            """, -1, &statement, nil) == SQLITE_OK else { return }
+        data.withUnsafeBytes { bytes in
+            sqlite3_bind_blob(statement, 1, bytes.baseAddress, Int32(bytes.count), nil)
+            sqlite3_bind_text(statement, 2, (messageId as NSString).utf8String, -1, nil)
+            sqlite3_step(statement)
+        }
+    }
+
+    func localDeliveries(sessionId: String) -> [String: [CloudDeliverable]] {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(db, """
+            SELECT d.message_id, d.items_json FROM local_deliveries d
+            JOIN messages m ON m.id = d.message_id WHERE m.session_id = ?
+            """, -1, &statement, nil) == SQLITE_OK else { return [:] }
+        sqlite3_bind_text(statement, 1, (sessionId as NSString).utf8String, -1, nil)
+        var result: [String: [CloudDeliverable]] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let id = sqlite3_column_text(statement, 0),
+                  let bytes = sqlite3_column_blob(statement, 1) else { continue }
+            let data = Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 1)))
+            result[String(cString: id)] = try? JSONDecoder().decode([CloudDeliverable].self, from: data)
+        }
+        return result
+    }
+
     // MARK: - Message CRUD
 
     func appendMessage(_ message: RawMessage) {

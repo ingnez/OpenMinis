@@ -280,6 +280,7 @@ private struct ChatTrailingMenu: View, Equatable {
     let onOpenTerminal: () -> Void
     let onOpenBrowser: () -> Void
     let onBrowseFiles: () -> Void
+    let onChatFiles: () -> Void
     let onSkills: () -> Void
     let onMCPs: () -> Void
     let onMemories: () -> Void
@@ -359,6 +360,10 @@ private struct ChatTrailingMenu: View, Equatable {
                 Label(AppLocalized("Open Browser"), systemImage: "globe")
             }
 
+            Button { onChatFiles() } label: {
+                Label("文件", systemImage: "folder")
+            }
+            .accessibilityIdentifier("chatFilesButton")
             Button { onBrowseFiles() } label: {
                 Label(AppLocalized("Browse Chat Files"), systemImage: "folder")
             }
@@ -524,6 +529,7 @@ struct ChatTrailingMenuButton: UIViewRepresentable {
     let onOpenTerminal: () -> Void
     let onOpenBrowser: () -> Void
     let onBrowseFiles: () -> Void
+    let onChatFiles: () -> Void
     let onSkills: () -> Void
     let onMCPs: () -> Void
     let onMemories: () -> Void
@@ -611,6 +617,7 @@ struct ChatTrailingMenuButton: UIViewRepresentable {
         button.tintColor = UIColor(ChatColors.primaryText)
         button.showsMenuAsPrimaryAction = true
         button.accessibilityLabel = AppLocalized("More options")
+        button.accessibilityIdentifier = "chatOverflow"
         button.menu = Self.buildMenu(key: key, coordinator: context.coordinator)
         context.coordinator.lastKey = key
         return button
@@ -684,6 +691,8 @@ struct ChatTrailingMenuButton: UIViewRepresentable {
                      image: UIImage(systemName: "terminal")) { _ in coordinator.parent.onOpenTerminal() },
             UIAction(title: AppLocalized("Open Browser"),
                      image: UIImage(systemName: "globe")) { _ in coordinator.parent.onOpenBrowser() },
+            UIAction(title: "文件",
+                     image: UIImage(systemName: "folder")) { _ in coordinator.parent.onChatFiles() },
             UIAction(title: AppLocalized("Browse Chat Files"),
                      image: UIImage(systemName: "folder")) { _ in coordinator.parent.onBrowseFiles() },
         ]))

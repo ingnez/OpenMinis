@@ -69,6 +69,7 @@ extension AIChatView {
             onOpenTerminal: { showTerminal = true },
             onOpenBrowser: { showBrowserSheet = true },
             onBrowseFiles: { showFileBrowser = true },
+            onChatFiles: { showChatFiles = true },
             onSkills: { showSessionSkills = true },
             onMCPs: { showSessionMCPs = true },
             onMemories: { showSessionMemory = true },

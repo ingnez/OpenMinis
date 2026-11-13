@@ -89,3 +89,15 @@ struct MessageImageGallery: View {
     init(items: [GalleryItem], startIndex: Int, onAsk: ((UIImage, ImageExport.Source?) -> Void)? = nil) { self.items = items }
     var body: some View { Text("\(items.count)") }
 }
+
+// App shell views used by deliverable previews and sharing.
+struct MinisShareSheet: View {
+    let url: URL
+    var body: some View { EmptyView() }
+}
+
+struct MinisSafariView: View {
+    let url: URL
+    let localFile: Bool
+    var body: some View { EmptyView() }
+}

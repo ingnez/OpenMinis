@@ -746,3 +746,12 @@ Bot 调 `browser_action` / `desktop_action` 截图时，服务器把截图另存
 - 详细：和以前完全一样（主模型直接干活、实时步骤）。
 - `GET /v1/workers?session_id=` 每个任务多了 `status_phrase`（一句话进度，例如「分析工作方案」，来自工具的 tool_title 或工具种类）、`needs_decision`（等用户选）、`eta_s`（只在这个 Bot 至少有 3 次已完成的后台任务时给：用时中位数 − 已用时间，不到 5 秒不给）。
 - `/health` 的 `capabilities.reply_modes = true`。
+
+## 成果直达聊天（2.52.0）
+
+- 任务结束时服务器把本轮工作区和新出现在 `@shared` 的文件收成交付物，挂到最后一条可见助手消息的 `meta.deliverables`（没有合适消息就补一句「做好了，文件在下面。」）。助手只回路径、不交文件的情况由系统提示禁止。
+- 工具 `deliver_file {path}`：显式交付一个工作区或 `@shared` 文件（不能出工作区）。与自动捕获、回复里的链接合并去重，最多 20 个、单文件 500 MB。
+- 交付物按会话写在 `.deliveries/<session_id>/<id>/`（`id` 形如 `dl_` + 16 位十六进制），带 `meta.json`。消息 `meta.deliverables` 经 `public_meta` 下发给 App，字段含 `id, name, kind, bytes, pages, sha256, mime, path, url, thumb_url, entries, title`。`kind`：`file` / `image` / `pdf` / `pptx` / `html` / `ipa` / `zip` / `link`。
+- `GET /v1/sessions/{sid}/deliveries[?q=]` 列出本会话交付物；`GET …/deliveries/{id}` 读一条；`GET …/deliveries/{id}/file` 下载（支持 `Range` / 206）；`GET …/deliveries/{id}/thumb` 缩略图。路径含 `..` 返回 400。
+- 子 Bot / 工人会话里产生的交付物会复制到发起对话（保留原显示名）。`/health` 的 `capabilities.deliverables = true`。
+- App：对话里按类型出卡片（图可叠放，链接 App 内打开，zip 可展开），动作「打开 / 存到文件 / 分享 / 用 WPS 打开」（没装 WPS 走系统分享，不带第三方商标）。对话「文件」页可搜索、预览。下载支持进度、断点续传、缓存和重试。本地模式在回合结束时同样把本轮新文件和回复里的链接收成卡片。

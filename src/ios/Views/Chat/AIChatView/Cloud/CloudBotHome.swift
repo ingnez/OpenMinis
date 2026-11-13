@@ -1047,6 +1047,7 @@ struct CloudBotChatView: View {
     @State private var emptyHistory = false
     @State private var showDetail = false
     @State private var showComputer = false
+    @State private var showFilesPage = false
 
     @ObservedObject private var lock = CloudBotLock.shared
     /// 当前是无痕对话时记下它和之前的对话，结束后删掉并回到原来的对话
@@ -1152,6 +1153,9 @@ struct CloudBotChatView: View {
         .navigationDestination(isPresented: $showComputer) {
             CloudComputerView(botId: botId, sessionId: sessionId, reason: nil)
         }
+        .navigationDestination(isPresented: $showFilesPage) {
+            CloudChatFilesPage(sessionId: sessionId ?? "", botName: model.bot(botId)?.name)
+        }
         .navigationDestination(isPresented: $showDetail) {
             if let bot = model.bot(botId) {
                 CloudBotDetailView(bot: bot, onChanged: { await model.refresh() })
@@ -1201,7 +1205,11 @@ struct CloudBotChatView: View {
         if let sid = sessionId, !lock.needsUnlock(botId) {
             Button { speakLatest(sid) } label: { Label("朗读最新回复", systemImage: "speaker.wave.2") }
             Button { showComputer = true } label: { Label("电脑", systemImage: "display") }
-            if incognito == nil { CloudReplyChatMenu(sessionId: sid, plan: $replyPlan) }
+            if incognito == nil {
+                Button { showFilesPage = true } label: { Label("文件", systemImage: "folder") }
+                    .accessibilityIdentifier("chatFilesButton")
+                CloudReplyChatMenu(sessionId: sid, plan: $replyPlan)
+            }
         }
     }
 

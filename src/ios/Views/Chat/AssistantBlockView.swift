@@ -4,6 +4,7 @@ import Combine
 // MARK: - Assistant Block View (individual block — isolated invalidation)
 
 struct AssistantBlockView: View {
+    @Environment(\.localDeliverySessionId) private var localDeliverySessionId
     @ObservedObject var block: AssistantBlock
     @ObservedObject var message: ChatMessage
     let isActiveMessage: Bool
@@ -94,6 +95,11 @@ struct AssistantBlockView: View {
                 // [T-p2-helper-block-render] Own view: status / tier / elapsed /
                 // summary instead of the generic capsule's raw content.
                 HelperBlockView(block: block, detailBlock: $detailBlock)
+            }
+        case .info where block.toolUseId?.hasPrefix("local-delivery-") == true:
+            if let data = block.content.data(using: .utf8),
+               let item = try? JSONDecoder().decode(CloudDeliverable.self, from: data) {
+                CloudFileCardView(item: item, sessionId: localDeliverySessionId, accent: .accentColor)
             }
         case .info:
             // Reason lines (⚠️, the middle elided past nine) then the final

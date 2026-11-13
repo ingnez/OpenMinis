@@ -68,6 +68,19 @@ final class ChatMessage: Identifiable, ObservableObject {
     @Published var usage: TokenUsage?
     /// Structured metadata for user-attached files (images & documents).
     @Published var attachments: [AttachmentMeta] = []
+    /// 本地模式：这一轮助手交出来的文件 / 链接卡片
+    @Published var deliverables: [CloudDeliverable] = []
+
+    func addLocalDeliveries(_ items: [CloudDeliverable]) {
+        guard !items.isEmpty else { return }
+        var seen = Set(deliverables.map(\.id))
+        for item in items where seen.insert(item.id).inserted {
+            deliverables.append(item)
+            if let data = try? JSONEncoder().encode(item), let json = String(data: data, encoding: .utf8) {
+                blocks.append(AssistantBlock(kind: .info, content: json, toolUseId: "local-delivery-" + item.id))
+            }
+        }
+    }
     /// Raw input attachments for preview before queue drain (cache URLs still valid).
     @Published var inputAttachments: [InputAttachment] = []
     /// True when all tool calls have completed and we're waiting for the model's next response.

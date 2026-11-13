@@ -327,6 +327,7 @@ struct AIChatView: View {
     // [T-p3-agent-callback-cell] Detail sheet for a tapped agent callback cell.
     @State private var agentCallbackDetail: AgentCallbackDetailTarget?
     @State var showFileBrowser = false
+    @State var showChatFiles = false
     // [T-browser-download-ux-v2] Downloads panel + "Show in Files" locate target.
     @State var showDownloadsPanel = false
     @State private var locateDownloadTarget: DownloadLocateTarget?
@@ -1152,6 +1153,13 @@ struct AIChatView: View {
 
     private var chatBodySheets: some View {
         chatBodyMedia
+        .environment(\.localDeliverySessionId, vm.sessionId ?? "")
+        .sheet(isPresented: $showChatFiles) {
+            NavigationView {
+                CloudChatFilesPage(sessionId: vm.sessionId ?? "local",
+                                   localItems: vm.messages.flatMap(\.deliverables).reversed())
+            }
+        }
         .sheet(isPresented: $showFileBrowser) {
             NavigationStack {
                 let base = RootfsManager.shared.dataPath

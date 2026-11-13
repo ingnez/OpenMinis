@@ -12,6 +12,8 @@ import time
 import uuid
 import re
 
+import cloud_deliver
+
 SOFT_CAP = 4
 ID_RE = re.compile(r"^wk_[a-f0-9]{10}$")
 ACTIVE = ("queued", "running")
@@ -166,6 +168,11 @@ def post_result(conn, w, defer_while_front_active=False):
                 "SELECT 1 FROM tasks WHERE session_id = ? AND status IN ('queued', 'running', 'waiting_user')",
                 (current["front_session"],)).fetchone():
             return None
+        front = conn.execute("SELECT incognito FROM sessions WHERE session_id = ?",
+                             (current["front_session"],)).fetchone()
+        if not front:
+            return False
+        text = result_text(current)
         meta = {"worker_id": current["worker_id"], "worker_status": current["status"],
                 "worker_title": current["title"]}
         if current["status"] == "completed":
@@ -186,8 +193,17 @@ def post_result(conn, w, defer_while_front_active=False):
                         pending.remove(key)
                 if not pending:
                     break
+            try:
+                source_items = [] if front[0] else cloud_deliver.items_from_session(
+                    current["worker_session"], since=current["started_at"] or current["created_at"])
+                items = cloud_deliver.copy_items_to_session(
+                    current["worker_session"], current["front_session"], source_items, source="worker")
+                if items:
+                    meta["deliverables"] = items
+            except (OSError, ValueError) as e:
+                print(f"worker deliver propagate failed: {type(e).__name__}", flush=True)
         conn.execute("INSERT INTO messages (session_id, role, content, timestamp, meta) VALUES (?, 'assistant', ?, ?, ?)",
-                     (current["front_session"], result_text(current), time.time(),
+                     (current["front_session"], text, time.time(),
                       json.dumps(meta, ensure_ascii=False)))
         conn.execute("UPDATE bot_workers SET reported = 1 WHERE worker_id = ?", (current["worker_id"],))
         return True

@@ -574,6 +574,61 @@ public final class CloudConnection: ObservableObject {
         return data
     }
 
+    /// 下载交付文件（支持 Range 续传、写入缓存）。只允许 /v1/sessions/<id>/deliveries/dl_<16 hex>/(file|thumb)
+    public func downloadDeliverable(path: String, id: String, name: String, expectedBytes: Int,
+                                    onProgress: @escaping (Double) -> Void) async throws -> URL {
+        guard isConnected else { throw failure("云端连接已断开") }
+        let ok = path.range(of: #"^/v1/sessions/[A-Za-z0-9_-]{1,64}/deliveries/dl_[a-f0-9]{16}/(file|thumb)$"#, options: .regularExpression) != nil
+        guard ok, !path.contains(".."), let url = URL(string: "http://127.0.0.1:\(apiPort)" + path) else { throw failure("交付路径无效") }
+        if let cached = CloudFileCache.cached(id: id, name: name, bytes: expectedBytes) { return cached }
+        guard let token = getToken(), !token.isEmpty else { throw failure("缺少服务 Token") }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        var existing = CloudFileCache.partialBytes(id: id, name: name)
+        if expectedBytes > 0, existing >= expectedBytes {
+            CloudFileCache.removePartial(id: id, name: name)
+            existing = 0
+        }
+        if let h = CloudFileCache.rangeHeader(existingBytes: existing) {
+            req.setValue(h.1, forHTTPHeaderField: h.0)
+        }
+        let (asyncBytes, response) = try await http.bytes(for: req)
+        guard let httpResp = response as? HTTPURLResponse, [200, 206].contains(httpResp.statusCode) else { throw failure("交付文件下载失败") }
+        if httpResp.statusCode == 206,
+           httpResp.value(forHTTPHeaderField: "Content-Range")?.hasPrefix("bytes \(existing)-") != true {
+            CloudFileCache.removePartial(id: id, name: name)
+            throw failure("续传位置不符，请重试")
+        }
+        let part = CloudFileCache.partURL(id: id, name: name)
+        if httpResp.statusCode != 206 {
+            CloudFileCache.removePartial(id: id, name: name)
+        }
+        var got = httpResp.statusCode == 206 ? existing : 0
+        let total = expectedBytes > 0 ? expectedBytes : (Int(httpResp.value(forHTTPHeaderField: "Content-Length") ?? "") ?? 0) + got
+        var buffer = Data()
+        for try await byte in asyncBytes {
+            buffer.append(byte)
+            if buffer.count >= 64 * 1024 {
+                try CloudFileCache.append(buffer, to: part)
+                got += buffer.count
+                buffer.removeAll(keepingCapacity: true)
+                if total > 0 { onProgress(min(1, Double(got) / Double(total))) }
+            }
+        }
+        if !buffer.isEmpty {
+            try CloudFileCache.append(buffer, to: part)
+            got += buffer.count
+        }
+        guard total == 0 || got == total else {
+            if got > total { CloudFileCache.removePartial(id: id, name: name) }
+            throw failure("交付文件大小不完整，请重试")
+        }
+        if got == 0 { try CloudFileCache.append(Data(), to: part) }
+        let final = try CloudFileCache.finalize(id: id, name: name)
+        onProgress(1)
+        return final
+    }
+
     private func requestRaw(method: String, path: String, body: [String: Any]?) async throws -> [String: Any] {
         let components = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         let route = String(components[0])

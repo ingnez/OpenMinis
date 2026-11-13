@@ -57,6 +57,7 @@ final class ChatMessage: ObservableObject {
 struct ModelEntry { let providerInstanceId: String; let model: LLMModel }
 @MainActor
 final class AIChatViewModel: ObservableObject {
+ nonisolated static func minisWorkspacePersistentDir(for sid: String) -> URL { FileManager.default.temporaryDirectory.appendingPathComponent(sid) }
  nonisolated static var minisSkillsPersistentDir: URL { FileManager.default.temporaryDirectory.appendingPathComponent("skills") }
  nonisolated static let minisMemoryLinuxDir = "/var/minis/memory"
  nonisolated static var minisMemoryPersistentDir: URL { FileManager.default.temporaryDirectory.appendingPathComponent("memory") }

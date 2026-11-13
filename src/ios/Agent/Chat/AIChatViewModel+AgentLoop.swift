@@ -95,8 +95,14 @@ extension AIChatViewModel {
         // 就把整轮悄悄导到 VPS 主 Bot 上执行（11-11 真机：本地任务出现在云端小猪包对话里）。
         // 开关 UI 在 c3678d6 去掉了，路由没去掉；现在路由删除，旧偏好启动时清掉（LocalCloudIsolation）。交给云端只走「交给 Bot」。
 
+        let startingHistoryCount = agentHistory.count
+        pendingDeliveries.removeAll()
+        defer { pendingDeliveries.removeAll() }
         do {
             try await runAgentLoopCore(resumingAt: existingMsgIdx, committedBlocks: committedBlocks)
+            if !Task.isCancelled, !userDidCancel {
+                await flushDeliveries(after: startingHistoryCount)
+            }
         } catch {
             // [T-ctx-measure-outbound] A context-length rejection is the one
             // ground truth that our size estimate was too low (a borrowed ratio

@@ -63,6 +63,25 @@ def image_count(data):
     return n
 
 
+def delivery_pdf():
+    parts = ["%PDF-1.4\n"]
+    objects = (
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
+        "<< /Length 0 >>\nstream\nendstream",
+    )
+    offsets = [0]
+    for number, value in enumerate(objects, 1):
+        offsets.append(sum(map(len, parts)))
+        parts.append(f"{number} 0 obj\n{value}\nendobj\n")
+    xref = sum(map(len, parts))
+    parts.append(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n")
+    parts.extend(f"{offset:010d} 00000 n \n" for offset in offsets[1:])
+    parts.append(f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+    return "".join(parts)
+
+
 def script(data):
     from test_phase1_support import tool_call, tool_turns
     text = last_user_text(data)
@@ -72,6 +91,17 @@ def script(data):
         return tool_call("c1", "shell_execute", {"command": "echo e2e-shell-ok; sleep 2"})
     if "加粗" in text:
         return {"role": "assistant", "content": "> 这是**结论：**引用里的中文加粗，还有**「重点」**和**加粗的中文**。\n\n正文第二段。"}
+    if "生成交付物" in text:
+        if not _fresh_tools(data):
+            import shlex
+            cmd = "python3 -c " + shlex.quote(
+                "from pathlib import Path; import zipfile;"
+                f"Path('说明.pdf').write_bytes({delivery_pdf().encode()!r});"
+                "Path('图.png').write_bytes(bytes.fromhex('89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c49444154789c63f8cfc0000000030001000518d84e0000000049454e44ae426082'));"
+                "z=zipfile.ZipFile('课件.pptx','w');z.writestr('ppt/slides/slide1.xml','<s/>');z.close()"
+            )
+            return tool_call("d1", "shell_execute", {"command": cmd})
+        return {"role": "assistant", "content": "课件做好了，说明见 https://example.com/guide"}
     n = image_count(data)
     if n:
         return {"role": "assistant", "content": f"收到 {n} 张图片"}
@@ -81,6 +111,15 @@ def script(data):
 def local_script(data):
     text = last_user_text(data)
     reply = "本地收到：" + text[:30]
+    if "生成交付物" in text:
+        if not _fresh_tools(data):
+            args = {"path": "/var/minis/workspace/本地说明.pdf", "content": delivery_pdf()}
+            if data.get("stream"):
+                return _stream_then_tool("", "local-delivery", "file_write", args)
+            from test_phase1_support import tool_call
+            return tool_call("local-delivery", "file_write", args)
+        content = "本地课件做好了，说明见 https://example.com/guide"
+        return {"_chunks": [content]} if data.get("stream") else {"role": "assistant", "content": content}
     if "加粗" in text:
         md = "> 这是**结论：**引用里的中文加粗，还有**「重点」**和**加粗的中文**。\n\n本地正文第二段。"
         return {"_chunks": [md]} if data.get("stream") else {"role": "assistant", "content": md}

@@ -201,6 +201,21 @@ class WorkerTests(CloudServerTestCase):
         result = self._wait_results(sid)[0]
         self.assertEqual(result["reminder_draft"], {"title": "复核构建", "notes": "", "due": "2026-11-14"})
 
+    def test_worker_delivers_file_to_front(self):
+        def worker(request):
+            if not fresh_tools(request):
+                return tool_call("worker_file", "file_write",
+                                 {"path": "handoff.txt", "content": "deliverable content"})
+            return {"role": "assistant", "content": "文件已准备"}
+
+        FakeModelHandler.scripts["worker-file"] = self._front_script(worker)
+        sid = self.new_session()
+        self._say(sid, "查一下并生成交班文件", "worker-file")
+        result = self._wait_results(sid)[0]
+        matches = [item for item in result["deliverables"] if item["name"] == "handoff.txt"]
+        self.assertEqual(len(matches), 1)
+        self.assertTrue(matches[0]["url"].startswith(f"/v1/sessions/{sid}/deliveries/"))
+
     def test_01b_worker_waits_for_front_and_notifies_once(self):
         front_entered, front_release = threading.Event(), threading.Event()
 
