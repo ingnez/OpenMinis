@@ -15,7 +15,7 @@ done
 if [ ${#missing[@]} -gt 0 ]; then
     brew install "${missing[@]}"
 fi
-for directory in "$(brew --prefix)/bin" "$(brew --prefix llvm)/bin" "$(brew --prefix lld)/bin"; do
+for directory in "$(brew --prefix llvm)/bin" "$(brew --prefix lld)/bin"; do
     echo "$directory" >> "$GITHUB_PATH"
 done
 "$(brew --prefix)/bin/meson" --version

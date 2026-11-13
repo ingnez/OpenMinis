@@ -11,5 +11,8 @@ if [ ! -x "$ci_environment/bin/python3" ]; then
     "$ci_python" -m venv "$ci_environment"
 fi
 "$ci_environment/bin/python3" --version
+PIP_CONFIG_FILE=/dev/null "$ci_environment/bin/python3" -m pip install \
+    --disable-pip-version-check --no-input --index-url https://pypi.org/simple \
+    -r scripts/requirements-ios-ci.txt
 echo "$ci_environment/bin" >> "$GITHUB_PATH"
 echo "VIRTUAL_ENV=$ci_environment" >> "$GITHUB_ENV"
