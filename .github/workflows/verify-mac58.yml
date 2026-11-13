@@ -64,7 +64,4 @@ jobs:
           cache: false
       - name: Prepare the CI Python interpreter
         if: ${{ inputs.prepare_dependencies }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          architecture: arm64
+        run: bash scripts/prepare_mac_python.sh

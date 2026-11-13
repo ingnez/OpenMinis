@@ -154,11 +154,8 @@ jobs:
             if [ -d "$directory" ]; then echo "$directory" >> "$GITHUB_PATH"; fi
           done
 
-      - name: 使用隔离的 CI Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          architecture: arm64
+      - name: 使用 runner 工具目录内的 CI Python 3.13
+        run: bash scripts/prepare_mac_python.sh
       - name: Swift 文件都在 Xcode 工程里
         run: python3 scripts/check_xcode_membership.py
       - name: 实时语音协议回归与 iOS 类型检查
@@ -715,11 +712,8 @@ jobs:
             if [ -d "$directory" ]; then echo "$directory" >> "$GITHUB_PATH"; fi
           done
 
-      - name: 使用隔离的 CI Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          architecture: arm64
+      - name: 使用 runner 工具目录内的 CI Python 3.13
+        run: bash scripts/prepare_mac_python.sh
 
       - name: iOS 16 API 兼容预检
         run: |
@@ -1132,11 +1126,8 @@ jobs:
             if [ -d "$directory" ]; then echo "$directory" >> "$GITHUB_PATH"; fi
           done
 
-      - name: 使用隔离的 CI Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          architecture: arm64
+      - name: 使用 runner 工具目录内的 CI Python 3.13
+        run: bash scripts/prepare_mac_python.sh
 
       - name: iOS 16 API 兼容预检
         run: |
