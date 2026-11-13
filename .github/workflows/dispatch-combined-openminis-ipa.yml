@@ -80,16 +80,10 @@ jobs:
           from pathlib import Path
 
           source = Path(sys.argv[3])
-          workflow = (source / ".github/workflows/build-ios.yml").read_text()
-          selections = re.search(r'DEFAULT_ONLY_TESTING="([^"]+)"', workflow).group(1).split()
-          expected = set()
-          for selection in selections:
-              target, suite = selection.split('/')
-              swift = (source / f"src/ios/{target}/{suite}.swift").read_text()
-              methods = re.findall(r"\bfunc\s+(test\w+)\s*\(", swift)
-              if not methods:
-                  sys.exit(f"No tests found for {suite}")
-              expected.update(f"{suite}.{method}" for method in methods)
+          sys.path.insert(0, str(source / 'scripts'))
+          import check_ui_coverage as coverage
+          expected = coverage.expected(['MinisUITests/' + suite for suite in coverage.SUITES],
+                                       source / 'src/ios/MinisUITests')
           results = {}
           for line in Path(sys.argv[1]).read_text().splitlines():
               if line.startswith('|'):
