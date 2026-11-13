@@ -18,6 +18,33 @@ final class ReplyModeUITests: XCTestCase {
 
     // MARK: - 流程
 
+    func testExperience_workorderEvidenceDeliveryAndStop() throws {
+        let app = launch(mode: "instant", experience: true)
+        openBot(app)
+        send(app, "体验你好")
+        XCTAssertTrue(waitText(app, contains: "体验秒回：体验你好", timeout: 20))
+        send(app, "体验生成文件")
+        XCTAssertTrue(waitText(app, contains: "完成标准是文件存在且内容验证通过", timeout: 20))
+        let card = app.descendants(matching: .any)["deliverableCard-体验结果.txt"]
+        XCTAssertTrue(card.waitForExistence(timeout: 60), "工单没有交回真实文件卡片")
+        XCTAssertTrue(waitText(app, contains: "体验文件已生成并通过 Python 断言", timeout: 20))
+        assertNoReasoningOrBrief(app)
+        shot(app, "experience-verified-file-delivery")
+        send(app, "体验慢任务")
+        let statusRow = app.descendants(matching: .any)["replyStatusRow"]
+        XCTAssertTrue(poll(20) { statusRow.exists && statusRow.label.contains("正在") }, "慢任务没有开始执行")
+        send(app, "停")
+        XCTAssertTrue(waitText(app, contains: "已停止：", timeout: 20), "叫停没有执行确定性停止流程")
+        hideKeyboard(app)
+        app.buttons["botConversationMenu"].tap()
+        let ledger = app.descendants(matching: .any)["experienceLedgerMenu"]
+        XCTAssertTrue(ledger.waitForExistence(timeout: 10))
+        ledger.tap()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "experienceRequest-delivered").firstMatch.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "experienceRequest-stopped").firstMatch.waitForExistence(timeout: 15))
+        shot(app, "experience-ledger-reconciled")
+    }
+
     /// 秒回：点发送到对话里出现前台的第一个字 < 1 秒（假模型），请求发给了前台模型
     func testReply_instantFrontReply() throws {
         let app = launch(mode: "instant")
@@ -634,7 +661,7 @@ final class ReplyModeUITests: XCTestCase {
         return r.requests.map(\.text)
     }
 
-    private func launch(mode: String, reset: Bool = true, delayHistory: Bool = false, cacheReply: String? = nil) -> XCUIApplication {
+    private func launch(mode: String, reset: Bool = true, delayHistory: Bool = false, cacheReply: String? = nil, experience: Bool = false) -> XCUIApplication {
         if reset { _ = probe("/_e2e/reset") }
         XCTAssertNotNil(probe("/_e2e/reply?mode=" + mode), "探针设不了回复方式（E2E 云端没起来？）")
         let app = XCUIApplication()
@@ -643,6 +670,10 @@ final class ReplyModeUITests: XCTestCase {
         app.launchArguments += ["-OpenMinisCloud_lockDefaultsDecided", "(e2ebot)", "-OpenMinisCloud_lockedBots", "()"]
         app.launchEnvironment["OPENMINIS_E2E_TOKEN"] = Self.token
         app.launchEnvironment["OPENMINIS_E2E_PORT"] = "18765"
+        if experience {
+            app.launchEnvironment["OPENMINIS_E2E_EXPERIENCE"] = "1"
+            app.launchEnvironment["OPENMINIS_E2E_LOCAL_PROVIDER"] = "http://127.0.0.1:18797"
+        }
         if delayHistory { app.launchEnvironment["OPENMINIS_E2E_DELAY_HISTORY"] = "1" }
         if let cacheReply { app.launchEnvironment["OPENMINIS_E2E_CACHE_REPLY"] = cacheReply }
         app.launch()

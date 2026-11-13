@@ -106,6 +106,15 @@ def front_tools(tools):
     return [t for t in tools if t.get("function", {}).get("name") in allowed] + [DISPATCH_TOOL]
 
 
+def recent_front_messages(messages, turns=4):
+    """Keep complete recent turns, including tool call/result pairs."""
+    users = [i for i, item in enumerate(messages) if item.get("role") == "user"]
+    if len(users) <= turns:
+        return messages
+    system = [item for item in messages[:users[0]] if item.get("role") in ("system", "developer")]
+    return system + messages[users[-turns]:]
+
+
 def estimate_budget(conn, sid, goal, context, output_tokens=4096):
     cfg = settings(conn, sid) or {}
     prompt = cloud_usage.estimate(goal) + cloud_usage.estimate(context) + 2000

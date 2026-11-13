@@ -3132,7 +3132,7 @@ EXPERIENCE_REQUESTS = {}    # currently applied request per front task
 EXPERIENCE_TASKS = {}       # task_id -> ephemeral phone-owned role profiles
 EXPERIENCE_REVIEWERS = {}   # worker_id -> ephemeral reviewer profile
 WORKER_RUNTIME = {}          # worker_id -> (model, provider)：排队的任务开跑时用；重启后丢失（中断的任务由前台 task_resume 带上新的）
-WORKER_LOCK = threading.Lock()
+WORKER_LOCK = threading.RLock()
 
 def _worker_display_state(w):
     if w["status"] == "running" and w.get("task_id") and GATE.position(w["task_id"]) > 0:
@@ -3293,6 +3293,8 @@ def _worker_launch(wid):
             prompt = cloud_workers.worker_prompt(w) if not has_user else "继续完成这个任务（上次没做完）。" + ("\n补充：" + note if note else "")
             contract = cloud_workorders.get(conn, wid)
             if contract:
+                if w.get("task_id"):
+                    contract = cloud_workorders.attach(conn, wid, w["front_session"], contract)
                 prompt += "\n【当前工单】" + json.dumps({k: contract[k] for k in cloud_workorders.FIELDS}, ensure_ascii=False)
                 prompt += "\n每条验收标准都要实际验证。工具结果中 evidence_event_id 可用于 record_evidence。未验证的内容只称草稿。"
                 if note:
@@ -3321,6 +3323,8 @@ def _worker_finish(wid, tid, started):
     try:
         st = (conn.execute("SELECT status FROM tasks WHERE task_id = ?", (tid,)).fetchone() or ["failed"])[0]
         w = cloud_workers.get(conn, wid)
+        if w and w.get("task_id") != tid:
+            return  # A resumed attempt owns this worker now; old cleanup must not overwrite it.
         status = st if st in ("completed", "failed", "cancelled", "limit_reached", "interrupted", "paused") else "failed"
         if w and w["status"] == "running" and status == "paused":
             cloud_workers.park(conn, wid, w.get("stop_reason") or "user", {"task_id": tid})
@@ -3358,6 +3362,8 @@ def _worker_finish(wid, tid, started):
                     else:
                         status = "failed"
                         result = "待验证草稿：" + feedback + ("\n\n" + result if result else "")
+            if is_task_cancelled(tid):
+                status, result = "cancelled", None
             cloud_workers.set_status(conn, wid, status, result=result, finished_at=None if status == "queued" else time.time())
             if contract:
                 cloud_workorders.reconcile(conn, w["front_session"])
@@ -3442,7 +3448,9 @@ def worker_resume(wid, model=None, provider=None, note=""):
             return 404, {"error": "没有这个后台任务"}
         if w["status"] in cloud_workers.ACTIVE:
             return 409, {"error": "任务还在进行", "status": w["status"]}
-        if w["status"] != "paused" and not cloud_workers.can_retry(w["status"]):
+        revised_order = cloud_workorders.get(conn, wid)
+        revised_completed = w["status"] == "completed" and revised_order and revised_order["verification"] == "pending"
+        if w["status"] != "paused" and not cloud_workers.can_retry(w["status"]) and not revised_completed:
             return 409, {"error": "这个任务现在不能继续", "status": w["status"]}
         runtime = {}
         if w.get("runtime"):
@@ -3753,7 +3761,8 @@ def experience_stop_message(sid, content, nonce):
             set_task_cancelled(row[0])
             conn.execute("UPDATE tasks SET status='cancelled' WHERE task_id=?", (row[0],))
         conn.commit()
-        stopped = cloud_experience_runtime.stop_all(sys.modules[__name__], sid)
+        with WORKER_LOCK:
+            stopped = cloud_experience_runtime.stop_all(sys.modules[__name__], sid)
         text = "已停止：" + "、".join(w["title"] for w in stopped) if stopped else "当前没有正在进行的后台任务。"
         tid, now = "task_" + uuid.uuid4().hex[:12], time.time()
         conn.execute("INSERT INTO tasks(task_id,session_id,client_nonce,status,model,created_at) VALUES (?,?,?,'completed','',?)", (tid,sid,nonce,now))
@@ -3772,7 +3781,8 @@ def tool_worker(task_id, session_id, name, args, model, provider_config):
     args = args if isinstance(args, dict) else {}
     if name == "dispatch_workorder":
         try:
-            return cloud_experience_runtime.dispatch(sys.modules[__name__], task_id, session_id, args, model, provider_config)
+            with WORKER_LOCK:
+                return cloud_experience_runtime.dispatch(sys.modules[__name__], task_id, session_id, args, model, provider_config)
         except (cloud_workorders.WorkOrderError, ValueError) as exc:
             return {"error": str(exc), "note": "补齐工单字段后重试；当前没有派发成功。"}
     if name == "spawn_task":
@@ -5547,6 +5557,10 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
     reply = reply_plan(session_id, model) if front_session else None
     instant = bool(reply and reply["mode"] == "instant")
     experience_profiles = EXPERIENCE_TASKS.get(task_id) if front_session else None
+    if instant and experience_profiles:
+        # The front router needs persona and concise instructions, not the
+        # backend's full browser/shell/skills catalogue on every small reply.
+        system_text = persona_prompt(session_id) + (instructions or "")[:4000]
     if instant:
         system_text += cloud_experience.NOTE if experience_profiles else cloud_reply.FRONT_INSTANT_NOTE
         if experience_profiles:
@@ -5973,6 +5987,8 @@ def _run_agent_task_inner(task_id, session_id, initial_content, model, provider_
                 if mention_hint or dynamic_note:
                     send_msgs = _append_note(send_msgs, (mention_hint or "") + dynamic_note)
                 if instant:
+                    if experience_profiles:
+                        send_msgs = cloud_experience.recent_front_messages(send_msgs)
                     tools = (cloud_experience.front_tools if experience_profiles else cloud_reply.front_tools)(session_tools(session_id, depth))   # 前台不拿干活的工具，全部交给后台
                 else:
                     tools, _omitted = cloud_llm.select_tools(session_tools(session_id, depth) + plugin_defs, send_msgs, extra_tools,
@@ -10159,7 +10175,7 @@ class Handler(BaseHTTPRequestHandler):
             client_nonce = req_json.get("client_nonce")
             provider_req = req_json.get("provider", {})
             bot = session_bot(sid)
-            if bot and bot.get("model") and bot.get("credential"):
+            if req_json.get("experience") is None and bot and bot.get("model") and bot.get("credential"):
                 # Bot 自带模型选择：覆盖客户端当前模型
                 model = bot["model"]
                 provider_req = {"protocol": "chat", "credential": bot["credential"]}

@@ -9,6 +9,9 @@ enum CloudExperience {
     static let defaults = UserDefaults.standard
 
     static var enabled: Bool { defaults.bool(forKey: prefix + "enabled") }
+    static func install() {
+        CloudChatBridge.shared.preparePayload = { body in try prepare(&body) }
+    }
     static func reference(_ role: String) -> String { defaults.string(forKey: prefix + role) ?? "" }
     static var policy: [String: Any] {
         ["version": 1, "worker_concurrency": max(1, min(4, defaults.integer(forKey: prefix + "concurrency") == 0 ? 2 : defaults.integer(forKey: prefix + "concurrency"))),
@@ -52,6 +55,10 @@ enum CloudExperience {
         body["experience"] = body["experience"] ?? policy
         body["execution_profile_refs"] = refs
         body["execution_profiles"] = profiles
+        if let front = profiles["front"] as? [String: Any] {
+            body["model"] = front["model"]
+            body["provider"] = front["provider"]
+        }
     }
 
     /// Capture the choice for an offline message without reading any keys.

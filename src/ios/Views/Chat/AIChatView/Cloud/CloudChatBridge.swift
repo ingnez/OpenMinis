@@ -54,6 +54,7 @@ public final class CloudChatBridge: ObservableObject {
     private var activePollTasks: [String: Task<Void, Never>] = [:]
     /// 审批卡处理钩子（CloudApprovalBridge.install 注册）；未注册时审批只出现在任务日志中。
     var approvalHandler: (@MainActor (CloudApprovalSignal, String, String, ChatMessage, @escaping @MainActor () -> Void) -> Void)?
+    var preparePayload: ((inout [String: Any]) throws -> Void)?
     private let logger = AppLogger(category: "CloudChatBridge")
 
     private init() {}
@@ -237,7 +238,7 @@ public final class CloudChatBridge: ObservableObject {
             "instructions": instructions,
             "history": history
         ]
-        try CloudExperience.prepare(&messagePayload)
+        try preparePayload?(&messagePayload)
         if !messageParts.isEmpty {
             messagePayload["message_parts"] = messageParts
         }

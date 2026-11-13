@@ -54,7 +54,7 @@ class WorkOrderTests(unittest.TestCase):
         with self.assertRaises(orders.WorkOrderError):
             orders.attach(self.conn, "worker-a", "chat-b", self.contract)
         self.conn.execute("UPDATE bot_workers SET status='completed' WHERE worker_id='worker-a'")
-        self.assertIsNone(orders.reusable_worker(self.conn, "chat-a", "openminis-ui"))
+        self.assertEqual(orders.reusable_worker(self.conn, "chat-a", "openminis-ui"), "worker-a")
 
     def test_replayed_requests_do_not_duplicate_or_replace_the_original_message(self):
         a = orders.register_request(self.conn, "chat-a", "nonce-a", "第一条请求")

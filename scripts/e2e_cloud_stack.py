@@ -212,6 +212,17 @@ def front_script(data):
     """秒回前台：「查一下」→ 先回一句再派后台；后台在跑时「插话」→ 先回再转给后台；其余直接秒回。"""
     import re
     text = last_user_text(data)
+    if any(t.get("function", {}).get("name") == "dispatch_workorder" for t in data.get("tools", [])):
+        if _fresh_tools(data):
+            return {"role": "assistant", "content": "已派发，验证后交回结果。"}
+        if "体验生成文件" in text or "体验慢任务" in text:
+            slow = "体验慢任务" in text
+            order = {"workstream": "experience-stop" if slow else "experience-file",
+                     "goal": "体验慢任务" if slow else "体验生成文件：实际写入并验证体验结果.txt",
+                     "context": "只使用 E2E 编造数据", "success_criteria": ["文件实际存在", "内容通过 Python 断言"],
+                     "report_back": "交回文件卡片和实际验证依据"}
+            return _stream_then_tool("我理解你要生成文件，完成标准是文件存在且内容验证通过。", "experience-dispatch", "dispatch_workorder", order)
+        return {"_chunks": ["体验秒回：", text[:20]], "_delay": 0.02}
     if "E2E引用卡布局" in text:
         return {"role": "assistant", "content": (
             "一句话：E2E结论正文：**今夜值班**，记得交班。\n\n这里是展开后的细节。\n\n"
@@ -268,6 +279,18 @@ def back_script(data):
     msgs = data.get("messages", [])
     done = sum(1 for m in msgs if m.get("role") == "tool")
     goal = " ".join(str(m.get("content")) for m in msgs if m.get("role") == "user")
+    if '"workstream": "experience-' in goal:
+        from test_phase1_support import tool_call
+        done = len(_fresh_tools(data))
+        if "体验慢任务" in goal:
+            return tool_call("slow", "shell_execute", {"command": "sleep 60; echo experience-slow-finished"}) if not done else {"role": "assistant", "content": "慢任务已执行"}
+        if done == 0:
+            return tool_call("write", "file_write", {"path": "体验结果.txt", "content": "experience verified synthetic data"})
+        if done == 1:
+            return tool_call("check", "shell_execute", {"command": "python3 -c 'from pathlib import Path; assert Path(\"体验结果.txt\").read_text() == \"experience verified synthetic data\"; print(\"experience assertion passed\")'"})
+        if done == 2:
+            return tool_call("deliver", "deliver_file", {"path": "体验结果.txt"})
+        return {"role": "assistant", "content": "体验文件已生成并通过 Python 断言，结果在文件卡片中。"}
     if done < 3:
         secs = 60 if ("慢活" in goal and done == 0) else 4
         return {"role": "assistant", "content": "", "tool_calls": [{"id": f"b{done}", "type": "function", "function": {
@@ -276,6 +299,17 @@ def back_script(data):
     blob = " ".join(str(m.get("content")) for m in msgs if m.get("role") == "user")
     heard = "插话" in blob or "按用户补充调整：" in blob
     return {"role": "assistant", "content": "后台结论：上海晴（假数据）" + ("（已按插话调整）" if heard else "")}
+
+
+def experience_review_script(data):
+    bundle = json.loads(data["messages"][-1]["content"])
+    events = [e for e in bundle["events"] if e["type"] == "tool_result"]
+    artifact = next((e for e in events if e["payload"].get("tool") == "deliver_file" and not e["payload"]["result"].get("error")), None)
+    test = next((e for e in events if e["payload"].get("tool") == "shell_execute" and e["payload"]["result"].get("exit_code") == 0), None)
+    ok = artifact is not None and test is not None
+    evidence = ([{"criterion": 0, "event_id": artifact["event_id"], "kind": "artifact"},
+                 {"criterion": 1, "event_id": test["event_id"], "kind": "test"}] if ok else [])
+    return {"role": "assistant", "content": json.dumps({"pass": ok, "unmet": [] if ok else ["缺少实际验证"], "evidence": evidence})}
 
 
 def _api(method, path, body=None):
@@ -556,6 +590,7 @@ def main():
     sup.FakeModelHandler.scripts[BACK_MODEL] = back_script
     sup.FakeModelHandler.scripts[LOCAL_FRONT_MODEL] = local_front_script
     sup.FakeModelHandler.scripts[LOCAL_BACK_MODEL] = back_script
+    sup.FakeModelHandler.scripts["e2e-experience-reviewer"] = experience_review_script
     local_srv = ThreadingHTTPServer(("127.0.0.1", LOCAL_MODEL_PORT), sup.FakeModelHandler)
     threading.Thread(target=local_srv.serve_forever, daemon=True).start()
     model_srv = ThreadingHTTPServer(("127.0.0.1", 0), sup.FakeModelHandler)

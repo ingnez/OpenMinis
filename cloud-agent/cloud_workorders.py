@@ -111,8 +111,8 @@ def attach(conn, worker_id, front_session, contract):
 
 def reusable_worker(conn, front_session, workstream):
     row = conn.execute("SELECT w.worker_id FROM bot_workers w JOIN worker_workorders o ON o.worker_id=w.worker_id "
-                       "WHERE o.front_session=? AND o.workstream=? AND w.status IN ('queued','running','paused','verifying') "
-                       "ORDER BY w.created_at LIMIT 1", (front_session, workstream)).fetchone()
+                       "WHERE o.front_session=? AND o.workstream=? "
+                       "ORDER BY w.created_at DESC LIMIT 1", (front_session, workstream)).fetchone()
     return row[0] if row else None
 
 
@@ -190,7 +190,7 @@ def record_evidence(conn, worker_id, criterion, event_id, kind, summary=""):
     if kind == "test" and (tool != "shell_execute" or type(result.get("exit_code")) is not int or result["exit_code"] != 0):
         raise WorkOrderError("测试依据必须有成功退出码")
     if kind == "artifact" and (tool not in ("deliver_file", "file_write", "file_read")
-                               or not (result.get("status") == "ok" or result.get("success") is True)):
+                               or not (result.get("status") in ("ok", "success") or result.get("success") is True)):
         raise WorkOrderError("交付物依据必须先由文件工具核验")
     nested = result.get("result") if isinstance(result.get("result"), dict) else {}
     if kind == "source" and (tool not in ("browser_action", "web_fetch", "fetch_url")

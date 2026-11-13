@@ -18,10 +18,17 @@ def dispatch(server, task_id, sid, contract, model, provider):
             return {"error": "需要用户调整预算后再派发", "needs_decision": True, "budget": estimate}
         wid = orders.reusable_worker(conn, sid, contract["workstream"])
         reused = wid is not None
+        role = server.EXPERIENCE_TASKS.get(task_id)
         if reused:
             worker = cloud_workers.get(conn, wid)
             orders.attach(conn, wid, sid, contract)
-            code, reply = server.worker_message(wid, "工单已更新，请按新版验收标准完成：\n" + json.dumps(contract, ensure_ascii=False))
+            if role:
+                server.EXPERIENCE_REVIEWERS[wid] = role["reviewer"]
+            note = "工单已更新，请按新版验收标准完成：\n" + json.dumps(contract, ensure_ascii=False)
+            if worker["status"] in cloud_workers.ACTIVE:
+                code, reply = server.worker_message(wid, note)
+            else:
+                code, reply = server.worker_resume(wid, model, provider, note)
             if code >= 300:
                 return {"error": reply.get("error"), "id": wid}
         else:
@@ -33,7 +40,6 @@ def dispatch(server, task_id, sid, contract, model, provider):
         if pending:
             orders.assign_request(conn, pending[0]["id"], sid, wid)
         server.WORKER_RUNTIME.setdefault(wid, (model, provider, ""))
-        role = server.EXPERIENCE_TASKS.get(task_id)
         if role:
             server.EXPERIENCE_REVIEWERS[wid] = role["reviewer"]
         started = reused or server._worker_launch(wid)
@@ -74,7 +80,9 @@ def verify(server, conn, worker):
                  "events": events, "draft": worker.get("result") or ""}, ensure_ascii=False)[:100000]}]}
             response, _ = server.call_chat(route["url"], {"Authorization": "Bearer " + route["key"],
                 "Content-Type": "application/json"}, request, "off", stream=False,
+                should_abort=lambda: server.is_task_cancelled(worker["task_id"]),
                 deadline=time.monotonic() + 30)
+            server.note_usage(worker.get("bot_id"), route["model"], response, request["messages"])
             text = response["choices"][0]["message"]["content"].strip()
             if text.startswith("```"):
                 text = text.split("\n", 1)[1].rsplit("```", 1)[0]
@@ -103,9 +111,24 @@ def stop_all(server, sid):
         workers.sort(key=lambda w: w["status"] != "queued")
         stopped = []
         for worker in workers:
+            conn.execute("UPDATE bot_workers SET reported=1 WHERE worker_id=?", (worker["worker_id"],))
+        conn.commit()
+        owned_tasks = {w["task_id"] for w in workers if w.get("task_id")}
+        with server.active_tasks_lock:
+            for _ in range(12):
+                children = {tid for tid, entry in server.active_tasks.items() if entry.get("parent") in owned_tasks}
+                if children <= owned_tasks:
+                    break
+                owned_tasks.update(children)
+        owned_sessions = {w["worker_session"] for w in workers}
+        for tid in owned_tasks:
+            row = conn.execute("SELECT session_id FROM tasks WHERE task_id=?", (tid,)).fetchone()
+            if row:
+                owned_sessions.add(row[0])
+        for worker in workers:
             server.worker_stop(worker["worker_id"])
             for job in server.BG_JOBS.list():
-                if job.get("session_id") == worker["worker_session"] and job.get("status") == "running":
+                if job.get("session_id") in owned_sessions and job.get("status") == "running":
                     server.BG_JOBS.stop(job["job_id"])
             stopped.append({"id": worker["worker_id"], "title": worker["title"]})
         orders.reconcile(conn, sid)

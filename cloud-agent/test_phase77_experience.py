@@ -172,8 +172,47 @@ class ExperienceHTTPTests(CloudServerTestCase):
         self.assertEqual(len(result["workorder"]["evidence"]), 1)
         _, ledger = self.request("GET", f"/v1/sessions/{sid}/experience")
         self.assertEqual(ledger["requests"][0]["status"], "delivered")
+
         self.assertIn("Bearer fake-back-phone-only", FakeModelHandler.auth_headers)
         self.assertIn("Bearer fake-review-phone-only", FakeModelHandler.auth_headers)
+
+    def test_06_simulator_fixture_really_generates_and_verifies_its_delivery(self):
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location("experience_e2e_fixture", Path(__file__).resolve().parents[1] / "scripts/e2e_cloud_stack.py")
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        FakeModelHandler.scripts["experience-front"] = fixture.front_script
+        FakeModelHandler.scripts["experience-back"] = fixture.back_script
+        FakeModelHandler.scripts["experience-reviewer"] = fixture.experience_review_script
+        sid = self.new_session()
+        status, task = self.submit(sid, "体验生成文件", "base", client_nonce="simulator-fixture", **self.body())
+        self.assertEqual(status, 202)
+        self.wait_status(task["task_id"], {"completed"})
+        def verified():
+            _, tray = self.request("GET", f"/v1/workers?session_id={sid}")
+            return tray["workers"][0] if tray.get("workers") and tray["workers"][0]["status"] == "completed" else None
+        worker = self.wait_until(verified)
+        self.assertEqual(worker["workorder"]["verification"], "verified")
+        path = Path(self.srv.get_session_workspace(worker["worker_session"])) / "体验结果.txt"
+        self.assertEqual(path.read_text(), "experience verified synthetic data")
+        _, ledger = self.request("GET", f"/v1/sessions/{sid}/experience")
+        self.assertEqual(ledger["requests"][0]["status"], "delivered")
+
+        # A follow-up in the same workstream reuses the completed worker, but
+        # must generate fresh evidence instead of accepting the old test run.
+        original_task = worker["task_id"]
+        status, task = self.submit(sid, "体验生成文件：重新生成", "base", client_nonce="simulator-followup", **self.body())
+        self.assertEqual(status, 202)
+        self.wait_status(task["task_id"], {"completed"})
+        def revised():
+            value = self.request("GET", "/v1/workers/" + worker["worker_id"])[1]["worker"]
+            return value if value["status"] == "completed" and value["task_id"] != original_task else None
+        newer = self.wait_until(revised)
+        self.assertGreater(newer["workorder"]["revision"], worker["workorder"]["revision"])
+        self.assertEqual(newer["workorder"]["verification"], "verified")
+        all_workers = self.request("GET", f"/v1/workers?session_id={sid}")[1]["workers"]
+        self.assertEqual(len(all_workers), 1)
 
 
 if __name__ == "__main__":

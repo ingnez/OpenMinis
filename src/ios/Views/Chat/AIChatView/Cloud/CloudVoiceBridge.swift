@@ -9,9 +9,14 @@ import Foundation
 @MainActor
 enum CloudVoiceBridge {
     private static var lastTaskId: String?
+    private static var voiceSession: (host: String, id: String)?
+    private static var frontRequests: [String: (session: String, nonce: String)] = [:]
 
     /// 已选择云电脑服务商与模型时才向实时模型暴露云电脑工具。
     static var isAvailable: Bool {
+        if CloudExperience.enabled {
+            return !CloudExperience.reference("front").isEmpty && !CloudExperience.reference("back").isEmpty
+        }
         let d = UserDefaults.standard
         return !(d.string(forKey: "OpenMinisCloud_selectedInstanceId") ?? "").isEmpty
             && !(d.string(forKey: "OpenMinisCloud_manualModel") ?? "").isEmpty
@@ -83,7 +88,7 @@ enum CloudVoiceBridge {
             throw failure("这条语音任务含疑似身份信息。请隐去后再发给云电脑。")
         }
         var provider: [String: Any] = [:]
-        if let providerID {
+        if let providerID, !CloudExperience.enabled {
             guard let inst = ProviderConfigStore.shared.instance(for: providerID), inst.isEnabled,
                   inst.providerType == .openAI, inst.credentialType == .apiKey, !inst.azureMode,
                   let key = ProviderKeychainHelper.loadAPIKey(instanceId: inst.id), !key.isEmpty else {
@@ -96,6 +101,23 @@ enum CloudVoiceBridge {
     }
 
     private static func submitWorker(sessionId: String, prompt: String, model: String, provider: [String: Any]) async throws -> String {
+        if CloudExperience.enabled {
+            let nonce = UUID().uuidString
+            var body: [String: Any] = ["content": prompt, "model": model, "provider": provider, "client_nonce": nonce]
+            try CloudExperience.prepare(&body)
+            do {
+                let response = try await CloudConnection.shared.request(method: "POST", path: "/v1/sessions/\(sessionId)/messages", body: body)
+                guard response["task_id"] is String else { throw failure("前台没有确认接收语音消息。") }
+            } catch let busy as CloudSessionBusyError {
+                switch await CloudInjector.inject(taskId: busy.taskId, content: prompt, nonce: nonce) {
+                case .injected: break
+                default: throw failure("前台暂时未接收这条语音消息，请重试。")
+                }
+            }
+            let id = "voice_" + nonce
+            frontRequests[id] = (sessionId, nonce)
+            return id
+        }
         let body: [String: Any] = ["goal": prompt, "model": model, "provider": provider, "client_nonce": UUID().uuidString]
         let response = try await CloudQuiet.retry(3) {
             try await CloudConnection.shared.request(method: "POST", path: "/v1/sessions/\(sessionId)/voice-tasks", body: body)
@@ -129,6 +151,21 @@ enum CloudVoiceBridge {
     }
 
     private static func startTask(prompt: String) async throws -> String {
+        if CloudExperience.enabled {
+            let conn = CloudConnection.shared
+            if !conn.isConnected { try await conn.connect() }
+            let host = conn.host
+            let sid: String
+            if let prior = voiceSession, prior.host == host { sid = prior.id }
+            else {
+                let response = try await conn.request(method: "POST", path: "/v1/sessions", body: ["title": "语音对话"])
+                guard let id = response["session_id"] as? String else { throw failure("云电脑没有返回语音对话 ID") }
+                sid = id; voiceSession = (host, id)
+            }
+            let tid = try await submitWorker(sessionId: sid, prompt: prompt, model: "", provider: [:])
+            lastTaskId = tid
+            return tid
+        }
         let d = UserDefaults.standard
         let instanceId = d.string(forKey: "OpenMinisCloud_selectedInstanceId") ?? ""
         let model = d.string(forKey: "OpenMinisCloud_manualModel") ?? ""
@@ -149,6 +186,20 @@ enum CloudVoiceBridge {
     private static func progress(taskId: String) async throws -> [String: Any] {
         let conn = CloudConnection.shared
         if !conn.isConnected { try await conn.connect() }
+        if let request = frontRequests[taskId] {
+            let ledger = try await conn.request(method: "GET", path: "/v1/sessions/\(request.session)/experience")
+            let rows = ledger["requests"] as? [[String: Any]] ?? []
+            if let row = rows.first(where: { $0["nonce"] as? String == request.nonce }) {
+                if let worker = row["worker_id"] as? String {
+                    let result = try await conn.request(method: "GET", path: "/v1/workers/\(worker)")
+                    return result["worker"] as? [String: Any] ?? ["status": "running"]
+                }
+                if row["status"] as? String == "delivered" {
+                    return ["status": "completed", "result": row["reply"] as? String ?? ""]
+                }
+            }
+            return ["status": "running", "note": "前台已接收，正在分流"]
+        }
         if taskId.hasPrefix("wk_") {
             let response = try await conn.request(method: "GET", path: "/v1/workers/\(taskId)")
             guard let worker = response["worker"] as? [String: Any] else {
@@ -159,6 +210,11 @@ enum CloudVoiceBridge {
         let task = try await conn.request(method: "GET", path: "/v1/tasks/\(taskId)", body: nil)
         let status = task["status"] as? String ?? "unknown"
         let events = task["events"] as? [[String: Any]] ?? []
+        if let event = events.last(where: { $0["type"] as? String == "worker_spawned" }),
+           let payload = event["payload"] as? [String: Any], let wid = payload["worker_id"] as? String {
+            let response = try await conn.request(method: "GET", path: "/v1/workers/\(wid)")
+            if let worker = response["worker"] as? [String: Any] { return worker }
+        }
         var steps = 0
         var lastTool = ""
         for e in events where e["type"] as? String == "tool_call" {

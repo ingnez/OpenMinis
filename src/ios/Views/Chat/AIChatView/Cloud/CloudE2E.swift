@@ -31,6 +31,7 @@ enum CloudE2E {
     static func applyLaunchDefaults() {
         let env = ProcessInfo.processInfo.environment
         guard env["OPENMINIS_E2E_TOKEN"] != nil else { return }
+        UserDefaults.standard.set(env["OPENMINIS_E2E_EXPERIENCE"] == "1", forKey: "OpenMinis_experience_enabled")
         CrashReporter.forgetCrashLoopForE2E()
         if let mode = env["OPENMINIS_E2E_HOMEMODE"] { UserDefaults.standard.set(mode, forKey: CloudBotHome.modeKey) }
         // 模拟老用户手机：旧版本地「云电脑」开关留下的「本地对话在云端执行」偏好（启动时应被 LocalCloudIsolation 清掉）
@@ -142,7 +143,14 @@ enum CloudE2E {
             store.defaultPrimaryGroupId = group.id
         }
         store.addAgentLoopEntry(entry.id)
-        for (mid, label) in [(localFrontModelId, "E2E 本地前台"), (localBackModelId, "E2E 本地后台")] {
+        var extras = [(localFrontModelId, "E2E 本地前台"), (localBackModelId, "E2E 本地后台")]
+        if ProcessInfo.processInfo.environment["OPENMINIS_E2E_EXPERIENCE"] == "1" {
+            extras += [("e2e-front-model", "E2E 体验前台"), ("e2e-back-model", "E2E 体验后台"), ("e2e-experience-reviewer", "E2E 体验验收")]
+            for (role, mid) in [("front", "e2e-front-model"), ("back", "e2e-back-model"), ("reviewer", "e2e-experience-reviewer")] {
+                UserDefaults.standard.set(inst.id + "/" + mid, forKey: "OpenMinis_experience_" + role)
+            }
+        }
+        for (mid, label) in extras {
             let extra: ModelEntry
             if let old = store.config.modelEntries.first(where: { $0.providerInstanceId == inst.id && $0.model.id == mid }) {
                 extra = old

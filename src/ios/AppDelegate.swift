@@ -58,6 +58,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // 云电脑：后台刷新任务必须在启动结束前注册；连接守护在启动时静默连接、回到前台时检查隧道
         CloudLinkSupervisor.registerBackgroundTasks()
         CloudLinkSupervisor.shared.start()
+        CloudExperience.install()
+        CloudApprovalBridge.install()
 
         // [T-notification-tap-vs-launch-session] The UNUserNotificationCenter
         // delegate must be in place BEFORE didFinishLaunching returns, or iOS
