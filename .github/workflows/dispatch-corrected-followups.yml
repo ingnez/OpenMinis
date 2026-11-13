@@ -1,0 +1,386 @@
+name: Validate the corrected OpenMinis candidates in handoff order
+on:
+  push:
+    branches: [grokbot-phase2-chat-motion-ci]
+    paths: [.github/workflows/dispatch-corrected-followups.yml]
+permissions:
+  actions: write
+  contents: read
+jobs:
+  images:
+    if: github.repository == 'ingnez/OpenMinis'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Validate the named simulator cases on the candidate commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="repos/$GITHUB_REPOSITORY"
+          prerequisite="$repo/actions/runs/43406167222"
+          while [ "$(gh api "$prerequisite" --jq .status)" != completed ]; do
+            sleep 45
+          done
+          test "$(gh api "$prerequisite" --jq .conclusion)" = success
+          test "$(gh release view grokbot-deliver-b4eabcf --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[] | select(.name | endswith("-unsigned.ipa"))] | length')" = 1
+
+          validate() {
+            local branch="$1" sha="$2" tests="$3"
+            local ref="$repo/git/ref/heads/$branch"
+            local runs="$repo/actions/workflows/build-ios.yml/runs?branch=$branch&head_sha=$sha&event=workflow_dispatch&per_page=20"
+            local test_id=0 status=pending conclusion=pending last_id=0 completed_checks=0 result
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            test_id=$(gh api "$runs" --jq '.workflow_runs[0].id // 0')
+            if [ "$test_id" = 0 ]; then
+              gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$branch" -f ui_tests=true -f mac_runner=macos-15 -f only_testing="$tests"
+            fi
+            while true; do
+              result=$(gh api "$runs" --jq '(.workflow_runs[0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
+              IFS=$'\t' read -r test_id status conclusion <<< "$result"
+              if [ "$test_id" != "$last_id" ]; then
+                echo "$branch simulator run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$test_id"
+                last_id="$test_id"
+                completed_checks=0
+              fi
+              if [ "$status" = completed ]; then
+                if [ "$conclusion" = success ]; then break; fi
+                completed_checks=$((completed_checks + 1))
+                if [ "$completed_checks" -ge 4 ]; then echo "$branch simulator tests: $conclusion"; return 1; fi
+              fi
+              sleep 45
+            done
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            local evidence
+            evidence=$(mktemp -d)
+            gh run download "$test_id" --repo "$GITHUB_REPOSITORY" --name Minis-e2e-early --dir "$evidence"
+            python3 - "$evidence/e2e-summary.md" "$tests" <<'PY'
+          import sys
+          from pathlib import Path
+
+          expected = {test.split('/', 1)[1].replace('/', '.') for test in sys.argv[2].split(',')}
+          results = {}
+          for line in Path(sys.argv[1]).read_text().splitlines():
+              if line.startswith('|'):
+                  _, name, outcome, *_ = line.split('|')
+                  if name.strip() in expected:
+                      results[name.strip()] = outcome.strip().startswith('PASS')
+          missing = sorted(test for test in expected if not results.get(test))
+          if missing:
+              sys.exit(f'Missing or failed XCTest cases: {", ".join(missing)}')
+          print(f'{len(expected)}/{len(expected)} targeted XCTest cases passed')
+          PY
+          }
+
+
+          validate grokbot-phase2-images-integration 1f9064cef680a33092ec7a6323a692f4fd4fcda5 'MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport,MinisUITests/E2EFlowsUITests/test40_cloudMessageSwipeQuotesExactReply,MinisUITests/E2EFlowsUITests/test04_markdownBoldInQuoteCJK,MinisUITests/E2EFlowsUITests/test20_localMarkdownBoldInQuoteCJK,MinisUITests/MinisSmokeUITests/testLaunchShowsHomeAndSurvivesBackgrounding,MinisUITests/DeliverablesUITests/testBotDeliverableCards,MinisUITests/DeliverablesUITests/testLocalDeliverableLinkCard,MinisUITests/ImageExperienceUITests/testI1_scrubOpensNthImage'
+  b2b:
+    if: github.repository == 'ingnez/OpenMinis'
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Validate the named simulator cases on the candidate commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="repos/$GITHUB_REPOSITORY"
+
+          validate() {
+            local branch="$1" sha="$2" tests="$3"
+            local ref="$repo/git/ref/heads/$branch"
+            local runs="$repo/actions/workflows/build-ios.yml/runs?branch=$branch&head_sha=$sha&event=workflow_dispatch&per_page=20"
+            local test_id=0 status=pending conclusion=pending last_id=0 completed_checks=0 result
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            test_id=$(gh api "$runs" --jq '.workflow_runs[0].id // 0')
+            if [ "$test_id" = 0 ]; then
+              gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$branch" -f ui_tests=true -f mac_runner=macos-15 -f only_testing="$tests"
+            fi
+            while true; do
+              result=$(gh api "$runs" --jq '(.workflow_runs[0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
+              IFS=$'\t' read -r test_id status conclusion <<< "$result"
+              if [ "$test_id" != "$last_id" ]; then
+                echo "$branch simulator run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$test_id"
+                last_id="$test_id"
+                completed_checks=0
+              fi
+              if [ "$status" = completed ]; then
+                if [ "$conclusion" = success ]; then break; fi
+                completed_checks=$((completed_checks + 1))
+                if [ "$completed_checks" -ge 4 ]; then echo "$branch simulator tests: $conclusion"; return 1; fi
+              fi
+              sleep 45
+            done
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            local evidence
+            evidence=$(mktemp -d)
+            gh run download "$test_id" --repo "$GITHUB_REPOSITORY" --name Minis-e2e-early --dir "$evidence"
+            python3 - "$evidence/e2e-summary.md" "$tests" <<'PY'
+          import sys
+          from pathlib import Path
+
+          expected = {test.split('/', 1)[1].replace('/', '.') for test in sys.argv[2].split(',')}
+          results = {}
+          for line in Path(sys.argv[1]).read_text().splitlines():
+              if line.startswith('|'):
+                  _, name, outcome, *_ = line.split('|')
+                  if name.strip() in expected:
+                      results[name.strip()] = outcome.strip().startswith('PASS')
+          missing = sorted(test for test in expected if not results.get(test))
+          if missing:
+              sys.exit(f'Missing or failed XCTest cases: {", ".join(missing)}')
+          print(f'{len(expected)}/{len(expected)} targeted XCTest cases passed')
+          PY
+          }
+
+
+          validate grokbot-phase2-b2b-integration 53d054557d21867a438431f5b9c3f6934136d86e 'MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport,MinisUITests/E2EFlowsUITests/test40_cloudMessageSwipeQuotesExactReply,MinisUITests/E2EFlowsUITests/test04_markdownBoldInQuoteCJK,MinisUITests/E2EFlowsUITests/test20_localMarkdownBoldInQuoteCJK,MinisUITests/MinisSmokeUITests/testLaunchShowsHomeAndSurvivesBackgrounding,MinisUITests/DeliverablesUITests/testBotDeliverableCards,MinisUITests/DeliverablesUITests/testLocalDeliverableLinkCard,MinisUITests/ImageExperienceUITests/testI1_scrubOpensNthImage,MinisUITests/BotToBotUITests/testX1toX5_handoffShowsCollapsedLineAndThread'
+  group:
+    if: github.repository == 'ingnez/OpenMinis'
+    needs: b2b
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Validate the named simulator cases on the candidate commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="repos/$GITHUB_REPOSITORY"
+
+          validate() {
+            local branch="$1" sha="$2" tests="$3"
+            local ref="$repo/git/ref/heads/$branch"
+            local runs="$repo/actions/workflows/build-ios.yml/runs?branch=$branch&head_sha=$sha&event=workflow_dispatch&per_page=20"
+            local test_id=0 status=pending conclusion=pending last_id=0 completed_checks=0 result
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            test_id=$(gh api "$runs" --jq '.workflow_runs[0].id // 0')
+            if [ "$test_id" = 0 ]; then
+              gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$branch" -f ui_tests=true -f mac_runner=macos-15 -f only_testing="$tests"
+            fi
+            while true; do
+              result=$(gh api "$runs" --jq '(.workflow_runs[0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
+              IFS=$'\t' read -r test_id status conclusion <<< "$result"
+              if [ "$test_id" != "$last_id" ]; then
+                echo "$branch simulator run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$test_id"
+                last_id="$test_id"
+                completed_checks=0
+              fi
+              if [ "$status" = completed ]; then
+                if [ "$conclusion" = success ]; then break; fi
+                completed_checks=$((completed_checks + 1))
+                if [ "$completed_checks" -ge 4 ]; then echo "$branch simulator tests: $conclusion"; return 1; fi
+              fi
+              sleep 45
+            done
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            local evidence
+            evidence=$(mktemp -d)
+            gh run download "$test_id" --repo "$GITHUB_REPOSITORY" --name Minis-e2e-early --dir "$evidence"
+            python3 - "$evidence/e2e-summary.md" "$tests" <<'PY'
+          import sys
+          from pathlib import Path
+
+          expected = {test.split('/', 1)[1].replace('/', '.') for test in sys.argv[2].split(',')}
+          results = {}
+          for line in Path(sys.argv[1]).read_text().splitlines():
+              if line.startswith('|'):
+                  _, name, outcome, *_ = line.split('|')
+                  if name.strip() in expected:
+                      results[name.strip()] = outcome.strip().startswith('PASS')
+          missing = sorted(test for test in expected if not results.get(test))
+          if missing:
+              sys.exit(f'Missing or failed XCTest cases: {", ".join(missing)}')
+          print(f'{len(expected)}/{len(expected)} targeted XCTest cases passed')
+          PY
+          }
+
+
+          validate grokbot-phase2-group-integration bed02785a7e79650204eedda3a0ff26e1fb26965 'MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport,MinisUITests/E2EFlowsUITests/test40_cloudMessageSwipeQuotesExactReply,MinisUITests/E2EFlowsUITests/test04_markdownBoldInQuoteCJK,MinisUITests/E2EFlowsUITests/test20_localMarkdownBoldInQuoteCJK,MinisUITests/MinisSmokeUITests/testLaunchShowsHomeAndSurvivesBackgrounding,MinisUITests/DeliverablesUITests/testBotDeliverableCards,MinisUITests/DeliverablesUITests/testLocalDeliverableLinkCard,MinisUITests/ImageExperienceUITests/testI1_scrubOpensNthImage,MinisUITests/BotToBotUITests/testX1toX5_handoffShowsCollapsedLineAndThread,MinisUITests/GroupChatUITests/testG0_createSendMentionReact,MinisUITests/GroupChatUITests/testG1_foldBurst,MinisUITests/GroupChatUITests/testG2_typingStagger,MinisUITests/GroupChatUITests/testG3_missedDigest,MinisUITests/GroupChatUITests/testG4_wrapSummary,MinisUITests/GroupChatUITests/testG5_listenFilter,MinisUITests/GroupChatUITests/testG6_mentionChips,MinisUITests/GroupChatUITests/testG7_replyThread,MinisUITests/GroupChatUITests/testG8_voiceMeeting,MinisUITests/GroupChatUITests/testG9_spinTask,MinisUITests/GroupChatUITests/testG10_quotaBanner,MinisUITests/GroupChatUITests/testG11_notifyRelevant'
+  ideas:
+    if: github.repository == 'ingnez/OpenMinis'
+    needs: group
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Validate the named simulator cases on the candidate commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="repos/$GITHUB_REPOSITORY"
+
+          validate() {
+            local branch="$1" sha="$2" tests="$3"
+            local ref="$repo/git/ref/heads/$branch"
+            local runs="$repo/actions/workflows/build-ios.yml/runs?branch=$branch&head_sha=$sha&event=workflow_dispatch&per_page=20"
+            local test_id=0 status=pending conclusion=pending last_id=0 completed_checks=0 result
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            test_id=$(gh api "$runs" --jq '.workflow_runs[0].id // 0')
+            if [ "$test_id" = 0 ]; then
+              gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$branch" -f ui_tests=true -f mac_runner=macos-15 -f only_testing="$tests"
+            fi
+            while true; do
+              result=$(gh api "$runs" --jq '(.workflow_runs[0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
+              IFS=$'\t' read -r test_id status conclusion <<< "$result"
+              if [ "$test_id" != "$last_id" ]; then
+                echo "$branch simulator run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$test_id"
+                last_id="$test_id"
+                completed_checks=0
+              fi
+              if [ "$status" = completed ]; then
+                if [ "$conclusion" = success ]; then break; fi
+                completed_checks=$((completed_checks + 1))
+                if [ "$completed_checks" -ge 4 ]; then echo "$branch simulator tests: $conclusion"; return 1; fi
+              fi
+              sleep 45
+            done
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            local evidence
+            evidence=$(mktemp -d)
+            gh run download "$test_id" --repo "$GITHUB_REPOSITORY" --name Minis-e2e-early --dir "$evidence"
+            python3 - "$evidence/e2e-summary.md" "$tests" <<'PY'
+          import sys
+          from pathlib import Path
+
+          expected = {test.split('/', 1)[1].replace('/', '.') for test in sys.argv[2].split(',')}
+          results = {}
+          for line in Path(sys.argv[1]).read_text().splitlines():
+              if line.startswith('|'):
+                  _, name, outcome, *_ = line.split('|')
+                  if name.strip() in expected:
+                      results[name.strip()] = outcome.strip().startswith('PASS')
+          missing = sorted(test for test in expected if not results.get(test))
+          if missing:
+              sys.exit(f'Missing or failed XCTest cases: {", ".join(missing)}')
+          print(f'{len(expected)}/{len(expected)} targeted XCTest cases passed')
+          PY
+          }
+
+
+          validate grokbot-phase2-ideas12-integration 1669725266031542de8e1acf145897fd6114076f 'MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport,MinisUITests/E2EFlowsUITests/test40_cloudMessageSwipeQuotesExactReply,MinisUITests/E2EFlowsUITests/test04_markdownBoldInQuoteCJK,MinisUITests/E2EFlowsUITests/test20_localMarkdownBoldInQuoteCJK,MinisUITests/MinisSmokeUITests/testLaunchShowsHomeAndSurvivesBackgrounding,MinisUITests/DeliverablesUITests/testBotDeliverableCards,MinisUITests/DeliverablesUITests/testLocalDeliverableLinkCard,MinisUITests/ImageExperienceUITests/testI1_scrubOpensNthImage,MinisUITests/BotToBotUITests/testX1toX5_handoffShowsCollapsedLineAndThread,MinisUITests/GroupChatUITests/testG0_createSendMentionReact,MinisUITests/GroupChatUITests/testG1_foldBurst,MinisUITests/GroupChatUITests/testG2_typingStagger,MinisUITests/GroupChatUITests/testG3_missedDigest,MinisUITests/GroupChatUITests/testG4_wrapSummary,MinisUITests/GroupChatUITests/testG5_listenFilter,MinisUITests/GroupChatUITests/testG6_mentionChips,MinisUITests/GroupChatUITests/testG7_replyThread,MinisUITests/GroupChatUITests/testG8_voiceMeeting,MinisUITests/GroupChatUITests/testG9_spinTask,MinisUITests/GroupChatUITests/testG10_quotaBanner,MinisUITests/GroupChatUITests/testG11_notifyRelevant,MinisUITests/Ideas12UITests/testIdea1_instantHome,MinisUITests/Ideas12UITests/testIdea2_shiftSpeech,MinisUITests/Ideas12UITests/testIdea3_taskTimeline,MinisUITests/Ideas12UITests/testIdea4_offlineWrite,MinisUITests/Ideas12UITests/testIdea5_lastRef,MinisUITests/Ideas12UITests/testIdea6_oneHand,MinisUITests/Ideas12UITests/testIdea7_dutyMode,MinisUITests/Ideas12UITests/testIdea8_privacyGuard,MinisUITests/Ideas12UITests/testIdea9_oralStruct,MinisUITests/Ideas12UITests/testIdea10_trackpadIME,MinisUITests/Ideas12UITests/testIdea11_desktopResume,MinisUITests/Ideas12UITests/testIdea12_ipaChecklist'
+  frog:
+    if: github.repository == 'ingnez/OpenMinis'
+    needs: ideas
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Validate the named simulator cases on the candidate commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="repos/$GITHUB_REPOSITORY"
+
+          validate() {
+            local branch="$1" sha="$2" tests="$3"
+            local ref="$repo/git/ref/heads/$branch"
+            local runs="$repo/actions/workflows/build-ios.yml/runs?branch=$branch&head_sha=$sha&event=workflow_dispatch&per_page=20"
+            local test_id=0 status=pending conclusion=pending last_id=0 completed_checks=0 result
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            test_id=$(gh api "$runs" --jq '.workflow_runs[0].id // 0')
+            if [ "$test_id" = 0 ]; then
+              gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$branch" -f ui_tests=true -f mac_runner=macos-15 -f only_testing="$tests"
+            fi
+            while true; do
+              result=$(gh api "$runs" --jq '(.workflow_runs[0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
+              IFS=$'\t' read -r test_id status conclusion <<< "$result"
+              if [ "$test_id" != "$last_id" ]; then
+                echo "$branch simulator run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$test_id"
+                last_id="$test_id"
+                completed_checks=0
+              fi
+              if [ "$status" = completed ]; then
+                if [ "$conclusion" = success ]; then break; fi
+                completed_checks=$((completed_checks + 1))
+                if [ "$completed_checks" -ge 4 ]; then echo "$branch simulator tests: $conclusion"; return 1; fi
+              fi
+              sleep 45
+            done
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            local evidence
+            evidence=$(mktemp -d)
+            gh run download "$test_id" --repo "$GITHUB_REPOSITORY" --name Minis-e2e-early --dir "$evidence"
+            python3 - "$evidence/e2e-summary.md" "$tests" <<'PY'
+          import sys
+          from pathlib import Path
+
+          expected = {test.split('/', 1)[1].replace('/', '.') for test in sys.argv[2].split(',')}
+          results = {}
+          for line in Path(sys.argv[1]).read_text().splitlines():
+              if line.startswith('|'):
+                  _, name, outcome, *_ = line.split('|')
+                  if name.strip() in expected:
+                      results[name.strip()] = outcome.strip().startswith('PASS')
+          missing = sorted(test for test in expected if not results.get(test))
+          if missing:
+              sys.exit(f'Missing or failed XCTest cases: {", ".join(missing)}')
+          print(f'{len(expected)}/{len(expected)} targeted XCTest cases passed')
+          PY
+          }
+
+
+          validate grokbot-phase2-frog-integration 22ea71f8cdda21dcb203b117685a3fddc9b01cec 'MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport,MinisUITests/E2EFlowsUITests/test40_cloudMessageSwipeQuotesExactReply,MinisUITests/E2EFlowsUITests/test04_markdownBoldInQuoteCJK,MinisUITests/E2EFlowsUITests/test20_localMarkdownBoldInQuoteCJK,MinisUITests/MinisSmokeUITests/testLaunchShowsHomeAndSurvivesBackgrounding,MinisUITests/DeliverablesUITests/testBotDeliverableCards,MinisUITests/DeliverablesUITests/testLocalDeliverableLinkCard,MinisUITests/ImageExperienceUITests/testI1_scrubOpensNthImage,MinisUITests/BotToBotUITests/testX1toX5_handoffShowsCollapsedLineAndThread,MinisUITests/GroupChatUITests/testG0_createSendMentionReact,MinisUITests/GroupChatUITests/testG1_foldBurst,MinisUITests/GroupChatUITests/testG2_typingStagger,MinisUITests/GroupChatUITests/testG3_missedDigest,MinisUITests/GroupChatUITests/testG4_wrapSummary,MinisUITests/GroupChatUITests/testG5_listenFilter,MinisUITests/GroupChatUITests/testG6_mentionChips,MinisUITests/GroupChatUITests/testG7_replyThread,MinisUITests/GroupChatUITests/testG8_voiceMeeting,MinisUITests/GroupChatUITests/testG9_spinTask,MinisUITests/GroupChatUITests/testG10_quotaBanner,MinisUITests/GroupChatUITests/testG11_notifyRelevant,MinisUITests/Ideas12UITests/testIdea1_instantHome,MinisUITests/Ideas12UITests/testIdea2_shiftSpeech,MinisUITests/Ideas12UITests/testIdea3_taskTimeline,MinisUITests/Ideas12UITests/testIdea4_offlineWrite,MinisUITests/Ideas12UITests/testIdea5_lastRef,MinisUITests/Ideas12UITests/testIdea6_oneHand,MinisUITests/Ideas12UITests/testIdea7_dutyMode,MinisUITests/Ideas12UITests/testIdea8_privacyGuard,MinisUITests/Ideas12UITests/testIdea9_oralStruct,MinisUITests/Ideas12UITests/testIdea10_trackpadIME,MinisUITests/Ideas12UITests/testIdea11_desktopResume,MinisUITests/Ideas12UITests/testIdea12_ipaChecklist,MinisUITests/FrogP0UITests/testFrog_approvalOnceAndTaskOptions,MinisUITests/FrogP0UITests/testFrog_newBotDefaultAsk,MinisUITests/FrogP0UITests/testFrog_pastedFakeSecretIsMasked,MinisUITests/FrogP0UITests/testFrog_taskTrayPauseAndSendIsNotStop,MinisUITests/FrogP0UITests/testFrog_restartAsksToResume,MinisUITests/Frog1850UITests/testShiftCard,MinisUITests/Frog1850UITests/testPocketMode,MinisUITests/Frog1850UITests/testTaskReplay,MinisUITests/Frog1850UITests/testPromptTemplates,MinisUITests/Frog1850Chunk3UITests/testLockScreenApprovalAndPassphrase,MinisUITests/Frog1850Chunk3UITests/testWardTodoBox,MinisUITests/Frog1850Chunk3UITests/testWatchComplicationPreview,MinisUITests/Frog1850Chunk3UITests/testShiftGrantOnLockPreview,MinisUITests/Frog1850Chunk2UITests/testDataSaver,MinisUITests/Frog1850Chunk2UITests/testQuietHours,MinisUITests/Frog1850Chunk2UITests/testBotRelay,MinisUITests/Frog1850Chunk2UITests/testNightEyeCare'
+  backup:
+    if: github.repository == 'ingnez/OpenMinis'
+    needs: frog
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Validate the named simulator cases on the candidate commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="repos/$GITHUB_REPOSITORY"
+
+          validate() {
+            local branch="$1" sha="$2" tests="$3"
+            local ref="$repo/git/ref/heads/$branch"
+            local runs="$repo/actions/workflows/build-ios.yml/runs?branch=$branch&head_sha=$sha&event=workflow_dispatch&per_page=20"
+            local test_id=0 status=pending conclusion=pending last_id=0 completed_checks=0 result
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            test_id=$(gh api "$runs" --jq '.workflow_runs[0].id // 0')
+            if [ "$test_id" = 0 ]; then
+              gh workflow run build-ios.yml --repo "$GITHUB_REPOSITORY" --ref "$branch" -f ui_tests=true -f mac_runner=macos-15 -f only_testing="$tests"
+            fi
+            while true; do
+              result=$(gh api "$runs" --jq '(.workflow_runs[0] // {}) | [(.id // 0), (.status // "pending"), (.conclusion // "pending")] | @tsv')
+              IFS=$'\t' read -r test_id status conclusion <<< "$result"
+              if [ "$test_id" != "$last_id" ]; then
+                echo "$branch simulator run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$test_id"
+                last_id="$test_id"
+                completed_checks=0
+              fi
+              if [ "$status" = completed ]; then
+                if [ "$conclusion" = success ]; then break; fi
+                completed_checks=$((completed_checks + 1))
+                if [ "$completed_checks" -ge 4 ]; then echo "$branch simulator tests: $conclusion"; return 1; fi
+              fi
+              sleep 45
+            done
+            test "$(gh api "$ref" --jq '.object.sha')" = "$sha"
+            local evidence
+            evidence=$(mktemp -d)
+            gh run download "$test_id" --repo "$GITHUB_REPOSITORY" --name Minis-e2e-early --dir "$evidence"
+            python3 - "$evidence/e2e-summary.md" "$tests" <<'PY'
+          import sys
+          from pathlib import Path
+
+          expected = {test.split('/', 1)[1].replace('/', '.') for test in sys.argv[2].split(',')}
+          results = {}
+          for line in Path(sys.argv[1]).read_text().splitlines():
+              if line.startswith('|'):
+                  _, name, outcome, *_ = line.split('|')
+                  if name.strip() in expected:
+                      results[name.strip()] = outcome.strip().startswith('PASS')
+          missing = sorted(test for test in expected if not results.get(test))
+          if missing:
+              sys.exit(f'Missing or failed XCTest cases: {", ".join(missing)}')
+          print(f'{len(expected)}/{len(expected)} targeted XCTest cases passed')
+          PY
+          }
+
+
+          validate grokbot-phase2-backup-integration 8501380651a7e4a4c964cdc872523788d58a8ebb 'MinisUITests/E2EFlowsUITests/test03_sendSixImages,MinisUITests/E2EFlowsUITests/test09_trayToggleReorderRemove,MinisUITests/E2EFlowsUITests/test10_stackCaptionFanOutAndViewer,MinisUITests/E2EFlowsUITests/test30_primaryStarShowsStatus,MinisUITests/E2EFlowsUITests/test32_longPressMenuSheet,MinisUITests/E2EFlowsUITests/test34_longPressOwnCloudMessage,MinisUITests/E2EFlowsUITests/test35_longPressLocalMessages,MinisUITests/E2EFlowsUITests/test36_sourceChipDoesNotCoverReply,MinisUITests/E2EFlowsUITests/test37_botComposerMenuContainsModelAndEffort,MinisUITests/E2EFlowsUITests/test38_localImageOnlyMessageScrubsPastSixthImage,MinisUITests/E2EFlowsUITests/test13_headerGearNoSwitcherTodayCard,MinisUITests/E2EFlowsUITests/test28_homeFeedPreviewNoMarkdown,MinisUITests/E2EFlowsUITests/test29_todayBarPanels,MinisUITests/E2EFlowsUITests/test33_homeBottomSearchBar,MinisUITests/ReplyModeUITests/testReply_reopenInstantHistoryAtLatestMessage,MinisUITests/ReplyModeUITests/testReply_verboseModeUnchanged,MinisUITests/E2EFlowsUITests/test39_cloudHistoryFlingKeepsViewport,MinisUITests/E2EFlowsUITests/test40_cloudMessageSwipeQuotesExactReply,MinisUITests/E2EFlowsUITests/test04_markdownBoldInQuoteCJK,MinisUITests/E2EFlowsUITests/test20_localMarkdownBoldInQuoteCJK,MinisUITests/MinisSmokeUITests/testLaunchShowsHomeAndSurvivesBackgrounding,MinisUITests/DeliverablesUITests/testBotDeliverableCards,MinisUITests/DeliverablesUITests/testLocalDeliverableLinkCard,MinisUITests/ImageExperienceUITests/testI1_scrubOpensNthImage,MinisUITests/BotToBotUITests/testX1toX5_handoffShowsCollapsedLineAndThread,MinisUITests/GroupChatUITests/testG0_createSendMentionReact,MinisUITests/GroupChatUITests/testG1_foldBurst,MinisUITests/GroupChatUITests/testG2_typingStagger,MinisUITests/GroupChatUITests/testG3_missedDigest,MinisUITests/GroupChatUITests/testG4_wrapSummary,MinisUITests/GroupChatUITests/testG5_listenFilter,MinisUITests/GroupChatUITests/testG6_mentionChips,MinisUITests/GroupChatUITests/testG7_replyThread,MinisUITests/GroupChatUITests/testG8_voiceMeeting,MinisUITests/GroupChatUITests/testG9_spinTask,MinisUITests/GroupChatUITests/testG10_quotaBanner,MinisUITests/GroupChatUITests/testG11_notifyRelevant,MinisUITests/Ideas12UITests/testIdea1_instantHome,MinisUITests/Ideas12UITests/testIdea2_shiftSpeech,MinisUITests/Ideas12UITests/testIdea3_taskTimeline,MinisUITests/Ideas12UITests/testIdea4_offlineWrite,MinisUITests/Ideas12UITests/testIdea5_lastRef,MinisUITests/Ideas12UITests/testIdea6_oneHand,MinisUITests/Ideas12UITests/testIdea7_dutyMode,MinisUITests/Ideas12UITests/testIdea8_privacyGuard,MinisUITests/Ideas12UITests/testIdea9_oralStruct,MinisUITests/Ideas12UITests/testIdea10_trackpadIME,MinisUITests/Ideas12UITests/testIdea11_desktopResume,MinisUITests/Ideas12UITests/testIdea12_ipaChecklist,MinisUITests/FrogP0UITests/testFrog_approvalOnceAndTaskOptions,MinisUITests/FrogP0UITests/testFrog_newBotDefaultAsk,MinisUITests/FrogP0UITests/testFrog_pastedFakeSecretIsMasked,MinisUITests/FrogP0UITests/testFrog_taskTrayPauseAndSendIsNotStop,MinisUITests/FrogP0UITests/testFrog_restartAsksToResume,MinisUITests/Frog1850UITests/testShiftCard,MinisUITests/Frog1850UITests/testPocketMode,MinisUITests/Frog1850UITests/testTaskReplay,MinisUITests/Frog1850UITests/testPromptTemplates,MinisUITests/Frog1850Chunk3UITests/testLockScreenApprovalAndPassphrase,MinisUITests/Frog1850Chunk3UITests/testWardTodoBox,MinisUITests/Frog1850Chunk3UITests/testWatchComplicationPreview,MinisUITests/Frog1850Chunk3UITests/testShiftGrantOnLockPreview,MinisUITests/Frog1850Chunk2UITests/testDataSaver,MinisUITests/Frog1850Chunk2UITests/testQuietHours,MinisUITests/Frog1850Chunk2UITests/testBotRelay,MinisUITests/Frog1850Chunk2UITests/testNightEyeCare,MinisUITests/BackupUXUITests/testBackup_generateCardHistoryAndRestorePreview'
