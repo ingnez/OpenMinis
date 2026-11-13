@@ -4,10 +4,19 @@ import hashlib
 import io
 import json
 import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 import struct
 import zipfile
 
-from test_phase1_support import CloudServerTestCase, FakeModelHandler, tool_call, tool_turns
+from test_phase1_support import CloudServerTestCase, FakeModelHandler, _serve, tool_call, tool_turns
 import cloud_deliver
 
 
@@ -63,6 +72,59 @@ def _write_fixture(ws, name, data=None, writer=None):
         with open(path, "wb") as f:
             f.write(data)
     return path
+
+
+class DeliverExecutableTests(unittest.TestCase):
+    def test_delivery_does_not_interrupt_task_when_agent_starts_as_script(self):
+        token = "fake-delivery-cli-token"
+        with tempfile.TemporaryDirectory() as folder, socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+            listener.close()
+            path = Path(folder)
+            env = dict(os.environ, OPENMINIS_PORT=str(port), OPENMINIS_HOST="127.0.0.1",
+                       OPENMINIS_DB=str(path / "agent.db"), OPENMINIS_WORKSPACE=str(path / "workspace"),
+                       OPENMINIS_TOKEN=token, OPENMINIS_MASTER_KEY_FILE=str(path / "master.key"),
+                       OPENMINIS_REPLY_DEFAULT="verbose")
+            model, model_port = _serve(FakeModelHandler)
+            self.addCleanup(model.server_close)
+            self.addCleanup(model.shutdown)
+            process = subprocess.Popen([sys.executable, str(Path(__file__).with_name("cloud_agent_server.py"))],
+                                       env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                def request(method, route, body=None):
+                    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                    data = json.dumps(body).encode() if body is not None else None
+                    req = Request(f"http://127.0.0.1:{port}{route}", data=data, headers=headers, method=method)
+                    with urlopen(req, timeout=2) as response:
+                        return json.load(response)
+
+                deadline = time.monotonic() + 10
+                while True:
+                    try:
+                        request("GET", "/health")
+                        break
+                    except URLError:
+                        if time.monotonic() >= deadline or process.poll() is not None:
+                            raise
+                        time.sleep(.05)
+                sid = request("POST", "/v1/sessions", {"title": "Executable delivery"})["session_id"]
+                task = request("POST", f"/v1/sessions/{sid}/messages", {
+                    "content": "Generate a report",
+                    "model": "m-delivery-cli",
+                    "provider": {"base_url": f"http://127.0.0.1:{model_port}/v1", "api_key": "fake-model-key"},
+                })["task_id"]
+                deadline = time.monotonic() + 10
+                while True:
+                    detail = request("GET", f"/v1/tasks/{task}")
+                    status = detail["status"]
+                    if status not in ("running", "queued", "waiting_user") or time.monotonic() >= deadline:
+                        break
+                    time.sleep(.05)
+                self.assertEqual(status, "completed")
+            finally:
+                process.terminate()
+                process.wait(timeout=5)
 
 
 class DeliverUnitTests(CloudServerTestCase):

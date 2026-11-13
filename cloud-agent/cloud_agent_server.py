@@ -52,6 +52,11 @@ SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
+# The executable and helpers importing the server must share one module.
+# Importing a second instance would run database recovery during a live task.
+if __name__ == "__main__":
+    sys.modules["cloud_agent_server"] = sys.modules[__name__]
+
 import re
 import cloud_browser
 import cloud_delegation as deleg
