@@ -1,0 +1,32 @@
+name: Inspect the current Mac log without interrupting it
+on:
+  push:
+    branches: [grokbot-phase2-chat-motion-ci]
+    paths:
+      - .github/workflows/inspect-running-mac.yml
+      - scripts/diagnostics/inspect_mac_progress.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read current Mac metadata and log tail
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/diagnostics/inspect_mac_progress.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: current-mac-progress
+          path: |
+            mac-job.json
+            mac-progress.json
+            mac-live-tail.log
+            mac-operation-tail.log
+            mac-test-results.log
+          retention-days: 7
