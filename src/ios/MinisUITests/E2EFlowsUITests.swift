@@ -522,7 +522,7 @@ final class E2EFlowsUITests: XCTestCase {
     /// 本地新对话顶上的模型名不再是「No model selected」（最多等 20 秒，注入是异步的）
     /// 本地发送键：iOS 26 上发送键背后有个 ⌘Return 用的 0×0 隐藏按钮，只取有尺寸的那个
     private func localSendButton(_ app: XCUIApplication) -> XCUIElement {
-        let q = app.buttons.matching(identifier: "localComposerSendButton")
+        let q = app.descendants(matching: .any).matching(identifier: "localComposerSendButton")
         var found: XCUIElement?
         _ = poll(10) { found = q.allElementsBoundByIndex.first { $0.frame.width > 1 }; return found != nil }
         return found ?? q.firstMatch
@@ -1680,7 +1680,7 @@ extension E2EFlowsUITests {
         let app = launch()
         openBot(app)
 
-        let menu = app.buttons["botComposerMenu"]
+        let menu = app.descendants(matching: .any)["botComposerMenu"]
         let model = app.buttons["模型与思考深度"]
         XCTAssertTrue(menu.waitForExistence(timeout: 10))
         XCTAssertFalse(model.exists, "模型入口还在输入框上方")
@@ -1697,7 +1697,7 @@ extension E2EFlowsUITests {
     func test41_cloudProviderGroupsFoldAndShowLocalModels() throws {
         let app = launch(extraEnv: ["OPENMINIS_E2E_LOCAL_PROVIDER": "http://127.0.0.1:18797"])
         openBot(app)
-        app.buttons["botComposerMenu"].tap()
+        app.descendants(matching: .any)["botComposerMenu"].tap()
         let modelSettings = app.buttons["模型与思考深度"]
         XCTAssertTrue(modelSettings.waitForExistence(timeout: 8))
         modelSettings.tap()

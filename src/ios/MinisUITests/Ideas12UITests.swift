@@ -141,7 +141,7 @@ final class Ideas12UITests: XCTestCase {
         executionTimeAllowance = 180
         let app = launch(extraEnv: ["OPENMINIS_E2E_ORAL_TEXT": "交班：12床，诊断肺炎，目前平稳，血压120/80，今晚关注血氧"])
         openBot(app)
-        let plus = app.buttons["添加附件"]
+        let plus = app.descendants(matching: .any)["botComposerMenu"]
         XCTAssertTrue(plus.waitForExistence(timeout: 15), "没有附件菜单")
         plus.tap()
         let oral = app.buttons["口述转结构化（交班单 / 病例摘要）"]

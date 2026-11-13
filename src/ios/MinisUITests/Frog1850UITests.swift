@@ -65,7 +65,7 @@ final class Frog1850UITests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 30), "没有输入框")
         field.press(forDuration: 0.8)
         if !app.descendants(matching: .any)["promptTemplateSheet"].waitForExistence(timeout: 6) {
-            let plus = app.buttons["添加附件"]
+            let plus = app.descendants(matching: .any)["botComposerMenu"]
             if plus.waitForExistence(timeout: 3) { plus.tap() }
             let item = app.buttons["一键模板"]
             XCTAssertTrue(item.waitForExistence(timeout: 8), "长按和菜单都没有一键模板")

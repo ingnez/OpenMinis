@@ -184,7 +184,7 @@ final class DeliverablesUITests: XCTestCase {
 
     @MainActor
     private func localSendButton(_ app: XCUIApplication) -> XCUIElement {
-        let q = app.buttons.matching(identifier: "localComposerSendButton")
+        let q = app.descendants(matching: .any).matching(identifier: "localComposerSendButton")
         var found: XCUIElement?
         _ = poll(10) { found = q.allElementsBoundByIndex.first { $0.frame.width > 1 }; return found != nil }
         return found ?? q.firstMatch

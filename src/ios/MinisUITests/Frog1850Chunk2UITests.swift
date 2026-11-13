@@ -43,7 +43,7 @@ final class Frog1850Chunk2UITests: XCTestCase {
         executionTimeAllowance = 180
         let app = launch()
         openBot(app)
-        let plus = app.buttons["添加附件"]
+        let plus = app.descendants(matching: .any)["botComposerMenu"]
         XCTAssertTrue(plus.waitForExistence(timeout: 20), "没有 + 菜单")
         plus.tap()
         let item = app.buttons["交给其他 Bot"]
