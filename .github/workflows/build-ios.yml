@@ -1435,6 +1435,65 @@ jobs:
           cat e2e-cloud-stack.log
           grep -q "E2E 云端就绪" e2e-cloud-stack.log
 
+      # Fail at the shared entry point before spending hours retrying dependent flows.
+      # Explicit subsets still run exactly the requested methods.
+      - name: 聊天入口预检（打开 Bot、输入、真实回复）
+        id: ui_entry
+        if: ${{ inputs.only_testing == '' }}
+        timeout-minutes: 45
+        env:
+          DEV: ${{ steps.simulator.outputs.udid }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          directory = Path('src/ios/Minis.xcodeproj/xcshareddata/xcschemes')
+          original = (directory / 'Minis.xcscheme').read_text()
+          smoke = re.sub(r'\s*<TestableReference[^>]*>(?:(?!</TestableReference>).)*?BlueprintName = "MinisTests"(?:(?!</TestableReference>).)*?</TestableReference>', '', original, flags=re.S)
+          assert smoke != original and 'MinisUITests' in smoke
+          (directory / 'MinisE2E.xcscheme').write_text(smoke)
+          PY
+          xcodebuild test \
+            -project src/ios/Minis.xcodeproj -scheme MinisE2E -configuration Debug \
+            -destination "id=$DEV" -derivedDataPath build \
+            -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/build/SourcePackages" \
+            -scmProvider system -disableAutomaticPackageResolution \
+            -only-testing:MinisUITests/E2EFlowsUITests/test01_sendText \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 150 \
+            -maximum-test-execution-time-allowance 240 -parallel-testing-enabled NO \
+            -resultBundlePath ui-entry.xcresult \
+            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= | tee ui-entry.log
+          xcrun xcresulttool get test-results summary --path ui-entry.xcresult --format json > ui-entry-summary.json
+          python3 - <<'PY'
+          import json
+          result = json.load(open('ui-entry-summary.json'))
+          assert result.get('passedTests') == 1 and result.get('failedTests') == 0, result
+          assert result.get('skippedTests', 0) == 0, result
+          print('Chat entry: 1 actual test passed; no failures or skips')
+          PY
+          git rev-parse HEAD > UI_ENTRY_SOURCE_COMMIT.txt
+
+      - name: 导出聊天入口预检证据
+        if: ${{ always() && steps.ui_entry.outcome != 'skipped' }}
+        run: |
+          mkdir -p ui-entry-shots
+          xcrun xcresulttool get test-results summary --path ui-entry.xcresult --format json > ui-entry-summary.json 2>/dev/null || true
+          xcrun xcresulttool export attachments --path ui-entry.xcresult --output-path ui-entry-shots 2>&1 | tail -3 || true
+
+      - name: Upload chat entry results immediately
+        if: ${{ always() && steps.ui_entry.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-chat-entry
+          path: |
+            ui-entry.log
+            ui-entry-summary.json
+            UI_ENTRY_SOURCE_COMMIT.txt
+            ui-entry-shots
+            e2e-cloud-stack.log
+          retention-days: 7
+
       - name: XCUITest 端到端冒烟（模拟器）
         # 累积版本覆盖所有功能批次；保留每项测试限时，给完整编译和串行回归留足时间。
         # 不用并行克隆模拟器（克隆冷启动「Timed out while launching application」，且假云端栈不能同时给两台模拟器用）；失败的流程自动重试一次，汇总里注明重试次数

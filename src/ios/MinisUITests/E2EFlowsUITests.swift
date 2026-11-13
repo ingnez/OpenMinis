@@ -849,13 +849,16 @@ final class E2EFlowsUITests: XCTestCase {
         let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", Self.botName)).firstMatch
         if !row.waitForExistence(timeout: 60) {
             shot(app, "找不到Bot")
+            print("OPENMINIS_UI_ENTRY_FAILURE: home Bot missing\n\(app.debugDescription)")
             XCTFail("首页 60 秒内没出现「\(Self.botName)」（云端没连上？）")
         }
         row.tap()
         if !app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 30) {
             // 留下当时的画面和控件树，失败原因一眼能看出来
             shot(app, "打开Bot后没有输入框")
-            let tree = XCTAttachment(string: app.debugDescription)
+            let description = app.debugDescription
+            print("OPENMINIS_UI_ENTRY_FAILURE: Bot composer missing\n\(description)")
+            let tree = XCTAttachment(string: description)
             tree.name = "打开Bot后的控件树"
             tree.lifetime = .keepAlways
             add(tree)
