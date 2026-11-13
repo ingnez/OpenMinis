@@ -1677,7 +1677,9 @@ jobs:
               except urllib.error.HTTPError as e:
                   print(f"读注释失败 HTTP {e.code}，按步骤判断", flush=True)
               runner = (j.get("runner_name") or "").strip()
-              if "not acquired" in text.lower() or (not started and not runner):
+              # A user can cancel a queued Mac before it gets a runner too.
+              # Only GitHub's explicit capacity annotation permits a retry.
+              if "not acquired" in text.lower() and not started and not runner:
                   unacquired.append(f"{j.get('name')} labels={labels} msg={text[:120]}")
           if not unacquired:
               print("这次取消不是因为领不到机器，不重排", flush=True)
@@ -1695,6 +1697,11 @@ jobs:
           if not ref:
               print("没有 ref，无法重派", flush=True)
               raise SystemExit(1)
+          current_run = api(f"/actions/runs/{run_id}")
+          branch = api(f"/git/ref/heads/{ref}")
+          if branch.get("object", {}).get("sha") != current_run.get("head_sha"):
+              print("分支已有更新，旧提交不再自动重派", flush=True)
+              raise SystemExit(0)
           print("领不到 Mac，准备再派一次同样输入的运行（第 %s 次重派，ref=%s）：" % (retry + 1, ref), flush=True)
           for line in unacquired:
               print("  " + line, flush=True)
