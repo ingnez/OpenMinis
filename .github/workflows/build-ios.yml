@@ -2093,6 +2093,19 @@ jobs:
           xcrun xcresulttool export attachments --path ui-tests.xcresult --output-path e2e-shots 2>&1 | tail -3 || true
           ls e2e-shots | head -50
 
+      - name: Upload UI failure trees and screenshots before raw bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-diagnostics
+          path: |
+            e2e-shots/**/*.json
+            e2e-shots/**/*.txt
+            e2e-shots/**/*.png
+            ui-validation-source.txt
+            e2e-summary.md
+          retention-days: 14
+
       - name: 定向 UI 通过后的 Agent 完整回归
         id: agent_diagnostic_regression
         if: ${{ inputs.only_testing != '' && steps.ui_e2e.outcome == 'success' }}

@@ -1,0 +1,80 @@
+name: Recover previous iOS diagnostic evidence
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        type: string
+        required: true
+      source_run:
+        type: string
+        required: true
+  push:
+    branches: [grokbot-phase2-combined-20261113]
+    paths: [.github/workflows/recover-ios-evidence.yml]
+permissions:
+  contents: read
+jobs:
+  register:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Evidence recovery only runs when explicitly dispatched.'
+  recover:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: [self-hosted, macOS, openminis-mac]
+    timeout-minutes: 15
+    concurrency:
+      group: ${{ github.repository }}-macos
+      cancel-in-progress: false
+    steps:
+      # 不 checkout，避免清理尚未下载的上一轮真实证据。
+      - name: Preserve exact previous run before any checkout
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          SOURCE_RUN: ${{ inputs.source_run }}
+        run: |
+          test "$RUNNER_NAME" = Mac-58
+          python3 - <<'PY'
+          import os,pathlib,shutil,subprocess,json
+          root=pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          sha=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
+          assert sha == os.environ['EXPECTED_SHA'], (sha,'previous source SHA mismatch')
+          run=os.environ['SOURCE_RUN'];assert run.isdigit()
+          dst=pathlib.Path(os.environ['RUNNER_TOOL_CACHE'])/'OpenMinisEvidence'/run
+          dst.mkdir(parents=True,exist_ok=True)
+          def preserve(src,dest):
+              if dest.exists(): return
+              try:os.link(src,dest)
+              except OSError:shutil.copy2(src,dest)
+          raw=root/'ui-tests.xcresult'
+          if raw.is_dir():shutil.copytree(raw,dst/'ui-tests.xcresult',copy_function=preserve,dirs_exist_ok=True)
+          shots=root/'e2e-shots';assert shots.is_dir()
+          for p in shots.rglob('*'):
+              if p.is_file() and p.suffix.lower() in ('.json','.txt','.png'):
+                  target=dst/'shots'/p.relative_to(shots);target.parent.mkdir(parents=True,exist_ok=True);preserve(p,target)
+          for n in ['e2e-summary.md','ui-tests-summary.json','ui-tests-tests.json','e2e-cloud-stack.log','ui-tests.log','unit-tests.log']:
+              if (root/n).is_file():preserve(root/n,dst/n)
+          (dst/'SOURCE_COMMIT.txt').write_text(sha+'\n')
+          print('Previous raw xcresult retained:',dst/'ui-tests.xcresult')
+          print('Diagnostic files:',sum(1 for p in (dst/'shots').rglob('*') if p.is_file()))
+          with open(os.environ['GITHUB_ENV'],'a') as f:f.write('EVIDENCE_DIR='+str(dst)+'\n')
+          PY
+      - name: Upload manifest and failure trees first
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-recovered-text-${{ inputs.source_run }}
+          path: |
+            ${{ env.EVIDENCE_DIR }}/SOURCE_COMMIT.txt
+            ${{ env.EVIDENCE_DIR }}/*.log
+            ${{ env.EVIDENCE_DIR }}/*.md
+            ${{ env.EVIDENCE_DIR }}/*.json
+            ${{ env.EVIDENCE_DIR }}/shots/**/*.txt
+            ${{ env.EVIDENCE_DIR }}/shots/**/*.json
+          retention-days: 14
+      - name: Upload exported screenshots without recordings
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-recovered-images-${{ inputs.source_run }}
+          path: ${{ env.EVIDENCE_DIR }}/shots/**/*.png
+          compression-level: 0
+          retention-days: 14
