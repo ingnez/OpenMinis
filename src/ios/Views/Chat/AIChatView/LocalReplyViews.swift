@@ -264,6 +264,14 @@ struct LocalReplyComposerSlot: View {
 
     var body: some View {
         CloudReplyComposerSlot(instant: instant, status: status, theme: theme, firstTextMs: firstTextMs)
+        #if DEBUG
+        if CloudE2E.token != nil {
+            // 仅测试诊断：保留真实状态行断言，失败树同时记录绑定与任务筛选结果。
+            let summary = "instant=\(instant) session=\(status.sessionId) source=\(status.workerSource != nil) workers=\(status.workers.count) registry=\(LocalReplyHub.workers(for: status.sessionId).count) active=\(status.activeCount)"
+            Text(summary).font(.system(size: 1)).opacity(0.01)
+                .accessibilityIdentifier("localReplyStateDebug").accessibilityLabel(summary)
+        }
+        #endif
     }
 }
 
@@ -300,16 +308,32 @@ struct LocalReplyChatChrome: ViewModifier {
             }
             .overlay(alignment: .bottom) { CloudFollowUpToast(text: $status.notice, icon: "bolt.horizontal.circle") }
             .onReceive(NotificationCenter.default.publisher(for: CloudReplyService.changed)) { _ in
-                onPlan(LocalReplyStore.plan(sessionId: sessionId))
+                bindCurrentSession()
             }
-            .onReceive(NotificationCenter.default.publisher(for: CloudReplyService.kick)) { _ in status.kick() }
-            .onAppear { configure(); onPlan(LocalReplyStore.plan(sessionId: sessionId)); status.start(sessionId: sessionId) }
-            .onChange(of: sessionId) { _ in configure(); onPlan(LocalReplyStore.plan(sessionId: sessionId)); status.start(sessionId: sessionId) }
+            .onReceive(NotificationCenter.default.publisher(for: CloudReplyService.kick)) { _ in
+                // 新建对话的首次派发可能早于 SwiftUI 重建修饰符；此时值类型里的 sessionId 仍为空。
+                bindCurrentSession()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .sessionDidCreate)) { note in
+                guard note.object as? String == viewModel.sessionId else { return }
+                bindCurrentSession()
+            }
+            .onAppear { bindCurrentSession() }
+            .onChange(of: sessionId) { _ in bindCurrentSession() }
             .onDisappear { status.stopPolling() }
     }
 
     private var interjectShown: Binding<Bool> {
         Binding(get: { status.interjecting != nil }, set: { if !$0 { status.interjecting = nil } })
+    }
+
+    private func bindCurrentSession() {
+        // 从引用对象现取，不能让新对话首次展示时捕获的空值成为轮询目标。
+        let sid = viewModel.sessionId ?? sessionId
+        configure()
+        onPlan(LocalReplyStore.plan(sessionId: sid))
+        status.start(sessionId: sid)
+        status.kick()
     }
 
     private func configure() {
