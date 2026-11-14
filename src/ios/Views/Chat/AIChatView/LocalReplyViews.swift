@@ -267,7 +267,7 @@ struct LocalReplyComposerSlot: View {
         #if DEBUG
         if CloudE2E.token != nil {
             // 仅测试诊断：保留真实状态行断言，失败树同时记录绑定与任务筛选结果。
-            let summary = "instant=\(instant) session=\(status.sessionId) source=\(status.workerSource != nil) workers=\(status.workers.count) registry=\(LocalReplyHub.workers(for: status.sessionId).count) active=\(status.activeCount)"
+            let summary = "instant=\(instant) \(status.bindingDebugDescription)"
             Text(summary).font(.system(size: 1)).opacity(0.01)
                 .accessibilityIdentifier("localReplyStateDebug").accessibilityLabel(summary)
         }

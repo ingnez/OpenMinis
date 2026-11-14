@@ -107,6 +107,10 @@ final class CloudReplyStatusModel: ObservableObject {
     #if DEBUG
     @Published var lastCue: String?
     @Published var liveActivityOn = false
+    /// 只读诊断保留在对象内部，外部不直接访问私有会话和轮询任务。
+    var bindingDebugDescription: String {
+        "session=\(sessionId) source=\(workerSource != nil) workers=\(workers.count) active=\(activeCount) polling=\(loop != nil)"
+    }
     #endif
 
     var current: CloudReplyWorker? { CloudReplyRow.current(workers, finishedAt: finishedAt) }
