@@ -114,7 +114,9 @@ def main():
         task = api('/v1/tasks/' + worker['task_id'])
         assert any(e['type'] == 'tool_result' and 'e2e-back-step0' in str(e['payload']) for e in task['events']), task
         api(path + '/resume', {})
-        deadline = time.monotonic() + 15
+        # 第一步已在暂停前完成；恢复后两步各8秒，沿用原来的7秒调度余量。
+        # 这是受控夹具的执行预算，仍必须等到真实completed，不接受running。
+        deadline = time.monotonic() + (2 * 8 + 7)
         while time.monotonic() < deadline:
             resumed = api(path)['worker']
             if resumed['status'] == 'completed':
