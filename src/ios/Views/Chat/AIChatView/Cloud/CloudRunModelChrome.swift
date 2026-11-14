@@ -338,6 +338,11 @@ enum CloudMessageMenu {
 
     static func didDismiss(then action: (() -> Void)?) {
         NotificationCenter.default.post(name: restoreViewport, object: false)
+        for delay in [0.05, 0.15, 0.25] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                NotificationCenter.default.post(name: restoreViewport, object: false)
+            }
+        }
         // The keyboard's safe-area transition finishes after modal dismissal.
         // Restore before a selected action deliberately changes focus/scroll.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {

@@ -24,6 +24,7 @@ final class CloudTranscriptTimes: ObservableObject {
     #if DEBUG
     @Published var didReveal = false
     @Published var revealedOffset: CGFloat = 0
+    @Published var replyDiagnostic = "not attempted"
     #endif
 }
 
@@ -49,6 +50,8 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
     private enum Direction { case timestamps, reply }
     private var direction: Direction?
     private var start = CGPoint.zero
+    private weak var menuScrollView: UIScrollView?
+    private var menuContentOrigin: CGPoint?
     private weak var replyRow: CloudTranscriptHitView?
     private var armed = false
     private var hideTimes: Task<Void, Never>?
@@ -62,6 +65,34 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
     var isVerticallyScrolling: Bool {
         guard let scrollView else { return false }
         return ChatScrollInteraction.blocksAutomaticScroll(in: scrollView) || scrollSettleTask != nil
+    }
+
+    override init() {
+        super.init()
+        NotificationCenter.default.addObserver(self, selector: #selector(saveMenuViewport), name: CloudMessageMenu.willPresent, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(restoreMenuViewport(_:)), name: CloudMessageMenu.restoreViewport, object: nil)
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc func saveMenuViewport() {
+        guard let scroll = scrollView, let window = scroll.window else { return }
+        menuScrollView = scroll
+        menuContentOrigin = scroll.convert(.zero, to: window)
+    }
+
+    @objc func restoreMenuViewport(_ notification: Notification) {
+        defer {
+            if notification.object as? Bool == true { menuContentOrigin = nil; menuScrollView = nil }
+        }
+        guard let origin = menuContentOrigin, let scroll = menuScrollView ?? scrollView,
+              let window = scroll.window, !isInteracting,
+              !scroll.isTracking, !scroll.isDragging, !scroll.isDecelerating else { return }
+        let current = scroll.convert(.zero, to: window)
+        let delta = current.y - origin.y
+        if abs(delta) > 0.5 {
+            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: scroll.contentOffset.y + delta), animated: false)
+        }
     }
 
     func attach(to scroll: UIScrollView?, reduceMotion: Bool) {
@@ -128,13 +159,24 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
                nested.isScrollEnabled, nested.contentSize.width > nested.bounds.width + 1 { return false }
             view = candidate.superview
         }
-        start = touch.location(in: scrollView)
+        start = touch.location(in: window)
         return true
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
-        other === scrollView?.panGestureRecognizer
+        if other === scrollView?.panGestureRecognizer { return true }
+        if other is UIPanGestureRecognizer, let view = other.view, let scrollView, view.isDescendant(of: scrollView) {
+            return true
+        }
+        return false
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        if other === scrollView?.panGestureRecognizer { return false }
+        if other is UIPanGestureRecognizer { return false }
+        return true
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -150,10 +192,29 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
             direction = .timestamps
             return true
         }
-        replyRow = rows.allObjects.first { row in
-            row.targetID != nil && row.window === scrollView.window &&
-                row.isDescendant(of: scrollView) && row.bounds.contains(row.convert(start, from: scrollView))
+        let candidates = rows.allObjects.filter { row in
+            row.targetID != nil && row.window === scrollView.window && row.isDescendant(of: scrollView)
         }
+        replyRow = candidates.first { row in
+            let pt = row.convert(start, from: scrollView.window)
+            if row.bounds.width > 1 && row.bounds.height > 1 {
+                return row.bounds.insetBy(dx: -8, dy: -4).contains(pt)
+            }
+            if let host = row.superview, host.bounds.width > 1 && host.bounds.height > 1 {
+                let hpt = host.convert(start, from: scrollView.window)
+                return host.bounds.insetBy(dx: -8, dy: -4).contains(hpt)
+            }
+            return false
+        }
+        #if DEBUG
+        if CloudE2E.token != nil {
+            let rects = candidates.map { r in
+                let f = r.convert(r.bounds, to: scrollView.window)
+                return "\(r.targetID ?? -1):\(Int(f.minX)),\(Int(f.minY)),\(Int(f.width))x\(Int(f.height))"
+            }.joined(separator: ";")
+            times.replyDiagnostic = "rows=\(rows.allObjects.count), start=\(Int(start.x)),\(Int(start.y)), hit=\(replyRow?.targetID.map(String.init) ?? "none"), callback=\(onReply != nil), rects=[\(rects)]"
+        }
+        #endif
         guard replyRow != nil else { return false }
         direction = .reply
         return true
@@ -204,6 +265,9 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
                     row?.offset.showingReply = false
                 }
                 if reply, let row, let id = row.targetID { onReply?(id, row.excerpt, row.role) }
+                #if DEBUG
+                if CloudE2E.token != nil { times.replyDiagnostic += ", ended=\(pan.state == .ended), distance=\(Int(distance)), fired=\(reply && row?.targetID != nil && onReply != nil)" }
+                #endif
             }
         default:
             break
@@ -264,6 +328,10 @@ struct CloudTranscriptTimeTestStatus: View {
     @ObservedObject var times: CloudTranscriptTimes
 
     var body: some View {
+        Text(times.replyDiagnostic)
+            .font(.system(size: 1)).opacity(0.01)
+            .accessibilityIdentifier("botReplySwipeDiagnostic")
+            .allowsHitTesting(false)
         if times.didReveal {
             Color.clear.frame(width: 1, height: 1)
                 .accessibilityElement(children: .ignore)
@@ -345,6 +413,8 @@ private struct CloudTranscriptHitRegion: UIViewRepresentable {
     }
 
     func updateUIView(_ view: CloudTranscriptHitView, context: Context) {
+        // SwiftUI can reuse a mounted region when its environment changes.
+        swipe.register(view)
         view.targetID = id
         view.excerpt = excerpt
         view.role = role
@@ -404,6 +474,7 @@ struct CloudTranscriptMessage: ViewModifier {
                 .background {
                     if replyID != nil {
                         CloudTranscriptHitRegion(swipe: swipe, offset: offset, id: replyID, excerpt: excerpt, role: replyRole)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .accessibilityHidden(true)
                     }
                 }

@@ -1611,6 +1611,7 @@ jobs:
         run: mkdir -p ui-suites
 
       - name: XCUITest MinisSmokeUITests (1/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1618,9 +1619,27 @@ jobs:
           ONLY_TESTING: MinisUITests/MinisSmokeUITests
           RESULT_BUNDLE: ui-suites/MinisSmokeUITests.xcresult
           UI_LOG: ui-suites/MinisSmokeUITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload MinisSmokeUITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-MinisSmokeUITests
+          path: |
+            ui-suites/MinisSmokeUITests.log
+            ui-suites/MinisSmokeUITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest ComposerVoiceButtonUITests (2/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1628,9 +1647,27 @@ jobs:
           ONLY_TESTING: MinisUITests/ComposerVoiceButtonUITests
           RESULT_BUNDLE: ui-suites/ComposerVoiceButtonUITests.xcresult
           UI_LOG: ui-suites/ComposerVoiceButtonUITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload ComposerVoiceButtonUITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-ComposerVoiceButtonUITests
+          path: |
+            ui-suites/ComposerVoiceButtonUITests.log
+            ui-suites/ComposerVoiceButtonUITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest E2EFlowsUITests (3/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1638,9 +1675,27 @@ jobs:
           ONLY_TESTING: MinisUITests/E2EFlowsUITests
           RESULT_BUNDLE: ui-suites/E2EFlowsUITests.xcresult
           UI_LOG: ui-suites/E2EFlowsUITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload E2EFlowsUITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-E2EFlowsUITests
+          path: |
+            ui-suites/E2EFlowsUITests.log
+            ui-suites/E2EFlowsUITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest MiscControlsUITests (4/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1648,9 +1703,27 @@ jobs:
           ONLY_TESTING: MinisUITests/MiscControlsUITests
           RESULT_BUNDLE: ui-suites/MiscControlsUITests.xcresult
           UI_LOG: ui-suites/MiscControlsUITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload MiscControlsUITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-MiscControlsUITests
+          path: |
+            ui-suites/MiscControlsUITests.log
+            ui-suites/MiscControlsUITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest ReplyModeUITests (5/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1658,9 +1731,27 @@ jobs:
           ONLY_TESTING: MinisUITests/ReplyModeUITests
           RESULT_BUNDLE: ui-suites/ReplyModeUITests.xcresult
           UI_LOG: ui-suites/ReplyModeUITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload ReplyModeUITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-ReplyModeUITests
+          path: |
+            ui-suites/ReplyModeUITests.log
+            ui-suites/ReplyModeUITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest DeliverablesUITests (6/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1668,9 +1759,27 @@ jobs:
           ONLY_TESTING: MinisUITests/DeliverablesUITests
           RESULT_BUNDLE: ui-suites/DeliverablesUITests.xcresult
           UI_LOG: ui-suites/DeliverablesUITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload DeliverablesUITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-DeliverablesUITests
+          path: |
+            ui-suites/DeliverablesUITests.log
+            ui-suites/DeliverablesUITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest ImageExperienceUITests (7/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1678,9 +1787,27 @@ jobs:
           ONLY_TESTING: MinisUITests/ImageExperienceUITests
           RESULT_BUNDLE: ui-suites/ImageExperienceUITests.xcresult
           UI_LOG: ui-suites/ImageExperienceUITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload ImageExperienceUITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-ImageExperienceUITests
+          path: |
+            ui-suites/ImageExperienceUITests.log
+            ui-suites/ImageExperienceUITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest BotToBotUITests (8/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1688,9 +1815,27 @@ jobs:
           ONLY_TESTING: MinisUITests/BotToBotUITests
           RESULT_BUNDLE: ui-suites/BotToBotUITests.xcresult
           UI_LOG: ui-suites/BotToBotUITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload BotToBotUITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-BotToBotUITests
+          path: |
+            ui-suites/BotToBotUITests.log
+            ui-suites/BotToBotUITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest GroupChatUITests (9/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1698,9 +1843,27 @@ jobs:
           ONLY_TESTING: MinisUITests/GroupChatUITests
           RESULT_BUNDLE: ui-suites/GroupChatUITests.xcresult
           UI_LOG: ui-suites/GroupChatUITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload GroupChatUITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-GroupChatUITests
+          path: |
+            ui-suites/GroupChatUITests.log
+            ui-suites/GroupChatUITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest Ideas12UITests (10/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1708,9 +1871,27 @@ jobs:
           ONLY_TESTING: MinisUITests/Ideas12UITests
           RESULT_BUNDLE: ui-suites/Ideas12UITests.xcresult
           UI_LOG: ui-suites/Ideas12UITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload Ideas12UITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-Ideas12UITests
+          path: |
+            ui-suites/Ideas12UITests.log
+            ui-suites/Ideas12UITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest FrogP0UITests (11/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1718,9 +1899,27 @@ jobs:
           ONLY_TESTING: MinisUITests/FrogP0UITests
           RESULT_BUNDLE: ui-suites/FrogP0UITests.xcresult
           UI_LOG: ui-suites/FrogP0UITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload FrogP0UITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-FrogP0UITests
+          path: |
+            ui-suites/FrogP0UITests.log
+            ui-suites/FrogP0UITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest Frog1850UITests (12/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1728,9 +1927,27 @@ jobs:
           ONLY_TESTING: MinisUITests/Frog1850UITests
           RESULT_BUNDLE: ui-suites/Frog1850UITests.xcresult
           UI_LOG: ui-suites/Frog1850UITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload Frog1850UITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-Frog1850UITests
+          path: |
+            ui-suites/Frog1850UITests.log
+            ui-suites/Frog1850UITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest Frog1850Chunk2UITests (13/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1738,9 +1955,27 @@ jobs:
           ONLY_TESTING: MinisUITests/Frog1850Chunk2UITests
           RESULT_BUNDLE: ui-suites/Frog1850Chunk2UITests.xcresult
           UI_LOG: ui-suites/Frog1850Chunk2UITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload Frog1850Chunk2UITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-Frog1850Chunk2UITests
+          path: |
+            ui-suites/Frog1850Chunk2UITests.log
+            ui-suites/Frog1850Chunk2UITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest Frog1850Chunk3UITests (14/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1748,9 +1983,27 @@ jobs:
           ONLY_TESTING: MinisUITests/Frog1850Chunk3UITests
           RESULT_BUNDLE: ui-suites/Frog1850Chunk3UITests.xcresult
           UI_LOG: ui-suites/Frog1850Chunk3UITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload Frog1850Chunk3UITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-Frog1850Chunk3UITests
+          path: |
+            ui-suites/Frog1850Chunk3UITests.log
+            ui-suites/Frog1850Chunk3UITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: XCUITest BackupUXUITests (15/15)
+        continue-on-error: true
         if: ${{ inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
         timeout-minutes: 45
         env:
@@ -1758,7 +2011,24 @@ jobs:
           ONLY_TESTING: MinisUITests/BackupUXUITests
           RESULT_BUNDLE: ui-suites/BackupUXUITests.xcresult
           UI_LOG: ui-suites/BackupUXUITests.log
-        run: bash scripts/run_ios_ui_tests.sh
+        run: |
+          set +e
+          bash scripts/run_ios_ui_tests.sh
+          ui_exit=$?
+          python3 scripts/e2e_summary.py "$UI_LOG" > "${UI_LOG%.log}-summary.md"
+          echo "$GITHUB_SHA" > ui-suites/SOURCE_COMMIT.txt
+          exit "$ui_exit"
+
+      - name: Upload BackupUXUITests progress immediately
+        if: ${{ always() && inputs.only_testing == '' && steps.unit.outcome != 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-ui-progress-BackupUXUITests
+          path: |
+            ui-suites/BackupUXUITests.log
+            ui-suites/BackupUXUITests-summary.md
+            ui-suites/SOURCE_COMMIT.txt
+          retention-days: 7
 
       - name: 定向 XCUITest（模拟器）
         id: ui_targeted
