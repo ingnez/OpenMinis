@@ -323,7 +323,7 @@ struct LocalReplyChatChrome: ViewModifier {
         #endif
         let status = status
         viewModel.onReplyFrontDecision = { [weak status] line, action in
-            status?.noteDecision(line, action: action)
+            Task { @MainActor in status?.noteDecision(line, action: action) }
         }
     }
 
