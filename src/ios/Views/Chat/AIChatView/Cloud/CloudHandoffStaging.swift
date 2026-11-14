@@ -45,6 +45,8 @@ enum CloudHandoffStaging {
     }()
 
     /// 把 `fileURL` 暂存到云端，返回 `staging_id`（交接 JSON 里带它）。
+    /// 主线程只用来读连接状态 / token / 端口；字节不在这里发。
+    @MainActor
     static func stage(filename: String, fileURL: URL) async throws -> String {
         let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         guard size > 0 else { throw StageError.empty }
@@ -53,11 +55,14 @@ enum CloudHandoffStaging {
         let conn = CloudConnection.shared
         if !conn.isConnected { try await conn.ensureConnected() }
         guard let token = conn.getToken(), !token.isEmpty else { throw StageError.notConnected }
+        return try await stageRaw(filename: filename, fileURL: fileURL, token: token, port: conn.apiPort)
+    }
 
+    private static func stageRaw(filename: String, fileURL: URL, token: String, port: Int) async throws -> String {
         var comps = URLComponents()
         comps.scheme = "http"
         comps.host = "127.0.0.1"
-        comps.port = conn.apiPort
+        comps.port = port
         comps.path = "/v1/handoff/files"
         let clean = (filename as NSString).lastPathComponent
         comps.queryItems = [URLQueryItem(name: "filename", value: clean.isEmpty ? "file" : clean)]

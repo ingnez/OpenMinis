@@ -48,6 +48,8 @@ enum CloudAttachmentUpload {
     }()
 
     /// 上传一个附件，返回服务端的 upload 回执（file_path / filename / bytes / attachment_url）。
+    /// 主线程只用来读连接状态 / token / 端口；传字节本身在 uploadRaw 里（不在主 actor）。
+    @MainActor
     static func upload(filename: String, data: Data, sessionId: String) async throws -> [String: Any] {
         guard !data.isEmpty else { throw UploadError.empty }
         guard data.count <= rawMaxBytes else { throw UploadError.tooLarge(data.count) }
@@ -56,18 +58,19 @@ enum CloudAttachmentUpload {
                 method: "POST", path: "/v1/sessions/\(sessionId)/upload",
                 body: ["filename": filename, "data_base64": data.base64EncodedString()])
         }
-        return try await uploadRaw(filename: filename, data: data, sessionId: sessionId)
-    }
-
-    private static func uploadRaw(filename: String, data: Data, sessionId: String) async throws -> [String: Any] {
         let conn = CloudConnection.shared
         if !conn.isConnected { try await conn.ensureConnected() }
         guard let token = conn.getToken(), !token.isEmpty else { throw UploadError.notConnected }
+        return try await uploadRaw(filename: filename, data: data, sessionId: sessionId,
+                                   token: token, port: conn.apiPort)
+    }
 
+    private static func uploadRaw(filename: String, data: Data, sessionId: String,
+                                  token: String, port: Int) async throws -> [String: Any] {
         var comps = URLComponents()
         comps.scheme = "http"
         comps.host = "127.0.0.1"
-        comps.port = conn.apiPort
+        comps.port = port
         comps.path = "/v1/sessions/\(sessionId)/upload/raw"
         let clean = (filename as NSString).lastPathComponent
         comps.queryItems = [URLQueryItem(name: "filename", value: clean.isEmpty ? "file" : clean)]
