@@ -573,7 +573,13 @@ struct CloudDocumentScanner: UIViewControllerRepresentable {
 }
 
 struct CloudFilePicker: UIViewControllerRepresentable {
+    /// 上传走 `/v1/sessions/<id>/upload` 的 base64 JSON，服务端对请求体限 36MB，
+    /// base64 膨胀 4/3 → 单个文件最多 24MB 左右。超过就明确告诉用户，不再默默丢掉。
+    static let maxBytes = 24 * 1024 * 1024
+
     let onPicked: ([CloudPendingAttachment]) -> Void
+    /// 选中的文件加不上时的一句话（太大 / 读不出来），由调用方弹提示
+    var onRejected: (String) -> Void = { _ in }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let vc = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
@@ -583,16 +589,37 @@ struct CloudFilePicker: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ vc: UIDocumentPickerViewController, context: Context) {}
-    func makeCoordinator() -> Coordinator { Coordinator(onPicked: onPicked) }
+    func makeCoordinator() -> Coordinator { Coordinator(onPicked: onPicked, onRejected: onRejected) }
 
     final class Coordinator: NSObject, UIDocumentPickerDelegate {
         let onPicked: ([CloudPendingAttachment]) -> Void
-        init(onPicked: @escaping ([CloudPendingAttachment]) -> Void) { self.onPicked = onPicked }
+        let onRejected: (String) -> Void
+        init(onPicked: @escaping ([CloudPendingAttachment]) -> Void,
+             onRejected: @escaping (String) -> Void) {
+            self.onPicked = onPicked
+            self.onRejected = onRejected
+        }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            let items = urls.compactMap { url -> CloudPendingAttachment? in
-                guard let data = try? Data(contentsOf: url), data.count < 24_000_000 else { return nil }
-                return CloudPendingAttachment(filename: url.lastPathComponent, data: data, isImage: false)
+            var items: [CloudPendingAttachment] = []
+            var rejected: [String] = []
+            for url in urls {
+                let name = url.lastPathComponent
+                // asCopy: true 给的是 App 自己的临时副本，但也可能是 iCloud 占位文件；
+                // 用文件属性拿大小（不把整个文件读进内存）再决定要不要读
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+                if size > Int64(CloudFilePicker.maxBytes) {
+                    rejected.append("\(name)（\(size / 1024 / 1024)MB，上限 \(CloudFilePicker.maxBytes / 1024 / 1024)MB）")
+                    continue
+                }
+                guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else {
+                    rejected.append("\(name)（读不出来）")
+                    continue
+                }
+                items.append(CloudPendingAttachment(filename: name, data: data, isImage: false))
+            }
+            if !rejected.isEmpty {
+                onRejected("这些文件没能加上：" + rejected.joined(separator: "、"))
             }
             onPicked(items)
         }

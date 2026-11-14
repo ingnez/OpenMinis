@@ -1329,6 +1329,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
 
     // Attachments
     @Published var attachments: [InputAttachment] = []
+    /// 附件没加上时给用户看的一句话（选择器里选了大文件 / iCloud 文件没下载下来的拷贝失败）。
+    /// 以前这些失败只进日志，界面上什么也不发生，用户看到的就是「选了文件没反应」。
+    @Published var attachmentProblem: String?
     /// 这一轮新产生、还没挂到助手消息上的交付文件
     var pendingDeliveries: [CloudDeliverable] = []
     /// [OpenMinis#433] The composer holds something worth keeping when the

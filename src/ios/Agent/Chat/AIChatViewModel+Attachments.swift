@@ -4,6 +4,19 @@ import UniformTypeIdentifiers
 
 private let logger = AppLogger(category: "AIChatVM")
 
+/// 选择器允许的类型：图片 / PDF / 文本 / 表格 / 压缩包 / `.ipa`。
+/// `.data` 本身已经覆盖绝大多数类型，但部分系统版本里 `.ipa` 只有动态类型，
+/// 在「文件」App 里会被置灰选不中（用户就是拿它传 ipa 包的）。这里显式把
+/// ipa / zip / archive 列上，宁可多选也不要把用户要的文件挡在外面。
+enum AttachmentFileTypes {
+    static var allowed: [UTType] {
+        var types: [UTType] = [.image, .pdf, .plainText, .json, .sourceCode,
+                               .presentation, .spreadsheet, .data, .zip, .archive]
+        if let ipa = UTType(filenameExtension: "ipa") { types.append(ipa) }
+        return types
+    }
+}
+
 // MARK: - Pasted-text placeholders [T-paste-placeholder]
 
 /// One long pasted text stashed for the current session's draft.
@@ -533,10 +546,25 @@ extension AIChatViewModel {
         let fileName = sourceURL.lastPathComponent
         let destURL = dir.appendingPathComponent("\(UUID().uuidString.prefix(8))_\(fileName)")
         do {
-            // sourceURL may be security-scoped
+            // sourceURL may be security-scoped (Files / iCloud Drive / other providers).
+            // NSFileCoordinator also covers the "not downloaded yet" case: it makes the
+            // provider materialize the file before the copy, where a bare copyItem()
+            // failed with "file doesn't exist" and left the user with nothing.
+            // (Darwin only: the Linux type-check harness lifts this function and has no
+            // NSFileCoordinator — there it keeps the plain copy.)
             let accessed = sourceURL.startAccessingSecurityScopedResource()
             defer { if accessed { sourceURL.stopAccessingSecurityScopedResource() } }
+            #if canImport(Darwin)
+            var coordinationError: NSError?
+            var copyError: Error?
+            NSFileCoordinator().coordinate(readingItemAt: sourceURL, options: [.withoutChanges], error: &coordinationError) { readable in
+                do { try fm.copyItem(at: readable, to: destURL) } catch { copyError = error }
+            }
+            if let error = copyError { throw error }
+            if let error = coordinationError { throw error }
+            #else
             try fm.copyItem(at: sourceURL, to: destURL)
+            #endif
 
             if let date = originalDate {
                 try? fm.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: destURL.path)
@@ -568,6 +596,8 @@ extension AIChatViewModel {
             attachments.append(InputAttachment(fileName: fileName, cacheURL: destURL, kind: kind))
         } catch {
             logger.error("Failed to cache file attachment: \(error.localizedDescription)")
+            attachmentProblem = "「\(fileName)」没能加上：\(error.localizedDescription)"
+            try? fm.removeItem(at: destURL)
         }
     }
 

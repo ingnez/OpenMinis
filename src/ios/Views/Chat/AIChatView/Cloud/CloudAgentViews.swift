@@ -759,6 +759,8 @@ struct CloudSessionView: View {
     #endif
     @State private var showReplayList = false
     @State private var showFiles = false
+    /// 选中的文件没加上时的提示（太大 / 读不出来）；以前是静默丢弃，用户只看到「选了没反应」
+    @State private var attachmentProblem: String?
     @State private var showVoiceCall = false
     /// 顶部浮动胶囊的实时通话（Bot 模式）
     @StateObject private var call = CloudBotCallController()
@@ -984,7 +986,17 @@ struct CloudSessionView: View {
                                    result: lastAssistantText(), context: "", excludeId: theme.botId)
             }
         }
-        .sheet(isPresented: $showFiles) { CloudFilePicker { attachments.append(contentsOf: $0) }.ignoresSafeArea() }
+        .sheet(isPresented: $showFiles) {
+            CloudFilePicker(onPicked: { attachments.append(contentsOf: $0) },
+                            onRejected: { attachmentProblem = $0 })
+                .ignoresSafeArea()
+        }
+        .alert("附件没有加上", isPresented: Binding(get: { attachmentProblem != nil },
+                                          set: { if !$0 { attachmentProblem = nil } })) {
+            Button("好", role: .cancel) { attachmentProblem = nil }
+        } message: {
+            Text(attachmentProblem ?? "")
+        }
         .fullScreenCover(isPresented: $showVoiceCall) {
             if let theme {
                 if voiceMode == "realtime" {
@@ -1540,6 +1552,12 @@ struct CloudSessionView: View {
         .padding(.vertical, 8)
     }
 
+    /// 「选择文件」不能在菜单同一个 runloop 里就把 sheet 置位：Menu 还在收起，
+    /// SwiftUI 会把这次 presentation 丢掉，表现就是「点了选文件什么都不弹」。等菜单收完再弹。
+    private func presentFilePicker() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showFiles = true }
+    }
+
     private func botComposerInputRow(_ theme: CloudBotChatTheme, working: Bool) -> some View {
         let compact = CloudOneHandMode.isOn(stored: oneHandMode)
         return HStack(alignment: .bottom, spacing: 8) {
@@ -1554,7 +1572,7 @@ struct CloudSessionView: View {
                 if VNDocumentCameraViewController.isSupported {
                     Button { showScanner = true } label: { Label("扫描文档", systemImage: "doc.viewfinder") }
                 }
-                Button { showFiles = true } label: { Label("选择文件", systemImage: "folder") }
+                Button { presentFilePicker() } label: { Label("选择文件", systemImage: "folder") }
                 Button { showCaseNote = true } label: { Label("口述病例（脱敏后复盘）", systemImage: "stethoscope") }
                 Button { showOralStruct = true } label: {
                     Label("口述转结构化（交班单 / 病例摘要）", systemImage: "list.clipboard")

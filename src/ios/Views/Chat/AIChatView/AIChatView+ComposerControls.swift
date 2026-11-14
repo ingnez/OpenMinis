@@ -44,7 +44,7 @@ extension AIChatView {
             Menu {
                 Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
                 Button { showPhotoPicker = true } label: { Label("Choose Photos & Videos", systemImage: "photo.on.rectangle") }
-                Button { showDocumentPicker = true } label: { Label("Add File", systemImage: "doc") }
+                Button { presentDocumentImporter() } label: { Label("Add File", systemImage: "doc") }
                 // 本地做不完：打包交给主 Bot（它决定谁接手），在云端继续
                 Button { vm.handoffToBot(instruction: vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines), target: nil) } label: {
                     Label("交给 Bot 在云端继续", systemImage: "arrow.up.forward.circle")
@@ -59,13 +59,20 @@ extension AIChatView {
             .confirmationDialog("Add Attachment", isPresented: $showAttachmentMenu) {
                 Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
                 Button { showPhotoPicker = true } label: { Label("Choose Photos & Videos", systemImage: "photo.on.rectangle") }
-                Button { showDocumentPicker = true } label: { Label("Add File", systemImage: "doc") }
+                Button { presentDocumentImporter() } label: { Label("Add File", systemImage: "doc") }
                 // 本地做不完：打包交给主 Bot（它决定谁接手），在云端继续
                 Button { vm.handoffToBot(instruction: vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines), target: nil) } label: {
                     Label("交给 Bot 在云端继续", systemImage: "arrow.up.forward.circle")
                 }
             }
         }
+    }
+
+    /// 「Add File」不能在菜单同一个 runloop 里就把 importer 的 present 置位：iOS 17 的 Menu /
+    /// iOS 16 的 confirmationDialog 还在收起，SwiftUI 会把这次 presentation 丢掉，
+    /// 表现就是「点了选文件什么都不弹」（时好时坏）。等菜单收完再弹。
+    func presentDocumentImporter() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showDocumentPicker = true }
     }
 
     /// Bottom toolbar under the text field (+ / edit-exit / mic / send).

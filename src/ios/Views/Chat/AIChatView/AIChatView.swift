@@ -1392,7 +1392,7 @@ struct AIChatView: View {
         }
         .fileImporter(
             isPresented: $showDocumentPicker,
-            allowedContentTypes: [.image, .pdf, .plainText, .json, .sourceCode, .presentation, .spreadsheet, .data],
+            allowedContentTypes: AttachmentFileTypes.allowed,
             allowsMultipleSelection: true
         ) { result in
             switch result {
@@ -1402,7 +1402,14 @@ struct AIChatView: View {
                 }
             case .failure(let error):
                 minisLogger.error("File import failed: \(error.localizedDescription)")
+                vm.attachmentProblem = "选文件失败：\(error.localizedDescription)"
             }
+        }
+        .alert("附件没有加上", isPresented: Binding(get: { vm.attachmentProblem != nil },
+                                          set: { if !$0 { vm.attachmentProblem = nil } })) {
+            Button("好", role: .cancel) { vm.attachmentProblem = nil }
+        } message: {
+            Text(vm.attachmentProblem ?? "")
         }
     }
 

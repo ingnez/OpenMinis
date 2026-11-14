@@ -253,6 +253,7 @@ func viewModel(chain: String, persistImageParts: String, budget: String) -> Stri
         var warmUpDropByMarker: [String: Int] = [:]
         var contextFixedTokens = 0
         var attachments: [InputAttachment] = []
+        var attachmentProblem: String?
         var pastedTexts: [PastedText] = []
         var attachmentCacheDir: URL { HarnessEnv.root.appendingPathComponent("Caches/attachments", isDirectory: true) }
         func ensureSession() async {}
