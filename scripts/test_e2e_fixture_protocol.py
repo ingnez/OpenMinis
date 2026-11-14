@@ -57,6 +57,37 @@ class StreamingFixtureTests(unittest.TestCase):
         self.assertIn('后台已收到', text)
         self.assertEqual(events[-1]['choices'][0]['finish_reason'], 'stop')
 
+    def test_front_relays_completed_worker_result_without_redelegating(self):
+        worker_messages = [{'role': 'user', 'content': '帮我查一下天气'}]
+        worker_messages.extend({'role': 'tool', 'tool_call_id': f'b{i}', 'content': f'e2e-back-step{i}'} for i in range(3))
+        worker_messages.append({'role': 'user', 'content': '[Course correction from the delegating agent] 按用户补充调整：插话：只要上海的'})
+        result = fixture.back_script({'messages': worker_messages})['content']
+        callback = ('<agent_callback kind="finished" job="ABCDEF12-1234" title="查一下天气" status="done">\n'
+                    '<summary>tools shell_execute×3 · turns 3</summary>\n<result>\n' + result + '\n</result>\n</agent_callback>')
+        messages = [{'role': 'user', 'content': '帮我查一下天气'},
+                    tool_call('front', 'spawn_task', {'goal': '帮我查一下天气'}),
+                    {'role': 'tool', 'tool_call_id': 'front', 'content': '{"job_id":"ABCDEF12-1234"}'},
+                    {'role': 'user', 'content': [{'type': 'text', 'text': callback}]}]
+        events = self.stream(fixture.LOCAL_FRONT_MODEL, messages)
+        deltas = [event['choices'][0].get('delta', {}) for event in events]
+        text = ''.join(delta.get('content') or '' for delta in deltas)
+        self.assertIn('已按插话调整', result)
+        self.assertEqual(text, result)
+        self.assertFalse(any(delta.get('tool_calls') for delta in deltas))
+        self.assertEqual(events[-1]['choices'][0]['finish_reason'], 'stop')
+
+    def test_front_does_not_invent_missing_worker_correction(self):
+        result = '后台结论：上海晴（假数据）\n证据：温度 < 30 & 湿度 > 40'
+        callback = ('<agent_callback kind="finished" job="ABCDEF12-1234" status="done">\n'
+                    '<result>\n' + result + '\n</result>\n</agent_callback>')
+        events = self.stream(fixture.LOCAL_FRONT_MODEL, [
+            {'role': 'user', 'content': '插话：只要上海的'},
+            {'role': 'user', 'content': callback}])
+        text = ''.join(event['choices'][0].get('delta', {}).get('content') or '' for event in events)
+        self.assertEqual(text, result)
+        self.assertNotIn('已按插话调整', text)
+        self.assertNotIn('<agent_callback', text)
+
 
 class ThreadSummaryFixtureTests(CloudServerTestCase):
     def test_completed_worker_summary_preserves_notice_and_delegation(self):

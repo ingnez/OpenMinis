@@ -413,13 +413,12 @@ final class ReplyModeUITests: XCTestCase {
         XCTAssertTrue(poll(10) { row.label.contains("正在") && row.label.contains("秒") }, "本地状态行文字不对：\(row.label)")
         XCTAssertTrue(app.descendants(matching: .any)["replyLiveActivity"].waitForExistence(timeout: 10), "本地灵动岛没同步")
         shot(app, "local-reply-02a-后台状态行")
-        sendLocal(app, "插话：只要上海的")
+        sendLocal(app, "插话：只要上海的", whileBackgroundRunning: true)
         XCTAssertTrue(waitText(app, contains: "你想", timeout: 20) && waitText(app, contains: "上海", timeout: 2) && waitText(app, contains: "我让后台", timeout: 2), "本地插话没被前台按原意马上答复")
         XCTAssertFalse(waitText(app, contains: "收到插话，马上转给后台", timeout: 1), "本地前台不该用套话答复插话")
-        let send = localSendButton(app)
-        XCTAssertFalse(send.label.contains("停止"), "本地发送键变成了停止键")
         shot(app, "local-reply-02b-插话秒回")
         XCTAssertTrue(waitText(app, contains: "已按插话调整", timeout: 80), "本地后台结果里没体现插话")
+        XCTAssertTrue(requestUserTexts(model: "e2e-local-back-model").contains { $0.contains("按用户补充调整：插话：只要上海的") }, "本地后台没收到实际插话")
         XCTAssertTrue(requests(model: "e2e-local-back-model").contains { !$0.isEmpty }, "本地后台模型没干活")
         XCTAssertTrue(app.descendants(matching: .any)["replyCueLast"].waitForExistence(timeout: 15), "本地完成时没有提示音")
         shot(app, "local-reply-02c-后台结果")
@@ -637,13 +636,19 @@ final class ReplyModeUITests: XCTestCase {
         return found ?? q.firstMatch
     }
 
-    private func sendLocal(_ app: XCUIApplication, _ text: String) {
+    private func sendLocal(_ app: XCUIApplication, _ text: String, whileBackgroundRunning: Bool = false) {
         let field = localComposerField(app)
         field.tap()
         dismissKeyboardIntro(app)
         field.typeText(text)
         let button = localSendButton(app)
         XCTAssertTrue(button.waitForExistence(timeout: 10))
+        if whileBackgroundRunning {
+            // 发送后输入框清空会切回语音键；必须趁后台仍在运行且输入非空时核验发送键。
+            XCTAssertTrue(app.descendants(matching: .any)["replyStatusRow"].exists, "插话发送前后台已结束，未覆盖边工作边发送")
+            XCTAssertFalse(button.label.contains("停止"), "本地发送键变成了停止键")
+            XCTAssertTrue(button.isEnabled && button.isHittable, "后台运行时本地发送键不可用")
+        }
         button.tap()
     }
 
