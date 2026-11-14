@@ -517,6 +517,9 @@ extension AIChatViewModel {
         }
         registry.markRunning(job.id, sessionId: childId)
         registry.releaseChildStart(key: toolUseId)   // [T-limits-per-parent] counted as running now
+        if !wait {
+            NotificationCenter.default.post(name: CloudReplyService.kick, object: nil)
+        }
         // [T-subagent-termination] `running` until an ending path replaces it;
         // still `running` later with no live run reads as `interrupted`.
         SubAgentTerminationStore.shared.begin(sessionId: childId, jobId: job.id, parentSessionId: parentSid)

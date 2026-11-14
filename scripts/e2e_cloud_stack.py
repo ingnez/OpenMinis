@@ -276,7 +276,7 @@ def local_front_script(data):
 
 
 def back_script(data):
-    """秒回后台：三步带 tool_title 的命令（每步约 4 秒；「慢活」第一步 60 秒），然后给结论（收到插话就注明）。"""
+    """秒回后台：三步带 tool_title 的命令（每步约 8 秒；「慢活」第一步 60 秒），然后给结论（收到插话就注明）。"""
     msgs = data.get("messages", [])
     done = sum(1 for m in msgs if m.get("role") == "tool")
     goal = " ".join(str(m.get("content")) for m in msgs if m.get("role") == "user")
@@ -293,7 +293,7 @@ def back_script(data):
             return tool_call("deliver", "deliver_file", {"path": "体验结果.txt"})
         return {"role": "assistant", "content": "体验文件已生成并通过 Python 断言，结果在文件卡片中。"}
     if done < 3:
-        secs = 60 if ("慢活" in goal and done == 0) else 4
+        secs = 60 if ("慢活" in goal and done == 0) else 8
         return {"role": "assistant", "content": "", "tool_calls": [{"id": f"b{done}", "type": "function", "function": {
             "name": "shell_execute", "arguments": json.dumps({"command": f"sleep {secs}; echo e2e-back-step{done}",
                                                               "tool_title": ["分析工作方案", "查找资料", "整理结果"][done]}, ensure_ascii=False)}}]}
