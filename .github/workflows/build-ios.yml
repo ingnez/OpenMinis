@@ -1449,6 +1449,9 @@ jobs:
         run: |
           cp src/ios/Configs/ProviderCustomization.xcconfig.example \
              src/ios/Configs/ProviderCustomization.xcconfig
+          # Offline request-serialization tests need a nonempty identifier.
+          # This synthetic value never authenticates and is not used by IPA builds.
+          printf '%s\n' 'ANTHROPIC_OAUTH_IDENTIFIER_PROMPT = OpenMinis synthetic offline serialization fixture' >> src/ios/Configs/ProviderCustomization.xcconfig
 
       - name: Cache FFmpeg source tarball
         uses: actions/cache@v4

@@ -1834,8 +1834,9 @@ extension E2EFlowsUITests {
         executionTimeAllowance = 240
         let app = launch(extraEnv: ["OPENMINIS_E2E_TRANSCRIPT_VIEWPORT": "1"])
         openBot(app) // Ensure the fixture Bot has a conversation to seed.
+        let sid = try activeCloudSessionId(app)
         goBack(app)
-        let url = try XCTUnwrap(URL(string: "http://127.0.0.1:18799/_e2e/scroll_history"))
+        let url = try XCTUnwrap(URL(string: "http://127.0.0.1:18799/_e2e/scroll_history?session_id=\(sid)"))
         let seed = try JSONDecoder().decode([String: Int].self, from: Data(contentsOf: url))
         XCTAssertEqual(seed["seeded"], 48)
         openBot(app)
@@ -1880,8 +1881,9 @@ extension E2EFlowsUITests {
         executionTimeAllowance = 240
         let app = launch()
         openBot(app)
+        let sid = try activeCloudSessionId(app)
         goBack(app)
-        let fixture = try XCTUnwrap(URL(string: "http://127.0.0.1:18799/_e2e/swipe_history"))
+        let fixture = try XCTUnwrap(URL(string: "http://127.0.0.1:18799/_e2e/swipe_history?session_id=\(sid)"))
         let seed = try JSONDecoder().decode([String: Int].self, from: Data(contentsOf: fixture))
         XCTAssertEqual(seed["seeded"], 3)
         openBot(app)
@@ -1924,6 +1926,14 @@ extension E2EFlowsUITests {
                 $0.contains("回复（你之前说）：\(target)") && $0.contains(followup)
             } ?? false
         }, "发给模型的引用没有指向右滑选中的第一条")
+    }
+
+    private func activeCloudSessionId(_ app: XCUIApplication) throws -> String {
+        let marker = app.staticTexts["e2eCloudSessionId"]
+        XCTAssertTrue(marker.waitForExistence(timeout: 10), "当前云端会话标识没有出现")
+        let sid = marker.label
+        XCTAssertNotNil(sid.range(of: #"\A[A-Za-z0-9_-]+\z"#, options: .regularExpression))
+        return try XCTUnwrap(sid.isEmpty ? nil : sid)
     }
 
     private func revealTodayBar(_ app: XCUIApplication) {

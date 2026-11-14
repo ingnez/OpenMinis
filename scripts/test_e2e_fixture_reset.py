@@ -71,6 +71,22 @@ def main():
     finally:
         probe('/_e2e/reply?mode=verbose')
 
+    # The phone can remember an older conversation while another fixture has
+    # created a newer one. Both history probes must target the phone's actual ID.
+    probe('/_e2e/reset')
+    older = api('/v1/sessions', {'title': 'synthetic selected history', 'persona_id': 'e2ebot'})['session_id']
+    newer = api('/v1/sessions', {'title': 'synthetic sibling history', 'persona_id': 'e2ebot'})['session_id']
+    assert probe('/_e2e/swipe_history?session_id=' + older)['seeded'] == 3
+    assert len(api('/v1/sessions/' + older)['messages']) == 3
+    assert api('/v1/sessions/' + newer)['messages'] == []
+    assert probe('/_e2e/scroll_history?session_id=' + older)['seeded'] == 48
+    assert len(api('/v1/sessions/' + older)['messages']) == 99
+    assert api('/v1/sessions/' + newer)['messages'] == []
+    probe('/_e2e/reply?mode=instant')
+    probe('/_e2e/reset')
+    assert api('/v1/bots/e2ebot/reply')['reply']['mode'] == 'verbose'
+    print('PASS: history seeds the selected conversation; reset restores the verbose baseline.')
+
     probe('/_e2e/reply?mode=instant')
     try:
         sid = api('/v1/sessions', {'title': 'synthetic safe-point pause', 'persona_id': 'e2ebot'})['session_id']

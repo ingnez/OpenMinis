@@ -1929,6 +1929,10 @@ struct CloudSessionView: View {
             .overlay(alignment: .topLeading) {
                 if theme != nil, CloudE2E.token != nil {
                     CloudTranscriptTimeTestStatus(times: transcriptSwipe.times)
+                    Text(sessionId)
+                        .font(.system(size: 1)).opacity(0.01)
+                        .accessibilityIdentifier("e2eCloudSessionId")
+                        .allowsHitTesting(false)
                 }
                 if e2eCachedReply {
                     Text("聊天缓存已写入")

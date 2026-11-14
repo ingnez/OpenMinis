@@ -378,6 +378,17 @@ def set_reply(mode):
     return {"bot": _api("GET", f"/v1/bots/{BOT_ID}/reply").get("reply"), "overrides": overrides}
 
 
+def history_fixture_session(db, path):
+    """Seed the conversation actually opened by the app, not a newer sibling."""
+    from urllib.parse import urlparse, parse_qs
+    requested = (parse_qs(urlparse(path).query).get("session_id") or [""])[0]
+    if requested:
+        return db.execute("SELECT session_id FROM sessions WHERE session_id = ? AND persona_id = ?",
+                          (requested, BOT_ID)).fetchone()
+    return db.execute("SELECT session_id FROM sessions WHERE persona_id = ? ORDER BY created_at DESC LIMIT 1",
+                      (BOT_ID,)).fetchone()
+
+
 def set_approval(mode):
     """探针 /_e2e/approval?mode=ask|auto：只改 E2E Bot 的覆盖，不改产品默认（新产品仍是先问我）。"""
     if mode in ("ask", "auto"):
@@ -652,7 +663,7 @@ def main():
                 import sqlite3
                 # Stop and drain first: late cancellation/result messages must
                 # not reappear after the next fixture has cleared its history.
-                stop_fixture_work()
+                set_reply("verbose")
                 db = sqlite3.connect(os.environ["OPENMINIS_DB"])
                 sids = [r[0] for r in db.execute("SELECT session_id FROM sessions WHERE persona_id = ?", (BOT_ID,))]
                 for sid in sids:
@@ -709,8 +720,7 @@ def main():
             if urlparse(self.path).path == "/_e2e/swipe_history":
                 import sqlite3
                 with sqlite3.connect(os.environ["OPENMINIS_DB"]) as db:
-                    sid = db.execute("SELECT session_id FROM sessions WHERE persona_id = ? ORDER BY created_at DESC LIMIT 1",
-                                     (BOT_ID,)).fetchone()
+                    sid = history_fixture_session(db, self.path)
                     if sid:
                         now = time.time()
                         rows = [
@@ -727,8 +737,7 @@ def main():
             if urlparse(self.path).path == "/_e2e/scroll_history":
                 import sqlite3
                 with sqlite3.connect(os.environ["OPENMINIS_DB"]) as db:
-                    sid = db.execute("SELECT session_id FROM sessions WHERE persona_id = ? ORDER BY created_at DESC LIMIT 1",
-                                     (BOT_ID,)).fetchone()
+                    sid = history_fixture_session(db, self.path)
                     if sid:
                         rows = []
                         start = time.time() - 120
