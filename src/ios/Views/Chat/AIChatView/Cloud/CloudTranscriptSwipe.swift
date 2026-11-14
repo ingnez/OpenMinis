@@ -40,6 +40,7 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
     let timeOffset = CloudTranscriptOffset()
     let times = CloudTranscriptTimes()
     private weak var scrollView: UIScrollView?
+    var attachedScrollView: UIScrollView? { scrollView }
     private let rows = NSHashTable<CloudTranscriptHitView>.weakObjects()
     private lazy var pan: UIPanGestureRecognizer = {
         let recognizer = UIPanGestureRecognizer(target: self, action: #selector(dragged(_:)))

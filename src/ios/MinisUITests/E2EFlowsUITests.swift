@@ -1894,8 +1894,8 @@ extension E2EFlowsUITests {
         let cancel = app.buttons["取消回复"]
         let origin = app.coordinate(withNormalizedOffset: .zero)
         let screen = app.windows.firstMatch.frame
-        let rowY = reply.frame.midY
         func drag(from: CGFloat, to: CGFloat) {
+            let rowY = reply.frame.midY
             let start = origin.withOffset(CGVector(dx: screen.width * from, dy: rowY))
             let end = origin.withOffset(CGVector(dx: screen.width * to, dy: rowY))
             start.press(forDuration: 0.04, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.25)

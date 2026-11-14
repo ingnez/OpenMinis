@@ -1996,6 +1996,9 @@ struct CloudSessionView: View {
                 positionedInitialHistory = true
                 guard followLatest, !isUserScrolling, !transcriptSwipe.isInteracting,
                       !transcriptSwipe.isVerticallyScrolling else { return }
+                if let scroll = transcriptSwipe.attachedScrollView {
+                    guard scroll.contentSize.height > scroll.bounds.height + 4 else { return }
+                }
                 proxy.scrollTo("chat-bottom", anchor: .bottom)
             }
             .onDisappear {
