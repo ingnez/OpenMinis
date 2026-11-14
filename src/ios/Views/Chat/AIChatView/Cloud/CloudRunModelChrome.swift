@@ -296,10 +296,11 @@ struct MessageActionMenu: ViewModifier {
             .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in present() })
             .accessibilityAction(named: Text("消息操作")) { present() }
             .background {
-                CloudMessageOverlay(isPresented: $isPresented, onDismiss: {
+                Color.clear.frame(width: 0, height: 0)
+                    .fullScreenCover(isPresented: $isPresented, onDismiss: {
                         let action = pendingAction
                         pendingAction = nil
-                        action?()
+                        CloudMessageMenu.didDismiss(then: action)
                     }) {
                         CloudMessageActionSheet(emojis: CloudMessageActionSheet.allEmojis, current: currentReaction,
                                                 onEmoji: onEmoji, groups: groups().filter { !$0.isEmpty },
@@ -308,7 +309,7 @@ struct MessageActionMenu: ViewModifier {
                                                     pendingAction = action
                                                     CloudMessageMenu.dismiss($isPresented)
                                                 })
-                    }.frame(width: 0, height: 0)
+                    }
             }
     }
 
@@ -321,7 +322,11 @@ struct MessageActionMenu: ViewModifier {
 
 /// 面板用不带动画的全屏层弹出（背景透明，自己画模糊和升起动画），下面的消息完全不动
 enum CloudMessageMenu {
+    static let willPresent = Notification.Name("OpenMinisMessageMenuWillPresent")
+    static let restoreViewport = Notification.Name("OpenMinisMessageMenuRestoreViewport")
+
     static func present(_ shown: Binding<Bool>) {
+        NotificationCenter.default.post(name: willPresent, object: nil)
         var t = Transaction(); t.disablesAnimations = true
         withTransaction(t) { shown.wrappedValue = true }
     }
@@ -330,70 +335,18 @@ enum CloudMessageMenu {
         var t = Transaction(); t.disablesAnimations = true
         withTransaction(t) { shown.wrappedValue = false }
     }
-}
 
-/// Keep the transcript and its keyboard mounted while the menu is visible.
-/// SwiftUI's fullScreenCover removes the presenting page, then reapplies its
-/// keyboard avoidance on dismissal, shifting an otherwise unchanged bubble.
-private struct CloudMessageOverlay<Content: View>: UIViewControllerRepresentable {
-    @Binding var isPresented: Bool
-    let onDismiss: () -> Void
-    let content: () -> Content
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeUIViewController(context: Context) -> CloudMessageOverlayController {
-        let controller = CloudMessageOverlayController()
-        controller.view.backgroundColor = .clear
-        return controller
-    }
-
-    func updateUIViewController(_ controller: CloudMessageOverlayController, context: Context) {
-        let coordinator = context.coordinator
-        let update = { [weak controller, weak coordinator] in
-            guard let controller, let coordinator, controller.view.window != nil else { return }
-            coordinator.update(controller, shown: isPresented, content: content, onDismiss: onDismiss)
-        }
-        controller.onAppearance = update
-        DispatchQueue.main.async(execute: update)
-    }
-
-    static func dismantleUIViewController(_ controller: CloudMessageOverlayController, coordinator: Coordinator) {
-        controller.onAppearance = nil
-        coordinator.host?.dismiss(animated: false)
-    }
-
-    final class Coordinator {
-        var host: UIViewController?
-        private var dismissing = false
-
-        func update(_ presenter: UIViewController, shown: Bool, content: () -> Content, onDismiss: @escaping () -> Void) {
-            if shown {
-                guard host == nil, presenter.presentedViewController == nil else { return }
-                let next = UIHostingController(rootView: content())
-                next.modalPresentationStyle = .overFullScreen
-                next.view.backgroundColor = .clear
-                host = next
-                presenter.present(next, animated: false)
-            } else if let host, !dismissing {
-                dismissing = true
-                host.dismiss(animated: false) {
-                    self.host = nil
-                    self.dismissing = false
-                    onDismiss()
-                }
-            }
+    static func didDismiss(then action: (() -> Void)?) {
+        NotificationCenter.default.post(name: restoreViewport, object: false)
+        // The keyboard's safe-area transition finishes after modal dismissal.
+        // Restore before a selected action deliberately changes focus/scroll.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            NotificationCenter.default.post(name: restoreViewport, object: true)
+            action?()
         }
     }
 }
 
-private final class CloudMessageOverlayController: UIViewController {
-    var onAppearance: (() -> Void)?
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        onAppearance?()
-    }
-}
 
 /// 全屏层的系统背景改成透明（iOS 16.0 没有 presentationBackground）
 struct CloudClearCoverBackground: UIViewRepresentable {
