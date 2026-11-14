@@ -246,13 +246,17 @@ enum CloudReplyCue: Equatable {
 struct CloudReplyTracker {
     private(set) var seen: [String: (status: String, decision: Bool)] = [:]
 
-    mutating func update(_ workers: [CloudReplyWorker]) -> [CloudReplyCue] {
+    mutating func update(_ workers: [CloudReplyWorker], seedOnly: Bool = false) -> [CloudReplyCue] {
         var cues: [CloudReplyCue] = []
         for w in workers {
             defer { seen[w.id] = (w.status, w.needsDecision) }
-            guard let old = seen[w.id] else { continue }
+            guard !seedOnly else { continue }
+            if let old = seen[w.id] {
             if !old.decision && w.needsDecision { cues.append(.decision(w.id)) }
             guard old.status != w.status, old.status == "running" || old.status == "queued" else { continue }
+            } else if w.active {
+                continue
+            }
             switch w.status {
             case "completed": cues.append(.done(w.id))
             case "cancelled": cues.append(.stopped(w.id))
