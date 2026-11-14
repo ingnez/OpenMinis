@@ -351,7 +351,7 @@ enum CloudHistoryAdapter {
                 var payload: [String: Any] = ["id": m["tool_call_id"] as? String ?? "", "result": parsed]
                 if let ms = m["duration_ms"] { payload["duration_ms"] = ms }
                 CloudEventApplier.apply(msg, type: "tool_result", payload: payload)
-                if toolNames[m["tool_call_id"] as? String ?? ""] == "spawn_task", let card = CloudCards.workerCard(fromToolResult: parsed) {
+                if ["spawn_task", "dispatch_workorder"].contains(toolNames[m["tool_call_id"] as? String ?? ""] ?? ""), let card = CloudCards.workerCard(fromToolResult: parsed) {
                     msg.blocks.append(CloudCards.block(card))      // 派出去的后台任务：卡片显示实时状态
                 }
             default:
