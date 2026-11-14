@@ -1913,7 +1913,7 @@ extension E2EFlowsUITests {
         XCTAssertFalse(cancel.exists, "短滑误触发引用")
 
         drag(from: 0.30, to: 0.65)
-        XCTAssertTrue(cancel.waitForExistence(timeout: 8), "右滑没有打开引用")
+        XCTAssertTrue(cancel.waitForExistence(timeout: 8), "右滑没有打开引用：\(app.staticTexts["botReplySwipeDiagnostic"].label)")
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8), "引用后没有聚焦输入框")
         shot(app, "40-右滑引用第一条")
         dismissKeyboardIntro(app)
