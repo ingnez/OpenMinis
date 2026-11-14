@@ -91,6 +91,7 @@ final class CloudReplyStatusModel: ObservableObject {
     }
 
     private var tracker = CloudReplyTracker()
+    private var hasSeeded = false
     private var loop: Task<Void, Never>?
     private var sessionId = ""
     private var fastUntil = Date.distantPast
@@ -114,8 +115,9 @@ final class CloudReplyStatusModel: ObservableObject {
     func start(sessionId sid: String) {
         guard loop == nil || sessionId != sid else { return }
         loop?.cancel()
+        if sessionId != sid { hasSeeded = false }
         sessionId = sid
-        loop = Task { [weak self] in
+        loop = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.refresh()
@@ -152,7 +154,8 @@ final class CloudReplyStatusModel: ObservableObject {
                 && (previous[worker.id]?.status != worker.status
                     || previous[worker.id]?.needsDecision != worker.needsDecision)
         }
-        let cues = tracker.update(list)
+        let cues = tracker.update(list, seedOnly: !hasSeeded)
+        hasSeeded = true
         if workerSource == nil {
             await CloudExperience.restoreWorkers(list)
             await CloudApprovalCenter.shared.sync(workers: list, botName: botName)
@@ -169,7 +172,7 @@ final class CloudReplyStatusModel: ObservableObject {
         if decisionChanged || cues.contains(where: { if case .decision = $0 { return false }; return true }) {
             onWorkerFinished()
             // 结果消息可能比状态晚一点写进对话：稍后再拉一次
-            Task { try? await Task.sleep(nanoseconds: 1_500_000_000); self.onWorkerFinished() }
+            Task { @MainActor [weak self] in try? await Task.sleep(nanoseconds: 1_500_000_000); self?.onWorkerFinished() }
         }
         mirror()
     }
