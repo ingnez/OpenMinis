@@ -20,9 +20,15 @@ struct CloudLocalHandoffTests {
         check(CloudLocalHandoff.intent("bot 是什么意思", bots: bots) == nil, "只提到 bot 不算")
         check(CloudLocalHandoff.intent("", bots: bots) == nil, "空消息")
         let pkg = CloudLocalHandoff.Package(goal: "g", summary: "s", progress: "p", outputs: "o", remaining: "r",
-                                            files: [(name: "a.txt", data: Data("hi".utf8))], targetBot: nil)
+                                            files: [.inline(name: "a.txt", data: Data("hi".utf8))], targetBot: nil)
         let body = pkg.body
         check(body["target_bot"] == nil && (body["files"] as? [[String: String]])?.first?["data_base64"] == "aGk=", "请求体：不点名不带 target_bot，文件 base64")
+        // 大文件走暂存：交接 JSON 里只带 staging_id，不带 base64（.ipa 进不了 36MB 的请求体）
+        let staged = CloudLocalHandoff.Package(goal: "g", summary: "s", progress: "p", outputs: "o", remaining: "r",
+                                               files: [.staged(name: "App.ipa", stagingId: "hf_0123456789ab")], targetBot: "coder")
+        let stagedFiles = staged.body["files"] as? [[String: String]]
+        check(stagedFiles?.first?["staging_id"] == "hf_0123456789ab" && stagedFiles?.first?["data_base64"] == nil,
+              "请求体：暂存文件只带 staging_id")
         let r = CloudLocalHandoff.Receipt(sessionId: "s", taskId: "t", botId: "coder", botName: "码农", routed: true, files: [])
         check(r.title == "已交给 主 Bot → 码农 在云端继续", "卡片文字")
         check(CloudLocalHandoff.clip("abcdef", 3) == "abc…", "截断")
