@@ -309,20 +309,25 @@ def scope_supported():
 BASH = shutil.which("bash")
 
 
-def shell_argv(cmd):
-    """用 bash -lc 执行（模型写的命令大多是 bash 语法：[[ ]]、数组、source、{a,b} 展开…；/bin/sh 在 Debian 上是 dash 会报错）。
-    没有 bash 时退回系统 sh。返回 (argv 或字符串, shell 标志)。"""
+def shell_argv(cmd, cwd=None):
+    """保留登录 Shell 的工具环境，在启动配置完成后恢复任务工作目录。"""
+    import shlex
     bash = BASH or ("/bin/bash" if os.path.exists("/bin/bash") else None)
+    if cwd is not None:
+        # 启动配置可能 cd 到用户主目录，Popen(cwd=...) 无法阻止它。
+        # 路径按 Shell 参数转义，恢复失败时终止，不能在错误目录继续写文件。
+        change_directory = "builtin cd" if bash else "cd"
+        cmd = f"{change_directory} -- {shlex.quote(os.path.abspath(cwd))} || exit\n{cmd}"
     if bash:
         return [bash, "-lc", cmd], False
     return cmd, True
 
 
-def wrap_command(cmd, limits):
+def wrap_command(cmd, limits, cwd=None):
     """返回 (argv 或 shell 字符串, shell 标志, preexec_fn)。"""
     cpu, mem = limits.get("cpu_percent") or 0, limits.get("memory_mb") or 0
     if not cpu and not mem:
-        argv, shell = shell_argv(cmd)
+        argv, shell = shell_argv(cmd, cwd=cwd)
         return argv, shell, None
     if scope_supported():
         argv = ["systemd-run", "--scope", "--quiet", "--collect"]
@@ -330,7 +335,10 @@ def wrap_command(cmd, limits):
             argv += ["-p", f"MemoryMax={mem}M"]
         if cpu:
             argv += ["-p", f"CPUQuota={cpu}%"]
-        return argv + ["--", BASH or "/bin/bash", "-lc", cmd], False, None
+        command_argv, use_shell = shell_argv(cmd, cwd=cwd)
+        if use_shell:
+            command_argv = ["/bin/sh", "-c", command_argv]
+        return argv + ["--"] + command_argv, False, None
 
     def preexec():
         import resource
@@ -344,7 +352,7 @@ def wrap_command(cmd, limits):
                 os.nice(10)
             except OSError:
                 pass
-    argv, shell = shell_argv(cmd)
+    argv, shell = shell_argv(cmd, cwd=cwd)
     return argv, shell, preexec
 
 
@@ -518,7 +526,7 @@ class BackgroundJobs:
         os.makedirs(log_dir, exist_ok=True)
         job_id = "job_" + uuid.uuid4().hex[:10]
         log_path = os.path.join(log_dir, job_id + ".log")
-        argv, shell, preexec = wrap_command(cmd, limits)
+        argv, shell, preexec = wrap_command(cmd, limits, cwd=cwd)
         log_f = open(log_path, "wb")
         proc = subprocess.Popen(argv, shell=shell, cwd=cwd, env=env, stdout=log_f, stderr=subprocess.STDOUT,
                                 start_new_session=True, preexec_fn=preexec)

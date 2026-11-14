@@ -937,7 +937,6 @@ extension AIChatViewModel {
                     guard blockIdx >= 0, blockIdx < messages[msgIdx].blocks.count else { return -1 }
 
                     messages[msgIdx].blocks[blockIdx].content = content
-                    if !content.isEmpty { replyLatency.sawText() }
                     messages[msgIdx].blocks[blockIdx].toolStatus = .running
                     messages[msgIdx].blocks[blockIdx].streamingFileContent = nil
                     switch name {

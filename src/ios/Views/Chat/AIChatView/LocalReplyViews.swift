@@ -169,8 +169,9 @@ struct LocalReplyModeSection: View {
 
 /// 对话标题长按菜单：只改这个对话
 struct LocalReplyChatMenu: View {
-    let sessionId: String
+    let sessionId: String?
     @Binding var plan: CloudReplyPlan
+    var ensureSession: (() async -> String)? = nil
 
     var body: some View {
         Menu {
@@ -194,11 +195,21 @@ struct LocalReplyChatMenu: View {
     }
 
     private func set(_ m: CloudReplyMode?) {
-        LocalReplyStore.setOverride(sessionId: sessionId, mode: m)
-        plan = LocalReplyStore.plan(sessionId: sessionId)
-        CloudHaptics.selection()
-        NotificationCenter.default.post(name: CloudReplyService.changed, object: nil,
-                                        userInfo: ["session_id": sessionId, "local": true])
+        Task { @MainActor in
+            let sid: String
+            if let sessionId, !sessionId.isEmpty {
+                sid = sessionId
+            } else if let ensureSession {
+                sid = await ensureSession()
+            } else {
+                return
+            }
+            LocalReplyStore.setOverride(sessionId: sid, mode: m)
+            plan = LocalReplyStore.plan(sessionId: sid)
+            CloudHaptics.selection()
+            NotificationCenter.default.post(name: CloudReplyService.changed, object: nil,
+                                            userInfo: ["session_id": sid, "local": true])
+        }
     }
 }
 

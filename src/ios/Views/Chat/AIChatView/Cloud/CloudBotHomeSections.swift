@@ -104,8 +104,13 @@ struct CloudBotTopAvatar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("homeBotAvatar-\(bot.id)")
         .accessibilityLabel("打开 \(bot.name)，\(presence.accessibilityText)")
         .accessibilityValue(presence.state == .error ? "皱眉" : (typing != nil ? "思考中眨眼" : "平静"))
+        .highPriorityGesture(LongPressGesture(minimumDuration: 0.6).onEnded { _ in
+            CloudBotHomeModel.shared.shiftSpeechBot = bot
+        })
+        .accessibilityAction(named: "一句话交班") { CloudBotHomeModel.shared.shiftSpeechBot = bot }
     }
 
     private var typing: CloudTypingPhase? { CloudBotLock.shared.isLocked(bot.id) ? nil : bot.activity }

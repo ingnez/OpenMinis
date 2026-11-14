@@ -98,8 +98,11 @@ final class Frog1850Chunk2UITests: XCTestCase {
 
     private func openBot(_ app: XCUIApplication) {
         let row = app.descendants(matching: .any)["homeBotRow-e2ebot"]
-        XCTAssertTrue(row.waitForExistence(timeout: 60), "首页没有 E2E小助手")
-        row.tap()
+        let avatar = app.buttons["homeBotAvatar-e2ebot"]
+        let available = NSPredicate { _, _ in row.exists || avatar.exists }
+        let expectation = XCTNSPredicateExpectation(predicate: available, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 60), .completed, "首页没有 E2E小助手")
+        (avatar.exists ? avatar : row).tap()
         XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 30), "打开 Bot 后没有输入框")
     }
 

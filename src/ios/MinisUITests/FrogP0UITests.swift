@@ -132,11 +132,15 @@ final class FrogP0UITests: XCTestCase {
 
     private func openBot(_ app: XCUIApplication) {
         let row = app.descendants(matching: .any)["homeBotRow-e2ebot"]
-        if !row.waitForExistence(timeout: 60) {
+        let avatar = app.buttons["homeBotAvatar-e2ebot"]
+        let available = NSPredicate { _, _ in row.exists || avatar.exists }
+        let expectation = XCTNSPredicateExpectation(predicate: available, object: nil)
+        guard XCTWaiter.wait(for: [expectation], timeout: 60) == .completed else {
             shot(app, "找不到Bot")
             XCTFail("首页 60 秒内没出现「\(Self.botName)」")
+            return
         }
-        row.tap()
+        (avatar.exists ? avatar : row).tap()
         if !app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 30) {
             shot(app, "打开Bot后没有输入框")
             XCTFail("Bot 对话的输入框没出现")

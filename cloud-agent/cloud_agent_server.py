@@ -1440,7 +1440,7 @@ def tool_shell_execute(task_id, session_id, args):
                             owner_worker_id=task_owner_worker(task_id, session_id))
         return {"status": "started", "job_id": job["job_id"], "log": os.path.relpath(job["log"], ws),
                 "note": "命令在后台运行，完成后会写回对话并推送；可用 background_jobs 查看进度。"}
-    argv, use_shell, preexec = iso.wrap_command(cmd, limits)
+    argv, use_shell, preexec = iso.wrap_command(cmd, limits, cwd=ws)
     system_op = resource_settings()["system_lock"] and iso.is_system_op(cmd)
     if iso.is_system_op(cmd) and resource_settings().get("system_snapshot", True):
         try:

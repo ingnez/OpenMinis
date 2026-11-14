@@ -153,8 +153,9 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
               touch.location(in: window).x > window.bounds.minX + 24 else { return false }
         var view = touch.view
         while let candidate = view, candidate !== scrollView {
-            // Preserve sliders, links with controls, and horizontal code/table scrolling.
-            if candidate is UIControl { return false }
+            // 图片卡片自行处理长按选页；消息横滑不能移动它的坐标系。
+            // 同时保留控件、选中文字以及代码/表格的横向滚动。
+            if candidate is UIControl || candidate is ImageStackScrubView { return false }
             if let text = candidate as? UITextView, text.selectedRange.length > 0 { return false }
             if let nested = candidate as? UIScrollView,
                nested.isScrollEnabled, nested.contentSize.width > nested.bounds.width + 1 { return false }
@@ -171,13 +172,6 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
             return true
         }
         return false
-    }
-
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        if other === scrollView?.panGestureRecognizer { return false }
-        if other is UIPanGestureRecognizer { return false }
-        return true
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {

@@ -75,6 +75,47 @@ class SettingsUnitTests(unittest.TestCase):
         self.assertEqual(gate.acquire("b3", "bot:b", "b"), 1)   # b 允许 2 个并发，第二个用槽 1
 
 
+class ShellWorkspaceTests(unittest.TestCase):
+    def test_startup_profile_cannot_move_commands_out_of_workspace(self):
+        import pathlib
+        import subprocess
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            work = root / "工作 区'$(echo unsafe)"
+            work.mkdir()
+            (work / "proof.txt").write_text("verified")
+            startup = root / "startup.sh"
+            startup.write_text('cd /\n')
+            env = dict(os.environ, BASH_ENV=str(startup))
+            for limits in ({}, {"cpu_percent": 50}):
+                with self.subTest(limits=limits), patch.object(iso, "scope_supported", return_value=False):
+                    argv, shell, _ = iso.wrap_command("cat proof.txt", limits, cwd=str(work))
+                    result = subprocess.run(argv, shell=shell, cwd=work, env=env,
+                                            capture_output=True, text=True, timeout=15)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, "verified")
+            with patch.object(iso, "scope_supported", return_value=True):
+                argv, shell, _ = iso.wrap_command("cat proof.txt", {"cpu_percent": 50}, cwd=str(work))
+                command = argv[argv.index("--") + 1:]
+                result = subprocess.run(command, cwd=work, env=env, capture_output=True, text=True, timeout=15)
+                self.assertFalse(shell)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "verified")
+
+    def test_missing_workspace_never_runs_command_in_another_directory(self):
+        import pathlib
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = pathlib.Path(temporary) / "must-not-write"
+            argv, shell = iso.shell_argv("touch " + str(marker), cwd=str(marker / "missing"))
+            result = subprocess.run(argv, shell=shell, capture_output=True, timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(marker.exists())
+
+
 class IsolationServerTests(CloudServerTestCase):
     def test_01_resources_api(self):
         code, res = self.request("GET", "/v1/resources")

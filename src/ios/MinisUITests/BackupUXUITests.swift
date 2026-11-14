@@ -36,7 +36,9 @@ final class BackupUXUITests: XCTestCase {
                       || waitText(app, contains: "位置：", timeout: 5), "存到文件后没有显示路径")
         shot(app, "b2-存到文件-路径")
 
-        XCTAssertTrue(waitText(app, contains: "备份历史", timeout: 5) || app.descendants(matching: .any)["backupHistory"].exists, "没有备份历史")
+        let historyRecord = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "backupHistory-")).firstMatch
+        XCTAssertTrue(scrollTo(app, historyRecord), "没有备份历史记录")
         shot(app, "b3-备份历史")
 
         let previewBtn = app.descendants(matching: .any)["backupE2EPreview"]

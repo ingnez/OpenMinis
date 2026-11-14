@@ -19,6 +19,10 @@ final class ReplyModeUITests: XCTestCase {
             screen.name = "failure-screen"; screen.lifetime = .keepAlways; add(screen)
             let tree = XCTAttachment(string: app.debugDescription)
             tree.name = "failure-ui-tree"; tree.lifetime = .keepAlways; add(tree)
+            if let data = probe("/_e2e/requests"), let text = String(data: data, encoding: .utf8) {
+                let requests = XCTAttachment(string: text)
+                requests.name = "failure-model-requests"; requests.lifetime = .keepAlways; add(requests)
+            }
         }
         _ = probe("/_e2e/reply?mode=verbose")
     }
@@ -699,11 +703,14 @@ final class ReplyModeUITests: XCTestCase {
 
     private func openBot(_ app: XCUIApplication) {
         let row = app.descendants(matching: .any)["homeBotRow-e2ebot"]
-        if !row.waitForExistence(timeout: 60) {
+        // 主 Bot 在顶部头像区，普通 Bot 在列表；两个入口都必须真的能点击。
+        let avatar = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "打开 \(Self.botName)，")).firstMatch
+        guard poll(60, { (row.exists && row.isHittable) || (avatar.exists && avatar.isHittable) }) else {
             shot(app, "找不到Bot")
             XCTFail("首页 60 秒内没出现「\(Self.botName)」")
+            return
         }
-        row.tap()
+        if row.exists && row.isHittable { row.tap() } else { avatar.tap() }
         if !app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 30) {
             shot(app, "打开Bot后没有输入框")
             XCTFail("Bot 对话的输入框没出现")

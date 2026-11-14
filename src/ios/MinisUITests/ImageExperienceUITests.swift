@@ -21,7 +21,7 @@ final class ImageExperienceUITests: XCTestCase {
         XCTAssertTrue(waitValue(stack, "已展开", timeout: 5), "长按没有铺开")
         shot(app, "i1-b-长按铺开")
 
-        // 动画已停后仍按住，再滑到最右一张，松手必须打开第 3 张。
+        // 用户图片靠右排列，第三张展开在左侧；松手必须打开该张。
         revealBelowNavBar(app, stack)
         let win = app.windows.firstMatch.frame
         let top = app.navigationBars.firstMatch.exists ? app.navigationBars.firstMatch.frame.maxY + 4 : win.minY + 120
@@ -29,8 +29,8 @@ final class ImageExperienceUITests: XCTestCase {
         XCTAssertFalse(visible.isNull || visible.height < 10, "叠放卡片没有露在可见区")
         let origin = app.coordinate(withNormalizedOffset: .zero)
         let start = origin.withOffset(CGVector(dx: visible.midX, dy: visible.midY))
-        let endX = min(win.maxX - 8, stack.frame.midX + 46)
-        XCTAssertGreaterThan(endX - stack.frame.midX, 27, "没有滑进第 3 张的选区")
+        let endX = max(win.minX + 8, stack.frame.midX - 46)
+        XCTAssertGreaterThan(stack.frame.midX - endX, 27, "没有滑进第 3 张的选区")
         let end = origin.withOffset(CGVector(dx: endX, dy: visible.midY))
         start.press(forDuration: 0.85, thenDragTo: end)
 

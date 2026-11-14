@@ -73,7 +73,7 @@ func check(_ ok: Bool, _ what: String) { if !ok { print("FAIL: " + what); exit(1
         check(!ImageStackLayout.shouldOpenOnRelease(horizontal: 4, vertical: -40), "竖滑不打开")
         check(!ImageStackLayout.shouldOpenOnRelease(horizontal: 16, vertical: 16), "方向不明确不打开")
 
-        for count in [6, 7, 9, 20] {
+        for count in [3, 6, 7, 9, 20] {
             let cards = ImageStackLayout.cards(count: count, fanned: true, fansLeft: true)
             let width = ImageStackLayout.stackSize(count: count).width
             for card in cards {

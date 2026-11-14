@@ -324,9 +324,8 @@ extension AIChatView {
                     Button("Thinking Level") { showThinkingLevelSheet = true }
                 }
             }
-            if let sid = vm.sessionId, !sid.isEmpty {
-                LocalReplyChatMenu(sessionId: sid, plan: $localReplyPlan).items
-            }
+            LocalReplyChatMenu(sessionId: vm.sessionId, plan: $localReplyPlan,
+                               ensureSession: { await vm.ensureSessionReturningId() }).items
         }
         .accessibilityActions {
             if navigationTypeSize > .large {

@@ -265,6 +265,8 @@ extension AIChatViewModel {
     ) {
         let wasEmpty = block.content.isEmpty
         block.content = text
+        // 正文真正写入可见文本块时记首字，包含节流末次刷新与延后恢复。
+        if !text.isEmpty { replyLatency.sawText() }
         if let parsedMarkdown {
             block.cachedMarkdown = parsedMarkdown
         } else if block.cachedMarkdown == nil {

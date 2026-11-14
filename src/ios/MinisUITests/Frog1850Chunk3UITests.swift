@@ -9,7 +9,11 @@ final class Frog1850Chunk3UITests: XCTestCase {
     func testLockScreenEntryRequiresRealConfirmationAndRejectsStaleApproval() throws {
         executionTimeAllowance = 180
         let app = launch()
-        XCTAssertTrue(app.descendants(matching: .any)["homeBotRow-e2ebot"].waitForExistence(timeout: 60))
+        let botVisible = NSPredicate { _, _ in
+            app.descendants(matching: .any)["homeBotRow-e2ebot"].exists
+                || app.buttons["homeBotAvatar-e2ebot"].exists
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: botVisible, object: nil)], timeout: 60), .completed)
         _ = try Data(contentsOf: URL(string: "http://127.0.0.1:18799/_e2e/approval?mode=ask")!)
         defer { _ = try? Data(contentsOf: URL(string: "http://127.0.0.1:18799/_e2e/approval?mode=auto")!) }
         let sid = try XCTUnwrap(api("POST", "/v1/sessions", body: ["title": "真实审批 E2E", "persona_id": "e2ebot"])["session_id"] as? String)
