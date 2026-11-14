@@ -32,7 +32,9 @@ final class Ideas12UITests: XCTestCase {
 
     func testIdea2_shiftSpeech() throws {
         executionTimeAllowance = 180
-        let app = launch(extraEnv: ["OPENMINIS_E2E_SHIFT_SPEECH": "明天下午三点提醒我给病人换药"])
+        // 顶部大头像只画「主 Bot + 置顶」的 Bot，而列表里又剔掉主 Bot：这条用例要验的就是
+        // 主 Bot 头像上的一句話交班入口，所以要先把假 Bot 设成主 Bot（test30 同款 /_e2e/primary）。
+        let app = launch(primary: true, extraEnv: ["OPENMINIS_E2E_SHIFT_SPEECH": "明天下午三点提醒我给病人换药"])
         XCTAssertTrue(waitText(app, contains: Self.botName, timeout: 60))
         let avatar = app.descendants(matching: .any)["homeBotAvatar-e2ebot"]
         XCTAssertTrue(avatar.waitForExistence(timeout: 15), "首页头像没有独立的辅助功能入口")
@@ -233,8 +235,10 @@ final class Ideas12UITests: XCTestCase {
         return element.exists && element.isHittable
     }
 
-    private func launch(extraEnv: [String: String] = [:]) -> XCUIApplication {
+    private func launch(primary: Bool = false, extraEnv: [String: String] = [:]) -> XCUIApplication {
         if let url = URL(string: "http://127.0.0.1:18799/_e2e/reset") { _ = try? Data(contentsOf: url) }
+        // 主 Bot 要在 reset 之后设（reset 会把假 Bot 改回普通 Bot）
+        if primary, let url = URL(string: "http://127.0.0.1:18799/_e2e/primary") { _ = try? Data(contentsOf: url) }
         let app = XCUIApplication()
         app.launchEnvironment["OPENMINIS_E2E_HOMEMODE"] = "bots"
         app.launchArguments += ["-OpenMinisCloud_name", "E2E云电脑", "-OpenMinisCloud_host", "127.0.0.1"]
@@ -252,9 +256,14 @@ final class Ideas12UITests: XCTestCase {
     private func openBot(_ app: XCUIApplication) {
         let row = app.descendants(matching: .any)["homeBotRow-e2ebot"]
         let avatar = app.buttons["homeBotAvatar-e2ebot"]
-        let available = NSPredicate { _, _ in row.exists || avatar.exists }
-        let expectation = XCTNSPredicateExpectation(predicate: available, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 60), .completed, "首页没有 E2E小助手")
+        // 首页上还有「今天 / 群聊」等内容，Bot 行可能不在第一屏：找不到就往上翻再找，
+        // 找到才算「首页有 E2E小助手」（断言不变，只是不只盯第一屏）。
+        let deadline = Date().addingTimeInterval(60)
+        while Date() < deadline, !(row.exists || avatar.exists) {
+            app.swipeUp()
+            _ = row.waitForExistence(timeout: 1)
+        }
+        XCTAssertTrue(row.exists || avatar.exists, "首页没有 E2E小助手")
         (avatar.exists ? avatar : row).tap()
         XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 30), "打开 Bot 后没有输入框")
     }

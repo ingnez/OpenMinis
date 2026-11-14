@@ -668,7 +668,9 @@ final class ReplyModeUITests: XCTestCase {
     private func assertBurstReplies(_ app: XCUIApplication, messages: [String], model: String) {
         for message in messages {
             let reply = "你想\(message)，我让后台现在就改。"
-            XCTAssertTrue(waitText(app, contains: reply, timeout: 25), "前台没有回答「\(message)」")
+            // 连发三条后，第一条的回复会被后面两轮顶出可视区；XCUITest 只看得见已实例化的行。
+            // 所以找不到时往上翻着找（断言含义不变：前台确实答过这一条）。
+            XCTAssertTrue(waitTextScrolling(app, contains: reply, timeout: 25), "前台没有回答「\(message)」")
         }
         XCTAssertTrue(poll(10) {
             let frontRequests = requests(model: model)
@@ -716,7 +718,13 @@ final class ReplyModeUITests: XCTestCase {
         let row = app.descendants(matching: .any)["homeBotRow-e2ebot"]
         // 主 Bot 在顶部头像区，普通 Bot 在列表；两个入口都必须真的能点击。
         let avatar = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "打开 \(Self.botName)，")).firstMatch
-        guard poll(60, { (row.exists && row.isHittable) || (avatar.exists && avatar.isHittable) }) else {
+        let deadline = Date().addingTimeInterval(60)
+        // 首页上方还有「今天 / 群聊」等内容，Bot 行不一定在第一屏：找不到就往上翻再找
+        while Date() < deadline, !((row.exists && row.isHittable) || (avatar.exists && avatar.isHittable)) {
+            app.swipeUp()
+            _ = row.waitForExistence(timeout: 1)
+        }
+        guard (row.exists && row.isHittable) || (avatar.exists && avatar.isHittable) else {
             shot(app, "找不到Bot")
             XCTFail("首页 60 秒内没出现「\(Self.botName)」")
             return
@@ -759,6 +767,22 @@ final class ReplyModeUITests: XCTestCase {
     private func waitText(_ app: XCUIApplication, contains s: String, timeout: TimeInterval) -> Bool {
         let p = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", s, s)
         return app.descendants(matching: .any).matching(p).firstMatch.waitForExistence(timeout: timeout)
+    }
+
+    /// 找一条可能已经被后到的气泡顶出可视区的文字：先就着当前屏幕等一会儿，还是找不到就
+    /// 往上翻看更早的消息再找。不改变断言的含义（这条回复确实存在），只是不要求它此刻恰好在第一屏。
+    private func waitTextScrolling(_ app: XCUIApplication, contains s: String, timeout: TimeInterval) -> Bool {
+        let p = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", s, s)
+        let query = app.descendants(matching: .any).matching(p)
+        let deadline = Date().addingTimeInterval(timeout)
+        if query.firstMatch.waitForExistence(timeout: min(6, timeout)) { return true }
+        let list = app.collectionViews.firstMatch
+        while Date() < deadline {
+            if query.firstMatch.exists { return true }
+            if list.exists { list.swipeDown() } else { app.swipeDown() }
+            if query.firstMatch.waitForExistence(timeout: 1.2) { return true }
+        }
+        return query.firstMatch.exists
     }
 
     private func waitGone(_ el: XCUIElement, timeout: TimeInterval) -> Bool {

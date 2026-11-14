@@ -102,9 +102,13 @@ final class Frog1850UITests: XCTestCase {
     private func openBot(_ app: XCUIApplication) {
         let row = app.descendants(matching: .any)["homeBotRow-e2ebot"]
         let avatar = app.buttons["homeBotAvatar-e2ebot"]
-        let available = NSPredicate { _, _ in row.exists || avatar.exists }
-        let expectation = XCTNSPredicateExpectation(predicate: available, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 60), .completed, "首页没有 E2E小助手")
+        // 首页上方还有「今天 / 群聊」等内容，Bot 行不一定在第一屏：找不到就往上翻再找
+        let deadline = Date().addingTimeInterval(60)
+        while Date() < deadline, !(row.exists || avatar.exists) {
+            app.swipeUp()
+            _ = row.waitForExistence(timeout: 1)
+        }
+        XCTAssertTrue(row.exists || avatar.exists, "首页没有 E2E小助手")
         (avatar.exists ? avatar : row).tap()
         XCTAssertTrue(app.descendants(matching: .any)["botComposerField"].waitForExistence(timeout: 30), "打开 Bot 后没有输入框")
     }

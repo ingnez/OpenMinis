@@ -676,6 +676,16 @@ def main():
                 sids = [r[0] for r in db.execute("SELECT session_id FROM sessions WHERE persona_id = ?", (BOT_ID,))]
                 for sid in sids:
                     db.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+                # 群聊也是流程产物：GroupChat / BotToBot / E2EFlows 每轮都会新建一个群，
+                # 而首页把「群聊」排在 Bot 列表之上。攒到一屏以上，`homeBotRow-e2ebot` 就被顶到
+                # 可视区外，XCUITest 取不到未实例化的行 → 之后所有「要首页入口」的用例 60 秒等不到
+                # （2026-11-14 run 43588277660：Ideas12 8 项 + FrogP0 4 项 + Frog1850 1 项）。
+                # 重置的目的本来就是「每个流程从干净首页开始」，所以群聊一并清掉。
+                for table in ("group_messages", "groups"):
+                    try:
+                        db.execute(f"DELETE FROM {table}")
+                    except sqlite3.OperationalError:
+                        pass   # 老库没有这张表：不影响其它重置
                 if PREV_PRIMARY:   # test30 把假 Bot 设成过主 Bot：还原
                     db.execute("UPDATE personas SET is_primary = 0 WHERE persona_id = ?", (BOT_ID,))
                     db.executemany("UPDATE personas SET is_primary = 1 WHERE persona_id = ?", [(p,) for p in PREV_PRIMARY])

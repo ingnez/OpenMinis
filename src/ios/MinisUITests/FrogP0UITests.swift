@@ -133,9 +133,13 @@ final class FrogP0UITests: XCTestCase {
     private func openBot(_ app: XCUIApplication) {
         let row = app.descendants(matching: .any)["homeBotRow-e2ebot"]
         let avatar = app.buttons["homeBotAvatar-e2ebot"]
-        let available = NSPredicate { _, _ in row.exists || avatar.exists }
-        let expectation = XCTNSPredicateExpectation(predicate: available, object: nil)
-        guard XCTWaiter.wait(for: [expectation], timeout: 60) == .completed else {
+        // 首页上方还有「今天 / 群聊」等内容，Bot 行不一定在第一屏：找不到就往上翻再找
+        let deadline = Date().addingTimeInterval(60)
+        while Date() < deadline, !(row.exists || avatar.exists) {
+            app.swipeUp()
+            _ = row.waitForExistence(timeout: 1)
+        }
+        guard row.exists || avatar.exists else {
             shot(app, "找不到Bot")
             XCTFail("首页 60 秒内没出现「\(Self.botName)」")
             return
