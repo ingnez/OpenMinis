@@ -78,7 +78,7 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
     @objc func saveMenuViewport() {
         guard let scroll = scrollView, let window = scroll.window else { return }
         menuScrollView = scroll
-        menuContentOrigin = scroll.convert(.zero, to: window)
+        menuContentOrigin = scroll.convert(CGPoint.zero, to: window)
     }
 
     @objc func restoreMenuViewport(_ notification: Notification) {
@@ -88,7 +88,7 @@ final class CloudTranscriptSwipe: NSObject, ObservableObject, UIGestureRecognize
         guard let origin = menuContentOrigin, let scroll = menuScrollView ?? scrollView,
               let window = scroll.window, !isInteracting,
               !scroll.isTracking, !scroll.isDragging, !scroll.isDecelerating else { return }
-        let current = scroll.convert(.zero, to: window)
+        let current = scroll.convert(CGPoint.zero, to: window)
         let delta = current.y - origin.y
         if abs(delta) > 0.5 {
             scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: scroll.contentOffset.y + delta), animated: false)
