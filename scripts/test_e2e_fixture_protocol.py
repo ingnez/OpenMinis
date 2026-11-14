@@ -64,10 +64,11 @@ class StreamingFixtureTests(unittest.TestCase):
         result = fixture.back_script({'messages': worker_messages})['content']
         callback = ('<agent_callback kind="finished" job="ABCDEF12-1234" title="查一下天气" status="done">\n'
                     '<summary>tools shell_execute×3 · turns 3</summary>\n<result>\n' + result + '\n</result>\n</agent_callback>')
+        note = '\n\n[这个对话的后台任务（只是摘要）]\n- ABCDEF12-1234「查一下天气」已完成，结果摘要：' + result
         messages = [{'role': 'user', 'content': '帮我查一下天气'},
                     tool_call('front', 'spawn_task', {'goal': '帮我查一下天气'}),
                     {'role': 'tool', 'tool_call_id': 'front', 'content': '{"job_id":"ABCDEF12-1234"}'},
-                    {'role': 'user', 'content': [{'type': 'text', 'text': callback}]}]
+                    {'role': 'user', 'content': [{'type': 'text', 'text': callback + note}]}]
         events = self.stream(fixture.LOCAL_FRONT_MODEL, messages)
         deltas = [event['choices'][0].get('delta', {}) for event in events]
         text = ''.join(delta.get('content') or '' for delta in deltas)

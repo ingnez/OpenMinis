@@ -253,14 +253,14 @@ def front_script(data):
 def local_front_script(data):
     """本地秒回前台：和云端同一套话术；任务 id 从每轮刷新的任务摘要或 spawn_task 的 job_id 里取（本地是 UUID）。"""
     import re
-    raw_text = last_user_text(data)
+    # 与普通用户消息相同，完成回帖也会被应用追加当前任务摘要。
+    text = last_user_text(data).split("\n\n[这个对话的后台任务", 1)[0]
     # 完成回帖是应用注入的消息；只转述真实结果，不能按用户要求猜出后台已经落实。
     # 结果正文允许未转义的文本，与 AgentCallback 的原文封装保持一致。
     callback = re.fullmatch(r'<agent_callback\b(?=[^>]*\bkind="finished")[^>]*>.*?<result>\s*\n(.*?)\n</result>\s*</agent_callback>',
-                            raw_text.strip(), re.DOTALL)
+                            text.strip(), re.DOTALL)
     if callback:
         return {"_chunks": [callback.group(1).strip()], "_delay": 0.02}
-    text = raw_text.split("\n\n[这个对话的后台任务", 1)[0]
     if _fresh_tools(data):
         # 本地 Agent 会继续读取工具结果；返回实际处理回执，不能模拟成空响应。
         return {"role": "assistant", "content": "后台已收到这次要求，结果会回到这里。"}
