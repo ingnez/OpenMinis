@@ -88,7 +88,7 @@ def delivery_pdf():
 
 def script(data):
     from test_phase1_support import tool_call, tool_turns
-    text = last_user_text(data)
+    text = last_user_text(data).split("\n\n[这个对话的后台任务", 1)[0]
     if "慢任务" in text and not tool_turns(data):
         return tool_call("c2", "shell_execute", {"command": "sleep 40; echo e2e-slow-done"})
     if "跑个命令" in text and not tool_turns(data):
@@ -253,9 +253,10 @@ def front_script(data):
 def local_front_script(data):
     """本地秒回前台：和云端同一套话术；任务 id 从每轮刷新的任务摘要或 spawn_task 的 job_id 里取（本地是 UUID）。"""
     import re
-    text = last_user_text(data)
+    text = last_user_text(data).split("\n\n[这个对话的后台任务", 1)[0]
     if _fresh_tools(data):
-        return {"role": "assistant", "content": ""}
+        # 本地 Agent 会继续读取工具结果；返回实际处理回执，不能模拟成空响应。
+        return {"role": "assistant", "content": "后台已收到这次要求，结果会回到这里。"}
     blob = json.dumps(data, ensure_ascii=False)
     m = re.search(r"([0-9a-fA-F-]{8,})「[^」]*」(进行中|排队中)", blob)
     if not m:

@@ -6,6 +6,7 @@ struct CloudReplyTaskTray: View {
     let count: Int
     let fetchedAt: Date
     let theme: CloudBotChatTheme
+    var decision: String? = nil
     var onExpand: () -> Void
     var onStop: () -> Void
     var onPause: () -> Void
@@ -17,6 +18,14 @@ struct CloudReplyTaskTray: View {
         VStack(spacing: 6) {
             CloudReplyStatusRow(worker: worker, count: count, fetchedAt: fetchedAt, theme: theme,
                                 onExpand: onExpand, onStop: onStop, onInterject: onInterject)
+            if let decision, !decision.isEmpty {
+                Text(decision)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+                    .accessibilityIdentifier("replyFrontDecision")
+            }
             CloudReplyTrayActions(worker: worker, onPause: onPause, onResume: onResume,
                                   onStop: onStop, onRetry: onRetry)
         }

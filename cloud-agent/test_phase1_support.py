@@ -79,6 +79,32 @@ class FakeModelHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
             self.close_connection = True
             return
+        if data.get("stream"):
+            # 客户端要求 stream=True 但脚本返回的是普通 message：自动包装为 SSE 流式响应，保证协议一致
+            usage = message.pop("_usage", None) if isinstance(message, dict) else None
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            delta = {"role": "assistant"}
+            if isinstance(message, dict):
+                if "content" in message:
+                    delta["content"] = message["content"]
+                if "tool_calls" in message:
+                    delta["tool_calls"] = [dict(call, index=index) for index, call in enumerate(message["tool_calls"])]
+                if "reasoning_content" in message:
+                    delta["reasoning_content"] = message["reasoning_content"]
+            else:
+                delta["content"] = str(message)
+            event = {"choices": [{"index": 0, "delta": delta}]}
+            self.wfile.write(b"data: " + json.dumps(event).encode() + b"\n\n")
+            self.wfile.flush()
+            reason = "tool_calls" if delta.get("tool_calls") else "stop"
+            self.wfile.write(b"data: " + json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": reason}],
+                                                     "usage": usage or {"prompt_tokens": 11, "completion_tokens": 1}}).encode() + b"\n\n")
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+            self.close_connection = True
+            return
         usage = message.pop("_usage", None) if isinstance(message, dict) else None
         envelope = {"id": "fake", "object": "chat.completion",
                     "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]}

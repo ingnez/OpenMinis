@@ -1738,7 +1738,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// 本地秒回前台做出 Steer / New / Cancel / Answer 后通知界面。
     /// 状态条由 AIChatView / Cloud 对话页自己持有，这里只发信号，不摸 View 的 replyStatus。
     var onReplyFrontDecision: ((String, String?) -> Void)?
-    var replyLatency = CloudReplyLatency()
+    /// 输入框区域独立于消息文本块观察首字时间，收到正文后立即刷新。
+    @Published var replyLatency = CloudReplyLatency()
 
     func noteReplyFrontDecision(_ line: String, action: String? = nil) {
         onReplyFrontDecision?(line, action)

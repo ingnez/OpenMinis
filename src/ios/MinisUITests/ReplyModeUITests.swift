@@ -541,7 +541,7 @@ final class ReplyModeUITests: XCTestCase {
                       || app.descendants(matching: .any)["replyCapsuleStrip"].waitForExistence(timeout: 2), "本地后台任务没出现")
         let bursts = ["改成10页", "只要上海的", "先做大纲"]
         for text in bursts {
-            let field = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
+            let field = localComposerField(app)
             field.tap()
             field.typeText(text)
             let button = localSendButton(app)
@@ -616,8 +616,14 @@ final class ReplyModeUITests: XCTestCase {
         return app
     }
 
+    private func localComposerField(_ app: XCUIApplication) -> XCUIElement {
+        // 回复正文也是 TextView；只在输入区内定位，避免第二条消息点中已显示的正文。
+        let composer = app.descendants(matching: .any).matching(identifier: "localComposer").firstMatch
+        return composer.textViews.firstMatch.exists ? composer.textViews.firstMatch : composer.textFields.firstMatch
+    }
+
     private func openLocalComposer(_ app: XCUIApplication) {
-        XCTAssertTrue(poll(60) { app.textViews.firstMatch.exists || app.textFields.firstMatch.exists }, "本地模式没打开新对话的输入框")
+        XCTAssertTrue(poll(60) { localComposerField(app).exists }, "本地模式没打开新对话的输入框")
         XCTAssertTrue(poll(25) {
             let m = app.buttons["localModelPicker"]
             return m.exists && ((m.value as? String) ?? "").contains("E2E")
@@ -632,7 +638,7 @@ final class ReplyModeUITests: XCTestCase {
     }
 
     private func sendLocal(_ app: XCUIApplication, _ text: String) {
-        let field = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
+        let field = localComposerField(app)
         field.tap()
         dismissKeyboardIntro(app)
         field.typeText(text)

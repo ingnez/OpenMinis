@@ -16,6 +16,7 @@ struct CloudReplyLiveBar: View {
             EmptyView()
         } else if items.count == 1, let w = items.first {
             CloudReplyTaskTray(worker: w, count: 1, fetchedAt: status.fetchedAt, theme: theme,
+                               decision: status.lastDecision,
                                onExpand: { status.expanded = w }, onStop: { status.stop(w) },
                                onPause: { status.pause(w) }, onResume: { status.resume(w) },
                                onRetry: { status.retry(w) }, onInterject: { status.interjecting = w })
