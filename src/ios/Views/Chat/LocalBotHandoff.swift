@@ -10,6 +10,9 @@ final class LocalBotHandoffCenter: ObservableObject {
     @Published private(set) var receipts: [String: [CloudLocalHandoff.Receipt]] = [:]
     @Published var sending: Set<String> = []
     @Published var errors: [String: String] = [:]
+    /// 交接已经发出、但有几个文件没能一起带过去（太大 / 读不出来 / 暂存失败）。
+    /// 以前这些文件是被静默丢掉的：用户只看到「已交给 Bot」，东西其实没跟过去。
+    @Published var notes: [String: String] = [:]
 
     init() {
         if let data = UserDefaults.standard.data(forKey: Self.key),
@@ -42,24 +45,72 @@ extension AIChatViewModel {
         let key = sessionId ?? "draft"
         let center = LocalBotHandoffCenter.shared
         guard !center.sending.contains(key) else { return }
-        let package = handoffPackage(instruction: instruction, target: target)
+        let (candidates, overflow) = handoffFileCandidates()
         inputText = ""
         attachments.removeAll()
         center.sending.insert(key)
         center.errors[key] = nil
+        center.notes[key] = nil
         Task { @MainActor in
             defer { center.sending.remove(key) }
             do {
                 try await CloudConnection.shared.ensureConnected()
+                // 小文件内联进 JSON，大文件先暂存（staging_id），全程不把大文件读进内存
+                var refs: [CloudLocalHandoff.FileRef] = []
+                // 10 个以外的文件也不静默丢：一并写进下面那句提示
+                var skipped: [String] = overflow.map { "\($0)（一次最多带 10 个）" }
+                var inlineBytes = 0
+                for f in candidates {
+                    if CloudLocalHandoff.canInline(bytes: f.size, used: inlineBytes) {
+                        if let data = try? Data(contentsOf: f.url) {
+                            refs.append(.inline(name: f.name, data: data))
+                            inlineBytes += data.count
+                        } else {
+                            skipped.append("\(f.name)（读不出来）")
+                        }
+                    } else {
+                        do {
+                            let stagingId = try await CloudHandoffStaging.stage(filename: f.name, fileURL: f.url)
+                            refs.append(.staged(name: f.name, stagingId: stagingId))
+                        } catch {
+                            skipped.append("\(f.name)（\(CloudHandoffStaging.sizeText(f.size))：\(error.localizedDescription)）")
+                        }
+                    }
+                }
+                let package = handoffPackage(instruction: instruction, target: target, files: refs)
                 let receipt = try await CloudLocalHandoff.send(package)
                 center.add(receipt, session: key)
+                if !skipped.isEmpty {
+                    center.notes[key] = "这几个文件没能一起带过去：" + skipped.joined(separator: "、")
+                }
             } catch {
                 center.errors[key] = "交给 Bot 没成功：\(error.localizedDescription)"
             }
         }
     }
 
-    private func handoffPackage(instruction: String, target: String?) -> CloudLocalHandoff.Package {
+    /// 这次交接要带上的文件（同名只带一份，最多 10 个 = 服务端 MAX_FILES）。
+    /// 返回 (能带的, 因为超过 10 个而没带的文件名)。只看元数据，不读内容。
+    private func handoffFileCandidates() -> (files: [(name: String, url: URL, size: Int)], overflow: [String]) {
+        let visible = messages.filter { !$0.isCompactedHistory }
+        let queued = attachments.filter { $0.loadState == .ready } + visible.flatMap(\.inputAttachments)
+        var out: [(name: String, url: URL, size: Int)] = []
+        var overflow: [String] = []
+        var seen = Set<String>()
+        for a in queued {
+            guard seen.insert(a.fileName).inserted else { continue }
+            let size = (try? a.cacheURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            guard size > 0, FileManager.default.fileExists(atPath: a.cacheURL.path) else { continue }
+            if out.count < 10 {
+                out.append((a.fileName, a.cacheURL, size))
+            } else {
+                overflow.append(a.fileName)
+            }
+        }
+        return (out, overflow)
+    }
+
+    private func handoffPackage(instruction: String, target: String?, files: [CloudLocalHandoff.FileRef]) -> CloudLocalHandoff.Package {
         let visible = messages.filter { !$0.isCompactedHistory }
         let users = visible.filter { $0.role == .user }.map(\.content)
         let goal = CloudLocalHandoff.clip(users.first ?? instruction, 1500)
@@ -72,13 +123,6 @@ extension AIChatViewModel {
             .map { m in m.blocks.filter { $0.kind == .text }.map(\.content).joined(separator: "\n") } ?? ""
         let tools = visible.flatMap { $0.blocks.filter { $0.toolStatus != nil } }.suffix(4)
         let outputs = tools.map { "· \($0.toolDescription)：" + CloudLocalHandoff.clip($0.content, 600) }.joined(separator: "\n")
-        var files: [(name: String, data: Data)] = []
-        let queued = attachments.filter { $0.loadState == .ready } + visible.flatMap(\.inputAttachments)
-        for a in queued where files.count < 10 {
-            guard !files.contains(where: { $0.name == a.fileName }),
-                  let data = try? Data(contentsOf: a.cacheURL), data.count <= 20_000_000 else { continue }
-            files.append((name: a.fileName, data: data))
-        }
         return CloudLocalHandoff.Package(goal: goal, summary: turns.joined(separator: "\n"),
                                          progress: CloudLocalHandoff.clip(lastAnswer, 2000), outputs: outputs,
                                          remaining: instruction, files: files, targetBot: target)
@@ -98,6 +142,10 @@ struct LocalBotHandoffCards: View {
             if let err = center.errors[sessionKey] {
                 card(icon: "exclamationmark.circle", text: err, tint: .red)
                     .onTapGesture { center.errors[sessionKey] = nil }
+            }
+            if let note = center.notes[sessionKey] {
+                card(icon: "info.circle", text: note, tint: .orange)
+                    .onTapGesture { center.notes[sessionKey] = nil }
             }
             if let last = center.receipts[sessionKey]?.last {
                 Button {

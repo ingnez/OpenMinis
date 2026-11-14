@@ -439,8 +439,10 @@ enum CloudAttachmentKit {
                     }
                     let resp: [String: Any]
                     do {
-                        resp = try await CloudConnection.shared.request(method: "POST", path: "/v1/sessions/\(sessionId)/upload",
-                                                                        body: ["filename": item.filename, "data_base64": item.data.base64EncodedString()])
+                        // 小文件仍走 base64 JSON 的 /upload；大文件（ipa 必走）走
+                        // /upload/raw 原始字节流，见 CloudAttachmentUpload。
+                        resp = try await CloudAttachmentUpload.upload(filename: item.filename, data: item.data,
+                                                                     sessionId: sessionId)
                     } catch {
                         await progress?(item.id, .failed)
                         throw error
@@ -488,7 +490,8 @@ struct CloudPhotoPicker: UIViewControllerRepresentable {
                 group.enter()
                 if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
                     provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _ in
-                        if let url, let data = try? Data(contentsOf: url), data.count < 24_000_000 {
+                        if let url, let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+                           data.count <= CloudAttachmentUpload.rawMaxBytes {
                             box.add(i, CloudPendingAttachment(filename: "视频\(i + 1).\(url.pathExtension.isEmpty ? "mov" : url.pathExtension)", data: data, isImage: false))
                         }
                         group.leave()
@@ -573,9 +576,10 @@ struct CloudDocumentScanner: UIViewControllerRepresentable {
 }
 
 struct CloudFilePicker: UIViewControllerRepresentable {
-    /// 上传走 `/v1/sessions/<id>/upload` 的 base64 JSON，服务端对请求体限 36MB，
-    /// base64 膨胀 4/3 → 单个文件最多 24MB 左右。超过就明确告诉用户，不再默默丢掉。
-    static let maxBytes = 24 * 1024 * 1024
+    /// 小文件走 `/v1/sessions/<id>/upload` 的 base64 JSON（服务端请求体 36MB、
+    /// 解码后 25MB，所以 24MB 是那条路的安全线）；超过就改走 `/upload/raw`
+    /// 原始字节流，上限见 CloudAttachmentUpload.rawMaxBytes。
+    static let maxBytes = CloudAttachmentUpload.rawMaxBytes
 
     let onPicked: ([CloudPendingAttachment]) -> Void
     /// 选中的文件加不上时的一句话（太大 / 读不出来），由调用方弹提示

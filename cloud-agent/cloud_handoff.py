@@ -12,7 +12,10 @@ class HandoffError(ValueError):
 
 
 def clean(req):
-    """校验请求字段，返回 (字段, 文件列表)。文件是 [{filename, data_base64}]。"""
+    """校验请求字段，返回 (字段, 文件列表)。
+
+    文件是 [{filename, data_base64}]（小文件）或 [{filename, staging_id}]（大文件暂存）。
+    """
     out = {}
     for k, limit in FIELD_LIMITS.items():
         v = req.get(k)
@@ -27,8 +30,11 @@ def clean(req):
     if not isinstance(files, list) or len(files) > MAX_FILES:
         raise HandoffError(f"files 最多 {MAX_FILES} 个")
     for f in files:
-        if not isinstance(f, dict) or not isinstance(f.get("filename"), str) or not isinstance(f.get("data_base64"), str):
-            raise HandoffError("files 每项需要 filename 和 data_base64")
+        # 小文件直接带 data_base64；大文件先 POST /v1/handoff/files 暂存，这里只带 staging_id
+        if not isinstance(f, dict) or not isinstance(f.get("filename"), str):
+            raise HandoffError("files 每项需要 filename，以及 data_base64 或 staging_id")
+        if not isinstance(f.get("data_base64"), str) and not isinstance(f.get("staging_id"), str):
+            raise HandoffError("files 每项需要 filename，以及 data_base64 或 staging_id")
     target = req.get("target_bot")
     if target is not None and (not isinstance(target, str) or not target):
         raise HandoffError("target_bot 必须是 Bot ID")

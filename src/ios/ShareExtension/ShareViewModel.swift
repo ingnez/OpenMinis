@@ -106,6 +106,58 @@ final class ShareViewModel {
 
     // MARK: - Processors
 
+    /// 文件没能落进共享容器时，别记一个不存在的附件。
+    ///
+    /// 以前是 `try? copyItem` 之后无条件 `add(.attachment, fileName)`：拷贝失败也记账，
+    /// 主 App 读到的是一个没有文件的「幽灵附件」，界面上什么也不会发生——这就是
+    /// 「分享进来偶尔没反应」。现在留给用户一句话，说明是哪一个、为什么。
+    private func noteFailure(_ name: String, _ error: Error?) {
+        NSLog("[ShareExt] %@ 没能加入共享容器: %@", name, error?.localizedDescription ?? "-")
+        add(.text, "（「\(name)」没能加入：文件读不出来，请先在「文件」里下载到本机再分享）")
+    }
+
+    /// 用 provider 的 file representation 直接拷进共享容器：系统给的临时 URL 只在
+    /// 回调内有效，所以复制必须在回调里做完。
+    ///
+    /// 为什么不用 `loadItem`：那会把整个文件读进扩展的内存。分享扩展的内存上限很小，
+    /// 分享一个 100MB+ 的 .ipa 会被系统直接杀掉，表现就是「点了分享什么都没发生」。
+    /// 返回 false 表示这个 provider 没有 file representation 或复制失败，调用方退回老路。
+    private func copyFileRepresentation(_ provider: NSItemProvider, type: UTType, fileName: String) async -> Bool {
+        await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { url, error in
+                guard let url, let dir = SharedContainerStore.sharedFileDirectory else {
+                    NSLog("[ShareExt] no file representation for %@: %@",
+                          type.identifier, error?.localizedDescription ?? "-")
+                    cont.resume(returning: false)
+                    return
+                }
+                do {
+                    try FileManager.default.copyItem(at: url, to: dir.appendingPathComponent(fileName))
+                    cont.resume(returning: true)
+                } catch {
+                    NSLog("[ShareExt] copy of %@ failed: %@", url.lastPathComponent, error.localizedDescription)
+                    cont.resume(returning: false)
+                }
+            }
+        }
+    }
+
+    /// 老接口拿到的 URL（可能带安全作用域）→ 共享容器；失败留话给用户。
+    private func copyLocalFile(_ url: URL, fileName: String, displayName: String) async {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        guard let dir = SharedContainerStore.sharedFileDirectory else {
+            noteFailure(displayName, nil)
+            return
+        }
+        do {
+            try FileManager.default.copyItem(at: url, to: dir.appendingPathComponent(fileName))
+            add(.attachment, fileName)
+        } catch {
+            noteFailure(displayName, error)
+        }
+    }
+
     private func processURL(_ provider: NSItemProvider) async {
         guard let item = try? await provider.loadItem(forTypeIdentifier: UTType.url.identifier),
               let url = item as? URL else { return }
@@ -132,20 +184,21 @@ final class ShareViewModel {
             let fileName = "shared-image-\(UUID().uuidString.prefix(8)).jpg"
             if let dir = SharedContainerStore.sharedFileDirectory,
                let jpegData = image.jpegData(compressionQuality: 0.85) {
-                let fileURL = dir.appendingPathComponent(fileName)
-                try? jpegData.write(to: fileURL)
-                add(.attachment, fileName)
+                do {
+                    try jpegData.write(to: dir.appendingPathComponent(fileName))
+                    add(.attachment, fileName)
+                } catch {
+                    noteFailure(url.lastPathComponent, error)
+                }
+            } else {
+                noteFailure(url.lastPathComponent, nil)
             }
             return
         }
 
         // General file copy
         let fileName = "shared-\(UUID().uuidString.prefix(8))_\(url.lastPathComponent)"
-        if let dir = SharedContainerStore.sharedFileDirectory {
-            let destURL = dir.appendingPathComponent(fileName)
-            try? FileManager.default.copyItem(at: url, to: destURL)
-            add(.attachment, fileName)
-        }
+        await copyLocalFile(url, fileName: fileName, displayName: url.lastPathComponent)
     }
 
     private func processText(_ provider: NSItemProvider) async {
@@ -171,43 +224,57 @@ final class ShareViewModel {
                 let fileName = "shared-image-\(UUID().uuidString.prefix(8)).jpg"
                 if let dir = SharedContainerStore.sharedFileDirectory,
                    let jpegData = image.jpegData(compressionQuality: 0.85) {
-                    let fileURL = dir.appendingPathComponent(fileName)
-                    try? jpegData.write(to: fileURL)
-                    add(.attachment, fileName)
+                    do {
+                        try jpegData.write(to: dir.appendingPathComponent(fileName))
+                        add(.attachment, fileName)
+                    } catch {
+                        noteFailure(provider.suggestedName ?? "图片", error)
+                    }
+                } else {
+                    noteFailure(provider.suggestedName ?? "图片", nil)
                 }
+            } else {
+                noteFailure(provider.suggestedName ?? "图片", nil)
             }
         }
     }
 
     private func processVideo(_ provider: NSItemProvider) async {
-        guard let item = try? await provider.loadItem(forTypeIdentifier: UTType.movie.identifier),
-              let url = item as? URL else { return }
-
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-
-        let ext = url.pathExtension.lowercased()
-        let suffix = ext.isEmpty ? "mov" : ext
-        let fileName = "shared-video-\(UUID().uuidString.prefix(8)).\(suffix)"
-        if let dir = SharedContainerStore.sharedFileDirectory {
-            let destURL = dir.appendingPathComponent(fileName)
-            try? FileManager.default.copyItem(at: url, to: destURL)
+        // suggestedName 可能带路径，取最后一段，别让它写到共享目录外面去
+        let name = ((provider.suggestedName ?? "视频") as NSString).lastPathComponent
+        let ext = (name as NSString).pathExtension.lowercased()
+        let fileName = "shared-video-\(UUID().uuidString.prefix(8)).\(ext.isEmpty ? "mov" : ext)"
+        if await copyFileRepresentation(provider, type: .movie, fileName: fileName) {
             add(.attachment, fileName)
+            return
         }
+        guard let item = try? await provider.loadItem(forTypeIdentifier: UTType.movie.identifier),
+              let url = item as? URL else {
+            noteFailure(name, nil)
+            return
+        }
+        await copyLocalFile(url, fileName: fileName, displayName: name)
     }
 
     private func processFile(_ provider: NSItemProvider) async {
-        guard let item = try? await provider.loadItem(forTypeIdentifier: UTType.item.identifier),
-              let url = item as? URL else { return }
-
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-
-        let fileName = "shared-\(UUID().uuidString.prefix(8))_\(url.lastPathComponent)"
-        if let dir = SharedContainerStore.sharedFileDirectory {
-            let destURL = dir.appendingPathComponent(fileName)
-            try? FileManager.default.copyItem(at: url, to: destURL)
+        let rawName = (provider.suggestedName?.isEmpty == false ? provider.suggestedName! : "文件")
+        let name = (rawName as NSString).lastPathComponent
+        let fileName = "shared-\(UUID().uuidString.prefix(8))_\(name)"
+        if await copyFileRepresentation(provider, type: .item, fileName: fileName) {
             add(.attachment, fileName)
+            return
         }
+        // 退一步：老 provider 只给 fileURL / item 的 Data
+        if let item = try? await provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier),
+           let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+            await copyLocalFile(url, fileName: fileName, displayName: name)
+            return
+        }
+        if let item = try? await provider.loadItem(forTypeIdentifier: UTType.item.identifier),
+           let url = item as? URL {
+            await copyLocalFile(url, fileName: fileName, displayName: name)
+            return
+        }
+        noteFailure(name, nil)
     }
 }

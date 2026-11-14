@@ -13,6 +13,10 @@ import UIKit
 
 private let shareLog = AppLogger(category: "Share")
 
+/// 分享进来的单文件上限，与云端 `PUT /upload/raw` 的 `MAX_RAW_UPLOAD`
+/// （cloud-agent/cloud_agent_server.py）保持一致；再大只能先压缩。
+private let shareFileByteLimit = 512 * 1024 * 1024
+
 extension ContentView {
     // MARK: - Share Extension Handling
 
@@ -30,16 +34,21 @@ extension ContentView {
             case .inlineText:
                 texts.append(item.value)
             case .attachment:
-                // 大文件（视频等）整块读进内存可能被系统杀掉：超过 25 MB 的跳过，并在文字里说明
+                // 上限与云端 /upload/raw 一致（512MB）。读盘用 .mappedIfSafe：
+                // 大文件是映射进来的，不会因为「整块读进内存」被系统杀掉。
                 guard let dir = SharedContainerStore.sharedFileDirectory else { continue }
                 let url = dir.appendingPathComponent((item.value as NSString).lastPathComponent)
                 let attrs = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
                 let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
-                if size > 25 * 1024 * 1024 {
-                    texts.append("（\(item.value) 太大，没有附上）")
+                if size > shareFileByteLimit {
+                    texts.append("（\(item.value) 太大（\(size / 1024 / 1024)MB），没有附上）")
                     continue
                 }
-                guard let data = try? Data(contentsOf: url) else { continue }
+                guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else {
+                    // 不静默丢：告诉用户是哪一份没读出来
+                    texts.append("（\(item.value) 没能附上：文件读不出来）")
+                    continue
+                }
                 if let img = UIImage(data: data), let a = CloudAttachmentKit.image(img, name: item.value) {
                     files.append(a)
                 } else {

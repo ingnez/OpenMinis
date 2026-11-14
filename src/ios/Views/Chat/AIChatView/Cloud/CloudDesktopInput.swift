@@ -499,8 +499,25 @@ enum CloudLowBandwidth {
         lowBandwidth ? CloudStreamQuality.saver : adaptive
     }
 
-    static func shouldDefer(bytes: Int, setting: String, expensive: Bool, threshold: Int = 512 * 1024) -> Bool {
-        bytes >= threshold && active(setting: setting, expensive: expensive)
+    /// 这次上传要不要推迟到「连上不贵的网络再传」。
+    ///
+    /// 只有用户**手动把省流打开**（"on"）时才推迟，并且只在当前网络确实昂贵
+    /// （蜂窝 / 低数据模式）时。默认的 "auto" 不推迟：聊天里的附件是用户刚刚
+    /// 亲手选的文件，默认设置却把它丢进「已推迟」队列，那条消息会立刻判失败、
+    /// Bot 也永远不知道文件后来到了 —— 用户看到的就是「有时候传不上去」。
+    ///
+    /// 阈值也从 512KB 提到 8MB：省流下普通文档 / 截图仍然直接发。
+    static func shouldDefer(bytes: Int, setting: String, expensive: Bool, threshold: Int = 8 * 1024 * 1024) -> Bool {
+        defersUploads(setting: setting, expensive: expensive) && bytes >= threshold
+    }
+
+    /// 上传推迟是否生效。
+    ///
+    /// 与「画面降画质」的 `active(setting:expensive:)` 故意分开：手动开省流
+    /// （"on"）只影响昂贵网络下的上传，Wi-Fi 上照常直传；否则 "on" 会让
+    /// 推迟队列永远等不到 flush（`CloudDataSaverFlush` 之前就是按 `active` 判的）。
+    static func defersUploads(setting: String, expensive: Bool) -> Bool {
+        setting == "on" && expensive
     }
 
     static func bytesText(_ n: Int) -> String {

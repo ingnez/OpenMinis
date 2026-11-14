@@ -7,7 +7,10 @@ enum CloudDataSaverFlush {
 
     static func maybeFlush() {
         let setting = UserDefaults.standard.string(forKey: CloudLowBandwidth.key) ?? "auto"
-        let saving = CloudLowBandwidth.active(setting: setting, expensive: CloudDataSaver.expensiveNetwork)
+        // 用「上传推迟」而不是「画面降画质」判断：手动开省流 + 蜂窝才推迟，
+        // 一旦连上 Wi-Fi / 关掉省流就该把队列发出去（以前按 active 判，
+        // setting == "on" 时永远为真，推迟的文件就永远卡在队列里）。
+        let saving = CloudLowBandwidth.defersUploads(setting: setting, expensive: CloudDataSaver.expensiveNetwork)
         guard !saving else { return }
         Task { await run() }
     }
@@ -22,7 +25,7 @@ enum CloudDataSaverFlush {
 
         let items = CloudDataSaver.load(from: defaults)
         let setting = defaults.string(forKey: CloudLowBandwidth.key) ?? UserDefaults.standard.string(forKey: CloudLowBandwidth.key) ?? "auto"
-        let saving = CloudLowBandwidth.active(setting: setting, expensive: CloudDataSaver.expensiveNetwork)
+        let saving = CloudLowBandwidth.defersUploads(setting: setting, expensive: CloudDataSaver.expensiveNetwork)
         let plan = CloudDataSaverFlushPlan.apply(items: items, saving: saving, fileExists: { name in
             guard let url = CloudDataSaver.payloadURL(localName: name, base: base) else { return false }
             return FileManager.default.fileExists(atPath: url.path)

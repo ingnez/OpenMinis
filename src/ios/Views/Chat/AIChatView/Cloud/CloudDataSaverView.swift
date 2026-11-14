@@ -78,7 +78,10 @@ struct CloudDataSaverPage: View {
     }
 
     private var statusLine: String {
-        saving ? "省流已开：画面降画质，大文件会推迟上传" : "省流未开：按原画质，上传立即发出"
+        // 「省流已开」说的是画面；要不要推迟附件，只在你手动打开省流 + 当前网络昂贵时成立。
+        let defers = CloudLowBandwidth.defersUploads(setting: setting, expensive: CloudDataSaver.expensiveNetwork)
+        let upload = defers ? "；当前网络下大文件推迟到 Wi-Fi 再传" : "；附件随时直接上传"
+        return (saving ? "省流已开：画面降画质" : "省流未开：按原画质") + upload
     }
 
     private var banner: String {

@@ -1006,8 +1006,12 @@ def avatar_save(bot_id, data):
         f.write(data)
     return hashlib.sha256(data).hexdigest()[:10]
 
-def save_upload(session_id, filename, data):
-    """手机上传的附件存到会话工作区 attachments/，文件名去掉危险字符并加随机前缀。"""
+# 原始字节流上传（/upload/raw）的单文件上限。手机端 app 里的
+# CloudAttachmentUpload.rawMaxBytes 必须与之一致。
+MAX_RAW_UPLOAD = 512 * 1024 * 1024
+
+def upload_target(session_id, filename):
+    """附件在工作区里的落点：attachments/up_<8 hex>_<安全名>。返回 (target, name, err)。"""
     stem, ext = os.path.splitext(os.path.basename(filename or "file"))
     stem = ATTACH_NAME_RE.sub("_", stem).strip("._")[-60:] or "file"
     ext = ATTACH_NAME_RE.sub("", ext.lstrip("."))[:10].lower()
@@ -1015,12 +1019,52 @@ def save_upload(session_id, filename, data):
     name = f"up_{uuid.uuid4().hex[:8]}_{base}"
     target, err = safe_path_resolve(session_id, os.path.join("attachments", name))
     if err:
-        raise ValueError(err)
+        return None, name, err
     os.makedirs(os.path.dirname(target), exist_ok=True)
+    return target, name, None
+
+def upload_receipt(session_id, name, size):
+    return {"file_path": f"attachments/{name}", "filename": name, "bytes": size,
+            "attachment_url": f"/v1/sessions/{session_id}/attachments/{name}"}
+
+def save_upload(session_id, filename, data):
+    """手机上传的附件存到会话工作区 attachments/，文件名去掉危险字符并加随机前缀。"""
+    target, name, err = upload_target(session_id, filename)
+    if err:
+        raise ValueError(err)
     with open(target, "wb") as f:
         f.write(data)
-    return {"file_path": f"attachments/{name}", "filename": name, "bytes": len(data),
-            "attachment_url": f"/v1/sessions/{session_id}/attachments/{name}"}
+    return upload_receipt(session_id, name, len(data))
+
+def save_upload_stream(session_id, filename, rfile, length):
+    """把 rfile 里的 length 个字节流式写进工作区（不整体读进内存、不做 base64）。
+
+    先写 <target>.part，字节数对上才 rename —— 手机中途断开时工作区里
+    不会留下一个看起来正常、其实是半个的 .ipa。
+    """
+    target, name, err = upload_target(session_id, filename)
+    if err:
+        raise ValueError(err)
+    part = target + ".part"
+    got = 0
+    try:
+        with open(part, "wb") as f:
+            while got < length:
+                chunk = rfile.read(min(1024 * 1024, length - got))
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+        if got != length:
+            raise ValueError(f"收到 {got} / {length} 字节")
+        os.replace(part, target)
+    except Exception:
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        raise
+    return upload_receipt(session_id, name, got)
 
 def library_media(bot_id, message_id, part):
     conn = get_db_connection()
@@ -3939,6 +3983,98 @@ def _handoff_session(bot_id, title):
     finally:
         conn.close()
 
+# ---- 交接（本地 → 云端）的大文件暂存 -------------------------------------
+# /v1/handoff 的请求体限 36MB，大文件（.ipa 等）先 POST /v1/handoff/files 暂存，
+# 交接 JSON 里只带 staging_id，起会话时再把文件搬进工作区（不再经过 base64）。
+HANDOFF_STAGING_MAX_BYTES = 512 * 1024 * 1024
+HANDOFF_STAGING_TTL = 6 * 3600
+HANDOFF_STAGING_ID_RE = re.compile(r"^hf_[0-9a-f]{12}$")
+
+def handoff_staging_dir():
+    d = os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "handoff-staging")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+def handoff_staging_sweep():
+    """清掉超过 TTL 还没被取走的暂存文件（手机传完却没发起交接）。"""
+    d = handoff_staging_dir()
+    cutoff = time.time() - HANDOFF_STAGING_TTL
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for n in names:
+        p = os.path.join(d, n)
+        try:
+            if os.path.getmtime(p) < cutoff:
+                os.remove(p)
+        except OSError:
+            pass
+
+def handoff_staging_write(rfile, length, filename):
+    """把 rfile 里的 length 个字节写到暂存区，返回 {staging_id, filename, bytes}。"""
+    handoff_staging_sweep()
+    d = handoff_staging_dir()
+    staging_id = "hf_" + uuid.uuid4().hex[:12]
+    part = os.path.join(d, staging_id + ".part")
+    got = 0
+    try:
+        with open(part, "wb") as f:
+            while got < length:
+                chunk = rfile.read(min(1024 * 1024, length - got))
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+        if got != length:
+            raise ValueError(f"收到 {got} / {length} 字节")
+        os.replace(part, os.path.join(d, staging_id))
+        with open(os.path.join(d, staging_id + ".name"), "w", encoding="utf-8") as f:
+            f.write(os.path.basename(filename or "file"))
+    except Exception:
+        for p in (part, os.path.join(d, staging_id + ".name")):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        raise
+    return {"staging_id": staging_id, "filename": os.path.basename(filename or "file"), "bytes": got}
+
+def handoff_staging_take(staging_id):
+    """取走一个暂存文件，返回 (path, filename)；不存在 / 不合法 → ValueError。"""
+    if not isinstance(staging_id, str) or not HANDOFF_STAGING_ID_RE.match(staging_id):
+        raise ValueError("staging_id 不合法")
+    d = handoff_staging_dir()
+    path = os.path.join(d, staging_id)
+    if not os.path.exists(path):
+        raise ValueError("暂存的文件已经不在了，请重新上传")
+    filename = ""
+    try:
+        with open(path + ".name", encoding="utf-8") as f:
+            filename = f.read().strip()
+    except OSError:
+        pass
+    try:
+        os.remove(path + ".name")
+    except OSError:
+        pass
+    return path, filename
+
+def save_upload_from_path(session_id, filename, src_path):
+    """把服务器上已有的文件搬进会话工作区 attachments/，命名规则与 save_upload 一致。"""
+    stem, ext = os.path.splitext(os.path.basename(filename or "file"))
+    stem = ATTACH_NAME_RE.sub("_", stem).strip("._")[-60:] or "file"
+    ext = ATTACH_NAME_RE.sub("", ext.lstrip("."))[:10].lower()
+    base = stem + ("." + ext if ext else "")
+    name = f"up_{uuid.uuid4().hex[:8]}_{base}"
+    target, err = safe_path_resolve(session_id, os.path.join("attachments", name))
+    if err:
+        raise ValueError(err)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    shutil.move(src_path, target)
+    return {"file_path": f"attachments/{name}", "filename": name, "bytes": os.path.getsize(target),
+            "attachment_url": f"/v1/sessions/{session_id}/attachments/{name}"}
+
 def start_handoff(req):
     """本地模式交接：打包的上下文和文件交给指定 Bot；没指定就交给主 Bot 分派。返回会话 / 任务 / Bot。"""
     fields, files = cloud_handoff.clean(req)
@@ -3962,12 +4098,20 @@ def start_handoff(req):
     sid = _handoff_session(target_id, "本地交接：" + (fields.get("goal") or fields.get("summary") or "")[:40])
     saved = []
     for f in files:
+        if isinstance(f.get("staging_id"), str):
+            # 大文件：先经 /v1/handoff/files 暂存，这里直接搬进工作区（不经过 base64）
+            try:
+                staged_path, staged_name = handoff_staging_take(f["staging_id"])
+                saved.append(save_upload_from_path(sid, f.get("filename") or staged_name, staged_path)["file_path"])
+            except ValueError as e:
+                raise cloud_handoff.HandoffError(str(e))
+            continue
         try:
             data = base64.b64decode(f["data_base64"], validate=True)
         except (ValueError, TypeError):
             raise cloud_handoff.HandoffError(f"文件 {f['filename']} 不是合法的 base64")
         if len(data) > cloud_handoff.MAX_FILE_BYTES:
-            raise cloud_handoff.HandoffError(f"文件 {f['filename']} 超过 20 MB")
+            raise cloud_handoff.HandoffError(f"文件 {f['filename']} 超过 20 MB，请改用暂存上传")
         saved.append(save_upload(sid, f["filename"], data)["file_path"])
     content = cloud_handoff.compose(fields, saved, routed, redact=cloud_vault.redact)
     now = time.time()
@@ -8801,9 +8945,62 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return req_json
 
+    def _raw_upload(self, path):
+        """PUT /v1/sessions/<sid>/upload/raw?filename=<name>，body 是文件原始字节。
+
+        大附件（.ipa 30-200MB）用这条：不再 base64（省 1/3 体积）、不经过
+        _read_json_body（那条路请求体限 36MB、还要把整包读进内存解析 JSON）。
+        鉴权、路径校验、落盘位置与 /upload 完全一致，返回值也同形。
+        """
+        m = re.fullmatch(r"/v1/sessions/([A-Za-z0-9_-]{1,64})/upload/raw", path)
+        if not m:
+            return False
+        sid = m.group(1)
+        filename = (parse_qs(urlparse(self.path).query).get("filename") or [""])[0]
+        if not filename:
+            self._send(400, {"error": "filename is required"})
+            return True
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except Exception:
+            length = 0
+        if length <= 0:
+            self._send(411, {"error": "Content-Length required"})
+            return True
+        if length > MAX_RAW_UPLOAD:
+            self._send(413, {"error": f"附件超过 {MAX_RAW_UPLOAD // (1024 * 1024)}MB"})
+            return True
+        conn = get_db_connection()
+        try:
+            found = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (sid,)).fetchone()
+        finally:
+            conn.close()
+        if not found:
+            self._send(404, {"error": "Session not found"})
+            return True
+        try:
+            receipt = save_upload_stream(sid, filename, self.rfile, length)
+        except ValueError as e:
+            self._send_quiet(400, {"error": str(e)})
+            return True
+        except Exception as e:
+            self._send_quiet(500, {"error": sanitize_err(e)})
+            return True
+        self._send_quiet(200, receipt)
+        return True
+
+    def _send_quiet(self, code, obj):
+        """传输中途掉线的手机上回复必然 BrokenPipe；别让它在服务日志里刷 traceback。"""
+        try:
+            self._send(code, obj)
+        except OSError:
+            pass
+
     def do_PUT(self):
         path = self.path.split("?")[0]
         if not self._authorized():
+            return
+        if self._raw_upload(path):
             return
         req_json = self._read_json_body()
         if req_json is None:
@@ -9420,9 +9617,47 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send(404, {"error": "Not found"})
 
+    def _handoff_raw_upload(self, path):
+        """POST /v1/handoff/files?filename=<name>，body 是文件原始字节。
+
+        交接的大文件先在这里暂存（原始字节流，512MB 上限），/v1/handoff 里只带
+        staging_id —— 否则 36MB 请求体 + base64 膨胀会让一个普通 .ipa 交不过去。
+        """
+        if path != "/v1/handoff/files":
+            return False
+        filename = (parse_qs(urlparse(self.path).query).get("filename") or [""])[0]
+        if not filename:
+            self._handoff_reply(400, {"error": "filename is required"})
+            return True
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except Exception:
+            length = 0
+        if length <= 0:
+            self._handoff_reply(411, {"error": "Content-Length required"})
+            return True
+        if length > HANDOFF_STAGING_MAX_BYTES:
+            self._handoff_reply(413, {"error": f"附件超过 {HANDOFF_STAGING_MAX_BYTES // (1024 * 1024)}MB"})
+            return True
+        try:
+            self._handoff_reply(200, handoff_staging_write(self.rfile, length, filename))
+        except ValueError as e:
+            self._handoff_reply(400, {"error": str(e)})
+        except Exception as e:
+            self._handoff_reply(500, {"error": sanitize_err(e)})
+        return True
+
+    def _handoff_reply(self, code, obj):
+        try:
+            self._send(code, obj)
+        except OSError:
+            pass    # 手机上传中途掉线：回复必然 BrokenPipe，别刷 traceback
+
     def do_POST(self):
         path = self.path.split("?")[0]
         if not self._authorized():
+            return
+        if self._handoff_raw_upload(path):
             return
         req_json = self._read_json_body()
         if req_json is None:

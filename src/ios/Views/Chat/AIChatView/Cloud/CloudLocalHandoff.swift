@@ -3,18 +3,45 @@ import Foundation
 /// 本地 → 云端交接：本地模式做不完的工作打包交给 Bot（POST /v1/handoff）。
 /// 没点名 Bot 时交给主 Bot，由它决定自己做还是转给最合适的 Bot。
 enum CloudLocalHandoff {
+    /// 随交接带上去的一个文件。
+    ///
+    /// 小文件直接 base64 塞进 JSON（`/v1/handoff` 请求体 36MB，够用）；
+    /// 大文件（.ipa 就是这种）先 POST `/v1/handoff/files` 暂存，JSON 里只带 staging_id，
+    /// 服务端起会话时再把文件搬进工作区。以前超过 20MB 的文件被**静默跳过**。
+    enum FileRef {
+        case inline(name: String, data: Data)
+        case staged(name: String, stagingId: String)
+
+        var body: [String: Any] {
+            switch self {
+            case .inline(let name, let data):
+                return ["filename": name, "data_base64": data.base64EncodedString()]
+            case .staged(let name, let stagingId):
+                return ["filename": name, "staging_id": stagingId]
+            }
+        }
+    }
+
+    /// 一次交接里走 base64 内联的总字节预算：36MB 请求体 ÷ 4/3，留出字段余量。
+    static let inlineByteBudget = 20 * 1024 * 1024
+
+    /// 单个文件是否还值得内联（太大或预算用尽就改走暂存）。
+    static func canInline(bytes: Int, used: Int) -> Bool {
+        bytes <= 8 * 1024 * 1024 && used + bytes <= inlineByteBudget
+    }
+
     struct Package {
         var goal: String
         var summary: String
         var progress: String
         var outputs: String
         var remaining: String
-        var files: [(name: String, data: Data)]
+        var files: [FileRef]
         var targetBot: String?
 
         var body: [String: Any] {
             var b: [String: Any] = ["goal": goal, "summary": summary, "progress": progress, "outputs": outputs, "remaining": remaining,
-                                    "files": files.map { ["filename": $0.name, "data_base64": $0.data.base64EncodedString()] }]
+                                    "files": files.map { $0.body }]
             if let targetBot { b["target_bot"] = targetBot }
             return b
         }
