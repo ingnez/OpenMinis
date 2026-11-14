@@ -55,6 +55,11 @@ struct CloudBotMenuItems: View {
         Button { model.markUnread(bot.id, !unread) } label: {
             Label(unread ? "标为已读" : "标为未读", systemImage: unread ? "envelope.open" : "envelope.badge")
         }
+        // 一句话交班：头像上的长按手势被这里的 contextMenu 抢走了（touch 用户根本到不了
+        // `CloudBotTopAvatar` 里的 LongPressGesture，只有 VoiceOver 的自定义动作能触发），
+        // 所以把入口放进菜单——长按头像 → 一句话交班，两步就到，不再是死代码。
+        Button { model.shiftSpeechBot = bot } label: { Label("一句话交班", systemImage: "text.bubble") }
+            .accessibilityIdentifier("shiftSpeechMenuButton")
         Button { model.setPrefs(bot.id, ["pinned": !bot.pinned]) } label: {
             Label(bot.pinned ? "取消置顶" : "置顶", systemImage: bot.pinned ? "pin.slash" : "pin")
         }

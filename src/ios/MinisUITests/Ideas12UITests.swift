@@ -39,6 +39,15 @@ final class Ideas12UITests: XCTestCase {
         let avatar = app.descendants(matching: .any)["homeBotAvatar-e2ebot"]
         XCTAssertTrue(avatar.waitForExistence(timeout: 15), "首页头像没有独立的辅助功能入口")
         avatar.press(forDuration: 1.0)
+        // 头像上还挂着长按菜单（contextMenu 优先于手势），交班入口在菜单里：
+        // 长按头像 → 一句话交班。任何一种方式能进到话术页都算这个入口存在。
+        if !app.descendants(matching: .any)["shiftSpeechSheet"].waitForExistence(timeout: 4) {
+            let item = app.buttons["shiftSpeechMenuButton"].exists
+                ? app.buttons["shiftSpeechMenuButton"]
+                : app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "一句话交班")).firstMatch
+            XCTAssertTrue(item.waitForExistence(timeout: 8), "长按头像既没有交班话术页，菜单里也没有交班入口")
+            item.tap()
+        }
         XCTAssertTrue(app.descendants(matching: .any)["shiftSpeechSheet"].waitForExistence(timeout: 10)
                       || waitText(app, contains: "一句话交班", timeout: 8),
                       "长按头像没有出现交班话术页")
